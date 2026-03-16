@@ -1,0 +1,3 @@
+experiment:
+  benchmark_queries: 100
+  seed: 42
