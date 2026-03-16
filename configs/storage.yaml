@@ -1,0 +1,3 @@
+storage:
+  metadata_dsn: file:andb.db?cache=shared&mode=rwc
+  blob_root: ./data/blobs

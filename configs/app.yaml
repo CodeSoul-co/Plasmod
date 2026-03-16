@@ -1,0 +1,4 @@
+app:
+  name: andb
+  env: dev
+  http_addr: 127.0.0.1:8080

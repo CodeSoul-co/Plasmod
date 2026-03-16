@@ -1,0 +1,120 @@
+package schemas
+
+type Agent struct {
+	AgentID             string   `json:"agent_id"`
+	TenantID            string   `json:"tenant_id"`
+	WorkspaceID         string   `json:"workspace_id"`
+	AgentType           string   `json:"agent_type"`
+	RoleProfile         string   `json:"role_profile"`
+	PolicyRef           string   `json:"policy_ref"`
+	CapabilitySet       []string `json:"capability_set"`
+	DefaultMemoryPolicy string   `json:"default_memory_policy"`
+	CreatedAt           string   `json:"created_at"`
+	Status              string   `json:"status"`
+}
+
+type Session struct {
+	SessionID       string `json:"session_id"`
+	AgentID         string `json:"agent_id"`
+	ParentSessionID string `json:"parent_session_id"`
+	TaskType        string `json:"task_type"`
+	Goal            string `json:"goal"`
+	ContextRef      string `json:"context_ref"`
+	StartTS         string `json:"start_ts"`
+	EndTS           string `json:"end_ts"`
+	Status          string `json:"status"`
+	BudgetToken     int64  `json:"budget_token"`
+	BudgetTimeMS    int64  `json:"budget_time_ms"`
+}
+
+type Event struct {
+	EventID       string         `json:"event_id"`
+	TenantID      string         `json:"tenant_id"`
+	WorkspaceID   string         `json:"workspace_id"`
+	AgentID       string         `json:"agent_id"`
+	SessionID     string         `json:"session_id"`
+	EventType     string         `json:"event_type"`
+	EventTime     string         `json:"event_time"`
+	IngestTime    string         `json:"ingest_time"`
+	VisibleTime   string         `json:"visible_time"`
+	LogicalTS     int64          `json:"logical_ts"`
+	ParentEventID string         `json:"parent_event_id"`
+	CausalRefs    []string       `json:"causal_refs"`
+	Payload       map[string]any `json:"payload"`
+	Source        string         `json:"source"`
+	Importance    float64        `json:"importance"`
+	Visibility    string         `json:"visibility"`
+	Version       int64          `json:"version"`
+}
+
+// EventEnvelope keeps backward compatibility for legacy ingest package wiring.
+type EventEnvelope = Event
+
+type Memory struct {
+	MemoryID       string   `json:"memory_id"`
+	MemoryType     string   `json:"memory_type"`
+	AgentID        string   `json:"agent_id"`
+	SessionID      string   `json:"session_id"`
+	Scope          string   `json:"scope"`
+	Level          int      `json:"level"`
+	Content        string   `json:"content"`
+	Summary        string   `json:"summary"`
+	SourceEventIDs []string `json:"source_event_ids"`
+	Confidence     float64  `json:"confidence"`
+	Importance     float64  `json:"importance"`
+	FreshnessScore float64  `json:"freshness_score"`
+	TTL            int64    `json:"ttl"`
+	ValidFrom      string   `json:"valid_from"`
+	ValidTo        string   `json:"valid_to"`
+	ProvenanceRef  string   `json:"provenance_ref"`
+	Version        int64    `json:"version"`
+	IsActive       bool     `json:"is_active"`
+}
+
+type State struct {
+	StateID            string `json:"state_id"`
+	AgentID            string `json:"agent_id"`
+	SessionID          string `json:"session_id"`
+	StateType          string `json:"state_type"`
+	StateKey           string `json:"state_key"`
+	StateValue         string `json:"state_value"`
+	DerivedFromEventID string `json:"derived_from_event_id"`
+	CheckpointTS       string `json:"checkpoint_ts"`
+	Version            int64  `json:"version"`
+}
+
+type Artifact struct {
+	ArtifactID        string         `json:"artifact_id"`
+	SessionID         string         `json:"session_id"`
+	OwnerAgentID      string         `json:"owner_agent_id"`
+	ArtifactType      string         `json:"artifact_type"`
+	URI               string         `json:"uri"`
+	ContentRef        string         `json:"content_ref"`
+	MimeType          string         `json:"mime_type"`
+	Metadata          map[string]any `json:"metadata"`
+	Hash              string         `json:"hash"`
+	ProducedByEventID string         `json:"produced_by_event_id"`
+	Version           int64          `json:"version"`
+}
+
+type Edge struct {
+	EdgeID        string  `json:"edge_id"`
+	SrcObjectID   string  `json:"src_object_id"`
+	SrcType       string  `json:"src_type"`
+	EdgeType      string  `json:"edge_type"`
+	DstObjectID   string  `json:"dst_object_id"`
+	DstType       string  `json:"dst_type"`
+	Weight        float64 `json:"weight"`
+	ProvenanceRef string  `json:"provenance_ref"`
+	CreatedTS     string  `json:"created_ts"`
+}
+
+type ObjectVersion struct {
+	ObjectID        string `json:"object_id"`
+	ObjectType      string `json:"object_type"`
+	Version         int64  `json:"version"`
+	MutationEventID string `json:"mutation_event_id"`
+	ValidFrom       string `json:"valid_from"`
+	ValidTo         string `json:"valid_to"`
+	SnapshotTag     string `json:"snapshot_tag"`
+}
