@@ -1,0 +1,4 @@
+retrieval:
+  dense_top_k: 50
+  sparse_top_k: 50
+  merge_top_k: 30

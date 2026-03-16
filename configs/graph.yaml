@@ -1,0 +1,3 @@
+graph:
+  max_hops: 2
+  max_nodes: 200

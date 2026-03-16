@@ -1,0 +1,10 @@
+version: '3.9'
+services:
+  andb:
+    image: golang:1.22
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: ["go", "run", "./src/cmd/server"]
+    ports:
+      - "8080:8080"
