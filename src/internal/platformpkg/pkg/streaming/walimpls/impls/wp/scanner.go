@@ -10,10 +10,10 @@ import (
 	woodpecker "github.com/zilliztech/woodpecker/woodpecker/log"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/helper"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/walimpls/helper"
 )
 
 var _ walimpls.ScannerImpls = (*scannerImpl)(nil)

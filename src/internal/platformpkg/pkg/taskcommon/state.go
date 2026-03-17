@@ -20,8 +20,8 @@
 package taskcommon
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/indexpb"
 )
 
 type State = indexpb.JobState

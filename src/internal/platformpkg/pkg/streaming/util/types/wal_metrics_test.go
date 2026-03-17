@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"andb/platformpkg/pkg/util/tsoutil"
 )
 
 func TestWALMetrics(t *testing.T) {

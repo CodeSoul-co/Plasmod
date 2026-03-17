@@ -28,11 +28,11 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/uniquegenerator"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/typeutil"
+	"andb/platformpkg/pkg/util/uniquegenerator"
 )
 
 func TestProxy_metrics(t *testing.T) {

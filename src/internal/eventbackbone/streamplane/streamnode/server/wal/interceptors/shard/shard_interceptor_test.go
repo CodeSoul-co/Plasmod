@@ -17,10 +17,10 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/shards"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/messagespb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/rmq"
 )
 
 func TestShardInterceptor(t *testing.T) {

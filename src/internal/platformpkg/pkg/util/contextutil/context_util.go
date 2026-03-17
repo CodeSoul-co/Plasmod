@@ -28,8 +28,8 @@ import (
 	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/crypto"
 )
 
 type ctxTenantKey struct{}

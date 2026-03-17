@@ -14,8 +14,8 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/contextutil"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 const replicateRespChanLength = 128

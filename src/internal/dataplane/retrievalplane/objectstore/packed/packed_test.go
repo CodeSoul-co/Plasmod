@@ -30,7 +30,7 @@ import (
 	"github.com/milvus-io/milvus/internal/storagecommon"
 	"github.com/milvus-io/milvus/internal/storagev2"
 	"github.com/milvus-io/milvus/internal/util/initcore"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestPackedReadAndWrite(t *testing.T) {

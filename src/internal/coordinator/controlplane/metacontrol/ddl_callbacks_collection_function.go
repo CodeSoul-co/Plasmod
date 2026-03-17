@@ -31,11 +31,11 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/messagespb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func callAlterCollection(ctx context.Context, c *Core, broadcaster broadcaster.BroadcastAPI, coll *model.Collection, dbName string, collectionName string) error {

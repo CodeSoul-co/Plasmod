@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"andb/platformpkg/pkg/proto/indexpb"
 )
 
 // properties keys

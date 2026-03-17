@@ -8,9 +8,9 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/util/reduce"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/proto/segcorepb"
 )
 
 type defaultLimitReducer struct {

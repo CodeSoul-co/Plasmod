@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/walimplstest"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/walimplstest"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 func TestWriteAheadBufferWithOnlyTrivialTimeTick(t *testing.T) {

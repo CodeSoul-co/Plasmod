@@ -30,10 +30,10 @@ import (
 
 	"github.com/milvus-io/milvus/internal/datacoord/session"
 	"github.com/milvus-io/milvus/internal/metastore/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	taskcommon "github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/internalpb"
+	taskcommon "andb/platformpkg/pkg/taskcommon"
+	"andb/platformpkg/pkg/util/timerecord"
 )
 
 func TestPreImportTask_GetTaskType(t *testing.T) {

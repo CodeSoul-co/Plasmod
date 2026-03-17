@@ -7,7 +7,7 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 var _ InterceptorWithReady = (*chainedInterceptor)(nil)

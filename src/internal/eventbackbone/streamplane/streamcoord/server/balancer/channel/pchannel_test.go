@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/replicateutil"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/replicateutil"
 )
 
 func TestPChannelAvailableInReplication(t *testing.T) {

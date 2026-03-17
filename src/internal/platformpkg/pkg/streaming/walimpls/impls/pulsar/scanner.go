@@ -9,9 +9,9 @@ import (
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/cockroachdb/errors"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/helper"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/walimpls/helper"
 )
 
 var _ walimpls.ScannerImpls = (*scannerImpl)(nil)

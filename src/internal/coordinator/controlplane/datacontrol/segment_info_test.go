@@ -9,7 +9,7 @@ import (
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
+	"andb/platformpkg/pkg/proto/datapb"
 )
 
 func TestCompactionTo(t *testing.T) {

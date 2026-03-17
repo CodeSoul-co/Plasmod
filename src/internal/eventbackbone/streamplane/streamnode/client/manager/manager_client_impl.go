@@ -16,10 +16,10 @@ import (
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/lazygrpc"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/resolver"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var _ ManagerClient = (*managerClientImpl)(nil)

@@ -34,11 +34,11 @@ import (
 	"github.com/milvus-io/milvus/internal/mocks/util/mock_segcore"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/util/dependency"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/proto/indexpb"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/proto/segcorepb"
+	"andb/platformpkg/pkg/util/etcd"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type LocalWorkerTestSuite struct {

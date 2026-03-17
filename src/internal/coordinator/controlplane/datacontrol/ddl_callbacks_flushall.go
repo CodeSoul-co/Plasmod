@@ -22,7 +22,7 @@ package datacoord
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 func (s *DDLCallbacks) flushAllV2AckCallback(ctx context.Context, result message.BroadcastResultFlushAllMessageV2) error {

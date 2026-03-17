@@ -34,10 +34,10 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	kv_datacoord "github.com/milvus-io/milvus/internal/metastore/kv/datacoord"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/indexpb"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // waitForRefIndexLoaded waits for a specific RefIndex to be loaded with timeout.

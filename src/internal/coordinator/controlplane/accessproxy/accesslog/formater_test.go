@@ -35,11 +35,11 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/proxy/accesslog/info"
-	"github.com/milvus-io/milvus/pkg/v2/tracer"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/tracer"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/crypto"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type LogFormatterSuite struct {

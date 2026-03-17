@@ -27,9 +27,9 @@ import (
 
 	ants "github.com/panjf2000/ants/v2"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/generic"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/generic"
+	"andb/platformpkg/pkg/util/hardware"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 // A goroutine pool

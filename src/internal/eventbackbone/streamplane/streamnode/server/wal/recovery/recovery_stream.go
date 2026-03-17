@@ -11,9 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/resource"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 // recoverFromStream recovers the recovery storage from the recovery stream.

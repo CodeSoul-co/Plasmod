@@ -22,8 +22,8 @@ package pipeline
 import (
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator"
 	base "github.com/milvus-io/milvus/internal/util/pipeline"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgdispatcher"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/mq/msgdispatcher"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // pipeline used for querynode

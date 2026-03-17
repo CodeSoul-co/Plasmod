@@ -8,7 +8,7 @@ ANDB keeps interfaces stable while allowing implementation replacement.
 - Query planner: `src/internal/semantic/operators.go`
 
 ## Replaceable Components
-- `DataPlane` implementation can be replaced with a deeper Milvus-port runtime.
+- `DataPlane` implementation can be replaced with a deeper extended-plane runtime (enable with `extended` build tag).
 - `QueryPlanner` can be replaced with graph/tensor-aware planner.
 - `PolicyEngine` can be replaced with ACL/TTL/quarantine policy engine.
 

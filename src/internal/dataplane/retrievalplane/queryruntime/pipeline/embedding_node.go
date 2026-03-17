@@ -34,11 +34,11 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/function"
 	base "github.com/milvus-io/milvus/internal/util/pipeline"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/util/bm25"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/util/bm25"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type embeddingNode struct {

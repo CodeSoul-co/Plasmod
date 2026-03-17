@@ -31,10 +31,10 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/etcdpb"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 const (

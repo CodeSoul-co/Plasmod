@@ -14,14 +14,14 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/util/commonpbutil"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/timerecord"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type insertTask struct {

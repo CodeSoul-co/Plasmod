@@ -30,11 +30,11 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/internal/flushcommon/broker"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/commonpbutil"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/retry"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type StatsUpdater interface {

@@ -32,8 +32,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/funcutil"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
+	"andb/platformpkg/pkg/mq/msgstream"
 )
 
 type mockMsgStream struct {

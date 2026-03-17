@@ -27,13 +27,13 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/datacoord/session"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	taskcommon "github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/lock"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	taskcommon "andb/platformpkg/pkg/taskcommon"
+	"andb/platformpkg/pkg/util/conc"
+	"andb/platformpkg/pkg/util/lock"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 const NullNodeID = -1

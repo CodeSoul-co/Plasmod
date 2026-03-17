@@ -32,9 +32,9 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // SegmentsInfo wraps a map, which maintains ID to SegmentInfo relation

@@ -30,10 +30,10 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer/balance"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestAssignChannelToWALLocatedFirst(t *testing.T) {

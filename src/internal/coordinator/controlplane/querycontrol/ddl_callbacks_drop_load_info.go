@@ -27,8 +27,8 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 var errReleaseCollectionNotLoaded = errors.New("release collection not loaded")

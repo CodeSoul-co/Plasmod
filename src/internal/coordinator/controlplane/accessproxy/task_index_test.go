@@ -39,13 +39,13 @@ import (
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metric"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/metric"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestMain(m *testing.M) {

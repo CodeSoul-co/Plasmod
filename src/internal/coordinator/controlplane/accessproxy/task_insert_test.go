@@ -16,12 +16,12 @@ import (
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/util/function/embedding"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/testutils"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/proto/rootcoordpb"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/testutils"
 )
 
 func TestInsertTask_CheckAligned(t *testing.T) {

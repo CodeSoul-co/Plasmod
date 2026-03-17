@@ -24,7 +24,7 @@ import (
 	"strings"
 
 	"github.com/milvus-io/milvus/internal/proxy/accesslog/info"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 const (

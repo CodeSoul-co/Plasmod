@@ -17,12 +17,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/config"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	mqcommon "github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/config"
+	"andb/platformpkg/pkg/log"
+	mqcommon "andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 var Params = paramtable.Get()

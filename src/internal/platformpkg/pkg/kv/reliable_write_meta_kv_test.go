@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus/pkg/v2/kv/predicates"
-	"github.com/milvus-io/milvus/pkg/v2/mocks/mock_kv"
+	"andb/platformpkg/pkg/kv/predicates"
+	"andb/platformpkg/pkg/mocks/mock_kv"
 )
 
 func TestReliableWriteMetaKv(t *testing.T) {

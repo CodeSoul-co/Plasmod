@@ -31,9 +31,9 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/exp/mmap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 // LocalChunkManager is responsible for read and write local file.

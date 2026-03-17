@@ -34,14 +34,14 @@ import (
 	"github.com/milvus-io/milvus/internal/coordinator/snmanager"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/util/commonpbutil"
+	"andb/platformpkg/pkg/util/timerecord"
+	"andb/platformpkg/pkg/util/tsoutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var (

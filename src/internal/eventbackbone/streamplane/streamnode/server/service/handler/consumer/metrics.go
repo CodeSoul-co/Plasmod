@@ -6,8 +6,8 @@ package consumer
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // newConsumerMetrics creates a new consumer metrics.

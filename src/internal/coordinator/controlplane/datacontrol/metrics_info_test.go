@@ -37,12 +37,12 @@ import (
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/tsoutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestGetDataNodeMetrics(t *testing.T) {

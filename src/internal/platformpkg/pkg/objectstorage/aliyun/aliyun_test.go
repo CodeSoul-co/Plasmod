@@ -12,7 +12,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage/aliyun/mocks"
+	"andb/platformpkg/pkg/objectstorage/aliyun/mocks"
 )
 
 func TestNewMinioClient(t *testing.T) {

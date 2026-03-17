@@ -39,11 +39,11 @@ import (
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/dependency"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/etcd"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type QueryNodeSuite struct {

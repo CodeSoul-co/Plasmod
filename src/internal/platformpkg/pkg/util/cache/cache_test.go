@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/contextutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/contextutil"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 var errTimeout = errors.New("timeout")

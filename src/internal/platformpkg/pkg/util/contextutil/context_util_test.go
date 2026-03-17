@@ -30,8 +30,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/crypto"
 )
 
 func TestAppendToIncomingContext(t *testing.T) {

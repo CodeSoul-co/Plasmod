@@ -26,7 +26,7 @@ import (
 
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/bloomfilter"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 var _ PkStat = (*BloomFilterSet)(nil)

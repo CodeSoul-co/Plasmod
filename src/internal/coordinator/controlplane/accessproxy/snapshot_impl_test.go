@@ -28,7 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 func TestProxy_CreateSnapshot_Success(t *testing.T) {

@@ -31,9 +31,9 @@ import (
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/mocks"
 	mockrootcoord "github.com/milvus-io/milvus/internal/rootcoord/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	pb "github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/proto/datapb"
+	pb "andb/platformpkg/pkg/proto/etcdpb"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 func TestServerBroker_ReleaseCollection(t *testing.T) {

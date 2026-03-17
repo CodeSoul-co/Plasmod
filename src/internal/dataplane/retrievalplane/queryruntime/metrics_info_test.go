@@ -34,13 +34,13 @@ import (
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator"
 	"github.com/milvus-io/milvus/internal/querynodev2/pipeline"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgdispatcher"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/mq/msgdispatcher"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/tsoutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestGetPipelineJSON(t *testing.T) {

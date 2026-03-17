@@ -33,8 +33,8 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/proto/indexpb"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 func ConsumeCStatusIntoError(status *C.CStatus) error {

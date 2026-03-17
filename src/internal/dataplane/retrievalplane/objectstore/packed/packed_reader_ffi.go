@@ -37,9 +37,9 @@ import (
 	"github.com/cockroachdb/errors"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexcgopb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/indexcgopb"
+	"andb/platformpkg/pkg/proto/indexpb"
 )
 
 func NewFFIPackedReader(manifestPath string, schema *arrow.Schema, neededColumns []string, bufferSize int64, storageConfig *indexpb.StorageConfig, storagePluginContext *indexcgopb.StoragePluginContext) (*FFIPackedReader, error) {

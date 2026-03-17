@@ -12,11 +12,11 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer/balance"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/syncutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var StaticStreamingNodeManager = newStreamingNodeManager()

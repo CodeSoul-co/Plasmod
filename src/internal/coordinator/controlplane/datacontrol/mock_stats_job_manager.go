@@ -6,7 +6,7 @@
 package datacoord
 
 import (
-	indexpb "github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	indexpb "andb/platformpkg/pkg/proto/indexpb"
 	mock "github.com/stretchr/testify/mock"
 )
 

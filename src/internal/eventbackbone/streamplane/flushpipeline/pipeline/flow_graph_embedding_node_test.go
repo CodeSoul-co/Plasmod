@@ -30,8 +30,8 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/mq/msgstream"
 )
 
 func TestEmbeddingNode_Operator(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // LevelZeroCompactionView holds all compactable L0 segments in a compaction group

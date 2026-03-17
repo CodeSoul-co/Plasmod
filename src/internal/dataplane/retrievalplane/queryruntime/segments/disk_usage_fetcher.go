@@ -27,9 +27,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/util/segcore"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type diskUsageFetcher struct {

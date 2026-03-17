@@ -30,11 +30,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	client3 "github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/client"
-	server2 "github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/server"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/mq/common"
+	client3 "andb/platformpkg/pkg/mq/mqimpl/rocksmq/client"
+	server2 "andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestMain(m *testing.M) {

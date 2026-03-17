@@ -30,9 +30,9 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/config"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
+	"andb/platformpkg/pkg/config"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/funcutil"
 )
 
 type ParamChangeCallback func(ctx context.Context, key, oldValue, newValue string) error

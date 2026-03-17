@@ -26,8 +26,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // JobScheduler schedules jobs,

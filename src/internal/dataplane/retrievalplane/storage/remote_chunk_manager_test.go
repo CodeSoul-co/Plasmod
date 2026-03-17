@@ -35,8 +35,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/googleapi"
 
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 // TODO: NewRemoteChunkManager is deprecated. Rewrite this unittest.

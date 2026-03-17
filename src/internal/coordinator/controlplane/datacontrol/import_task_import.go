@@ -34,14 +34,14 @@ import (
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/metastore/kv/binlog"
 	"github.com/milvus-io/milvus/internal/util/importutilv2"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/taskcommon"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/timerecord"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var _ ImportTask = (*importTask)(nil)

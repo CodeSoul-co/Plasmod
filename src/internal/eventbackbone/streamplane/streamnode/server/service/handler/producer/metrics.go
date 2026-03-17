@@ -6,9 +6,9 @@ package producer
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // newProducerMetrics creates a new producer metrics.

@@ -4,8 +4,8 @@
 package ack
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var _ typeutil.HeapInterface = (*ackersOrderByTimestamp)(nil)

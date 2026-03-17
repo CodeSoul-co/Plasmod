@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type SafeChanSuite struct {

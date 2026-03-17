@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/mocks/github.com/milvus-io/milvus-proto/go-api/v2/mock_hook"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
+	"andb/platformpkg/pkg/mocks/github.com/milvus-io/milvus-proto/go-api/v2/mock_hook"
+	"andb/platformpkg/pkg/proto/messagespb"
 )
 
 func TestMessageType(t *testing.T) {

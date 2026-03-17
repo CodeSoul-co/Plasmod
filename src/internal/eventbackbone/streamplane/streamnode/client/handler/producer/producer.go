@@ -6,8 +6,8 @@ package producer
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 var _ Producer = (*producerImpl)(nil)

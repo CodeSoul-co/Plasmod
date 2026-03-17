@@ -28,11 +28,11 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestDDLCallbacksAlterCollectionProperties(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 // tombstoneItem is a tombstone item with expired time.

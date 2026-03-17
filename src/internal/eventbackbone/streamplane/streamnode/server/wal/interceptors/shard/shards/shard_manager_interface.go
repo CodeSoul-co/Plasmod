@@ -5,9 +5,9 @@ package shards
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/utils"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 type ShardManager interface {

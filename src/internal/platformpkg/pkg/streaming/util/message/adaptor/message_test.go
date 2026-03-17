@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/rmq"
 )
 
 func TestNewMsgPackFromInsertMessage(t *testing.T) {

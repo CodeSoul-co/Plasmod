@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 func TestPChannelView(t *testing.T) {

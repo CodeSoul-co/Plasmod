@@ -1,4 +1,4 @@
-module github.com/milvus-io/milvus/pkg/v2
+module andb/platformpkg/pkg
 
 go 1.24.12
 

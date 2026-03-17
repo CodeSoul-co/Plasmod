@@ -7,7 +7,7 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 var singleton = syncutil.NewFuture[balancer.Balancer]()

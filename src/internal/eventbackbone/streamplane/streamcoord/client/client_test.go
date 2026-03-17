@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	kvfactory "github.com/milvus-io/milvus/internal/util/dependency/kv"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestDial(t *testing.T) {

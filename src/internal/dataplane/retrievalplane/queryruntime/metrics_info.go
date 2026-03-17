@@ -34,14 +34,14 @@ import (
 	"github.com/milvus-io/milvus/internal/querynodev2/delegator"
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/util/segcore"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/ratelimitutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/hardware"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/ratelimitutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func getRateMetric() ([]metricsinfo.RateMetric, error) {

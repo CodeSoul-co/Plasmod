@@ -26,7 +26,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/config"
+	"andb/platformpkg/pkg/config"
 )
 
 func TestParamItem_RegisterCallback(t *testing.T) {

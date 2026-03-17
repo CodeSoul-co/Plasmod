@@ -27,9 +27,9 @@ import (
 	"go.uber.org/atomic"
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/conc"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var (

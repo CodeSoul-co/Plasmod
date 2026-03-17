@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 func TestCtxWithLevelAndTrace(t *testing.T) {

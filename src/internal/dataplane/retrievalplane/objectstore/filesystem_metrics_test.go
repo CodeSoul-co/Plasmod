@@ -26,8 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/milvus-io/milvus/internal/util/initcore"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/proto/indexpb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestGetFilesystemKeyFromStorageConfig(t *testing.T) {

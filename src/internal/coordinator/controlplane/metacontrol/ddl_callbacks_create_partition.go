@@ -29,11 +29,11 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/metastore/model"
-	pb "github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message/ce"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	pb "andb/platformpkg/pkg/proto/etcdpb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message/ce"
+	"andb/platformpkg/pkg/util/commonpbutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func (c *Core) broadcastCreatePartition(ctx context.Context, in *milvuspb.CreatePartitionRequest) error {

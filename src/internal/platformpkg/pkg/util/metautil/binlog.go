@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 const pathSep = "/"

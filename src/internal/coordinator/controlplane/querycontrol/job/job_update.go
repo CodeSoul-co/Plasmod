@@ -29,9 +29,9 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 type UpdateLoadConfigJob struct {

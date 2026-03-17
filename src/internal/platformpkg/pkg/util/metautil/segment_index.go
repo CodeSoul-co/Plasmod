@@ -6,7 +6,7 @@ package metautil
 import (
 	"path"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"andb/platformpkg/pkg/common"
 )
 
 func BuildSegmentIndexFilePath(rootPath string, buildID, indexVersion, partID, segID int64, fileKey string) string {

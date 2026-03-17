@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus/internal/flushcommon/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestInsertMsg_TimeTick(te *testing.T) {

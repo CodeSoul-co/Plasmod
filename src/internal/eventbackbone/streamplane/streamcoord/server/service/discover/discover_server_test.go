@@ -14,10 +14,10 @@ import (
 	"github.com/milvus-io/milvus/internal/mocks/streamingnode/client/mock_manager"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/resource"
-	"github.com/milvus-io/milvus/pkg/v2/mocks/proto/mock_streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/mocks/proto/mock_streamingpb"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestAssignmentDiscover(t *testing.T) {

@@ -13,8 +13,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/mocks/streamingnode/server/wal/interceptors/timetick/mock_inspector"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/timetick/inspector"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestInsepctor(t *testing.T) {

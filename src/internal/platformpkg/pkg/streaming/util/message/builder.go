@@ -13,10 +13,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/messagespb"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/tsoutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // NewMutableMessageBeforeAppend creates a new mutable message.

@@ -30,12 +30,12 @@ import (
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/metautil"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/metautil"
+	"andb/platformpkg/pkg/util/retry"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type PackWriter interface {

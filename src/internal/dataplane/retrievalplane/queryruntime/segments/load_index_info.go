@@ -35,9 +35,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/cgopb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/proto/cgopb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // LoadIndexInfo is a wrapper of the underlying C-structure C.CLoadIndexInfo

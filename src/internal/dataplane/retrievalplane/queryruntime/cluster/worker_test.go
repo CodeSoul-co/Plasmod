@@ -38,9 +38,9 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 type RemoteWorkerSuite struct {

@@ -28,8 +28,8 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/crypto"
 )
 
 func TestGetSdkTypeByUserAgent(t *testing.T) {

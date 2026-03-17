@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/walimplstest"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/walimplstest"
 )
 
 type AckedResultTestSuite struct {

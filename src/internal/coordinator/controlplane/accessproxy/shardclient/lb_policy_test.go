@@ -31,10 +31,10 @@ import (
 
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type LBPolicySuite struct {

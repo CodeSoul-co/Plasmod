@@ -14,7 +14,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
+	"andb/platformpkg/pkg/util/hardware"
 )
 
 func TestZstdCompress(t *testing.T) {

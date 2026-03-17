@@ -32,7 +32,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	mockrootcoord "github.com/milvus-io/milvus/internal/rootcoord/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
+	"andb/platformpkg/pkg/proto/rootcoordpb"
 )
 
 func TestLockerKey(t *testing.T) {

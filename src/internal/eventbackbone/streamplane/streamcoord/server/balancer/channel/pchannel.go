@@ -8,9 +8,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/replicateutil"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/replicateutil"
 )
 
 // NewPChannelMeta creates a new PChannelMeta.

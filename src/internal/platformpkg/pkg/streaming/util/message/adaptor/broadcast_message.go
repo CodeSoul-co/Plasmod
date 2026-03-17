@@ -6,8 +6,8 @@ package adaptor
 import (
 	"github.com/cockroachdb/errors"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 func NewMsgPackFromMutableMessageV1(msg message.MutableMessage) (msgstream.TsMsg, error) {

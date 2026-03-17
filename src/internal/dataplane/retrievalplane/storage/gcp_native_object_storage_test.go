@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
+	"andb/platformpkg/pkg/objectstorage"
 )
 
 func TestGcpNativeObjectStorage(t *testing.T) {

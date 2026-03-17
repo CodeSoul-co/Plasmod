@@ -18,11 +18,11 @@ import (
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/flushcommon/syncmgr"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/util/hardware"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/tsoutil"
 )
 
 type ManagerSuite struct {

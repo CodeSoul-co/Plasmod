@@ -28,10 +28,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
-	rocksdbkv "github.com/milvus-io/milvus/pkg/v2/kv/rocksdb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	rocksdbkv "andb/platformpkg/pkg/kv/rocksdb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 var rmqPath = "/tmp/rocksmq"

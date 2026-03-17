@@ -22,10 +22,10 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/mocks/distributed/mock_streaming"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	pulsar2 "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/pulsar"
+	"andb/platformpkg/pkg/proto/messagespb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/types"
+	pulsar2 "andb/platformpkg/pkg/streaming/walimpls/impls/pulsar"
 )
 
 // createContextWithClusterID creates a context with cluster ID in metadata (simulating incoming context)

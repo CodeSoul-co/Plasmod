@@ -26,7 +26,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/json"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 func Test_parseDummyRequestType(t *testing.T) {

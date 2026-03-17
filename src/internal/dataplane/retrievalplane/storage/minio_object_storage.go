@@ -26,9 +26,9 @@ import (
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 var _ ObjectStorage = (*MinioObjectStorage)(nil)

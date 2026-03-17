@@ -17,14 +17,14 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/internal/mocks/util/streamingutil/service/mock_lazygrpc"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mocks/proto/mock_streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/replicateutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/mocks/proto/mock_streamingpb"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/replicateutil"
+	"andb/platformpkg/pkg/util/syncutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestAssignmentService(t *testing.T) {

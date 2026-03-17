@@ -36,12 +36,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/googleapi"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/retry"
+	"andb/platformpkg/pkg/util/timerecord"
 )
 
 // ChunkObjectWalkFunc is the callback function for walking objects.

@@ -28,8 +28,8 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache/pkoracle"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/datapb"
 )
 
 //go:generate mockery --name=MetaCache --structname=MockMetaCache --output=./  --filename=mock_meta_cache.go --with-expecter --inpackage

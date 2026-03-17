@@ -37,13 +37,13 @@ import (
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	broker2 "github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/metastore/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/proto/rootcoordpb"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/timerecord"
+	"andb/platformpkg/pkg/util/tsoutil"
 )
 
 type ImportCheckerSuite struct {

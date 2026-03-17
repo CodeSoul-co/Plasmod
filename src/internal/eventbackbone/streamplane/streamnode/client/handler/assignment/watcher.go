@@ -6,7 +6,7 @@ package assignment
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 var _ Watcher = (*watcherImpl)(nil)

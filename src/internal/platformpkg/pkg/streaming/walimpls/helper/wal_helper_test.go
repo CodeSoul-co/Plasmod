@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/walimpls"
 )
 
 func TestWALHelper(t *testing.T) {

@@ -31,11 +31,11 @@ import (
 	"github.com/milvus-io/milvus/internal/parser/planparserv2"
 	storage "github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/initcore"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/planpb"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type SearchSuite struct {

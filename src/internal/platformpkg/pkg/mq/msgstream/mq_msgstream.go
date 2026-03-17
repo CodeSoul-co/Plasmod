@@ -36,15 +36,15 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/retry"
+	"andb/platformpkg/pkg/util/tsoutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var _ MsgStream = (*mqMsgStream)(nil)

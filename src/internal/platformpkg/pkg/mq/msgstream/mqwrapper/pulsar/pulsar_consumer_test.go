@@ -27,8 +27,8 @@ import (
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	mqcommon "github.com/milvus-io/milvus/pkg/v2/mq/common"
+	"andb/platformpkg/pkg/common"
+	mqcommon "andb/platformpkg/pkg/mq/common"
 )
 
 func TestPulsarConsumer_Subscription(t *testing.T) {

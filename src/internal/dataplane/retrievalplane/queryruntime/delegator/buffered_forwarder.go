@@ -24,8 +24,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/querynodev2/cluster"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/commonpbutil"
 )
 
 // BufferForwarder is a util object to buffer delta data

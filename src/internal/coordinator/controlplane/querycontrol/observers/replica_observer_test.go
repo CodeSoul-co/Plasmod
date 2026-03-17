@@ -39,13 +39,13 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer/balance"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"github.com/milvus-io/milvus/pkg/v2/kv"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/kv"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/etcd"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type ReplicaObserverSuite struct {

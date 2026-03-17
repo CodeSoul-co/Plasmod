@@ -3,7 +3,7 @@
 
 package objectstorage
 
-import "github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+import "andb/platformpkg/pkg/util/paramtable"
 
 // Config for setting params used by chunk manager client.
 type Config struct {

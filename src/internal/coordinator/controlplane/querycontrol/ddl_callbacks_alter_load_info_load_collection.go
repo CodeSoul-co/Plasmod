@@ -28,8 +28,8 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/querypb"
 )
 
 // broadcastAlterLoadConfigCollectionV2ForLoadCollection is called when the load collection request is received.

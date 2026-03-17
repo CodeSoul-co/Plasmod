@@ -9,11 +9,11 @@ import (
 	context "context"
 
 	milvuspb "github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	internalpb "github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
+	internalpb "andb/platformpkg/pkg/proto/internalpb"
 
 	mock "github.com/stretchr/testify/mock"
 
-	querypb "github.com/milvus-io/milvus/pkg/v2/proto/querypb"
+	querypb "andb/platformpkg/pkg/proto/querypb"
 
 	schemapb "github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 

@@ -24,7 +24,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // DefaultEnvPrefix is the default prefix for environment variables

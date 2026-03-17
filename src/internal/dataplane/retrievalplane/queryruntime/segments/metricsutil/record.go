@@ -6,7 +6,7 @@ package metricsutil
 import (
 	"time"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"andb/platformpkg/pkg/util/timerecord"
 )
 
 var (

@@ -15,13 +15,13 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"andb/platformpkg/pkg/util/conc"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/timerecord"
 )
 
 var (

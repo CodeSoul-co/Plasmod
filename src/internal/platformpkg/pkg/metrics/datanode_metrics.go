@@ -25,7 +25,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var (

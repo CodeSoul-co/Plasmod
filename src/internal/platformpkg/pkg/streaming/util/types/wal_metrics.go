@@ -6,8 +6,8 @@ package types
 import (
 	"time"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/util/tsoutil"
 )
 
 var (

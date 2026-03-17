@@ -8,7 +8,7 @@ package msgstream
 import (
 	context "context"
 
-	common "github.com/milvus-io/milvus/pkg/v2/mq/common"
+	common "andb/platformpkg/pkg/mq/common"
 
 	mock "github.com/stretchr/testify/mock"
 

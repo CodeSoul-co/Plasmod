@@ -8,8 +8,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/segcore"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/proto/segcorepb"
 )
 
 type cntReducer struct{}

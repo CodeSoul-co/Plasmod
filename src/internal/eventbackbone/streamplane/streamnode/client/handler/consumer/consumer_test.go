@@ -13,14 +13,14 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/mocks/proto/mock_streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message/adaptor"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/options"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/walimplstest"
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"andb/platformpkg/pkg/mocks/proto/mock_streamingpb"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message/adaptor"
+	"andb/platformpkg/pkg/streaming/util/options"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/walimplstest"
+	"andb/platformpkg/pkg/util/tsoutil"
 )
 
 func TestConsumer(t *testing.T) {

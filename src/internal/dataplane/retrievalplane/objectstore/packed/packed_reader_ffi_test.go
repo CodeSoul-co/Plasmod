@@ -17,9 +17,9 @@ import (
 	"golang.org/x/exp/rand"
 
 	"github.com/milvus-io/milvus/internal/storagecommon"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/proto/indexpb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestPackedFFIReader(t *testing.T) {

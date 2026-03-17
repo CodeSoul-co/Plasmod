@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
+	"andb/platformpkg/pkg/util/etcd"
 )
 
 type EtcdSourceSuite struct {

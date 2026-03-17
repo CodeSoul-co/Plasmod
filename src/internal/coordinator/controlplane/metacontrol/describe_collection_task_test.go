@@ -31,9 +31,9 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	mockrootcoord "github.com/milvus-io/milvus/internal/rootcoord/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func Test_describeCollectionTask_Prepare(t *testing.T) {

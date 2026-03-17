@@ -24,11 +24,11 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	storage "github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/metautil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/planpb"
+	"andb/platformpkg/pkg/util/metautil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // segmentCriterion is the segment filter criterion obj.

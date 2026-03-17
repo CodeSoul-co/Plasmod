@@ -9,11 +9,11 @@ import (
 
 	"github.com/apache/pulsar-client-go/pulsar"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/helper"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/walimpls/helper"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 const (

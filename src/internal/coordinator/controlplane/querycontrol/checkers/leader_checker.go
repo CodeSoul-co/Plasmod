@@ -30,8 +30,8 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/log"
 )
 
 var _ Checker = (*LeaderChecker)(nil)

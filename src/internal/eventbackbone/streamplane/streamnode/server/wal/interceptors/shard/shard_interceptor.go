@@ -16,11 +16,11 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/txn"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message/messageutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/messagespb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message/messageutil"
+	"andb/platformpkg/pkg/util/funcutil"
 )
 
 const interceptorName = "shard"

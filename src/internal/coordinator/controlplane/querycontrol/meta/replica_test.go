@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type ReplicaSuite struct {

@@ -26,11 +26,11 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
-	"github.com/milvus-io/milvus/pkg/v2/proto/proxypb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/proxypb"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func (c *Core) broadcastCreateRole(ctx context.Context, in *milvuspb.CreateRoleRequest) error {

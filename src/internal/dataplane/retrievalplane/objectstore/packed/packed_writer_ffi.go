@@ -40,10 +40,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/storagecommon"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexcgopb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/indexcgopb"
+	"andb/platformpkg/pkg/proto/indexpb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func createStorageConfig() *indexpb.StorageConfig {

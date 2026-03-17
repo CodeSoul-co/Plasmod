@@ -39,14 +39,14 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/uniquegenerator"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/hardware"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
+	"andb/platformpkg/pkg/util/uniquegenerator"
 )
 
 // checkAnyReplicaAvailable checks if the collection has enough distinct available shards. These shards

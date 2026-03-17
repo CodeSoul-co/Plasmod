@@ -5,7 +5,7 @@ package resource
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/client/manager"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 // OptStreamingManagerClient provides streaming manager client to the resource.

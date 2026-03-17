@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
+	"andb/platformpkg/pkg/proto/messagespb"
 )
 
 type MessageType messagespb.MessageType

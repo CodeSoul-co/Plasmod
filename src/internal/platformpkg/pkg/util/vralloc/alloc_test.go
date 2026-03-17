@@ -27,8 +27,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/hardware"
 )
 
 func inspect[T comparable](a Allocator[T]) {

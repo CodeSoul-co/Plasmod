@@ -10,8 +10,8 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/kv/predicates"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/kv/predicates"
+	"andb/platformpkg/pkg/log"
 )
 
 var _ MetaKv = (*ReliableWriteMetaKv)(nil)

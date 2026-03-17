@@ -26,7 +26,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/tsoutil"
+	"andb/platformpkg/pkg/util/tsoutil"
 )
 
 func TestEntityFilterTaskSuite(t *testing.T) {

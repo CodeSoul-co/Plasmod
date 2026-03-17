@@ -23,9 +23,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/conc"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // taskDispatcher is the utility to provide task dedup and dispatch feature

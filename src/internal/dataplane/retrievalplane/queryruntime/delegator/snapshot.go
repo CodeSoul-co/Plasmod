@@ -25,8 +25,8 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // SnapshotItem group segmentEntry slice

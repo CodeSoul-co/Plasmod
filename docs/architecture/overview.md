@@ -30,7 +30,7 @@ ANDB v1 is intentionally positioned between three traditions:
 
 ### 3.1 Segment-Oriented Retrieval Plane
 
-We borrow segment-oriented retrieval ideas from systems like Milvus, but the first-party ANDB runtime now exposes its own module boundaries and naming.  All Milvus-derived terms have been renamed to CogDB conventions (`Partition→Shard`, `Row→ObjectRecord`, etc.).
+The first-party ANDB runtime exposes its own module boundaries and naming conventions.  Segment-store terms have been fully renamed to CogDB conventions (`Partition→Shard`, `Row→ObjectRecord`, etc.).
 
 The retrieval layer is now a **three-tier architecture**:
 - **Hot tier** — `HotSegmentIndex` (bounded in-memory growing shards) for sub-millisecond recall of active-session objects

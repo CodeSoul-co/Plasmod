@@ -12,13 +12,13 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/wab"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/vchantempstore"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/options"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/options"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 var (

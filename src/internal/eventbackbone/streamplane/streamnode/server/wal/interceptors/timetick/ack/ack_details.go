@@ -4,7 +4,7 @@
 package ack
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 // details that sorted by timestamp.

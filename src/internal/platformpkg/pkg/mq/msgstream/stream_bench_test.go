@@ -12,9 +12,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
+	"andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"andb/platformpkg/pkg/util/funcutil"
 )
 
 func benchmarkProduceAndConsume(b *testing.B, mqClient mqwrapper.Client, cases [][]byte) {

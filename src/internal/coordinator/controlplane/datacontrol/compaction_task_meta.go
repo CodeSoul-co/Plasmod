@@ -33,11 +33,11 @@ import (
 
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/metastore"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/metricsinfo"
+	"andb/platformpkg/pkg/util/timerecord"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func newCompactionTaskStats(task *datapb.CompactionTask) *metricsinfo.CompactionTask {

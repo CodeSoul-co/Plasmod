@@ -11,9 +11,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/discoverer"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/resolver"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 func NewWatcher(r resolver.Resolver) Watcher {

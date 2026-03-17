@@ -4,9 +4,9 @@
 package walimplstest
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/registry"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/walimpls/registry"
 )
 
 func init() {

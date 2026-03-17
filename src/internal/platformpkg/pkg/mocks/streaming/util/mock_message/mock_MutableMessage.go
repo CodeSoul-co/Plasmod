@@ -6,8 +6,8 @@
 package mock_message
 
 import (
-	messagespb "github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	message "github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	messagespb "andb/platformpkg/pkg/proto/messagespb"
+	message "andb/platformpkg/pkg/streaming/util/message"
 
 	mock "github.com/stretchr/testify/mock"
 

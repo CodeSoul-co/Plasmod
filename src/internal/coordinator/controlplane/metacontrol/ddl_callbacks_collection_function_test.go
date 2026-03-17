@@ -34,9 +34,9 @@ import (
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/mocks/streamingcoord/server/mock_broadcaster"
 	mockrootcoord "github.com/milvus-io/milvus/internal/rootcoord/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type DDLCallbacksCollectionFunctionTestSuite struct {

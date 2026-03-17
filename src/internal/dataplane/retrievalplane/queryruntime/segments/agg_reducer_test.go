@@ -11,10 +11,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/segcorepb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/planpb"
+	"andb/platformpkg/pkg/proto/segcorepb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type AggReduceSuite struct {

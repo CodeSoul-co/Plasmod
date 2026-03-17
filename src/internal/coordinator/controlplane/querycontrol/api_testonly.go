@@ -20,7 +20,7 @@
 package querycoordv2
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 func (s *Server) StopCheckerForTestOnly() {

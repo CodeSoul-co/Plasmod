@@ -11,7 +11,7 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 // EtcdServer is the singleton of embedded etcd server

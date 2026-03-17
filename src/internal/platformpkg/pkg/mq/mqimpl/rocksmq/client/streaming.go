@@ -9,9 +9,9 @@ import (
 	"github.com/cockroachdb/errors"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/server"
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
+	"andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"andb/platformpkg/pkg/proto/messagespb"
 )
 
 var (

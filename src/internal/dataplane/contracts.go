@@ -46,7 +46,7 @@ type SearchOutput struct {
 }
 
 // DataPlane is the interface satisfied by all retrieval execution modules
-// (SegmentDataPlane, TieredDataPlane, or a Milvus-backed adapter).
+// (SegmentDataPlane, TieredDataPlane, or an extended-plane adapter).
 type DataPlane interface {
 	Ingest(record IngestRecord) error
 	Search(input SearchInput) SearchOutput

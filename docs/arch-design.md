@@ -48,19 +48,19 @@ infrastructure projects.  Their **internal package names** are preserved in the
 borrowed sub-trees, but the **integration boundary** files (always named
 `contracts.go`) expose only CogDB/ANDB-native type names.
 
-| Directory | Origin | Build tag | CogDB boundary |
+| Directory | Role | Build tag | CogDB boundary |
 |---|---|---|---|
-| `coordinator/controlplane/` | Milvus MixCoord | `extended` | `controlplane.RuntimeContract` |
-| `eventbackbone/streamplane/` | Manu StreamNode | `extended` | `streamplane.RuntimeContract` |
-| `dataplane/retrievalplane/` | Milvus Segcore (C++) | CMake only | not imported by Go |
-| `platformpkg/` | Milvus pkg/ | `extended` | not imported by Go |
-| `dataplane/segmentstore/` | CogDB-native | always | `segmentstore.Index` / `Shard` |
+| `coordinator/controlplane/` | distributed control plane | `extended` | `controlplane.RuntimeContract` |
+| `eventbackbone/streamplane/` | distributed stream plane | `extended` | `streamplane.RuntimeContract` |
+| `dataplane/retrievalplane/` | C++ retrieval engine | CMake only | not imported by Go |
+| `platformpkg/` | shared platform utilities | `extended` | not imported by Go |
+| `dataplane/segmentstore/` | CogDB-native segment store | always | `segmentstore.Index` / `Shard` |
 
 The `extended` build tag means those files are **never compiled** in a
-standard `go build ./...`.  The only Milvus-derived code compiled by default
-was in `segmentstore/`, and it has been fully renamed:
+standard `go build ./...`.  The segment-store code compiled by default
+has been fully renamed to CogDB conventions:
 
-| Old (Milvus) | New (CogDB) |
+| Old name | CogDB name |
 |---|---|
 | `Partition` | `Shard` |
 | `PartitionState` | `ShardState` |
@@ -267,10 +267,10 @@ Per spec section 16.4:
 | Layer | Extension mechanism |
 |---|---|
 | Storage | Implement `RuntimeStorage` interface; swap `MemoryRuntimeStorage` |
-| Data Plane | Implement `DataPlane` interface; swap `TieredDataPlane` for Milvus adapter |
+| Data Plane | Implement `DataPlane` interface; swap `TieredDataPlane` for extended-plane adapter |
 | Cold Store | Implement `ColdObjectStore`; replace `InMemoryColdStore` |
 | Evidence | Implement `evidence.Cache`-compatible store (Redis, etc.) |
 | Workers | Implement any worker interface; call `manager.Register*()` |
 | Coordinators | Implement new coordinator; add to `Hub` struct |
 | Query Operators | Add new `QueryPlan` subtypes in `semantic/operators.go` |
-| Control Plane | Enable `extended` build tag to compile the Milvus-derived control plane |
+| Control Plane | Enable `extended` build tag to compile the distributed control plane |

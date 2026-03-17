@@ -6,10 +6,10 @@ package adaptor
 import (
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type ChanMessageHandler chan message.ImmutableMessage

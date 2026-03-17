@@ -5,7 +5,7 @@ package balance
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 func ResetBalancer() {

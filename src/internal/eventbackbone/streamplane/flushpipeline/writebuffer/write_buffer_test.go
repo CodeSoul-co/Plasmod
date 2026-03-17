@@ -18,11 +18,11 @@ import (
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache/pkoracle"
 	"github.com/milvus-io/milvus/internal/flushcommon/syncmgr"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/conc"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type WriteBufferSuite struct {

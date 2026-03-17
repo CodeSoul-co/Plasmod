@@ -21,7 +21,7 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 // GetUsedMemoryCount returns the memory usage in bytes.

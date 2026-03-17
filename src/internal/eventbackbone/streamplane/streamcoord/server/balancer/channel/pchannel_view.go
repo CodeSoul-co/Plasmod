@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 // ChannelID is the unique id of a channel.

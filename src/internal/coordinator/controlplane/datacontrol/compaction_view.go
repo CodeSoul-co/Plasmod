@@ -27,7 +27,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/internal/util/segmentutil"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
+	"andb/platformpkg/pkg/proto/datapb"
 )
 
 type CompactionView interface {

@@ -25,7 +25,7 @@ import (
 	"github.com/apache/arrow/go/v17/arrow/array"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"andb/platformpkg/pkg/common"
 )
 
 func TestSort(t *testing.T) {

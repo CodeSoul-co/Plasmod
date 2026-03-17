@@ -16,10 +16,10 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal"
 	internaltypes "github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 func TestMain(m *testing.M) {

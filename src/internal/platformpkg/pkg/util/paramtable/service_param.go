@@ -30,11 +30,11 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/metricsinfo"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/etcd"
+	"andb/platformpkg/pkg/util/metricsinfo"
 )
 
 const (

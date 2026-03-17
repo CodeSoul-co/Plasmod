@@ -11,8 +11,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 var _ balancer.Policy = &policy{}

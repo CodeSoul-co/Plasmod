@@ -29,11 +29,11 @@ import (
 
 	"github.com/milvus-io/milvus/internal/tso"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/etcd"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/rootcoordpb"
+	"andb/platformpkg/pkg/util/etcd"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func getTestEtcdCli() *clientv3.Client {

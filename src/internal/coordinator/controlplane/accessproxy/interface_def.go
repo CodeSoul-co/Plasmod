@@ -24,7 +24,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
+	"andb/platformpkg/pkg/proto/rootcoordpb"
 )
 
 // use interface tsoAllocator to keep other components testable

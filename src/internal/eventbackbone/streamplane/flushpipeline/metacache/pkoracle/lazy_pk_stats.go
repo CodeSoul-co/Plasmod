@@ -24,7 +24,7 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 var _ PkStat = (*LazyPkStats)(nil)

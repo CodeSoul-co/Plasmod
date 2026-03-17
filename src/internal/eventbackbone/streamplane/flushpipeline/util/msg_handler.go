@@ -23,8 +23,8 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 type MsgHandler interface {

@@ -13,7 +13,7 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
+	"andb/platformpkg/pkg/mq/common"
 )
 
 func TestKafkaProducer_SendSuccess(t *testing.T) {

@@ -17,9 +17,9 @@ package client
 import (
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/server"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
 )
 
 // assertion make sure implementation

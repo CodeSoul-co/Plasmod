@@ -17,11 +17,11 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/timetick/mvcc"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/wab"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/syncutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // buildInterceptorParams builds the interceptor params for the walimpls.

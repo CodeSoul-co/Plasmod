@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/metricsutil"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 // walCtxKey is the key type of extra append result.

@@ -33,8 +33,8 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/internal/flushcommon/broker"
 	"github.com/milvus-io/milvus/internal/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
+	"andb/platformpkg/pkg/util/merr"
+	"andb/platformpkg/pkg/util/retry"
 )
 
 func TestTimetickManagerNormal(t *testing.T) {

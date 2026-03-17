@@ -11,17 +11,17 @@ import (
 	rawWP "github.com/zilliztech/woodpecker/woodpecker/log"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	rawRocksmq "github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/client"
-	"github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/server"
-	mqkafka "github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper/kafka"
-	mqpulsar "github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper/pulsar"
-	mqwoodpecker "github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper/wp"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	msgkafka "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/kafka"
-	msgpulsar "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/pulsar"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
-	msgwoodpecker "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/wp"
+	"andb/platformpkg/pkg/mq/common"
+	rawRocksmq "andb/platformpkg/pkg/mq/mqimpl/rocksmq/client"
+	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	mqkafka "andb/platformpkg/pkg/mq/msgstream/mqwrapper/kafka"
+	mqpulsar "andb/platformpkg/pkg/mq/msgstream/mqwrapper/pulsar"
+	mqwoodpecker "andb/platformpkg/pkg/mq/msgstream/mqwrapper/wp"
+	"andb/platformpkg/pkg/streaming/util/message"
+	msgkafka "andb/platformpkg/pkg/streaming/walimpls/impls/kafka"
+	msgpulsar "andb/platformpkg/pkg/streaming/walimpls/impls/pulsar"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/rmq"
+	msgwoodpecker "andb/platformpkg/pkg/streaming/walimpls/impls/wp"
 )
 
 // MustGetMQWrapperIDFromMessage converts message.MessageID to common.MessageID

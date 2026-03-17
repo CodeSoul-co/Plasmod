@@ -25,10 +25,10 @@ import (
 	"github.com/tecbot/gorocksdb"
 	"go.uber.org/zap"
 
-	rocksdbkv "github.com/milvus-io/milvus/pkg/v2/kv/rocksdb"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	rocksdbkv "andb/platformpkg/pkg/kv/rocksdb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // Const value that used to convert unit

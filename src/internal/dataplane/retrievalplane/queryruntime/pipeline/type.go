@@ -26,9 +26,9 @@ import (
 	"github.com/milvus-io/milvus/internal/querynodev2/segments"
 	"github.com/milvus-io/milvus/internal/storage"
 	base "github.com/milvus-io/milvus/internal/util/pipeline"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 const (

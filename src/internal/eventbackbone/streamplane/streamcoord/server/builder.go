@@ -11,9 +11,9 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/service"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/kv"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/kv"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 type ServerBuilder struct {

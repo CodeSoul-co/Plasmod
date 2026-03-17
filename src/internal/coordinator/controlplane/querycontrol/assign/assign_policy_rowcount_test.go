@@ -29,8 +29,8 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/proto/datapb"
 )
 
 // TestRowCountBasedAssignPolicy_AssignSegment_PriorityToLeastLoaded tests segments go to least loaded node
