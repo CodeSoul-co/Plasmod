@@ -1,5 +1,5 @@
-//go:build milvus_port
-// +build milvus_port
+//go:build extended
+// +build extended
 
 // Copyright (C) 2019-2020 Zilliz. All rights reserved.
 //
