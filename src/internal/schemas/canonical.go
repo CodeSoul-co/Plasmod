@@ -55,6 +55,7 @@ type Memory struct {
 	MemoryType     string   `json:"memory_type"`
 	AgentID        string   `json:"agent_id"`
 	SessionID      string   `json:"session_id"`
+	OwnerType      string   `json:"owner_type"`
 	Scope          string   `json:"scope"`
 	Level          int      `json:"level"`
 	Content        string   `json:"content"`
@@ -117,4 +118,73 @@ type ObjectVersion struct {
 	ValidFrom       string `json:"valid_from"`
 	ValidTo         string `json:"valid_to"`
 	SnapshotTag     string `json:"snapshot_tag"`
+}
+
+// User represents a human or service identity that can own or publish objects.
+// It is intentionally minimal and may be extended as governance evolves.
+type User struct {
+	UserID          string `json:"user_id"`
+	UserName        string `json:"user_name"`
+	UserTenantID    string `json:"user_tenant_id"`
+	UserWorkspaceID string `json:"user_workspace_id"`
+	Visibility      string `json:"visibility"`
+}
+
+// Embedding stores a reference to a vector representation that can be shared across objects.
+// The actual vector payload may live in a vector store and be addressed by VectorRef.
+type Embedding struct {
+	VectorID        string `json:"vector_id"`
+	VectorContext   string `json:"vector_context"`
+	OriginalText    string `json:"original_text"`
+	Dim             int64  `json:"dim"`
+	ModelID         string `json:"model_id"`
+	VectorRef       string `json:"vector_ref"`
+	CreatedTS       string `json:"created_ts"`
+}
+
+// Policy is a minimal policy definition that an agent or system can reference.
+// This is a canonical object-level policy descriptor (not a full decision log).
+type Policy struct {
+	PolicyID        string `json:"policy_id"`
+	PolicyVersion   int64  `json:"policy_version"`
+	PolicyStartTime string `json:"policy_start_time"`
+	PolicyEndTime   string `json:"policy_end_time"`
+	PublisherType   string `json:"publisher_type"`
+	PublisherID     string `json:"publisher_id"`
+	PolicyType      string `json:"policy_type"`
+}
+
+// PolicyRecord is a minimal governance overlay record applied to an object.
+// It matches the "policy_records" minimal schema described in the design doc.
+type PolicyRecord struct {
+	PolicyID           string `json:"policy_id"`
+	PolicyVersion      int64  `json:"policy_version"`
+	Context            string `json:"context"`
+	ObjectID           string `json:"object_id"`
+	ObjectType         string `json:"object_type"`
+
+	SalienceWeight     float64 `json:"salience_weight"`
+	TTL                int64   `json:"ttl"`
+	ConfidenceOverride float64 `json:"confidence_override"`
+	VerifiedState      string  `json:"verified_state"`
+	QuarantineFlag     bool    `json:"quarantine_flag"`
+	VisibilityPolicy   string  `json:"visibility_policy"`
+	PolicyReason       string  `json:"policy_reason"`
+	PolicySource       string  `json:"policy_source"`
+	PolicyEventID      string  `json:"policy_event_id"`
+}
+
+// ShareContract defines a share governance contract for a scope.
+// It is used to make "shared" semantics explicit and auditable.
+type ShareContract struct {
+	ContractID       string `json:"contract_id"`
+	Scope            string `json:"scope"`
+	ReadACL          string `json:"read_acl"`
+	WriteACL         string `json:"write_acl"`
+	DeriveACL        string `json:"derive_acl"`
+	TTLPolicy        string `json:"ttl_policy"`
+	ConsistencyLevel string `json:"consistency_level"`
+	MergePolicy      string `json:"merge_policy"`
+	QuarantinePolicy string `json:"quarantine_policy"`
+	AuditPolicy      string `json:"audit_policy"`
 }
