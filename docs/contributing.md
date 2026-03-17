@@ -168,21 +168,66 @@ The repository should progressively include:
 - integration tests
 - end-to-end tests
 
-### 11.2 Minimum Merge Expectation
+### 11.2 Module-Level Test File Requirement
+
+**Every Go module package under `src/internal/` must have at least one `*_test.go` file.**
+
+This is the minimum viable test contract.  It prevents modules from silently accumulating dead or unreachable code between integration cycles.
+
+#### Rules
+
+1. **One test file per module.** Each package directory must contain at least one file named `<package>_test.go` (e.g., `service_test.go`, `hub_test.go`).
+2. **Same-package tests by default.** Use `package <pkg>` (white-box) unless the module exports only an interface, in which case `package <pkg>_test` (black-box) is acceptable.
+3. **No empty test files.** Every test file must contain at least one `Test*` function with a meaningful assertion.  A file with only `// TODO` is not acceptable.
+4. **Smoke tests are sufficient at bootstrap.** A smoke test instantiates the main type(s) and calls at least one method.  It does not need to cover all edge cases.
+5. **Table-driven tests for logic-bearing functions.** Any function with branching logic (switches, if-chains) must have a table-driven test covering the main branches.
+6. **No test file should import modules it does not need.** Keep test dependencies minimal to avoid coupling test compilation to unrelated changes.
+7. **Test files must not duplicate production setup.** Use constructor functions (`New*`) rather than re-implementing internal state.
+
+#### Module Test File Map
+
+The following table tracks the required test file for each package:
+
+| Package | Required test file | Status |
+|---|---|---|
+| `src/internal/schemas` | `canonical_test.go` | ✅ |
+| `src/internal/storage` | `memory_test.go` | ✅ |
+| `src/internal/semantic` | `objects_test.go` | ✅ |
+| `src/internal/coordinator` | `hub_test.go` | ✅ |
+| `src/internal/eventbackbone` | `wal_test.go` | ✅ |
+| `src/internal/dataplane` | `segment_adapter_test.go` | ✅ |
+| `src/internal/dataplane/segmentstore` | `engine_test.go` | ✅ |
+| `src/internal/evidence` | `assembler_test.go` | ✅ |
+| `src/internal/materialization` | `service_test.go` | ✅ |
+| `src/internal/worker` | `runtime_test.go` | ✅ |
+| `src/internal/worker/nodes` | `manager_test.go` | ✅ |
+| `src/internal/access` | `gateway_test.go` | ✅ |
+| `src/internal/app` | _(bootstrap, tested via worker)_ | exempt |
+
+`src/internal/app` is exempt because `BuildServer` is an integration wiring function; its behaviour is covered by the end-to-end path through `worker.Runtime`.
+
+### 11.3 Minimum Merge Expectation
 
 Before merging, confirm at least:
 
 - the modified code runs locally
 - the affected tests pass or were updated
+- any new package includes a test file per §11.2
 - integration assumptions still hold
 
-### 11.3 Current Test and Run Commands
+### 11.4 Current Test and Run Commands
 
 - `make dev`
 - `make build`
 - `make test`
 - `pytest -q`
 - `go test ./src/...`
+
+To run only Go module tests:
+
+```
+go test ./src/internal/... -count=1 -timeout 30s
+```
 
 If your change affects the Python SDK path, also verify the relevant scripts or tests.
 

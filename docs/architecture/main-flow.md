@@ -93,21 +93,34 @@ Events are the source of truth for state change, but query execution should oper
 
 ### 5.4 Examples
 
-- `user_message` -> `Event` + candidate `Memory`
-- `tool_result_returned` -> `Event` + `Artifact` + optional `State`
-- `plan_updated` -> `Event` + `State`
-- `critique_generated` -> `Event` + reflective `Memory`
+- `user_message` / `assistant_message` → `Memory` (episodic) + `ObjectVersion` + `belongs_to_session` + `owned_by_agent` edges
+- `tool_result_returned` → `Memory` (factual) + `ObjectVersion` + causal edges
+- `plan_updated` → `Memory` (procedural) + `ObjectVersion`
+- `critique_generated` → `Memory` (reflective) + `ObjectVersion`
 
 ### 5.5 Current Runtime Reality
 
-The repository does not yet have a full dedicated materialization module. The current data plane derives a memory-like retrieval object directly from ingested event text. That is a v1 bootstrap shortcut, not the final semantic boundary.
+`materialization.Service.MaterializeEvent(ev)` returns a `MaterializationResult` containing:
+
+- `Record` — the `IngestRecord` for the retrieval plane
+- `Memory` — a canonical `schemas.Memory` object
+- `Version` — a `schemas.ObjectVersion` record
+- `Edges` — typed edges inferred from the event (`belongs_to_session`, `owned_by_agent`, `derived_from`)
+
+`Runtime.SubmitIngest` writes all three canonical records to their stores before feeding the retrieval plane.  `PreComputeService.Compute` then builds an `EvidenceFragment` and stores it in `EvidenceCache`.
+
+Current anchor:
+
+- [`src/internal/materialization/service.go`](../../src/internal/materialization/service.go)
+- [`src/internal/worker/runtime.go`](../../src/internal/worker/runtime.go)
 
 ### 5.6 Output
 
-- canonical objects
-- object version hints
-- edge records
-- retrieval projection tasks
+- `Memory` persisted to `ObjectStore`
+- `ObjectVersion` persisted to `SnapshotVersionStore`
+- typed `Edge` records persisted to `GraphEdgeStore`
+- `EvidenceFragment` stored in `EvidenceCache`
+- `IngestRecord` fed to `TieredDataPlane`
 
 ## 6. Flow C: Retrieval Projection
 
@@ -129,16 +142,16 @@ Canonical objects represent semantic truth. Retrieval needs dense, sparse, and f
 
 ### 6.4 Current Runtime Reality
 
-Today the runtime materialization path projects event text into a memory-like object ID (`mem_<event_id>`) and attaches:
+`MaterializationResult.Record` (`IngestRecord`) is fed to `TieredDataPlane.Ingest()` which writes to both the hot segment index (for immediate retrieval) and the warm plane.  The object ID follows the pattern `mem_<event_id>` and carries filter attributes:
 
-- `tenant_id`
-- `workspace_id`
-- `agent_id`
-- `session_id`
+- `tenant_id`, `workspace_id`, `agent_id`, `session_id`, `event_type`, `visibility`
 
-This is implemented through:
+In v1 retrieval is lexical (term-overlap scoring).  Dense/vector retrieval is a planned extension.
+
+Current anchor:
 
 - [`src/internal/materialization/service.go`](../../src/internal/materialization/service.go)
+- [`src/internal/dataplane/tiered_adapter.go`](../../src/internal/dataplane/tiered_adapter.go)
 - [`src/internal/dataplane/segment_adapter.go`](../../src/internal/dataplane/segment_adapter.go)
 
 ### 6.5 Output
@@ -220,11 +233,18 @@ This is where ANDB diverges from ordinary chunk retrieval. Instead of returning 
 
 ### 8.4 v1 Constraint
 
-In v1, expansion should remain constrained to 1-hop or 2-hop.
+In v1, expansion is constrained to **1-hop** over the `GraphEdgeStore`.
 
 ### 8.5 Current Runtime Reality
 
-The response currently returns an empty edge list. This means the expansion stage is planned, schema-visible, and documentation-frozen, but not yet materially implemented.
+`Assembler.expandEdges(objectIDs)` calls `GraphEdgeStore.BulkEdges(objectIDs)` to load all edges where `SrcObjectID` or `DstObjectID` is one of the retrieved object IDs.  The result is returned in `QueryResponse.Edges` and the expansion count is appended to the proof trace as `graph_expansion:edges=N`.
+
+Edges are populated at ingest time by `materialization.Service.MaterializeEvent` (`belongs_to_session`, `owned_by_agent`, `derived_from`).
+
+Current anchor:
+
+- [`src/internal/evidence/assembler.go`](../../src/internal/evidence/assembler.go)
+- [`src/internal/storage/memory.go`](../../src/internal/storage/memory.go) — `memoryGraphEdgeStore.BulkEdges`
 
 ## 9. Flow F: Response Assembly
 
@@ -245,14 +265,16 @@ The target v1 response includes:
 
 ### 9.3 Current Runtime Reality
 
-The current `QueryResponse` already includes these top-level categories, but uses simplified representations:
+`Assembler.Build()` assembles a `QueryResponse` with:
 
-- `objects` is currently a list of object IDs
-- `provenance` is currently a list of strings
-- `applied_filters` is currently a list of filter names
-- `proof_trace` is currently a list of execution notes
+- `objects` — retrieved object IDs
+- `edges` — 1-hop `schemas.Edge` records from `GraphEdgeStore.BulkEdges`
+- `provenance` — `["event_projection", "retrieval_projection", "fragment_cache", "graph_expansion"]`
+- `versions` — reserved (shallow in v1)
+- `applied_filters` — policy filters applied by `PolicyEngine.ApplyQueryFilters`
+- `proof_trace` — tier label + shard trace + pre-computed fragment steps + scanned shards
 
-This is enough for bootstrap integration, but the richer schema described in the docs remains the intended v1 target.
+Pre-computed `EvidenceFragment` records (built at ingest by `PreComputeService`) are merged into the proof trace via `EvidenceCache.GetMany(objectIDs)`, amortising chain derivation cost over the ingest path.
 
 ## 10. Flow G: Benchmark and Experiment
 

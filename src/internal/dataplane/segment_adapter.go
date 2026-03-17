@@ -15,6 +15,9 @@ func NewSegmentDataPlane() *SegmentDataPlane {
 	return &SegmentDataPlane{index: segmentstore.NewIndex()}
 }
 
+// Flush is a no-op for SegmentDataPlane (writes go directly to the index).
+func (p *SegmentDataPlane) Flush() error { return nil }
+
 func (p *SegmentDataPlane) Ingest(record IngestRecord) error {
 	namespace := record.Namespace
 	if namespace == "" {
@@ -39,21 +42,20 @@ func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
 		ids = append(ids, hit.ObjectID)
 	}
 
-	planned := make([]SegmentTrace, 0, len(result.PlannedMeta))
-	for _, meta := range result.PlannedMeta {
+	planned := make([]SegmentTrace, 0, len(result.ShardMetas))
+	for _, meta := range result.ShardMetas {
 		planned = append(planned, SegmentTrace{
-			ID:        meta.ID,
-			Namespace: meta.Namespace,
-			State:     meta.State.String(),
-			RowCount:  meta.RowCount,
-			MinTS:     meta.MinTS,
-			MaxTS:     meta.MaxTS,
+			ID:       meta.ID,
+			State:    meta.State.String(),
+			RowCount: meta.RowCount,
+			MinTS:    meta.MinTS,
+			MaxTS:    meta.MaxTS,
 		})
 	}
 
 	return SearchOutput{
 		ObjectIDs:       ids,
-		ScannedSegments: result.ScannedSegments,
+		ScannedSegments: result.ScannedShards,
 		PlannedSegments: planned,
 	}
 }
