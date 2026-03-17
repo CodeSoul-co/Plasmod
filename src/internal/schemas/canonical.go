@@ -118,3 +118,73 @@ type ObjectVersion struct {
 	ValidTo         string `json:"valid_to"`
 	SnapshotTag     string `json:"snapshot_tag"`
 }
+
+// User defines a system user (model consumer, trainer, operator, etc.).
+// Stored separately to allow future access-control and audit queries.
+type User struct {
+	UserID          string `json:"user_id"`
+	UserName        string `json:"user_name"`
+	UserTenantID    string `json:"user_tenant_id"`
+	UserWorkspaceID string `json:"user_workspace_id"`
+	Visibility      string `json:"visibility"`
+}
+
+// PolicyRecord stores governance decisions applied to a specific object.
+// All policy changes are append-only and auditable.
+type PolicyRecord struct {
+	PolicyID           string  `json:"policy_id"`
+	ObjectID           string  `json:"object_id"`
+	ObjectType         string  `json:"object_type"`
+	SalienceWeight     float64 `json:"salience_weight"`
+	TTL                int64   `json:"ttl"`
+	DecayFn            string  `json:"decay_fn"`
+	ConfidenceOverride float64 `json:"confidence_override"`
+	VerifiedState      string  `json:"verified_state"`
+	QuarantineFlag     bool    `json:"quarantine_flag"`
+	VisibilityPolicy   string  `json:"visibility_policy"`
+	PolicyReason       string  `json:"policy_reason"`
+	PolicySource       string  `json:"policy_source"`
+	PolicyEventID      string  `json:"policy_event_id"`
+}
+
+// Embedding stores a vector representation independently so other objects can
+// reference it by vector_id without duplicating the dense representation.
+type Embedding struct {
+	VectorID      string    `json:"vector_id"`
+	VectorContext string    `json:"vector_context"`
+	EmbeddingType string    `json:"embedding_type"`
+	Dim           int       `json:"dim"`
+	ModelID       string    `json:"model_id"`
+	VectorRef     []float32 `json:"vector_ref"`
+}
+
+// ShareContract encodes the full sharing protocol between agents or scopes,
+// not just a single visibility field.
+type ShareContract struct {
+	ContractID       string `json:"contract_id"`
+	Scope            string `json:"scope"`
+	ReadACL          string `json:"read_acl"`
+	WriteACL         string `json:"write_acl"`
+	DeriveACL        string `json:"derive_acl"`
+	TTLPolicy        string `json:"ttl_policy"`
+	ConsistencyLevel string `json:"consistency_level"`
+	MergePolicy      string `json:"merge_policy"`
+	QuarantinePolicy string `json:"quarantine_policy"`
+	AuditPolicy      string `json:"audit_policy"`
+}
+
+// RetrievalSegment tracks a physical segment in the materialized retrieval layer.
+// Segments are the basic unit of search, scheduling, and buffering.
+type RetrievalSegment struct {
+	SegmentID       string `json:"segment_id"`
+	ObjectType      string `json:"object_type"`
+	Namespace       string `json:"namespace"`
+	TimeBucket      string `json:"time_bucket"`
+	EmbeddingFamily string `json:"embedding_family"`
+	StorageRef      string `json:"storage_ref"`
+	IndexRef        string `json:"index_ref"`
+	RowCount        int    `json:"row_count"`
+	MinTS           int64  `json:"min_ts"`
+	MaxTS           int64  `json:"max_ts"`
+	Tier            string `json:"tier"`
+}

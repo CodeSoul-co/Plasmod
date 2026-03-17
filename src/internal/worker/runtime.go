@@ -23,6 +23,7 @@ type Runtime struct {
 	policy       *semantic.PolicyEngine
 	planner      semantic.QueryPlanner
 	materializer *materialization.Service
+	preCompute   *materialization.PreComputeService
 	assembler    *evidence.Assembler
 	nodeManager  *nodes.Manager
 	storage      storage.RuntimeStorage
@@ -36,6 +37,7 @@ func NewRuntime(
 	policy *semantic.PolicyEngine,
 	planner semantic.QueryPlanner,
 	materializer *materialization.Service,
+	preCompute *materialization.PreComputeService,
 	assembler *evidence.Assembler,
 	nodeManager *nodes.Manager,
 	store storage.RuntimeStorage,
@@ -48,6 +50,7 @@ func NewRuntime(
 		policy:       policy,
 		planner:      planner,
 		materializer: materializer,
+		preCompute:   preCompute,
 		assembler:    assembler,
 		nodeManager:  nodeManager,
 		storage:      store,
@@ -69,12 +72,36 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if ev.LogicalTS == 0 {
 		ev.LogicalTS = entry.LSN
 	}
-	record := r.materializer.ProjectEvent(ev)
+	mat := r.materializer.MaterializeEvent(ev)
+	record := mat.Record
+
+	// ── Persist canonical objects ─────────────────────────────────────────
+	r.storage.Objects().PutMemory(mat.Memory)
+	r.storage.Versions().PutVersion(mat.Version)
+	for _, edge := range mat.Edges {
+		r.storage.Edges().PutEdge(edge)
+	}
+
+	// ── Pre-compute evidence fragment ─────────────────────────────────────
+	if r.preCompute != nil {
+		frag := r.preCompute.Compute(ev, record)
+		if frag.SalienceScore >= 0.5 {
+			r.storage.HotCache().Put(record.ObjectID, ev.EventType, record, frag.SalienceScore)
+		}
+	}
+
+	// ── Retrieval plane ───────────────────────────────────────────────────
 	r.nodeManager.DispatchIngest(record)
 	if err := r.plane.Ingest(record); err != nil {
 		return nil, err
 	}
-	return map[string]any{"status": "accepted", "lsn": entry.LSN, "event_id": ev.EventID}, nil
+	return map[string]any{
+		"status":    "accepted",
+		"lsn":       entry.LSN,
+		"event_id":  ev.EventID,
+		"memory_id": mat.Memory.MemoryID,
+		"edges":     len(mat.Edges),
+	}, nil
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
@@ -89,7 +116,8 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		IncludeGrowing: plan.IncludeGrowing,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
-	return r.assembler.Build(result, r.policy.ApplyQueryFilters(req))
+	filters := r.policy.ApplyQueryFilters(req)
+	return r.assembler.Build(result, filters)
 }
 
 func (r *Runtime) Topology() map[string]any {
