@@ -7,8 +7,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/policy"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 // CheckIfCollectionCanBeCreated checks if a collection can be created.

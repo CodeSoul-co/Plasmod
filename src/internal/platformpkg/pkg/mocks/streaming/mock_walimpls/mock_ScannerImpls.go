@@ -6,7 +6,7 @@
 package mock_walimpls
 
 import (
-	message "github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	message "andb/platformpkg/pkg/streaming/util/message"
 	mock "github.com/stretchr/testify/mock"
 )
 

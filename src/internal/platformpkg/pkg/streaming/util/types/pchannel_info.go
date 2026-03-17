@@ -6,7 +6,7 @@ package types
 import (
 	"fmt"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
+	"andb/platformpkg/pkg/proto/streamingpb"
 )
 
 const (

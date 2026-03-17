@@ -3,7 +3,7 @@
 
 package walimpls
 
-import "github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+import "andb/platformpkg/pkg/streaming/util/message"
 
 // OpenerBuilderImpls is the interface for building wal opener impls.
 type OpenerBuilderImpls interface {

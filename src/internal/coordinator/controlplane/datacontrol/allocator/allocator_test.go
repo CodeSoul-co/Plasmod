@@ -29,8 +29,8 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/milvus-io/milvus/internal/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/proto/rootcoordpb"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 type RootCoordAllocatorSuite struct {

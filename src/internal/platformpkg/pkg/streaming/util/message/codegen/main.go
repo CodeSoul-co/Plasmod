@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	messagePackage  = "github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	messagePackage  = "andb/platformpkg/pkg/streaming/util/message"
 	reflectInfoFile = "reflect_info.json"
 	reflectInfoGo   = "../reflect_info.go"
 )

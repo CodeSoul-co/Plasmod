@@ -6,9 +6,9 @@ package helper
 import (
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/walimpls"
 )
 
 // NewWALHelper creates a new WALHelper.

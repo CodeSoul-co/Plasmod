@@ -28,8 +28,8 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/hook"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/log"
 )
 
 // BinlogType is to distinguish different files saving different data.

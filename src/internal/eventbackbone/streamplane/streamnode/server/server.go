@@ -16,12 +16,12 @@ import (
 	"github.com/milvus-io/milvus/internal/util/fileresource"
 	"github.com/milvus-io/milvus/internal/util/initcore"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	_ "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/kafka"
-	_ "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/pulsar"
-	_ "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/rmq"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	_ "andb/platformpkg/pkg/streaming/walimpls/impls/kafka"
+	_ "andb/platformpkg/pkg/streaming/walimpls/impls/pulsar"
+	_ "andb/platformpkg/pkg/streaming/walimpls/impls/rmq"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // Server is the streamingnode server.

@@ -31,10 +31,10 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/testutils"
+	"andb/platformpkg/pkg/mq/msgstream"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/testutils"
 )
 
 func TestRepackInsertData(t *testing.T) {

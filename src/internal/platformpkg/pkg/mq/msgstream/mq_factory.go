@@ -31,16 +31,16 @@ import (
 	"github.com/streamnative/pulsarctl/pkg/pulsar/utils"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
-	"github.com/milvus-io/milvus/pkg/v2/mq/mqimpl/rocksmq/server"
-	kafkawrapper "github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper/kafka"
-	pulsarmqwrapper "github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper/pulsar"
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream/mqwrapper/rmq"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/pulsar/pulsarlog"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/mq/common"
+	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	kafkawrapper "andb/platformpkg/pkg/mq/msgstream/mqwrapper/kafka"
+	pulsarmqwrapper "andb/platformpkg/pkg/mq/msgstream/mqwrapper/pulsar"
+	"andb/platformpkg/pkg/mq/msgstream/mqwrapper/rmq"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/pulsar/pulsarlog"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/retry"
 )
 
 // PmsFactory is a pulsar msgstream factory that implemented Factory interface(msgstream.go)

@@ -6,7 +6,7 @@ package helper
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 // NewScannerHelper creates a new ScannerHelper.

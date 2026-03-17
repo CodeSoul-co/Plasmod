@@ -20,7 +20,7 @@
 package pipeline
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 // MsgFilter will return error if Msg was invalid

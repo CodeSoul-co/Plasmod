@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/messagespb"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/messagespb"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // NewResourceKeyFromProto creates a ResourceKey from proto.

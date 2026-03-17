@@ -27,8 +27,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/datacoord/task"
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/indexpb"
 )
 
 // externalCollectionRefreshInspector handles task scheduling and recovery for external collection refresh.

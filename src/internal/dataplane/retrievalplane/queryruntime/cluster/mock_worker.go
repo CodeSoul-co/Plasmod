@@ -10,11 +10,11 @@ import (
 
 	commonpb "github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 
-	internalpb "github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
+	internalpb "andb/platformpkg/pkg/proto/internalpb"
 
 	mock "github.com/stretchr/testify/mock"
 
-	querypb "github.com/milvus-io/milvus/pkg/v2/proto/querypb"
+	querypb "andb/platformpkg/pkg/proto/querypb"
 
 	streamrpc "github.com/milvus-io/milvus/internal/util/streamrpc"
 )

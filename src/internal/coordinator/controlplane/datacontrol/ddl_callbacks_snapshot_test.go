@@ -27,8 +27,8 @@ import (
 	"github.com/bytedance/mockey"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 // --- Test createSnapshotV2AckCallback ---

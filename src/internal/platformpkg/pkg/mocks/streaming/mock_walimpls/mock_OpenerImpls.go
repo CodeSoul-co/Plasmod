@@ -8,7 +8,7 @@ package mock_walimpls
 import (
 	context "context"
 
-	walimpls "github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
+	walimpls "andb/platformpkg/pkg/streaming/walimpls"
 	mock "github.com/stretchr/testify/mock"
 )
 

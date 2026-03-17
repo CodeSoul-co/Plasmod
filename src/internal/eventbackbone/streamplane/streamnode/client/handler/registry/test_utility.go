@@ -3,7 +3,7 @@
 
 package registry
 
-import "github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+import "andb/platformpkg/pkg/util/syncutil"
 
 func ResetRegisterLocalWALManager() {
 	registry = syncutil.NewFuture[WALManager]()

@@ -6,7 +6,7 @@ package stats
 import (
 	"fmt"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
+	"andb/platformpkg/pkg/proto/datapb"
 )
 
 // aggregatedMetrics is the metrics of a channel.

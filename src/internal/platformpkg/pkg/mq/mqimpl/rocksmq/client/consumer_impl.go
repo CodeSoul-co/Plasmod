@@ -20,8 +20,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/mq/common"
 )
 
 type consumer struct {

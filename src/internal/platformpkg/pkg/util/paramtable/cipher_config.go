@@ -4,7 +4,7 @@
 package paramtable
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 const cipherYamlFile = "hook.yaml"

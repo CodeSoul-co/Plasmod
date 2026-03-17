@@ -9,12 +9,12 @@ import (
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/cockroachdb/errors"
 
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/impls/pulsar/pulsarlog"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls/registry"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/walimpls/impls/pulsar/pulsarlog"
+	"andb/platformpkg/pkg/streaming/walimpls/registry"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func init() {

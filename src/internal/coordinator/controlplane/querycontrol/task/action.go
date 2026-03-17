@@ -26,8 +26,8 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 type ActionType int32

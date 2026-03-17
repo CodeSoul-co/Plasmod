@@ -24,9 +24,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/util/funcutil"
-	"github.com/milvus-io/milvus/pkg/v2/util/uniquegenerator"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/util/funcutil"
+	"andb/platformpkg/pkg/util/uniquegenerator"
 )
 
 func TestIndexFileBinlogCodec(t *testing.T) {

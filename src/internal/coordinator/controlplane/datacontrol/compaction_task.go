@@ -21,7 +21,7 @@ package datacoord
 
 import (
 	"github.com/milvus-io/milvus/internal/datacoord/task"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
+	"andb/platformpkg/pkg/proto/datapb"
 )
 
 type CompactionTask interface {

@@ -7,8 +7,8 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
-	"github.com/milvus-io/milvus/pkg/v2/util/lock"
+	"andb/platformpkg/pkg/util/conc"
+	"andb/platformpkg/pkg/util/lock"
 )
 
 type Task interface {

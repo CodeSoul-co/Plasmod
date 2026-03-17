@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func TestChannelBlacklist(t *testing.T) {

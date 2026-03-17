@@ -29,8 +29,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/util/hookutil"
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/log"
 )
 
 // BinlogReader is an object to read binlog file. Binlog file's format can be

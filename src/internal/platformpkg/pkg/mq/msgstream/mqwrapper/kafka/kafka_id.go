@@ -4,8 +4,8 @@
 package kafka
 
 import (
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	mqcommon "github.com/milvus-io/milvus/pkg/v2/mq/common"
+	"andb/platformpkg/pkg/common"
+	mqcommon "andb/platformpkg/pkg/mq/common"
 )
 
 func NewKafkaID(messageID int64) mqcommon.MessageID {

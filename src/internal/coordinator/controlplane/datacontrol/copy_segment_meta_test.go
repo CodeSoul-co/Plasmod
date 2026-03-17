@@ -32,9 +32,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/datacoord/broker"
 	"github.com/milvus-io/milvus/internal/metastore/mocks"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/taskcommon"
+	"andb/platformpkg/pkg/util/timerecord"
 )
 
 type CopySegmentMetaSuite struct {

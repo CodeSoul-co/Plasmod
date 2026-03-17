@@ -22,7 +22,7 @@ package flusherimpl
 import (
 	"sync"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/conc"
+	"andb/platformpkg/pkg/util/conc"
 )
 
 var (

@@ -11,7 +11,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/agg"
-	"github.com/milvus-io/milvus/pkg/v2/proto/planpb"
+	"andb/platformpkg/pkg/proto/planpb"
 )
 
 type AggregateOperatorsSuite struct {

@@ -31,7 +31,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"andb/platformpkg/pkg/common"
 )
 
 func TestPkStatsCollector(t *testing.T) {

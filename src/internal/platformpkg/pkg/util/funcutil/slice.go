@@ -22,7 +22,7 @@ package funcutil
 import (
 	"reflect"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // SliceContain returns true if slice s contains item.

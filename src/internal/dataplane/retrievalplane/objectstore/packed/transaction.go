@@ -33,8 +33,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/proto/indexpb"
 )
 
 // DeltaLogEntry represents a delta log to be added to the manifest

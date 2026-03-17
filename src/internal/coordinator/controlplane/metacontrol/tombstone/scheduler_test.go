@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/atomic"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 func TestTombstoneSweeper_AddTombstone(t *testing.T) {

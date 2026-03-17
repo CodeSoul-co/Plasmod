@@ -19,7 +19,7 @@
 
 package mqwrapper
 
-import "github.com/milvus-io/milvus/pkg/v2/mq/common"
+import "andb/platformpkg/pkg/mq/common"
 
 const DefaultPartitionIdx = 0
 

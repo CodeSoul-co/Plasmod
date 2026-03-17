@@ -27,8 +27,8 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
-	"github.com/milvus-io/milvus/pkg/v2/proto/querypb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/proto/querypb"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 func (suite *ServiceSuite) TestDDLCallbacksLoadCollectionInfo() {

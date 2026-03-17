@@ -24,8 +24,8 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/milvus-io/milvus/pkg/v2/kv/predicates"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/kv/predicates"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // CompareFailedError is a helper type for checking MetaKv CompareAndSwap series func error type

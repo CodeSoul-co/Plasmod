@@ -22,7 +22,7 @@ package shardclient
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
+	"andb/platformpkg/pkg/proto/internalpb"
 )
 
 type LBBalancer interface {

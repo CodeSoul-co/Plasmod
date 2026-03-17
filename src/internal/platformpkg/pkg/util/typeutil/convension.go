@@ -28,7 +28,7 @@ import (
 	"github.com/x448/float16"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"andb/platformpkg/pkg/common"
 )
 
 // Generic Clone for proto message

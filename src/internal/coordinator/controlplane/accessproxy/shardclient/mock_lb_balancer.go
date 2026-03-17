@@ -8,7 +8,7 @@ package shardclient
 import (
 	context "context"
 
-	internalpb "github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
+	internalpb "andb/platformpkg/pkg/proto/internalpb"
 	mock "github.com/stretchr/testify/mock"
 )
 

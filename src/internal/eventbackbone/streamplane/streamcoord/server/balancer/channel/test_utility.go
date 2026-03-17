@@ -6,8 +6,8 @@ package channel
 import (
 	"sync"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/syncutil"
+	"andb/platformpkg/pkg/proto/streamingpb"
+	"andb/platformpkg/pkg/util/syncutil"
 )
 
 func ResetStaticPChannelStatsManager() {

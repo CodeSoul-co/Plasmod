@@ -5,7 +5,7 @@ package utils
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/policy"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/types"
+	"andb/platformpkg/pkg/streaming/util/types"
 )
 
 // SealSegmentSignal is the signal for segment sealing.

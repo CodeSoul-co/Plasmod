@@ -8,7 +8,7 @@ import (
 
 	"github.com/tecbot/gorocksdb"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
+	"andb/platformpkg/pkg/log"
 )
 
 /**

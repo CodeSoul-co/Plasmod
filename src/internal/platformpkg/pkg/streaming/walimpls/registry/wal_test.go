@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/mocks/streaming/mock_walimpls"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/mocks/streaming/mock_walimpls"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 func TestRegister(t *testing.T) {

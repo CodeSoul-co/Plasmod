@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
+	"andb/platformpkg/pkg/common"
 )
 
 // ParseSegmentIDByBinlog parse segment id from binlog paths

@@ -27,7 +27,7 @@ import (
 	"github.com/apache/arrow/go/v17/arrow/array"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/merr"
+	"andb/platformpkg/pkg/util/merr"
 )
 
 func Sort(batchSize uint64, schema *schemapb.CollectionSchema, rr []RecordReader,

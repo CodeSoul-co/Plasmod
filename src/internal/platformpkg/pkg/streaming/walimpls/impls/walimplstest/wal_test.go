@@ -6,7 +6,7 @@ package walimplstest
 import (
 	"testing"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/walimpls"
+	"andb/platformpkg/pkg/streaming/walimpls"
 )
 
 func TestWALImplsTest(t *testing.T) {

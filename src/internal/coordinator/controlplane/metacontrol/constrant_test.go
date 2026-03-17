@@ -30,8 +30,8 @@ import (
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	mocktso "github.com/milvus-io/milvus/internal/tso/mocks"
 	"github.com/milvus-io/milvus/internal/util/testutil"
-	pb "github.com/milvus-io/milvus/pkg/v2/proto/etcdpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	pb "andb/platformpkg/pkg/proto/etcdpb"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 func TestCheckGeneralCapacity(t *testing.T) {

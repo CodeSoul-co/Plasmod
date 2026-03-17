@@ -29,8 +29,8 @@ import (
 	mock "github.com/stretchr/testify/mock"
 
 	"github.com/milvus-io/milvus/internal/datacoord/session"
-	taskcommon "github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	taskcommon "andb/platformpkg/pkg/taskcommon"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 func init() {

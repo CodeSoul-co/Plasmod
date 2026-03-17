@@ -8,8 +8,8 @@ import (
 
 	"github.com/cockroachdb/errors"
 
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 type ChunkManagerFactory struct {

@@ -6,8 +6,8 @@ package proxy
 import (
 	"fmt"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/internalpb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/proto/internalpb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // validator is a generic interface for validating tasks

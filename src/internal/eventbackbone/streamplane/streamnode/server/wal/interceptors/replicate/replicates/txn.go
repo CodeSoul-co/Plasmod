@@ -5,8 +5,8 @@ package replicates
 
 import (
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/typeutil"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util/typeutil"
 )
 
 // newReplicateTxnHelper creates a new replicate txn helper.

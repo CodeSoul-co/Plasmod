@@ -26,9 +26,9 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/taskcommon"
-	"github.com/milvus-io/milvus/pkg/v2/util/timerecord"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/taskcommon"
+	"andb/platformpkg/pkg/util/timerecord"
 )
 
 type CopySegmentTaskSuite struct {

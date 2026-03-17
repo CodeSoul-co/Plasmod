@@ -19,7 +19,7 @@ import (
 	"unsafe"
 
 	_ "github.com/milvus-io/milvus/internal/util/cgo"
-	"github.com/milvus-io/milvus/pkg/v2/proto/indexpb"
+	"andb/platformpkg/pkg/proto/indexpb"
 )
 
 // Property keys - matching milvus-storage/properties.h

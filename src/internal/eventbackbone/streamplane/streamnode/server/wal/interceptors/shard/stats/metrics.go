@@ -6,9 +6,9 @@ package stats
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/milvus-io/milvus/pkg/v2/metrics"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/metrics"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // newMetricsHelper creates a new metrics helper for the WAL segment.

@@ -8,9 +8,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/milvus-io/milvus/pkg/v2/common"
-	"github.com/milvus-io/milvus/pkg/v2/proto/datapb"
-	"github.com/milvus-io/milvus/pkg/v2/proto/streamingpb"
+	"andb/platformpkg/pkg/common"
+	"andb/platformpkg/pkg/proto/datapb"
+	"andb/platformpkg/pkg/proto/streamingpb"
 )
 
 // PartitionUniqueKey is the unique key of a partition.

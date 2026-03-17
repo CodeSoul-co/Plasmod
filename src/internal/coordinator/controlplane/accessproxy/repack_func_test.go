@@ -25,7 +25,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
+	"andb/platformpkg/pkg/mq/msgstream"
 )
 
 func Test_insertRepackFunc(t *testing.T) {

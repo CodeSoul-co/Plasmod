@@ -14,9 +14,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/proxy/privilege"
 	"github.com/milvus-io/milvus/internal/util/hookutil"
-	"github.com/milvus-io/milvus/pkg/v2/util"
-	"github.com/milvus-io/milvus/pkg/v2/util/crypto"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/util"
+	"andb/platformpkg/pkg/util/crypto"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 // validAuth validates the authentication

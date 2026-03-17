@@ -6,8 +6,8 @@ package timetick
 import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
-	"github.com/milvus-io/milvus/pkg/v2/util/commonpbutil"
+	"andb/platformpkg/pkg/streaming/util/message"
+	"andb/platformpkg/pkg/util/commonpbutil"
 )
 
 func NewTimeTickMsg(ts uint64, lastConfirmedMessageID message.MessageID, sourceID int64, persist bool) message.MutableMessage {

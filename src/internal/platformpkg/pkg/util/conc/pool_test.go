@@ -25,7 +25,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
+	"andb/platformpkg/pkg/util/hardware"
 )
 
 func TestPool(t *testing.T) {

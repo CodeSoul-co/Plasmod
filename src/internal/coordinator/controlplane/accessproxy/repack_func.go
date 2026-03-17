@@ -22,7 +22,7 @@ package proxy
 import (
 	"fmt"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/msgstream"
+	"andb/platformpkg/pkg/mq/msgstream"
 )
 
 // insertRepackFunc deprecated, use defaultInsertRepackFunc instead.

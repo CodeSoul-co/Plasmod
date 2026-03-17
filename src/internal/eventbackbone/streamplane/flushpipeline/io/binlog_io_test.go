@@ -13,8 +13,8 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/pkg/v2/objectstorage"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
+	"andb/platformpkg/pkg/objectstorage"
+	"andb/platformpkg/pkg/util/paramtable"
 )
 
 var binlogIOTestDir string

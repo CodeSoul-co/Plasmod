@@ -24,7 +24,7 @@ import (
 
 	"github.com/apache/pulsar-client-go/pulsar"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
+	"andb/platformpkg/pkg/mq/common"
 )
 
 // NewPulsarID creates a new pulsarID

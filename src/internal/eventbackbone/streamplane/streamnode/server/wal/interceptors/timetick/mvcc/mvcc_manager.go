@@ -6,7 +6,7 @@ package mvcc
 import (
 	"sync"
 
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 // NewMVCCManager creates a new mvcc timestamp manager.

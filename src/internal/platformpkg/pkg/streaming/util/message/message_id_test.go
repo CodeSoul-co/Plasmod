@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"github.com/milvus-io/milvus/pkg/v2/mocks/streaming/util/mock_message"
-	"github.com/milvus-io/milvus/pkg/v2/streaming/util/message"
+	"andb/platformpkg/pkg/mocks/streaming/util/mock_message"
+	"andb/platformpkg/pkg/streaming/util/message"
 )
 
 func TestRegisterMessageIDUnmarshaler(t *testing.T) {

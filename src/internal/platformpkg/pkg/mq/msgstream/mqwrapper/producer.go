@@ -22,7 +22,7 @@ package mqwrapper
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/pkg/v2/mq/common"
+	"andb/platformpkg/pkg/mq/common"
 )
 
 // Producer is the interface that provides operations of producer

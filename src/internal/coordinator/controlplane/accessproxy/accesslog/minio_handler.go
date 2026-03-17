@@ -32,9 +32,9 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/pkg/v2/log"
-	"github.com/milvus-io/milvus/pkg/v2/util/paramtable"
-	"github.com/milvus-io/milvus/pkg/v2/util/retry"
+	"andb/platformpkg/pkg/log"
+	"andb/platformpkg/pkg/util/paramtable"
+	"andb/platformpkg/pkg/util/retry"
 )
 
 type config struct {

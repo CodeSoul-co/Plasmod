@@ -25,8 +25,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/pkg/v2/config"
-	"github.com/milvus-io/milvus/pkg/v2/util/hardware"
+	"andb/platformpkg/pkg/config"
+	"andb/platformpkg/pkg/util/hardware"
 )
 
 func shouldPanic(t *testing.T, name string, f func()) {
