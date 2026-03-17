@@ -1,0 +1,55 @@
+version: 2
+
+updates:
+  # Root module (no external deps — kept for completeness)
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Imported Milvus platform package — contains external deps with known vulns
+  - package-ecosystem: gomod
+    directory: "/src/internal/platformpkg/pkg"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+      grpc:
+        patterns:
+          - "google.golang.org/grpc"
+          - "github.com/grpc-ecosystem/*"
+      gorilla:
+        patterns:
+          - "github.com/gorilla/*"
+
+  # Retrieval plane sub-module
+  - package-ecosystem: gomod
+    directory: "/src/internal/dataplane/retrievalplane"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Control plane sub-module
+  - package-ecosystem: gomod
+    directory: "/src/internal/coordinator/controlplane"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Stream plane sub-module
+  - package-ecosystem: gomod
+    directory: "/src/internal/eventbackbone/streamplane"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Python SDK and workspace deps
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

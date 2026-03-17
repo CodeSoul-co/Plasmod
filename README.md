@@ -215,7 +215,6 @@ Additional supporting docs already in the repo:
 - [Milvus Migration Status](docs/architecture/milvus-migration-status.md)
 - [Milvus Source Map](docs/architecture/milvus-source-map.md)
 - [Extension Points](docs/architecture/extension-points.md)
-- [Phase-2 Step 1](docs/architecture/phase2-step1.md)
 - [Nodes and Storage Initialization](docs/architecture/nodes-storage.md)
 - [Ingest API](docs/api/ingest.md)
 - [Query API](docs/api/query.md)
