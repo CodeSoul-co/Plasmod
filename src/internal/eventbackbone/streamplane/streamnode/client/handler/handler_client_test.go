@@ -1,5 +1,5 @@
-//go:build milvus_port
-// +build milvus_port
+//go:build extended
+// +build extended
 
 package handler
 

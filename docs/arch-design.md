@@ -50,13 +50,13 @@ borrowed sub-trees, but the **integration boundary** files (always named
 
 | Directory | Origin | Build tag | CogDB boundary |
 |---|---|---|---|
-| `coordinator/controlplane/` | Milvus MixCoord | `milvus_port` | `controlplane.RuntimeContract` |
-| `eventbackbone/streamplane/` | Manu StreamNode | `milvus_port` | `streamplane.RuntimeContract` |
+| `coordinator/controlplane/` | Milvus MixCoord | `extended` | `controlplane.RuntimeContract` |
+| `eventbackbone/streamplane/` | Manu StreamNode | `extended` | `streamplane.RuntimeContract` |
 | `dataplane/retrievalplane/` | Milvus Segcore (C++) | CMake only | not imported by Go |
-| `platformpkg/` | Milvus pkg/ | `milvus_port` | not imported by Go |
+| `platformpkg/` | Milvus pkg/ | `extended` | not imported by Go |
 | `dataplane/segmentstore/` | CogDB-native | always | `segmentstore.Index` / `Shard` |
 
-The `milvus_port` build tag means those files are **never compiled** in a
+The `extended` build tag means those files are **never compiled** in a
 standard `go build ./...`.  The only Milvus-derived code compiled by default
 was in `segmentstore/`, and it has been fully renamed:
 
@@ -273,4 +273,4 @@ Per spec section 16.4:
 | Workers | Implement any worker interface; call `manager.Register*()` |
 | Coordinators | Implement new coordinator; add to `Hub` struct |
 | Query Operators | Add new `QueryPlan` subtypes in `semantic/operators.go` |
-| Control Plane | Enable `milvus_port` build tag to compile the Milvus-derived control plane |
+| Control Plane | Enable `extended` build tag to compile the Milvus-derived control plane |

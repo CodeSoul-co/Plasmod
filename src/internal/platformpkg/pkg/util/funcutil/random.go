@@ -1,5 +1,5 @@
-//go:build milvus_port
-// +build milvus_port
+//go:build extended
+// +build extended
 
 // Licensed to the LF AI & Data foundation under one
 // or more contributor license agreements. See the NOTICE file

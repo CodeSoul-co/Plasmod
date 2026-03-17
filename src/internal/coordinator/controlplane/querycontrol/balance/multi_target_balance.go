@@ -1,5 +1,5 @@
-//go:build milvus_port
-// +build milvus_port
+//go:build extended
+// +build extended
 
 // multi_target_balance.go implements the MultiTargetBalancer which uses multiple optimization
 // strategies to achieve comprehensive load balancing across query nodes.
