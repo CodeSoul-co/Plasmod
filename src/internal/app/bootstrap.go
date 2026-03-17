@@ -22,42 +22,78 @@ func BuildServer() (*http.Server, error) {
 		addr = "127.0.0.1:8080"
 	}
 
+	// ── Event Backbone ───────────────────────────────────────────────────────
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+	watermark := eventbackbone.NewWatermarkPublisher(clock, bus)
+	derivLog := eventbackbone.NewDerivationLog(clock, bus)
+	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 
-	plane := dataplane.NewSegmentDataPlane()
+	// ── Storage Layer ────────────────────────────────────────────────────────
+	store := storage.NewMemoryRuntimeStorage()
+
+	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
 	policyEngine := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
-	materializer := materialization.NewService()
-	assembler := evidence.NewAssembler()
-	store := storage.NewMemoryRuntimeStorage()
-	nodeManager := nodes.NewManager()
-	nodeManager.RegisterData(nodes.NewInMemoryDataNode("data-1", store.Segments()))
-	nodeManager.RegisterIndex(nodes.NewInMemoryIndexNode("index-1", store.Indexes()))
-	nodeManager.RegisterQuery(nodes.NewInMemoryQueryNode("query-1", plane))
 
+	// ── Materialization & Evidence ───────────────────────────────────────────
+	evCache := evidence.NewCache(10000)
+	materializer := materialization.NewService()
+	preCompute := materialization.NewPreComputeService(evCache)
+	assembler := evidence.NewCachedAssembler(evCache).WithEdgeStore(store.Edges())
+
+	// ── Data Plane (Tiered: hot → warm → cold) ──────────────────────────────────
+	plane := dataplane.NewTieredDataPlane()
+
+	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(objectModel),
-		coordinator.NewObjectCoordinator(),
-		coordinator.NewPolicyCoordinator(policyEngine),
-		coordinator.NewVersionCoordinator(clock),
+		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
+		coordinator.NewPolicyCoordinator(policyEngine, store.Policies()),
+		coordinator.NewVersionCoordinator(clock, store.Versions()),
 		coordinator.NewWorkerScheduler(),
+		coordinator.NewMemoryCoordinator(store.Objects()),
+		coordinator.NewIndexCoordinator(store.Segments(), store.Indexes()),
+		coordinator.NewShardCoordinator(8),
+		coordinator.NewQueryCoordinator(planner, policyEngine),
 	)
+
+	// ── Module Registry ──────────────────────────────────────────────────────
 	coord.Registry.Register("dataplane", plane)
 	coord.Registry.Register("policy_engine", policyEngine)
 	coord.Registry.Register("query_planner", planner)
 	coord.Registry.Register("materializer", materializer)
 	coord.Registry.Register("evidence_assembler", assembler)
 	coord.Registry.Register("wal", wal)
-	coord.Registry.Register("node_manager", nodeManager)
+	coord.Registry.Register("watermark", watermark)
+	coord.Registry.Register("derivation_log", derivLog)
+	coord.Registry.Register("policy_decision_log", policyDecLog)
 	coord.Registry.Register("runtime_storage", store)
 
-	runtime := worker.NewRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, assembler, nodeManager, store)
+	// ── Worker Node Manager ──────────────────────────────────────────────────
+	nodeManager := nodes.NewManager()
+	// Hot tier: dedicated data/index nodes wired to the tiered plane's warm layer
+	nodeManager.RegisterData(nodes.NewInMemoryDataNode("data-hot", store.Segments()))
+	nodeManager.RegisterIndex(nodes.NewInMemoryIndexNode("index-hot", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.NewInMemoryQueryNode("query-1", plane))
+	nodeManager.RegisterMemoryExtraction(nodes.NewInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
+	nodeManager.RegisterMemoryConsolidation(nodes.NewInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	nodeManager.RegisterGraphRelation(nodes.NewInMemoryGraphRelationWorker("graph-1", store.Edges()))
+	nodeManager.RegisterProofTrace(nodes.NewInMemoryProofTraceWorker("proof-1", store.Edges()))
+	coord.Registry.Register("node_manager", nodeManager)
+
+	// ── Module Registry: evidence + pre-compute services ──────────────────────
+	coord.Registry.Register("evidence_cache", evCache)
+	coord.Registry.Register("pre_compute", preCompute)
+
+	// ── Runtime ──────────────────────────────────────────────────────────────
+	runtime := worker.NewRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store)
 	runtime.RegisterDefaults()
 
-	gateway := access.NewGateway(coord, runtime)
+	// ── HTTP Gateway ─────────────────────────────────────────────────────────
+	gateway := access.NewGateway(coord, runtime, store)
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
 

@@ -1,6 +1,6 @@
 # Agent-Native Database for Multi-Agent Systems
 
-ANDB is a v1 research prototype for an agent-native database aimed at multi-agent systems (MAS). The repository combines a segment-oriented retrieval plane, a Manu-inspired control and event backbone, and an agent-native semantic layer for canonical objects, reasoning-oriented retrieval, and structured evidence return.
+ANDB (CogDB) is a v1 prototype of an agent-native database for multi-agent systems (MAS). The repository combines a tiered segment-oriented retrieval plane, an event backbone with append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
 
 The core thesis is simple:
 
@@ -8,24 +8,27 @@ The core thesis is simple:
 
 ## Project Status
 
-This repository is in the framework-skeleton plus runnable-prototype stage.
+This repository is in the **runnable-prototype** stage.  The main ingest/query path is fully wired end-to-end.
 
-What exists today:
+What is implemented today:
 
-- a runnable Go server in [`src/cmd/server/main.go`](src/cmd/server/main.go)
-- an in-memory event backbone and runtime wiring
-- a segment-oriented embedded retrieval plane
-- canonical object and query schemas in Go
-- ingest and query HTTP endpoints
+- Runnable Go server in [`src/cmd/server/main.go`](src/cmd/server/main.go) with 10 HTTP routes
+- Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
+- `MaterializeEvent` → `MaterializationResult` that produces a canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
+- Three-tier data plane: **hot** (in-memory LRU cache) → **warm** (full segment index) → **cold** (archived tier), all behind a unified `DataPlane` interface
+- Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
+- 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
+- `QueryResponse` returns `Objects`, `Edges`, `Provenance`, and `ProofTrace` in every response
+- Module-level test coverage: 12 packages each with their own `*_test.go` file
 - Python SDK bootstrap and demo scripts
-- architecture, schema, and milestone documentation
+- Architecture, schema, and milestone documentation
 
 What is still intentionally lightweight in v1:
 
-- distributed runtime and persistence
-- full policy/governance execution
-- deep graph expansion and proof construction
-- production-grade indexing and optimization
+- Distributed runtime and persistence
+- Full policy/governance execution
+- Deep proof construction beyond 1-hop
+- Production-grade indexing and optimization
 
 ## Why This Project Exists
 
@@ -57,29 +60,44 @@ ANDB treats the database as cognitive infrastructure, not only as storage.
 
 ## Current Architecture
 
-The repository is organized around three perspectives:
+The system is organized around three execution layers:
 
-- Execution layers: access, coordinator, event backbone, worker, storage/data plane
-- Semantic layers: base semantics, policy/governance, adaptation
-- Representation layers: canonical records, retrieval projections, reasoning structures
+```
+HTTP API (access)
+    └─ Runtime (worker)
+          ├─ WAL + Bus  (eventbackbone)
+          ├─ MaterializeEvent → Memory / ObjectVersion / Edges  (materialization)
+          ├─ PreComputeService → EvidenceFragment cache  (materialization)
+          ├─ HotCache → TieredDataPlane (hot→warm→cold)  (dataplane)
+          └─ Assembler.Build → BulkEdges + EvidenceCache  (evidence)
+```
 
-Current code layout:
+**Ingest path:**
+`API → WAL.Append → MaterializeEvent → PutMemory + PutVersion + PutEdge → PreCompute → HotCache → TieredDataPlane.Ingest`
 
-- [`src/internal/access`](src/internal/access): HTTP gateway and route registration
-- [`src/internal/coordinator`](src/internal/coordinator): schema, object, policy, version, and worker coordination
-- [`src/internal/eventbackbone`](src/internal/eventbackbone): in-memory WAL, bus, and clock primitives
-- [`src/internal/worker`](src/internal/worker): ingest/query runtime wiring
-- [`src/internal/dataplane`](src/internal/dataplane): embedded retrieval and segment-planning path
-- [`src/internal/materialization`](src/internal/materialization): event-to-projection materialization service
-- [`src/internal/evidence`](src/internal/evidence): evidence-oriented response assembly
-- [`src/internal/semantic`](src/internal/semantic): object model registry and policy engine stubs
-- [`src/internal/schemas`](src/internal/schemas): canonical Go contracts for v1 objects and queries
+**Query path:**
+`API → TieredDataPlane.Search → Assembler.Build → EvidenceCache.GetMany + BulkEdges(1-hop) → QueryResponse{Objects, Edges, ProofTrace}`
+
+Code layout:
+
+- [`src/internal/access`](src/internal/access): HTTP gateway, 10 routes including ingest, query, and canonical CRUD
+- [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
+- [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
+- [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
+- [`src/internal/worker/nodes`](src/internal/worker/nodes): 14 worker-node type contracts (data, index, query, memory extraction, graph, proof trace, etc.)
+- [`src/internal/dataplane`](src/internal/dataplane): `TieredDataPlane` (hot/warm/cold), `SegmentDataPlane`, and `DataPlane` interface
+- [`src/internal/dataplane/segmentstore`](src/internal/dataplane/segmentstore): `Index`, `Shard`, `Searcher`, `Planner` — the physical segment layer
+- [`src/internal/materialization`](src/internal/materialization): `Service.MaterializeEvent` → `MaterializationResult{Record, Memory, Version, Edges}`; `PreComputeService`
+- [`src/internal/evidence`](src/internal/evidence): `Assembler` (cache-aware, graph-expansion via `WithEdgeStore`), `EvidenceFragment`, `Cache`
+- [`src/internal/storage`](src/internal/storage): 7 stores + `HotObjectCache` + `TieredObjectStore`; `GraphEdgeStore` with `BulkEdges`/`DeleteEdge`
+- [`src/internal/semantic`](src/internal/semantic): `ObjectModelRegistry`, `PolicyEngine`, 5 query plan types
+- [`src/internal/schemas`](src/internal/schemas): 13 canonical Go types + query/response contracts
 - [`sdk/python`](sdk/python): Python SDK and bootstrap scripts
 - [`cpp`](cpp): C++ retrieval stub for future high-performance execution
-- [`src/internal/dataplane/retrievalplane`](src/internal/dataplane/retrievalplane): imported retrieval-plane source subtree adapted under ANDB naming
-- [`src/internal/coordinator/controlplane`](src/internal/coordinator/controlplane): imported control-plane source subtree adapted under ANDB naming
-- [`src/internal/eventbackbone/streamplane`](src/internal/eventbackbone/streamplane): imported stream/event source subtree adapted under ANDB naming
-- [`src/internal/platformpkg`](src/internal/platformpkg): imported shared platform package subtree used for compatibility
+- [`src/internal/dataplane/retrievalplane`](src/internal/dataplane/retrievalplane): imported retrieval-plane source subtree (behind build tag)
+- [`src/internal/coordinator/controlplane`](src/internal/coordinator/controlplane): imported control-plane source subtree (behind build tag)
+- [`src/internal/eventbackbone/streamplane`](src/internal/eventbackbone/streamplane): imported stream/event source subtree (behind build tag)
+- [`src/internal/platformpkg`](src/internal/platformpkg): imported shared platform package subtree
 
 ## Canonical Objects in v1
 
@@ -98,18 +116,20 @@ The current authoritative Go definitions live in [`src/internal/schemas/canonica
 
 ## Query Contract in v1
 
-The current query path supports:
+The implemented ingest-to-query path:
 
-- structured request parsing
-- dense retrieval over embedded data-plane segments
-- basic scope/time/relation fields in the request contract
-- lightweight response assembly
+`event ingest → canonical object materialization → retrieval projection → tiered search (hot→warm→cold) → 1-hop graph expansion → pre-computed evidence merge → structured QueryResponse`
 
-The target v1 path is:
+The `QueryResponse` returned from every query includes:
 
-`event ingest -> canonical object materialization -> retrieval projection -> query planning -> hybrid retrieval -> graph expansion -> structured evidence response`
+- `Objects` — retrieved object IDs ranked by lexical score
+- `Edges` — 1-hop graph neighbours of all retrieved objects
+- `Provenance` — list of pipeline stages that contributed (`event_projection`, `retrieval_projection`, `fragment_cache`, `graph_expansion`)
+- `Versions` — object version records (populated by version-aware queries)
+- `AppliedFilters` — filters derived from the request by the `PolicyEngine`
+- `ProofTrace` — step-by-step trace of how the response was assembled
 
-The current Go contract lives in [`src/internal/schemas/query.go`](src/internal/schemas/query.go). The richer intended semantics are documented in the schema docs below.
+Go contracts live in [`src/internal/schemas/query.go`](src/internal/schemas/query.go). Richer intended semantics are documented in the schema docs below.
 
 ## Quick Start
 
@@ -151,6 +171,14 @@ python scripts/run_demo.py
 ```bash
 make test
 ```
+
+To run only the Go internal module tests:
+
+```bash
+go test ./src/internal/... -count=1 -timeout 30s
+```
+
+All 12 native packages have their own `*_test.go` file.  See [`docs/contributing.md §11`](docs/contributing.md) for the module-level test specification.
 
 ## Repository Structure
 
@@ -205,13 +233,19 @@ If you are starting implementation work, read [`docs/v1-scope.md`](docs/v1-scope
 
 ## Near-Term Milestone
 
-The near-term milestone is a coherent v1 prototype that can demonstrate:
+The implemented v1 prototype can already demonstrate:
 
-- event ingest through the public API
-- event-to-object materialization
-- retrieval over canonical-object projections
-- constrained evidence assembly
+- event ingest through the public API (`POST /v1/ingest/events`)
+- `MaterializeEvent` → canonical `Memory`, `ObjectVersion`, and `Edge` records written to stores
+- tiered retrieval (hot → warm → cold) over canonical-object projections
+- 1-hop graph expansion in every `QueryResponse`
+- pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time
+
+Next milestones:
+
 - benchmark comparison against simple top-k return
+- time-travel queries using WAL `Scan` replay
+- multi-agent session isolation and scope enforcement
 
 ## Long-Term Direction
 

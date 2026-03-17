@@ -30,13 +30,19 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 	nodeManager.RegisterQuery(nodes.NewInMemoryQueryNode("query-1", plane))
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
-		coordinator.NewObjectCoordinator(),
-		coordinator.NewPolicyCoordinator(policy),
-		coordinator.NewVersionCoordinator(clock),
+		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
+		coordinator.NewPolicyCoordinator(policy, store.Policies()),
+		coordinator.NewVersionCoordinator(clock, store.Versions()),
 		coordinator.NewWorkerScheduler(),
+		coordinator.NewMemoryCoordinator(store.Objects()),
+		coordinator.NewIndexCoordinator(store.Segments(), store.Indexes()),
+		coordinator.NewShardCoordinator(4),
+		coordinator.NewQueryCoordinator(planner, policy),
 	)
 
-	r := NewRuntime(wal, bus, plane, coord, policy, planner, materializer, assembler, nodeManager, store)
+	evCache := evidence.NewCache(1000)
+	preCompute := materialization.NewPreComputeService(evCache)
+	r := NewRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store)
 
 	_, err := r.SubmitIngest(schemas.Event{
 		EventID:     "evt_test_1",

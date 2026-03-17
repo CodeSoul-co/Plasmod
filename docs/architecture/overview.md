@@ -30,10 +30,16 @@ ANDB v1 is intentionally positioned between three traditions:
 
 ### 3.1 Segment-Oriented Retrieval Plane
 
-We borrow segment-oriented retrieval ideas from systems like Milvus, but the first-party ANDB runtime now exposes its own module boundaries and naming.
+We borrow segment-oriented retrieval ideas from systems like Milvus, but the first-party ANDB runtime now exposes its own module boundaries and naming.  All Milvus-derived terms have been renamed to CogDB conventions (`Partition→Shard`, `Row→ObjectRecord`, etc.).
+
+The retrieval layer is now a **three-tier architecture**:
+- **Hot tier** — `HotSegmentIndex` (bounded in-memory growing shards) for sub-millisecond recall of active-session objects
+- **Warm tier** — `SegmentDataPlane` (full in-memory, all shards) for normal queries
+- **Cold tier** — `ColdSegmentPlane` (disk-backed placeholder) for historical and time-travel queries
 
 Current in-repo anchor points:
 
+- [`src/internal/dataplane/tiered_adapter.go`](../../src/internal/dataplane/tiered_adapter.go)
 - [`src/internal/dataplane/segment_adapter.go`](../../src/internal/dataplane/segment_adapter.go)
 - [`src/internal/dataplane/segmentstore/engine.go`](../../src/internal/dataplane/segmentstore/engine.go)
 
@@ -55,6 +61,8 @@ This is the part ANDB adds on top:
 - provenance-aware response assembly
 - version-aware object semantics
 - structured evidence return
+- **pre-computed evidence fragments** built at ingest time so query assembly is fast
+- **1-hop graph expansion** over retrieved object IDs to populate the `Edges` field
 
 Current in-repo anchor points:
 
@@ -62,6 +70,8 @@ Current in-repo anchor points:
 - [`src/internal/semantic/objects.go`](../../src/internal/semantic/objects.go)
 - [`src/internal/materialization/service.go`](../../src/internal/materialization/service.go)
 - [`src/internal/evidence/assembler.go`](../../src/internal/evidence/assembler.go)
+- [`src/internal/evidence/cache.go`](../../src/internal/evidence/cache.go)
+- [`src/internal/materialization/pre_compute.go`](../../src/internal/materialization/pre_compute.go)
 
 ## 4. Three Architectural Perspectives
 
@@ -160,12 +170,16 @@ Responsibilities:
 - append events to WAL before downstream mutation
 - provide clock/sequence semantics
 - expose subscriber-oriented flow for later materialization and indexing workers
+- `Scan(fromLSN)` and `LatestLSN()` enable bounded-staleness replay and recovery
 
 Current code:
 
 - [`src/internal/eventbackbone/wal.go`](../../src/internal/eventbackbone/wal.go)
 - [`src/internal/eventbackbone/pubsub.go`](../../src/internal/eventbackbone/pubsub.go)
 - [`src/internal/eventbackbone/tso.go`](../../src/internal/eventbackbone/tso.go)
+- [`src/internal/eventbackbone/watermark.go`](../../src/internal/eventbackbone/watermark.go)
+- [`src/internal/eventbackbone/derivation_log.go`](../../src/internal/eventbackbone/derivation_log.go)
+- [`src/internal/eventbackbone/policy_decision_log.go`](../../src/internal/eventbackbone/policy_decision_log.go)
 
 In v1, this backbone is in-memory and intentionally simplified.
 
@@ -173,15 +187,16 @@ In v1, this backbone is in-memory and intentionally simplified.
 
 Responsibilities:
 
-- ingest submission
-- query execution
-- later materialization, graph, and proof workers
+- ingest submission: WAL → `MaterializeEvent` → canonical object persistence → pre-compute → retrieval plane
+- query execution: tiered search → graph expansion → evidence assembly
+- 14 specialised worker types (data, index, query, memory-extraction, consolidation, graph-relation, proof-trace, etc.)
 
 Current code:
 
 - [`src/internal/worker/runtime.go`](../../src/internal/worker/runtime.go)
+- [`src/internal/worker/nodes/`](../../src/internal/worker/nodes/)
 
-At present the runtime still compresses several future worker roles into one process.
+The `Runtime.SubmitIngest` now performs the full materialization loop: canonical `Memory` + `ObjectVersion` + typed `Edge` records are persisted to their stores on every ingest call.
 
 ### 7.5 Storage/Data Plane
 
@@ -255,15 +270,29 @@ before aggressive feature expansion.
 
 ## 10. v1 Architectural Focus
 
-The v1 prototype focuses on validating this path:
+The v1 prototype validates this path:
 
-`event -> object materialization -> retrieval projection -> query -> evidence assembly -> structured response`
+`event → WAL → object materialization → canonical store → retrieval projection → tiered search → 1-hop graph expansion → pre-computed evidence assembly → structured response`
+
+**Current implementation state:**
+
+| Capability | Status |
+|---|---|
+| Event ingest (WAL-first) | ✅ |
+| Canonical Memory + Version + Edge materialization | ✅ |
+| Tiered retrieval (hot/warm/cold) | ✅ |
+| Pre-computed EvidenceFragment at ingest | ✅ |
+| 1-hop graph expansion in query response | ✅ |
+| Structured QueryResponse (objects/edges/provenance/trace) | ✅ |
+| 9-coordinator Hub | ✅ |
+| 14-type worker node contracts | ✅ |
+| HTTP API (10 routes) | ✅ |
 
 The following remain intentionally simplified:
 
 - distributed runtime
-- durable persistence
-- deep graph expansion
+- durable persistence (cold tier is in-memory simulation)
+- deep (2+ hop) graph expansion
 - full governance enforcement
 - full logical time and publication semantics
 
