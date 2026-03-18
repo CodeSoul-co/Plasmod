@@ -17,7 +17,7 @@ class TimeRange:
 @dataclass
 class RetrievalRequest:
     """Retrieval request"""
-    query_text: str
+    query_text: str = ""
     query_vector: Optional[List[float]] = None
     
     # Isolation boundaries (required)
@@ -35,6 +35,15 @@ class RetrievalRequest:
     min_confidence: float = 0.0
     min_importance: float = 0.0
     time_range: Optional[TimeRange] = None
+    
+    # Version constraints
+    visible_before_ts: Optional[datetime] = None   # Only return objects visible before this time
+    version_at: Optional[datetime] = None          # Return exact version at this timestamp
+    bounded_staleness_ms: Optional[int] = None     # Allow stale data within this window
+    
+    # Policy constraints
+    exclude_quarantined: bool = True               # Exclude quarantined objects
+    exclude_unverified: bool = False               # Exclude unverified objects
     
     # Retrieval path switches
     enable_dense: bool = True
@@ -65,6 +74,15 @@ class Candidate:
     memory_type: str = ""                # episodic / semantic / procedural
     verified_state: str = ""             # verified / unverified / disputed
     salience_weight: float = 1.0         # for final reranking after RRF
+    
+    # Version info
+    valid_from: Optional[datetime] = None    # When this version became active
+    valid_to: Optional[datetime] = None      # When this version was superseded
+    visible_time: Optional[datetime] = None  # When object became visible
+    
+    # Governance
+    quarantine_flag: bool = False            # Whether object is quarantined
+    visibility_policy: str = ""              # public / private / workspace
     
     # Source channels
     source_channels: List[str] = field(default_factory=list)  # ["dense", "sparse", "filter"]

@@ -109,6 +109,15 @@ class MilvusFilterRetriever(FilterRetriever):
         if request.min_importance > 0:
             conditions.append(f'importance >= {request.min_importance}')
         
+        # Time range filtering
+        if request.time_range:
+            if request.time_range.from_ts:
+                ts = int(request.time_range.from_ts.timestamp())
+                conditions.append(f'visible_time >= {ts}')
+            if request.time_range.to_ts:
+                ts = int(request.time_range.to_ts.timestamp())
+                conditions.append(f'visible_time <= {ts}')
+        
         return " and ".join(conditions) if conditions else ""
     
     def _convert_results(self, results: List) -> List[Candidate]:
