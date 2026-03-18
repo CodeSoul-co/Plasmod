@@ -6,9 +6,12 @@ Member D's Query Worker calls this interface.
 import asyncio
 import logging
 from typing import Optional, List
-from .types import RetrievalRequest, CandidateList, Candidate
+from datetime import datetime
+from .types import RetrievalRequest, CandidateList, Candidate, QueryMeta
 from .interfaces import DenseRetriever, SparseRetriever, FilterRetriever
 from .merger import Merger
+from .version_filter import VersionFilter
+from .policy_filter import PolicyFilter
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +36,15 @@ class Retriever:
         sparse: Optional[SparseRetriever] = None,
         filter: Optional[FilterRetriever] = None,
         merger: Optional[Merger] = None,
+        version_filter: Optional[VersionFilter] = None,
+        policy_filter: Optional[PolicyFilter] = None,
     ):
         self.dense = dense
         self.sparse = sparse
         self.filter = filter
         self.merger = merger or Merger()
+        self.version_filter = version_filter or VersionFilter()
+        self.policy_filter = policy_filter or PolicyFilter()
     
     async def retrieve(self, request: RetrievalRequest) -> CandidateList:
         """
@@ -79,15 +86,35 @@ class Retriever:
         
         # Handle filter-only mode: skip RRF, use importance/confidence ordering
         if request.enable_filter_only:
-            return self._build_filter_only_result(filter_results, request)
+            result = self._build_filter_only_result(filter_results, request)
+        else:
+            # Merge results with RRF
+            result = self.merger.merge(
+                dense_results=dense_results,
+                sparse_results=sparse_results,
+                filter_results=filter_results,
+                request=request,
+            )
         
-        # Merge results with RRF
-        return self.merger.merge(
-            dense_results=dense_results,
-            sparse_results=sparse_results,
-            filter_results=filter_results,
-            request=request,
+        # Apply version filtering
+        if request.visible_before_ts or request.version_at or request.bounded_staleness_ms:
+            result.candidates = self.version_filter.filter(
+                result.candidates,
+                visible_before_ts=request.visible_before_ts,
+                version_at=request.version_at,
+                bounded_staleness_ms=request.bounded_staleness_ms,
+            )
+        
+        # Apply policy filtering
+        result.candidates = self.policy_filter.filter(
+            result.candidates,
+            requesting_agent_id=request.agent_id,
+            requesting_tenant_id=request.tenant_id,
+            exclude_quarantined=request.exclude_quarantined,
+            exclude_unverified=request.exclude_unverified,
         )
+        
+        return result
     
     def _build_filter_only_result(
         self,
@@ -140,3 +167,44 @@ class Retriever:
         except Exception as e:
             logger.warning(f"filter retrieval failed: {e}")
             return []
+    
+    async def batch_retrieve(
+        self,
+        requests: List[RetrievalRequest],
+    ) -> List[CandidateList]:
+        """
+        Batch retrieval for multiple requests.
+        
+        Optimizations:
+        - Requests with same scope/agent_id can share filter results
+        - Parallel execution of all requests
+        
+        Args:
+            requests: List of retrieval requests
+            
+        Returns:
+            List of CandidateList, one per request
+        """
+        if not requests:
+            return []
+        
+        # Group requests by filter key for potential sharing
+        # For now, execute all in parallel without sharing
+        tasks = [self.retrieve(req) for req in requests]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Convert exceptions to empty results
+        final_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.warning(f"Batch request {i} failed: {result}")
+                final_results.append(CandidateList(
+                    candidates=[],
+                    total_found=0,
+                    retrieved_at=datetime.now(),
+                    query_meta=QueryMeta(channels_used=[]),
+                ))
+            else:
+                final_results.append(result)
+        
+        return final_results
