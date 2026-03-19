@@ -125,7 +125,7 @@ These fields are read from Milvus and used by Merger in the reranking formula.
 |-------|------|---------|----------------------|---------|-------------|
 | `confidence` | `float` | `0.0` | `confidence` | Merger reranking formula: `final_score = score * importance * freshness_score * confidence`. Merger post-merge filter: removes if `< min_confidence`. Filter pre-filter: Milvus expression `confidence >= {min_confidence}` | Confidence score of this object. Range 0.0-1.0. May be overridden by `policy_records.confidence_override` (Materialization Layer writes this) |
 | `importance` | `float` | `0.0` | `importance` | Merger reranking formula: multiplied into `final_score`. Merger post-merge filter: removes if `< min_importance`. Filter pre-filter: Milvus expression `importance >= {min_importance}`. Filter-only mode: primary sort key (descending) | Importance score of this object. Range 0.0-1.0. Materialization Layer computes this |
-| `freshness_score` | `float` | `1.0` | `freshness_score` | Merger reranking formula: multiplied into `final_score` | Freshness score computed by Materialization Layer using a time-decay function. Range 0.0-1.0. `1.0` means maximally fresh, decays toward `0.0` over time. Only read by Filter `_convert_results`; Dense and Sparse do not currently read this field from Milvus |
+| `freshness_score` | `float` | `1.0` | `freshness_score` | Merger reranking formula: multiplied into `final_score` | Freshness score computed by Materialization Layer using a time-decay function. Range 0.0-1.0. `1.0` means maximally fresh, decays toward `0.0` over time. All three retrievers read this from Milvus |
 | `salience_weight` | `float` | `1.0` | `salience_weight` | Filter-only mode: `score = 1.0 * salience_weight`. Not used in normal RRF reranking formula but available for governance override | Governance weight from `policy_records` table. `1.0` = neutral, `>1.0` = promoted, `<1.0` = demoted. Materialization Layer writes this from policy_records |
 
 #### 3.1.5 Version and Time Fields (from Milvus, used in safety filter)
@@ -142,7 +142,7 @@ These fields are read from Milvus and used by Merger in the reranking formula.
 |-------|------|---------|----------------------|---------|-------------|
 | `quarantine_flag` | `bool` | `False` | `quarantine_flag` | Merger safety filter: removes if `True` (when `exclude_quarantined=True`, which is the default) | Whether this object has been quarantined by governance policy |
 | `visibility_policy` | `str` | `""` | `visibility_policy` | Passed through to output, available for Query Layer ACL enforcement | Visibility policy: `public`, `private`, `workspace` |
-| `is_active` | `bool` | `True` | `is_active` | Merger safety filter: removes if `False`. Only read by Filter `_convert_results`; Dense and Sparse do not currently read this field from Milvus | Active flag. Inactive objects are soft-deleted and excluded from results |
+| `is_active` | `bool` | `True` | `is_active` | Merger safety filter: removes if `False`. All three retrievers read this from Milvus | Active flag. Inactive objects are soft-deleted and excluded from results |
 | `ttl` | `Optional[datetime]` | `None` | `ttl` | Merger safety filter: removes if `ttl < now` (expired) | TTL expiry timestamp. After this time the object is considered expired |
 
 #### 3.1.7 Channel Tracking Fields (set by Merger)
@@ -157,7 +157,7 @@ These fields are read from Milvus and used by Merger in the reranking formula.
 |-------|------|---------|------------|---------|-------------|
 | `is_seed` | `bool` | `False` | Merger: sets `True` if `final_score >= seed_threshold` (default threshold `0.7`) | Graph Expansion Layer: uses seed candidates as starting nodes for graph traversal | Whether this candidate is a seed for graph expansion |
 | `seed_score` | `float` | `0.0` | Merger: sets to `final_score` when `is_seed=True` | Graph Expansion Layer: uses to prioritize seed traversal order | The score used for seed ranking, equal to `final_score` when marked as seed |
-| `source_event_ids` | `List[str]` | `[]` | Filter reads from Milvus `source_event_ids` field. Dense and Sparse do not currently read this field | Graph Expansion Layer: traverses these event IDs to expand the evidence graph. Required when `for_graph=True` | List of event IDs that contributed to the creation of this object. Written by Materialization Layer at materialization time |
+| `source_event_ids` | `List[str]` | `[]` | All three retrievers read from Milvus `source_event_ids` field | Graph Expansion Layer: traverses these event IDs to expand the evidence graph. Required when `for_graph=True` | List of event IDs that contributed to the creation of this object. Written by Materialization Layer at materialization time |
 
 ---
 
@@ -232,11 +232,9 @@ Returned by `Retriever.retrieve(request)` to Query Layer.
 
 **Search parameters**: `metric_type=IP`, `nprobe=10`, `anns_field=vector`
 
-**Output fields read from Milvus**: `object_id`, `object_type`, `agent_id`, `session_id`, `scope`, `version`, `provenance_ref`, `content`, `summary`, `confidence`, `importance`, `level`, `memory_type`, `verified_state`, `salience_weight`
+**Output fields read from Milvus**: `object_id`, `object_type`, `agent_id`, `session_id`, `scope`, `version`, `provenance_ref`, `content`, `summary`, `confidence`, `importance`, `level`, `memory_type`, `verified_state`, `salience_weight`, `freshness_score`, `is_active`, `source_event_ids`, `valid_from`, `valid_to`, `visible_time`, `quarantine_flag`, `visibility_policy`, `ttl`
 
-**Fields NOT read by Dense** (but present in Candidate): `freshness_score`, `source_event_ids`, `is_active`, `valid_from`, `valid_to`, `visible_time`, `quarantine_flag`, `visibility_policy`, `ttl` -- these remain at default values
-
-**Output**: `List[Candidate]` with `score=hit.distance` (cosine/IP similarity score from Milvus)
+**Output**: `List[Candidate]` with `score=hit.distance` (cosine/IP similarity score from Milvus), all safety-filter fields populated from Milvus
 
 ### 5.3 Sparse Retriever (`sparse.py`)
 
@@ -248,11 +246,9 @@ Returned by `Retriever.retrieve(request)` to Query Layer.
 
 **Search parameters**: `metric_type=IP`, `anns_field=sparse_vector`
 
-**Output fields read from Milvus**: Same as Dense (object_id, object_type, agent_id, session_id, scope, version, provenance_ref, content, summary, confidence, importance, level, memory_type, verified_state, salience_weight)
+**Output fields read from Milvus**: Same as Dense (all 24 fields including safety-filter fields)
 
-**Fields NOT read by Sparse**: Same as Dense (freshness_score, source_event_ids, is_active, valid_from, valid_to, visible_time, quarantine_flag, visibility_policy, ttl)
-
-**Output**: `List[Candidate]` with `score=hit.distance`
+**Output**: `List[Candidate]` with `score=hit.distance`, all safety-filter fields populated from Milvus
 
 ### 5.4 Merger (`merger.py`)
 
@@ -365,18 +361,13 @@ All fields that our retrieval module reads from Milvus, listed exhaustively.
 | `verified_state` | VARCHAR | Output + governance check |
 | `salience_weight` | FLOAT | Output + filter-only mode scoring |
 
-### 9.2 Fields read ONLY by Filter retriever
+### 9.2 Safety-filter and governance fields (read by ALL three retrievers)
 
 | Milvus Column | Data Type | Used For |
 |---------------|-----------|----------|
 | `freshness_score` | FLOAT | Reranking formula |
-| `source_event_ids` | ARRAY(VARCHAR) | Graph expansion for Graph Expansion Layer |
 | `is_active` | BOOL | Safety filter |
-
-### 9.3 Fields read by Merger safety filter (must exist in Milvus but currently only read via Filter results)
-
-| Milvus Column | Data Type | Used For |
-|---------------|-----------|----------|
+| `source_event_ids` | ARRAY(VARCHAR) | Graph expansion for Graph Expansion Layer |
 | `valid_from` | INT64 | Time-range filter + time-travel filter |
 | `valid_to` | INT64 | Time-range filter |
 | `visible_time` | INT64 | Safety filter (not-yet-visible check) |
