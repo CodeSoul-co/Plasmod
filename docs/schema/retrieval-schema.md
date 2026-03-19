@@ -7,7 +7,7 @@ Implementation: `src/retrieval/service/types.py`, `src/retrieval/proto/retrieval
 ## 1. Execution Flow
 
 ```
-[Member D: Query Worker]
+[Query Layer]
         |
         | RetrievalRequest
         v
@@ -32,14 +32,14 @@ Implementation: `src/retrieval/service/types.py`, `src/retrieval/proto/retrieval
          |
          | CandidateList
          v
-[Member D: Response Assembly]
+[Query Layer: Response Assembly]
 ```
 
 ---
 
 ## 2. RetrievalRequest (Input)
 
-Source: Member D constructs this and passes to `Retriever.retrieve(request)`.
+Source: Query Layer constructs this and passes to `Retriever.retrieve(request)`.
 
 ### 2.1 All Fields
 
@@ -47,7 +47,7 @@ Source: Member D constructs this and passes to `Retriever.retrieve(request)`.
 |-------|------|---------|----------|---------|-------------|
 | `query_id` | `str` | `""` | Yes | Tracing | Unique query ID, passed through to response for end-to-end tracing |
 | `query_text` | `str` | `""` | Yes | Dense, Sparse | Natural language query. Dense uses it for embedding lookup. Sparse converts it to BM25 sparse vector via `_text_to_sparse_vector()` |
-| `query_vector` | `Optional[List[float]]` | `None` | No | Dense | Pre-computed dense embedding from member D. If provided, Dense skips re-vectorization and searches directly with this vector. If `None`, Dense returns empty |
+| `query_vector` | `Optional[List[float]]` | `None` | No | Dense | Pre-computed dense embedding from Query Layer. If provided, Dense skips re-vectorization and searches directly with this vector. If `None`, Dense returns empty |
 | `tenant_id` | `str` | `""` | Yes | Dense, Sparse, Filter | Top-level isolation boundary. All three paths build filter expression `tenant_id == "{value}"`. Mandatory for data isolation |
 | `workspace_id` | `str` | `""` | Yes | Dense, Sparse, Filter | Workspace isolation boundary. All three paths build filter expression `workspace_id == "{value}"`. Mandatory for data isolation |
 | `agent_id` | `Optional[str]` | `None` | No | Dense, Sparse, Filter | If set, all three paths append `agent_id == "{value}"` to filter expression |
@@ -67,7 +67,7 @@ Source: Member D constructs this and passes to `Retriever.retrieve(request)`.
 | `enable_sparse` | `bool` | `True` | No | Retriever | If `False`, Retriever skips Sparse search entirely, `sparse_results = []` |
 | `enable_filter` | `bool` | `True` | No | Retriever | If `False`, Retriever skips Filter retrieval entirely, `filter_results = []` |
 | `enable_filter_only` | `bool` | `False` | No | Retriever | If `True`, Retriever skips Dense and Sparse entirely. Returns filter results ordered by `(importance desc, confidence desc)` with `score = 1.0 * salience_weight`. RRF fusion is not executed |
-| `for_graph` | `bool` | `False` | No | Merger, Retriever | Graph expansion mode for member C. Merger uses `top_k * 2` instead of `top_k`. Candidates must include `source_event_ids` |
+| `for_graph` | `bool` | `False` | No | Merger, Retriever | Graph expansion mode for Graph Expansion Layer. Merger uses `top_k * 2` instead of `top_k`. Candidates must include `source_event_ids` |
 
 ### 2.2 TimeRange
 
@@ -88,17 +88,17 @@ A single retrieval result. Each sub-retriever (Dense, Sparse, Filter) produces `
 
 | Field | Type | Default | Written By | Read By | Description |
 |-------|------|---------|------------|---------|-------------|
-| `object_id` | `str` | (required) | Dense, Sparse, Filter read from Milvus `object_id` field | Merger uses as dedup key; Member C uses as graph seed node | Unique identifier of the cognitive object |
-| `object_type` | `str` | `"memory"` | Dense, Sparse, Filter read from Milvus `object_type` field | Member D for response formatting | Allowed values: `memory`, `event`, `artifact`. Describes what kind of cognitive object this is |
+| `object_id` | `str` | (required) | Dense, Sparse, Filter read from Milvus `object_id` field | Merger uses as dedup key; Graph Expansion Layer uses as graph seed node | Unique identifier of the cognitive object |
+| `object_type` | `str` | `"memory"` | Dense, Sparse, Filter read from Milvus `object_type` field | Query Layer for response formatting | Allowed values: `memory`, `event`, `artifact`. Describes what kind of cognitive object this is |
 
 #### 3.1.2 Score Fields
 
 | Field | Type | Default | Written By | Read By | Description |
 |-------|------|---------|------------|---------|-------------|
-| `score` | `float` | `0.0` | Dense writes `hit.distance` (cosine/IP similarity). Sparse writes `hit.distance`. Filter writes `0.0`. Merger **overwrites** with accumulated RRF score: `score = sum(1/(k+rank_i))` across all channels. In filter-only mode, Retriever sets `score = 1.0 * salience_weight` | Merger uses for reranking formula input; Member E for evaluation | RRF merged score before reranking. This is the raw fusion score |
-| `final_score` | `float` | `0.0` | Merger computes: `final_score = score * max(importance, 0.01) * max(freshness_score, 0.01) * max(confidence, 0.01)`. In filter-only mode, Retriever computes same formula | Member D for final ranking; Member C for seed marking; Member E for evaluation | Final reranked score. Candidates are sorted by this value descending. This is the score that determines output order |
-| `dense_score` | `float` | `0.0` | Merger sets to `1/(k+rank)` for the candidate's rank in the Dense result list. `0.0` if candidate was not found by Dense | Member E for per-channel evaluation | The RRF contribution from Dense path only |
-| `sparse_score` | `float` | `0.0` | Merger sets to `1/(k+rank)` for the candidate's rank in the Sparse result list. `0.0` if candidate was not found by Sparse | Member E for per-channel evaluation | The RRF contribution from Sparse path only |
+| `score` | `float` | `0.0` | Dense writes `hit.distance` (cosine/IP similarity). Sparse writes `hit.distance`. Filter writes `0.0`. Merger **overwrites** with accumulated RRF score: `score = sum(1/(k+rank_i))` across all channels. In filter-only mode, Retriever sets `score = 1.0 * salience_weight` | Merger uses for reranking formula input; Benchmark Layer for evaluation | RRF merged score before reranking. This is the raw fusion score |
+| `final_score` | `float` | `0.0` | Merger computes: `final_score = score * max(importance, 0.01) * max(freshness_score, 0.01) * max(confidence, 0.01)`. In filter-only mode, Retriever computes same formula | Query Layer for final ranking; Merger for seed marking; Benchmark Layer for evaluation | Final reranked score. Candidates are sorted by this value descending. This is the score that determines output order |
+| `dense_score` | `float` | `0.0` | Merger sets to `1/(k+rank)` for the candidate's rank in the Dense result list. `0.0` if candidate was not found by Dense | Benchmark Layer for per-channel evaluation | The RRF contribution from Dense path only |
+| `sparse_score` | `float` | `0.0` | Merger sets to `1/(k+rank)` for the candidate's rank in the Sparse result list. `0.0` if candidate was not found by Sparse | Benchmark Layer for per-channel evaluation | The RRF contribution from Sparse path only |
 
 #### 3.1.3 Metadata Fields (from Milvus)
 
@@ -110,9 +110,9 @@ These fields are read from Milvus by each sub-retriever and passed through uncha
 | `session_id` | `str` | `""` | `session_id` | Passed through to output | The session where this object was created |
 | `scope` | `str` | `""` | `scope` | Passed through to output | Visibility scope: `private`, `session`, `workspace`, `global` |
 | `version` | `int` | `0` | `version` | Merger safety filter checks `version >= min_version`; passed through to output | Object version number. Higher version supersedes lower |
-| `provenance_ref` | `str` | `""` | `provenance_ref` | Member C reads for provenance tracing | Reference to the provenance chain for this object |
-| `content` | `str` | `""` | `content` | Member D reads for response assembly | Full content text of the object |
-| `summary` | `str` | `""` | `summary` | Member D reads for response assembly | Summarized content of the object |
+| `provenance_ref` | `str` | `""` | `provenance_ref` | Graph Expansion Layer reads for provenance tracing | Reference to the provenance chain for this object |
+| `content` | `str` | `""` | `content` | Query Layer reads for response assembly | Full content text of the object |
+| `summary` | `str` | `""` | `summary` | Query Layer reads for response assembly | Summarized content of the object |
 | `level` | `int` | `0` | `level` | Passed through to output | Distillation depth. `0` = raw event, `1` = summary, `2` = abstraction |
 | `memory_type` | `str` | `""` | `memory_type` | Passed through to output | Type of memory: `episodic`, `semantic`, `procedural` |
 | `verified_state` | `str` | `""` | `verified_state` | Merger checks if `exclude_unverified`; passed through to output | Verification status: `verified`, `unverified`, `disputed` |
@@ -123,10 +123,10 @@ These fields are read from Milvus and used by Merger in the reranking formula.
 
 | Field | Type | Default | Source (Milvus column) | Used In | Description |
 |-------|------|---------|----------------------|---------|-------------|
-| `confidence` | `float` | `0.0` | `confidence` | Merger reranking formula: `final_score = score * importance * freshness_score * confidence`. Merger post-merge filter: removes if `< min_confidence`. Filter pre-filter: Milvus expression `confidence >= {min_confidence}` | Confidence score of this object. Range 0.0-1.0. May be overridden by `policy_records.confidence_override` (member A writes this) |
-| `importance` | `float` | `0.0` | `importance` | Merger reranking formula: multiplied into `final_score`. Merger post-merge filter: removes if `< min_importance`. Filter pre-filter: Milvus expression `importance >= {min_importance}`. Filter-only mode: primary sort key (descending) | Importance score of this object. Range 0.0-1.0. Member A computes this |
-| `freshness_score` | `float` | `1.0` | `freshness_score` | Merger reranking formula: multiplied into `final_score` | Freshness score computed by member A using a time-decay function. Range 0.0-1.0. `1.0` means maximally fresh, decays toward `0.0` over time. Only read by Filter `_convert_results`; Dense and Sparse do not currently read this field from Milvus |
-| `salience_weight` | `float` | `1.0` | `salience_weight` | Filter-only mode: `score = 1.0 * salience_weight`. Not used in normal RRF reranking formula but available for governance override | Governance weight from `policy_records` table. `1.0` = neutral, `>1.0` = promoted, `<1.0` = demoted. Member A writes this from policy_records |
+| `confidence` | `float` | `0.0` | `confidence` | Merger reranking formula: `final_score = score * importance * freshness_score * confidence`. Merger post-merge filter: removes if `< min_confidence`. Filter pre-filter: Milvus expression `confidence >= {min_confidence}` | Confidence score of this object. Range 0.0-1.0. May be overridden by `policy_records.confidence_override` (Materialization Layer writes this) |
+| `importance` | `float` | `0.0` | `importance` | Merger reranking formula: multiplied into `final_score`. Merger post-merge filter: removes if `< min_importance`. Filter pre-filter: Milvus expression `importance >= {min_importance}`. Filter-only mode: primary sort key (descending) | Importance score of this object. Range 0.0-1.0. Materialization Layer computes this |
+| `freshness_score` | `float` | `1.0` | `freshness_score` | Merger reranking formula: multiplied into `final_score` | Freshness score computed by Materialization Layer using a time-decay function. Range 0.0-1.0. `1.0` means maximally fresh, decays toward `0.0` over time. Only read by Filter `_convert_results`; Dense and Sparse do not currently read this field from Milvus |
+| `salience_weight` | `float` | `1.0` | `salience_weight` | Filter-only mode: `score = 1.0 * salience_weight`. Not used in normal RRF reranking formula but available for governance override | Governance weight from `policy_records` table. `1.0` = neutral, `>1.0` = promoted, `<1.0` = demoted. Materialization Layer writes this from policy_records |
 
 #### 3.1.5 Version and Time Fields (from Milvus, used in safety filter)
 
@@ -141,7 +141,7 @@ These fields are read from Milvus and used by Merger in the reranking formula.
 | Field | Type | Default | Source (Milvus column) | Used In | Description |
 |-------|------|---------|----------------------|---------|-------------|
 | `quarantine_flag` | `bool` | `False` | `quarantine_flag` | Merger safety filter: removes if `True` (when `exclude_quarantined=True`, which is the default) | Whether this object has been quarantined by governance policy |
-| `visibility_policy` | `str` | `""` | `visibility_policy` | Passed through to output, available for member D ACL enforcement | Visibility policy: `public`, `private`, `workspace` |
+| `visibility_policy` | `str` | `""` | `visibility_policy` | Passed through to output, available for Query Layer ACL enforcement | Visibility policy: `public`, `private`, `workspace` |
 | `is_active` | `bool` | `True` | `is_active` | Merger safety filter: removes if `False`. Only read by Filter `_convert_results`; Dense and Sparse do not currently read this field from Milvus | Active flag. Inactive objects are soft-deleted and excluded from results |
 | `ttl` | `Optional[datetime]` | `None` | `ttl` | Merger safety filter: removes if `ttl < now` (expired) | TTL expiry timestamp. After this time the object is considered expired |
 
@@ -149,21 +149,21 @@ These fields are read from Milvus and used by Merger in the reranking formula.
 
 | Field | Type | Default | Written By | Read By | Description |
 |-------|------|---------|------------|---------|-------------|
-| `source_channels` | `List[str]` | `[]` | Merger sets this during dedup. Each channel that found this object appends its name: `"dense"`, `"sparse"`, `"filter"`. In filter-only mode, Retriever sets `["filter"]` | Member E for channel analysis; member D for debugging | List of retrieval channels that contributed this candidate |
+| `source_channels` | `List[str]` | `[]` | Merger sets this during dedup. Each channel that found this object appends its name: `"dense"`, `"sparse"`, `"filter"`. In filter-only mode, Retriever sets `["filter"]` | Benchmark Layer for channel analysis; Query Layer for debugging | List of retrieval channels that contributed this candidate |
 
-#### 3.1.8 Graph Expansion Fields (for Member C)
+#### 3.1.8 Graph Expansion Fields (for Graph Expansion Layer)
 
 | Field | Type | Default | Written By | Read By | Description |
 |-------|------|---------|------------|---------|-------------|
-| `is_seed` | `bool` | `False` | Merger: sets `True` if `final_score >= seed_threshold` (default threshold `0.7`) | Member C: uses seed candidates as starting nodes for graph traversal | Whether this candidate is a seed for graph expansion |
-| `seed_score` | `float` | `0.0` | Merger: sets to `final_score` when `is_seed=True` | Member C: uses to prioritize seed traversal order | The score used for seed ranking, equal to `final_score` when marked as seed |
-| `source_event_ids` | `List[str]` | `[]` | Filter reads from Milvus `source_event_ids` field. Dense and Sparse do not currently read this field | Member C: traverses these event IDs to expand the evidence graph. Required when `for_graph=True` | List of event IDs that contributed to the creation of this object. Written by member A at materialization time |
+| `is_seed` | `bool` | `False` | Merger: sets `True` if `final_score >= seed_threshold` (default threshold `0.7`) | Graph Expansion Layer: uses seed candidates as starting nodes for graph traversal | Whether this candidate is a seed for graph expansion |
+| `seed_score` | `float` | `0.0` | Merger: sets to `final_score` when `is_seed=True` | Graph Expansion Layer: uses to prioritize seed traversal order | The score used for seed ranking, equal to `final_score` when marked as seed |
+| `source_event_ids` | `List[str]` | `[]` | Filter reads from Milvus `source_event_ids` field. Dense and Sparse do not currently read this field | Graph Expansion Layer: traverses these event IDs to expand the evidence graph. Required when `for_graph=True` | List of event IDs that contributed to the creation of this object. Written by Materialization Layer at materialization time |
 
 ---
 
 ## 4. CandidateList (Output)
 
-Returned by `Retriever.retrieve(request)` to member D.
+Returned by `Retriever.retrieve(request)` to Query Layer.
 
 ### 4.1 All Fields
 
@@ -316,8 +316,8 @@ final_score = score * max(importance, 0.01) * max(freshness_score, 0.01) * max(c
 ```
 
 - `score` is the RRF merged score from Step 3b
-- `importance` comes from Milvus, written by member A
-- `freshness_score` comes from Milvus, computed by member A using time-decay
+- `importance` comes from Milvus, written by Materialization Layer
+- `freshness_score` comes from Milvus, computed by Materialization Layer using time-decay
 - `confidence` comes from Milvus, may be overridden by `policy_records.confidence_override`
 - `max(x, 0.01)` prevents zero-multiplication (a field at `0.0` would zero out the entire score)
 
@@ -355,7 +355,7 @@ All fields that our retrieval module reads from Milvus, listed exhaustively.
 | `session_id` | VARCHAR | Filter expression + output |
 | `scope` | VARCHAR | Filter expression + output |
 | `version` | INT32 | Filter expression + safety filter + output |
-| `provenance_ref` | VARCHAR | Output for member C |
+| `provenance_ref` | VARCHAR | Output for Graph Expansion Layer |
 | `content` | VARCHAR | Output |
 | `summary` | VARCHAR | Output |
 | `confidence` | FLOAT | Filter expression + reranking + threshold filter |
@@ -370,7 +370,7 @@ All fields that our retrieval module reads from Milvus, listed exhaustively.
 | Milvus Column | Data Type | Used For |
 |---------------|-----------|----------|
 | `freshness_score` | FLOAT | Reranking formula |
-| `source_event_ids` | ARRAY(VARCHAR) | Graph expansion for member C |
+| `source_event_ids` | ARRAY(VARCHAR) | Graph expansion for Graph Expansion Layer |
 | `is_active` | BOOL | Safety filter |
 
 ### 9.3 Fields read by Merger safety filter (must exist in Milvus but currently only read via Filter results)
@@ -382,7 +382,7 @@ All fields that our retrieval module reads from Milvus, listed exhaustively.
 | `visible_time` | INT64 | Safety filter (not-yet-visible check) |
 | `quarantine_flag` | BOOL | Safety filter |
 | `ttl` | INT64 | Safety filter (TTL expiry check) |
-| `visibility_policy` | VARCHAR | Passed through for member D ACL |
+| `visibility_policy` | VARCHAR | Passed through for Query Layer ACL |
 
 ### 9.4 Vector Fields (not scalar, used for search)
 
@@ -402,14 +402,14 @@ All fields that our retrieval module reads from Milvus, listed exhaustively.
 
 ## 10. Interface Contracts
 
-### 10.1 With Member A (Materialization)
+### 10.1 With Materialization Layer
 
-| What Member A Writes | Where | What We (B) Read |
+| What Materialization Layer Writes | Where | What Retrieval Layer Reads |
 |---------------------|-------|-------------------|
 | Dense embedding | Milvus `vector` field | Dense retriever searches against this |
 | Sparse embedding | Milvus `sparse_vector` field | Sparse retriever searches against this |
 | `freshness_score` | Milvus `freshness_score` column | Merger reranking formula multiplier |
-| `source_event_ids` | Milvus `source_event_ids` column | Filter retriever reads, passed to member C |
+| `source_event_ids` | Milvus `source_event_ids` column | Filter retriever reads, passed to Graph Expansion Layer |
 | `confidence` | Milvus `confidence` column | Reranking formula + threshold filter |
 | `importance` | Milvus `importance` column | Reranking formula + threshold filter |
 | `is_active` | Milvus `is_active` column | Safety filter |
@@ -417,32 +417,32 @@ All fields that our retrieval module reads from Milvus, listed exhaustively.
 | `valid_from`, `valid_to`, `visible_time` | Milvus columns | Time-travel and safety filter |
 | `quarantine_flag`, `ttl`, `visibility_policy` | Milvus columns | Safety filter |
 
-**Constraint**: Member A and member D must use the same `model_id` for embedding. Query embedding dimension must match document embedding dimension.
+**Constraint**: Materialization Layer and Query Layer must use the same `model_id` for embedding. Query embedding dimension must match document embedding dimension.
 
-### 10.2 With Member C (Graph Expansion)
+### 10.2 With Graph Expansion Layer
 
-| What We (B) Output | How C Uses It |
+| What Retrieval Layer Outputs | How Graph Expansion Layer Uses It |
 |--------------------|--------------| 
 | `Candidate.object_id` | Starting node for graph traversal |
-| `Candidate.source_event_ids` | Edge list: C traverses these event IDs to expand the evidence subgraph |
-| `Candidate.is_seed` | C only expands candidates where `is_seed=True` |
-| `Candidate.seed_score` | C prioritizes seed expansion order by this score |
-| `Candidate.provenance_ref` | C traces provenance chain from this reference |
-| `for_graph=True` in request | Tells B to return `top_k*2` candidates and ensure `source_event_ids` is populated |
+| `Candidate.source_event_ids` | Edge list: traverses these event IDs to expand the evidence subgraph |
+| `Candidate.is_seed` | Only expands candidates where `is_seed=True` |
+| `Candidate.seed_score` | Prioritizes seed expansion order by this score |
+| `Candidate.provenance_ref` | Traces provenance chain from this reference |
+| `for_graph=True` in request | Tells Retrieval Layer to return `top_k*2` candidates and ensure `source_event_ids` is populated |
 
-### 10.3 With Member D (Query Worker)
+### 10.3 With Query Layer
 
-| What D Provides | What We (B) Return |
+| What Query Layer Provides | What Retrieval Layer Returns |
 |----------------|--------------------|
 | `RetrievalRequest` with all fields | `CandidateList` with ranked candidates |
-| `query_vector` (optional, pre-computed embedding) | If provided, Dense uses directly; if not, Dense returns empty (D must provide) |
+| `query_vector` (optional, pre-computed embedding) | If provided, Dense uses directly; if not, Dense returns empty (Query Layer must provide) |
 | `query_text` | Sparse converts to BM25 sparse vector internally |
 | `Retriever.retrieve(request)` call | Single request execution |
 | `Retriever.batch_retrieve(requests)` call | Parallel execution of multiple requests, returns `List[CandidateList]` |
 
-### 10.4 With Member E (Benchmarks)
+### 10.4 With Benchmark Layer
 
-| What We (B) Output | How E Uses It |
+| What Retrieval Layer Outputs | How Benchmark Layer Uses It |
 |--------------------|---------------|
 | `Candidate.dense_score` | Per-channel evaluation of Dense recall quality |
 | `Candidate.sparse_score` | Per-channel evaluation of Sparse recall quality |
@@ -485,7 +485,7 @@ When `RetrievalRequest.for_graph = True`:
 | 2 | Merger uses `effective_k = top_k * 2` instead of `top_k` |
 | 3 | Each candidate must have `source_event_ids` populated (Filter retriever reads this from Milvus) |
 | 4 | Merger marks seeds: candidates with `final_score >= seed_threshold` get `is_seed=True` and `seed_score=final_score` |
-| 5 | Member C receives the `CandidateList` and expands the graph using `source_event_ids` from seed candidates |
+| 5 | Graph Expansion Layer receives the `CandidateList` and expands the graph using `source_event_ids` from seed candidates |
 
 ---
 
