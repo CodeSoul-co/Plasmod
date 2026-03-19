@@ -10,20 +10,24 @@ from datetime import datetime
 from .types import RetrievalRequest, CandidateList, Candidate, QueryMeta
 from .interfaces import DenseRetriever, SparseRetriever, FilterRetriever
 from .merger import Merger
-from .version_filter import VersionFilter
-from .policy_filter import PolicyFilter
 
 logger = logging.getLogger(__name__)
 
 
 class Retriever:
     """
-    Unified retrieval entry.
+    Unified retrieval entry - aligned with week-1 design doc.
     
-    Responsibilities:
-    1. Parallel call three-way retrieval (Dense / Sparse / Filter)
-    2. Call Merger to merge results
-    3. Handle degradation logic when single path fails
+    Execution flow (design doc section 4.1):
+    1. Filter runs FIRST -> produces whitelist of valid object_ids
+    2. Dense + Sparse run in parallel WITHIN the whitelist
+    3. Three-way results merged via RRF
+    4. Safety filter (quarantine/ttl/visible_time/is_active) applied in Merger
+    5. Reranking: final_score = rrf * importance * freshness * confidence
+    
+    Special modes:
+    - enable_filter_only: skip Dense+Sparse, return filter results ordered by importance
+    - for_graph: return top_k*2 with source_event_ids (for member C)
     
     Usage:
         retriever = Retriever(dense, sparse, filter, merger)
@@ -36,82 +40,55 @@ class Retriever:
         sparse: Optional[SparseRetriever] = None,
         filter: Optional[FilterRetriever] = None,
         merger: Optional[Merger] = None,
-        version_filter: Optional[VersionFilter] = None,
-        policy_filter: Optional[PolicyFilter] = None,
     ):
         self.dense = dense
         self.sparse = sparse
         self.filter = filter
         self.merger = merger or Merger()
-        self.version_filter = version_filter or VersionFilter()
-        self.policy_filter = policy_filter or PolicyFilter()
     
     async def retrieve(self, request: RetrievalRequest) -> CandidateList:
         """
-        Execute retrieval.
-        
-        Parallel call three-way retrieval, failure of any path does not affect others.
+        Execute retrieval following design doc flow:
+        Filter first -> Dense+Sparse in whitelist -> RRF merge -> safety filter -> rerank
         """
         dense_results: List[Candidate] = []
         sparse_results: List[Candidate] = []
         filter_results: List[Candidate] = []
         
-        # Build task list
+        # Step 1: Filter runs first to produce whitelist
+        if self.filter and request.enable_filter:
+            filter_results = await self._safe_filter(self.filter.filter, request)
+        
+        # Handle filter-only mode: skip Dense+Sparse
+        if request.enable_filter_only:
+            return self._build_filter_only_result(filter_results, request)
+        
+        # Step 2: Dense + Sparse run in parallel (within whitelist context)
         tasks = []
         task_names = []
         
-        if request.enable_dense and self.dense and not request.enable_filter_only:
+        if request.enable_dense and self.dense:
             tasks.append(self._safe_search(self.dense.search, request, "dense"))
             task_names.append("dense")
         
-        if request.enable_sparse and self.sparse and not request.enable_filter_only:
+        if request.enable_sparse and self.sparse:
             tasks.append(self._safe_search(self.sparse.search, request, "sparse"))
             task_names.append("sparse")
         
-        if self.filter:
-            tasks.append(self._safe_filter(self.filter.filter, request))
-            task_names.append("filter")
-        
-        # Execute in parallel
         if tasks:
             results = await asyncio.gather(*tasks)
-            
             for name, result in zip(task_names, results):
                 if name == "dense":
                     dense_results = result
                 elif name == "sparse":
                     sparse_results = result
-                elif name == "filter":
-                    filter_results = result
         
-        # Handle filter-only mode: skip RRF, use importance/confidence ordering
-        if request.enable_filter_only:
-            result = self._build_filter_only_result(filter_results, request)
-        else:
-            # Merge results with RRF
-            result = self.merger.merge(
-                dense_results=dense_results,
-                sparse_results=sparse_results,
-                filter_results=filter_results,
-                request=request,
-            )
-        
-        # Apply version filtering
-        if request.visible_before_ts or request.version_at or request.bounded_staleness_ms:
-            result.candidates = self.version_filter.filter(
-                result.candidates,
-                visible_before_ts=request.visible_before_ts,
-                version_at=request.version_at,
-                bounded_staleness_ms=request.bounded_staleness_ms,
-            )
-        
-        # Apply policy filtering
-        result.candidates = self.policy_filter.filter(
-            result.candidates,
-            requesting_agent_id=request.agent_id,
-            requesting_tenant_id=request.tenant_id,
-            exclude_quarantined=request.exclude_quarantined,
-            exclude_unverified=request.exclude_unverified,
+        # Step 3-7: Merge (RRF + safety filter + rerank + truncate + seed marking)
+        result = self.merger.merge(
+            dense_results=dense_results,
+            sparse_results=sparse_results,
+            filter_results=filter_results,
+            request=request,
         )
         
         return result
@@ -122,20 +99,19 @@ class Retriever:
         request: RetrievalRequest,
     ) -> CandidateList:
         """Build result for filter-only mode without RRF fusion"""
-        from datetime import datetime
-        from .types import CandidateList, QueryMeta
-        
         # Set score = 1.0 * salience_weight, source_channels = ["filter"]
         for c in filter_results:
             c.score = 1.0 * c.salience_weight
+            c.final_score = c.score * max(c.importance, 0.01) * max(c.freshness_score, 0.01) * max(c.confidence, 0.01)
             c.source_channels = ["filter"]
         
         # Order by importance descending, then confidence descending
         filter_results.sort(key=lambda c: (c.importance, c.confidence), reverse=True)
         
-        # Truncate to top_k
-        top_k = request.top_k if request.top_k > 0 else 20
-        candidates = filter_results[:top_k]
+        # Truncate to top_k (or top_k*2 for graph mode)
+        top_k = request.top_k if request.top_k > 0 else 10
+        effective_k = top_k * 2 if request.for_graph else top_k
+        candidates = filter_results[:effective_k]
         
         query_meta = QueryMeta(
             latency_ms=0,
@@ -175,25 +151,15 @@ class Retriever:
         """
         Batch retrieval for multiple requests.
         
-        Optimizations:
-        - Requests with same scope/agent_id can share filter results
-        - Parallel execution of all requests
-        
-        Args:
-            requests: List of retrieval requests
-            
-        Returns:
-            List of CandidateList, one per request
+        Parallel execution of all requests.
+        Future optimization: share filter results for same scope/agent_id.
         """
         if not requests:
             return []
         
-        # Group requests by filter key for potential sharing
-        # For now, execute all in parallel without sharing
         tasks = [self.retrieve(req) for req in requests]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Convert exceptions to empty results
         final_results = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):

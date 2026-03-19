@@ -17,16 +17,19 @@ class MilvusFilterRetriever(FilterRetriever):
     """
     Milvus scalar query implementation for attribute filtering.
     
+    Per design doc section 4.4, this runs FIRST to produce a whitelist
+    of valid object_ids that Dense and Sparse search within.
+    
     Supported filter fields:
     - tenant_id, workspace_id (isolation boundaries)
     - agent_id, session_id
     - scope (private / session / workspace / global)
-    - memory_type (episodic / semantic / procedural)
+    - memory_types (list of memory types)
+    - object_types (list of object types)
     - confidence, importance
-    - quarantine_flag (quarantined memories excluded from results)
-    - is_active (only active memories)
-    
-    Governance-aware retrieval is the core differentiator of this submodule.
+    - time_range (temporal bounds)
+    - as_of_ts (time-travel)
+    - min_version
     """
     
     def __init__(
@@ -100,8 +103,12 @@ class MilvusFilterRetriever(FilterRetriever):
             conditions.append(f'session_id == "{request.session_id}"')
         if request.scope:
             conditions.append(f'scope == "{request.scope}"')
-        if request.memory_type:
-            conditions.append(f'memory_type == "{request.memory_type}"')
+        if request.memory_types:
+            types_str = ', '.join(f'"{t}"' for t in request.memory_types)
+            conditions.append(f'memory_type in [{types_str}]')
+        if request.object_types:
+            types_str = ', '.join(f'"{t}"' for t in request.object_types)
+            conditions.append(f'object_type in [{types_str}]')
         
         # Confidence and importance thresholds
         if request.min_confidence > 0:
@@ -109,14 +116,21 @@ class MilvusFilterRetriever(FilterRetriever):
         if request.min_importance > 0:
             conditions.append(f'importance >= {request.min_importance}')
         
-        # Time range filtering
+        # Time range filtering (design doc: valid_from <= end AND valid_to >= start)
         if request.time_range:
             if request.time_range.from_ts:
                 ts = int(request.time_range.from_ts.timestamp())
-                conditions.append(f'visible_time >= {ts}')
+                conditions.append(f'valid_from <= {ts}')
             if request.time_range.to_ts:
                 ts = int(request.time_range.to_ts.timestamp())
-                conditions.append(f'visible_time <= {ts}')
+                conditions.append(f'valid_to >= {ts}')
+        
+        # Version constraints
+        if request.as_of_ts:
+            ts = int(request.as_of_ts.timestamp())
+            conditions.append(f'valid_from <= {ts}')
+        if request.min_version is not None:
+            conditions.append(f'version >= {request.min_version}')
         
         return " and ".join(conditions) if conditions else ""
     
@@ -145,6 +159,9 @@ class MilvusFilterRetriever(FilterRetriever):
                 memory_type=entity.get("memory_type", ""),
                 verified_state=entity.get("verified_state", ""),
                 salience_weight=entity.get("salience_weight", 1.0),
+                freshness_score=entity.get("freshness_score", 1.0),
+                source_event_ids=entity.get("source_event_ids", []),
+                is_active=entity.get("is_active", True),
             )
             candidates.append(candidate)
         

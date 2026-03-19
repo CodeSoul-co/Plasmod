@@ -288,7 +288,7 @@ async def test_memory_type_filter():
         query_text="",
         tenant_id="tenant_1",
         workspace_id="workspace_1",
-        memory_type="episodic",
+        memory_types=["episodic"],
         top_k=10,
     )
     

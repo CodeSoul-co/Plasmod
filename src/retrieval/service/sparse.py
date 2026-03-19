@@ -140,8 +140,9 @@ class MilvusSparseRetriever(SparseRetriever):
             conditions.append(f'session_id == "{request.session_id}"')
         if request.scope:
             conditions.append(f'scope == "{request.scope}"')
-        if request.memory_type:
-            conditions.append(f'memory_type == "{request.memory_type}"')
+        if request.memory_types:
+            types_str = ', '.join(f'"{t}"' for t in request.memory_types)
+            conditions.append(f'memory_type in [{types_str}]')
         
         return " and ".join(conditions) if conditions else None
     

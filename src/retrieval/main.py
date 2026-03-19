@@ -169,7 +169,7 @@ async def run_integration_test(dev_mode: bool = False):
     
     client.create_collection(collection_name=test_collection, schema=schema, index_params=index_params)
     
-    # Insert test data
+    # Insert test data (aligned with design doc field names)
     test_data = [
         {
             "id": 1,
@@ -188,10 +188,12 @@ async def run_integration_test(dev_mode: bool = False):
             "summary": "Weather query",
             "confidence": 0.9,
             "importance": 0.8,
+            "freshness_score": 0.95,
             "level": 0,
             "memory_type": "episodic",
             "verified_state": "verified",
             "salience_weight": 1.0,
+            "is_active": True,
         },
         {
             "id": 2,
@@ -210,10 +212,12 @@ async def run_integration_test(dev_mode: bool = False):
             "summary": "Deadline reminder",
             "confidence": 0.95,
             "importance": 0.9,
+            "freshness_score": 0.8,
             "level": 0,
             "memory_type": "procedural",
             "verified_state": "verified",
             "salience_weight": 1.2,
+            "is_active": True,
         },
     ]
     
@@ -258,7 +262,8 @@ async def run_integration_test(dev_mode: bool = False):
     
     print("\nCandidates:")
     for i, c in enumerate(result.candidates, 1):
-        print(f"  {i}. {c.object_id}: score={c.score:.4f}, sources={c.source_channels}")
+        print(f"  {i}. {c.object_id}: rrf={c.score:.4f}, final={c.final_score:.6f}, "
+              f"dense={c.dense_score:.4f}, sparse={c.sparse_score:.4f}, sources={c.source_channels}")
     
     assert len(result.candidates) > 0, "Should return candidates"
     print("\n[PASS] Three-way retrieval works")
