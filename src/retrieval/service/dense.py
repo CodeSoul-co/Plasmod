@@ -36,6 +36,9 @@ class MilvusDenseRetriever(DenseRetriever):
             "scope", "version", "provenance_ref", "content", "summary",
             "confidence", "importance", "level", "memory_type",
             "verified_state", "salience_weight",
+            "freshness_score", "is_active", "source_event_ids",
+            "valid_from", "valid_to", "visible_time",
+            "quarantine_flag", "visibility_policy", "ttl",
         ]
         self._client: Optional[MilvusClient] = None
     
@@ -139,6 +142,11 @@ class MilvusDenseRetriever(DenseRetriever):
                 memory_type=entity.get("memory_type", ""),
                 verified_state=entity.get("verified_state", ""),
                 salience_weight=entity.get("salience_weight", 1.0),
+                freshness_score=entity.get("freshness_score", 1.0),
+                is_active=entity.get("is_active", True),
+                source_event_ids=entity.get("source_event_ids", []),
+                quarantine_flag=entity.get("quarantine_flag", False),
+                visibility_policy=entity.get("visibility_policy", ""),
             )
             candidates.append(candidate)
         
