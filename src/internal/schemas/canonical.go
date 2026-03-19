@@ -55,6 +55,7 @@ type Memory struct {
 	MemoryType     string   `json:"memory_type"`
 	AgentID        string   `json:"agent_id"`
 	SessionID      string   `json:"session_id"`
+	OwnerType      string   `json:"owner_type"`
 	Scope          string   `json:"scope"`
 	Level          int      `json:"level"`
 	Content        string   `json:"content"`
@@ -121,6 +122,8 @@ type ObjectVersion struct {
 
 // User defines a system user (model consumer, trainer, operator, etc.).
 // Stored separately to allow future access-control and audit queries.
+// It represents a human or service identity that can own or publish objects.
+// It is intentionally minimal and may be extended as governance evolves.
 type User struct {
 	UserID          string `json:"user_id"`
 	UserName        string `json:"user_name"`
@@ -129,10 +132,38 @@ type User struct {
 	Visibility      string `json:"visibility"`
 }
 
+// Embedding stores a vector representation independently so other objects can
+// reference it by vector_id without duplicating the dense representation.
+// The actual vector payload may live in a vector store and be addressed by VectorRef.
+type Embedding struct {
+	VectorID      string `json:"vector_id"`
+	VectorContext string `json:"vector_context"`
+	OriginalText  string `json:"original_text"`
+	EmbeddingType string `json:"embedding_type"`
+	Dim           int64  `json:"dim"`
+	ModelID       string `json:"model_id"`
+	VectorRef     string `json:"vector_ref"`
+	CreatedTS     string `json:"created_ts"`
+}
+
+// Policy is a minimal policy definition that an agent or system can reference.
+// This is a canonical object-level policy descriptor (not a full decision log).
+type Policy struct {
+	PolicyID        string `json:"policy_id"`
+	PolicyVersion   int64  `json:"policy_version"`
+	PolicyStartTime string `json:"policy_start_time"`
+	PolicyEndTime   string `json:"policy_end_time"`
+	PublisherType   string `json:"publisher_type"`
+	PublisherID     string `json:"publisher_id"`
+	PolicyType      string `json:"policy_type"`
+}
+
 // PolicyRecord stores governance decisions applied to a specific object.
 // All policy changes are append-only and auditable.
 type PolicyRecord struct {
 	PolicyID           string  `json:"policy_id"`
+	PolicyVersion      int64   `json:"policy_version"`
+	Context            string  `json:"context"`
 	ObjectID           string  `json:"object_id"`
 	ObjectType         string  `json:"object_type"`
 	SalienceWeight     float64 `json:"salience_weight"`
@@ -147,19 +178,9 @@ type PolicyRecord struct {
 	PolicyEventID      string  `json:"policy_event_id"`
 }
 
-// Embedding stores a vector representation independently so other objects can
-// reference it by vector_id without duplicating the dense representation.
-type Embedding struct {
-	VectorID      string    `json:"vector_id"`
-	VectorContext string    `json:"vector_context"`
-	EmbeddingType string    `json:"embedding_type"`
-	Dim           int       `json:"dim"`
-	ModelID       string    `json:"model_id"`
-	VectorRef     []float32 `json:"vector_ref"`
-}
-
 // ShareContract encodes the full sharing protocol between agents or scopes,
 // not just a single visibility field.
+// It is used to make "shared" semantics explicit and auditable.
 type ShareContract struct {
 	ContractID       string `json:"contract_id"`
 	Scope            string `json:"scope"`

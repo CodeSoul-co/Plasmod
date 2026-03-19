@@ -7,10 +7,18 @@ import (
 )
 
 type SegmentRecord struct {
-	SegmentID string    `json:"segment_id"`
-	Namespace string    `json:"namespace"`
-	RowCount  int       `json:"row_count"`
-	UpdatedAt time.Time `json:"updated_at"`
+	SegmentID       string    `json:"segment_id"`
+	ObjectType      string 	  `json:"object_type"`
+	Namespace       string    `json:"namespace"`
+	TimeBucket      string    `json:"time_bucket"`
+	EmbeddingFamily string    `json:"embedding_family"`
+	StorageRef      string    `json:"storage_ref"`
+	IndexRef        string    `json:"index_ref"`
+	RowCount        int       `json:"row_count"`
+	MinTS           string    `json:"min_ts"`
+	MaxTS           string    `json:"max_ts"`
+	Tier            string    `json:"tier"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type IndexRecord struct {
