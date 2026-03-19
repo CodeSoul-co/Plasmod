@@ -172,6 +172,106 @@ python scripts/run_demo.py
 make test
 ```
 
+## Integration Tests
+
+The integration test suite lives under `integration_tests/` and is split into two complementary layers:
+
+| Layer | Location | What it tests |
+|---|---|---|
+| **Go HTTP tests** | `integration_tests/*_test.go` | All HTTP API routes, protocol, data-flow, topology — pure stdlib, no extra deps |
+| **Python SDK tests** | `integration_tests/python/` | `AndbClient.ingest_event()` / `.query()` SDK wrapper + optional S3 dataflow |
+
+### Prerequisites
+
+- Go server is running: `make dev`
+- For Python SDK tests: `pip install -r requirements.txt && pip install -e ./sdk/python`
+
+### Run all integration tests
+
+```bash
+make integration-test
+```
+
+This runs `go test ./integration_tests/... -v` followed by `python integration_tests/python/run_all.py`.
+
+### Run only Go tests
+
+```bash
+go test ./integration_tests/... -v -timeout 120s
+```
+
+### Run only Python SDK tests
+
+```bash
+cd integration_tests/python && python run_all.py
+```
+
+### Go test coverage
+
+| File | Tests |
+|---|---|
+| `healthz_test.go` | `GET /healthz` — status 200, Content-Type |
+| `ingest_query_test.go` | Ingest ack fields, LSN monotonicity, query evidence fields, top\_k, 400/405, E2E |
+| `canonical_crud_test.go` | POST + GET for agents, sessions, memory, states, artifacts, edges, policies, share-contracts |
+| `negative_test.go` | 405 on wrong method, 400 on malformed JSON, 404 on unknown routes |
+| `protocol_test.go` | `Content-Type: application/json` on all response paths |
+| `dataflow_test.go` | `provenance`, `proof_trace`, `applied_filters`, `edges`, `versions` after ingest→query |
+| `topology_test.go` | `/v1/admin/topology` node count, `state=ready`, field presence, 405 |
+| `s3_dataflow_test.go` | Ingest→query capture round-trip to S3 (**skipped** unless `ANDB_RUN_S3_TESTS=true`) |
+
+### Optional: S3/MinIO dataflow test
+
+The S3 test (available in both Go and Python layers) ingests an event, runs a query, serialises the full capture as JSON, writes it to a MinIO bucket, and reads it back to verify byte-exact round-trip integrity.
+
+**Start MinIO locally** (choose one):
+
+```bash
+# Docker
+docker run -d --name minio -p 9000:9000 \
+  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  quay.io/minio/minio server /data
+
+# Binary (macOS arm64)
+curl -sSL https://dl.min.io/server/minio/release/darwin-arm64/minio -o /usr/local/bin/minio
+chmod +x /usr/local/bin/minio
+MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin minio server /tmp/minio-data --address :9000
+```
+
+**Run with S3 enabled:**
+
+```bash
+export ANDB_RUN_S3_TESTS=true
+export S3_ENDPOINT=127.0.0.1:9000
+export S3_ACCESS_KEY=minioadmin
+export S3_SECRET_KEY=minioadmin
+export S3_BUCKET=andb-integration
+export S3_SECURE=false
+
+make integration-test
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANDB_BASE_URL` | `http://127.0.0.1:8080` | Server address for all tests |
+| `ANDB_HTTP_TIMEOUT` | `10` | HTTP timeout in seconds (Python SDK) |
+| `ANDB_RUN_S3_TESTS` | _(empty)_ | Set to `true` to enable S3 dataflow tests |
+| `S3_ENDPOINT` | — | MinIO/S3 host:port |
+| `S3_ACCESS_KEY` | — | Access key |
+| `S3_SECRET_KEY` | — | Secret key |
+| `S3_BUCKET` | — | Bucket name |
+| `S3_SECURE` | `false` | Use TLS |
+| `S3_REGION` | `us-east-1` | Region (MinIO ignores this) |
+| `S3_PREFIX` | `andb/integration_tests` | Object key prefix |
+
+## Review Notes (Current Prototype)
+
+- `GET /healthz` previously returned `Content-Type: text/plain` — fixed to `application/json` in `access/gateway.go`.
+- The HTTP gateway returns plain-text errors for malformed JSON and method mismatches; a structured error envelope would improve integration debugging.
+- The public API surface is small and stable; `response_mode: structured_evidence` is the canonical value — demo scripts have been updated to match.
+- For repeated integration runs, consider exposing a lightweight dev-only reset endpoint or adding idempotency semantics for seed data to avoid state accumulation.
+
 To run only the Go internal module tests:
 
 ```bash

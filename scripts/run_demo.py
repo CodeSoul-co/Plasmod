@@ -36,7 +36,7 @@ def main() -> None:
             "top_k": 3,
             "time_window": {"from": now, "to": now},
             "relation_constraints": [],
-            "response_mode": "evidence",
+            "response_mode": "structured_evidence",
         }
     )
     print(result)
