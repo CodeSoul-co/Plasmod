@@ -168,8 +168,10 @@ def setup_test_collection(client: MilvusClient):
     client.insert(collection_name=TEST_COLLECTION, data=test_data)
     logger.info(f"Inserted {len(test_data)} test records")
     
-    # Load collection
+    # Load collection and wait for indexing
     client.load_collection(TEST_COLLECTION)
+    import time
+    time.sleep(1)
     logger.info(f"Loaded collection: {TEST_COLLECTION}")
 
 

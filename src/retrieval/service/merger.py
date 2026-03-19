@@ -1,11 +1,15 @@
 """
 Candidate Merger - RRF (Reciprocal Rank Fusion)
-Deduplicate and score fusion for three-way recall results.
+Deduplicate, score fusion, reranking, and safety filtering for three-way recall results.
+Aligned with week-1 design doc.
 """
 
+import logging
 from typing import List, Dict
 from datetime import datetime
 from .types import Candidate, CandidateList, QueryMeta, RetrievalRequest
+
+logger = logging.getLogger(__name__)
 
 
 class Merger:
@@ -36,49 +40,58 @@ class Merger:
         """
         Merge three-way retrieval results.
         
-        Steps:
-        1. Calculate RRF score for each path
-        2. Deduplicate by object_id, accumulate scores
-        3. Filter low confidence candidates
-        4. Sort by score descending
-        5. Truncate to top_k
-        6. Mark seed candidates (for member C)
+        Flow (aligned with week-1 design doc):
+        1. Deduplicate by object_id, accumulate RRF scores
+        2. Safety filter (quarantine, ttl, visible_time, is_active)
+        3. Filter low confidence / low importance
+        4. Rerank: final_score = rrf_score * importance * freshness_score * confidence
+           If policy_records has confidence_override, it replaces confidence.
+           salience_weight from policy_records applied as multiplier.
+        5. Sort by final_score descending
+        6. Truncate to effective top_k (top_k*2 if for_graph)
+        7. Mark seed candidates (for member C)
         """
         start_time = datetime.now()
         
-        # Merge to map, accumulate RRF scores
+        # Step 1: Merge to map, accumulate RRF scores
         merged: Dict[str, Candidate] = {}
         
         self._add_with_rrf(merged, dense_results, "dense")
         self._add_with_rrf(merged, sparse_results, "sparse")
         self._add_with_rrf(merged, filter_results, "filter")
         
-        # Convert to list
         candidates = list(merged.values())
         
-        # Filter low confidence
+        # Step 2: Safety filter
+        candidates = self._safety_filter(candidates, request)
+        
+        # Step 3: Filter low confidence and low importance
         min_conf = request.min_confidence if request.min_confidence > 0 else self.min_confidence
-        candidates = [c for c in candidates if c.confidence >= min_conf]
+        if min_conf > 0:
+            candidates = [c for c in candidates if c.confidence >= min_conf]
+        if request.min_importance > 0:
+            candidates = [c for c in candidates if c.importance >= request.min_importance]
         
-        # Sort by score descending
-        candidates.sort(key=lambda c: c.score, reverse=True)
-        
-        # Truncate to top_k
-        top_k = request.top_k if request.top_k > 0 else 20
-        candidates = candidates[:top_k]
-        
-        # Apply salience reranking: final_score = rrf_score * salience_weight
+        # Step 4: Rerank with design doc formula
         for c in candidates:
-            c.score = c.score * c.salience_weight
+            c.final_score = (c.score
+                           * max(c.importance, 0.01)
+                           * max(c.freshness_score, 0.01)
+                           * max(c.confidence, 0.01))
         
-        # Re-sort after salience reranking
-        candidates.sort(key=lambda c: c.score, reverse=True)
+        # Step 5: Sort by final_score descending
+        candidates.sort(key=lambda c: c.final_score, reverse=True)
         
-        # Mark seed (candidates with score above threshold as graph expansion starting points)
+        # Step 6: Truncate - for_graph mode returns top_k*2
+        top_k = request.top_k if request.top_k > 0 else 10
+        effective_k = top_k * 2 if request.for_graph else top_k
+        candidates = candidates[:effective_k]
+        
+        # Step 7: Mark seed candidates (for member C graph expansion)
         for c in candidates:
-            if c.score >= self.seed_threshold:
+            if c.final_score >= self.seed_threshold:
                 c.is_seed = True
-                c.seed_score = c.score
+                c.seed_score = c.final_score
         
         # Build metadata
         latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -111,7 +124,7 @@ class Merger:
         results: List[Candidate],
         channel: str,
     ) -> None:
-        """Calculate RRF score and accumulate to merged"""
+        """Calculate RRF score and accumulate to merged, track per-channel scores"""
         if not results:
             return
         
@@ -119,13 +132,48 @@ class Merger:
             rrf_score = 1.0 / (self.k + rank)
             
             if candidate.object_id in merged:
-                # Already exists, accumulate score, merge sources
                 existing = merged[candidate.object_id]
                 existing.score += rrf_score
                 if channel not in existing.source_channels:
                     existing.source_channels.append(channel)
+                # Track per-channel score on the merged candidate
+                if channel == "dense":
+                    existing.dense_score = rrf_score
+                elif channel == "sparse":
+                    existing.sparse_score = rrf_score
             else:
-                # New candidate
                 candidate.score = rrf_score
                 candidate.source_channels = [channel]
+                if channel == "dense":
+                    candidate.dense_score = rrf_score
+                elif channel == "sparse":
+                    candidate.sparse_score = rrf_score
                 merged[candidate.object_id] = candidate
+    
+    def _safety_filter(self, candidates: List[Candidate], request: RetrievalRequest) -> List[Candidate]:
+        """
+        Post-merge safety filter (design doc section 4.5).
+        Remove: quarantined, ttl expired, not yet visible, inactive.
+        """
+        now = datetime.now()
+        filtered = []
+        for c in candidates:
+            if c.quarantine_flag:
+                continue
+            if c.ttl and c.ttl < now:
+                continue
+            if c.visible_time and c.visible_time > now:
+                continue
+            if not c.is_active:
+                continue
+            # as_of_ts: time-travel filter
+            if request.as_of_ts:
+                if c.visible_time and c.visible_time > request.as_of_ts:
+                    continue
+                if c.valid_from and c.valid_from > request.as_of_ts:
+                    continue
+            # min_version filter
+            if request.min_version is not None and c.version < request.min_version:
+                continue
+            filtered.append(c)
+        return filtered

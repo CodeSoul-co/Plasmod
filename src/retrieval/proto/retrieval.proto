@@ -9,29 +9,43 @@ option go_package = "andb/src/retrieval/generated";
 // ============================================================================
 
 message RetrievalRequest {
-    string query_text = 1;              // Query text
-    repeated float query_vector = 2;    // Pre-computed embedding (optional)
+    string query_id = 1;                // Unique query ID for tracing
+    string query_text = 2;              // Natural language query for dense+sparse
+    repeated float query_vector = 3;    // Pre-computed embedding from D (optional)
     
     // Isolation boundaries (required)
-    string tenant_id = 3;
-    string workspace_id = 4;
+    string tenant_id = 4;
+    string workspace_id = 5;
     
     // Filter conditions
-    string agent_id = 5;
-    string session_id = 6;
-    string scope = 7;                   // private / session / workspace / global
-    string memory_type = 8;             // episodic / semantic / procedural
+    string agent_id = 6;
+    string session_id = 7;
+    string scope = 8;                   // private / session / workspace / global
+    repeated string memory_types = 9;   // Filter by memory types (list), empty = all
+    repeated string object_types = 10;  // Filter by object types (memory/event/artifact/state)
     
     // Retrieval control
-    int32 top_k = 9;
-    double min_confidence = 10;
-    double min_importance = 11;
-    TimeRange time_range = 12;
+    int32 top_k = 11;
+    double min_confidence = 12;
+    double min_importance = 13;
+    TimeRange time_range = 14;
+    
+    // Version constraints
+    int64 as_of_ts = 15;               // Time-travel: only visible_time <= as_of_ts (unix ts)
+    int32 min_version = 16;            // Only return version >= min_version
+    
+    // Policy constraints
+    bool exclude_quarantined = 17;     // Exclude quarantined objects (default true)
+    bool exclude_unverified = 18;      // Exclude unverified objects
     
     // Retrieval path switches
-    bool enable_dense = 13;             // default true
-    bool enable_sparse = 14;            // default true
-    bool enable_filter_only = 15;       // filter only mode (see docs Section 11)
+    bool enable_dense = 19;            // default true
+    bool enable_sparse = 20;           // default true
+    bool enable_filter = 21;           // default true
+    bool enable_filter_only = 22;      // filter only mode
+    
+    // Graph expansion mode (for member C)
+    bool for_graph = 23;               // When true: return top_k*2, must include source_event_ids
 }
 
 message TimeRange {
@@ -46,31 +60,49 @@ message TimeRange {
 message Candidate {
     string object_id = 1;
     string object_type = 2;             // memory / event / artifact
-    double score = 3;                   // RRF merged score
+    double score = 3;                   // RRF merged score (before reranking)
+    double final_score = 4;             // After reranking: rrf * importance * freshness * confidence
+    
+    // Per-channel scores (for member E benchmarks)
+    double dense_score = 5;
+    double sparse_score = 6;
     
     // Metadata
-    string agent_id = 4;
-    string session_id = 5;
-    string scope = 6;
-    int32 version = 7;
-    string provenance_ref = 8;          // for member C to trace provenance
+    string agent_id = 7;
+    string session_id = 8;
+    string scope = 9;
+    int32 version = 10;
+    string provenance_ref = 11;         // For member C to trace provenance
     
     // Content
-    string content = 9;
-    string summary = 10;
-    double confidence = 11;
-    double importance = 12;
-    int32 level = 13;                   // distillation depth: 0=raw, 1=summary, 2=abstraction
-    string memory_type = 14;            // episodic / semantic / procedural
-    string verified_state = 15;         // verified / unverified / disputed
-    double salience_weight = 16;        // for final reranking after RRF
+    string content = 12;
+    string summary = 13;
+    double confidence = 14;
+    double importance = 15;
+    double freshness_score = 16;        // Computed by member A, read from memories table
+    int32 level = 17;                   // distillation depth: 0=raw, 1=summary, 2=abstraction
+    string memory_type = 18;            // episodic / semantic / procedural
+    string verified_state = 19;         // verified / unverified / disputed
+    double salience_weight = 20;        // From policy_records, for governance override
+    
+    // Version info
+    int64 valid_from = 21;              // When this version became active (unix ts)
+    int64 valid_to = 22;               // When this version was superseded (unix ts)
+    int64 visible_time = 23;           // When object became visible (unix ts)
+    
+    // Governance
+    bool quarantine_flag = 24;         // Whether object is quarantined
+    string visibility_policy = 25;     // public / private / workspace
+    bool is_active = 26;               // Active flag
+    int64 ttl = 27;                    // TTL expiry time (unix ts)
     
     // Source channels
-    repeated string source_channels = 17;   // ["dense", "sparse", "filter"]
+    repeated string source_channels = 28;   // ["dense", "sparse", "filter"]
     
-    // Graph expansion seed marker (for member C)
-    bool is_seed = 18;
-    double seed_score = 19;
+    // Graph expansion (for member C)
+    bool is_seed = 29;
+    double seed_score = 30;
+    repeated string source_event_ids = 31;  // Required when for_graph=true
 }
 
 message CandidateList {

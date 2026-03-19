@@ -12,7 +12,13 @@ from src.retrieval.service.types import Candidate, RetrievalRequest
 from src.retrieval.service.merger import Merger
 
 
-def create_candidate(object_id: str, confidence: float = 0.8, importance: float = 0.5, salience_weight: float = 1.0) -> Candidate:
+def create_candidate(
+    object_id: str,
+    confidence: float = 0.8,
+    importance: float = 0.5,
+    salience_weight: float = 1.0,
+    freshness_score: float = 1.0,
+) -> Candidate:
     return Candidate(
         object_id=object_id,
         object_type="memory",
@@ -26,6 +32,7 @@ def create_candidate(object_id: str, confidence: float = 0.8, importance: float 
         summary=f"Summary of {object_id}",
         confidence=confidence,
         importance=importance,
+        freshness_score=freshness_score,
         level=0,
         memory_type="episodic",
         verified_state="verified",
@@ -121,17 +128,17 @@ def test_rrf_score_calculation():
     print("\n[PASS] RRF score calculation correct")
 
 
-def test_salience_reranking():
-    """Test salience_weight affects final ranking"""
+def test_reranking():
+    """Test reranking formula: final_score = rrf * importance * freshness * confidence"""
     print("\n" + "=" * 60)
-    print("Test 3: Salience reranking")
+    print("Test 3: Reranking (rrf * importance * freshness * confidence)")
     print("=" * 60)
     
-    # doc_a has higher RRF rank but lower salience
-    # doc_b has lower RRF rank but higher salience
+    # doc_a: higher RRF rank but low importance
+    # doc_b: lower RRF rank but high importance and confidence
     dense_results = [
-        create_candidate("doc_a", salience_weight=0.5),  # rank 1, but salience=0.5
-        create_candidate("doc_b", salience_weight=2.0),  # rank 2, but salience=2.0
+        create_candidate("doc_a", importance=0.1, confidence=0.5, freshness_score=0.5),  # rank 1
+        create_candidate("doc_b", importance=0.9, confidence=0.9, freshness_score=1.0),  # rank 2
     ]
     
     request = RetrievalRequest(
@@ -144,17 +151,21 @@ def test_salience_reranking():
     merger = Merger(k=60)
     result = merger.merge(dense_results, [], [], request)
     
-    print("Before salience reranking:")
-    print(f"  doc_a RRF score: 1/61 = {1/61:.6f}, after salience: {1/61 * 0.5:.6f}")
-    print(f"  doc_b RRF score: 1/62 = {1/62:.6f}, after salience: {1/62 * 2.0:.6f}")
+    rrf_a = 1/61
+    rrf_b = 1/62
+    expected_final_a = rrf_a * 0.1 * 0.5 * 0.5
+    expected_final_b = rrf_b * 0.9 * 0.9 * 1.0
     
-    print("\nAfter salience reranking:")
+    print(f"  doc_a: rrf={rrf_a:.6f}, final={expected_final_a:.8f} (low importance/confidence)")
+    print(f"  doc_b: rrf={rrf_b:.6f}, final={expected_final_b:.8f} (high importance/confidence)")
+    
+    print("\nAfter reranking:")
     for i, c in enumerate(result.candidates, 1):
-        print(f"  {i}. {c.object_id}: final_score={c.score:.6f}")
+        print(f"  {i}. {c.object_id}: rrf={c.score:.6f}, final_score={c.final_score:.8f}")
     
-    # doc_b should be ranked first after salience reranking
-    assert result.candidates[0].object_id == "doc_b", "doc_b should be ranked first after salience reranking"
-    print("\n[PASS] Salience reranking works correctly")
+    # doc_b should be ranked first because importance*freshness*confidence >> doc_a
+    assert result.candidates[0].object_id == "doc_b", "doc_b should be ranked first after reranking"
+    print("\n[PASS] Reranking works correctly")
 
 
 def test_confidence_filtering():
@@ -221,10 +232,10 @@ def test_seed_marking():
     print("Test 6: Seed marking")
     print("=" * 60)
     
-    # Create candidates that will have different final scores
+    # Create candidates with high importance/confidence/freshness so final_score > threshold
     dense_results = [
-        create_candidate("doc_a", salience_weight=50.0),  # Will have high score
-        create_candidate("doc_b", salience_weight=1.0),   # Will have low score
+        create_candidate("doc_a", importance=0.9, confidence=0.9, freshness_score=1.0),
+        create_candidate("doc_b", importance=0.01, confidence=0.01, freshness_score=0.01),
     ]
     
     request = RetrievalRequest(
@@ -234,14 +245,15 @@ def test_seed_marking():
         top_k=10,
     )
     
-    merger = Merger(k=60, seed_threshold=0.5)
+    # final_score for doc_a: (1/61)*0.9*1.0*0.9 = ~0.01327 -> below 0.5
+    # Use a low seed_threshold to test marking
+    merger = Merger(k=60, seed_threshold=0.001)
     result = merger.merge(dense_results, [], [], request)
     
-    print(f"Seed threshold: 0.5")
+    print(f"Seed threshold: 0.001")
     for c in result.candidates:
-        print(f"  {c.object_id}: score={c.score:.6f}, is_seed={c.is_seed}")
+        print(f"  {c.object_id}: final_score={c.final_score:.8f}, is_seed={c.is_seed}")
     
-    # doc_a should be marked as seed (score > 0.5)
     doc_a = next(c for c in result.candidates if c.object_id == "doc_a")
     assert doc_a.is_seed == True, "doc_a should be marked as seed"
     
@@ -254,7 +266,7 @@ if __name__ == "__main__":
     
     test_basic_rrf()
     test_rrf_score_calculation()
-    test_salience_reranking()
+    test_reranking()
     test_confidence_filtering()
     test_top_k_truncation()
     test_seed_marking()
