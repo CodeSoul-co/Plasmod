@@ -16,7 +16,7 @@ def main() -> None:
                 "top_k": 5,
                 "time_window": {"from": "2026-01-01T00:00:00Z", "to": "2026-12-31T00:00:00Z"},
                 "relation_constraints": [],
-                "response_mode": "evidence",
+                "response_mode": "structured_evidence",
             }
         )
     print({"queries": 20, "elapsed_sec": round(time.time() - t0, 4)})
