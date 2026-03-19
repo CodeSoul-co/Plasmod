@@ -39,8 +39,12 @@ Current `QueryRequest` fields:
 - `query_scope`
 - `session_id`
 - `agent_id`
+- `tenant_id` (optional)
+- `workspace_id` (optional)
 - `top_k`
 - `time_window`
+- `object_types` (optional)
+- `memory_types` (optional)
 - `relation_constraints`
 - `response_mode`
 
@@ -69,11 +73,15 @@ Current example compatible with the running server:
   "query_scope": "workspace",
   "session_id": "sess_a",
   "agent_id": "agent_a",
+  "tenant_id": "t_demo",
+  "workspace_id": "w_demo",
   "top_k": 5,
   "time_window": {
     "from": "2026-03-16T00:00:00Z",
     "to": "2026-03-16T23:59:59Z"
   },
+  "object_types": ["memory", "state", "artifact"],
+  "memory_types": ["semantic", "episodic"],
   "relation_constraints": [],
   "response_mode": "structured_evidence"
 }
@@ -125,7 +133,25 @@ Meaning:
 
 - controls which namespace or visibility domain is searched
 
-### 5.5 `top_k`
+### 5.5 `tenant_id` (optional)
+
+Type: `string`
+
+Meaning:
+
+- narrows retrieval to a tenant boundary when provided
+- supports multi-tenant deployment patterns
+
+### 5.6 `workspace_id` (optional)
+
+Type: `string`
+
+Meaning:
+
+- narrows retrieval to a workspace boundary when provided
+- improves routing and policy filtering precision
+
+### 5.7 `top_k`
 
 Type: `integer`
 
@@ -134,7 +160,7 @@ Meaning:
 - initial retrieval candidate target
 - applied before relation expansion
 
-### 5.6 `time_window`
+### 5.8 `time_window`
 
 Type: `object`
 
@@ -147,7 +173,25 @@ Meaning:
 
 - restricts the temporal range of query candidates
 
-### 5.7 `relation_constraints`
+### 5.9 `object_types` (optional)
+
+Type: `list[string]`
+
+Meaning:
+
+- restricts candidate search to selected canonical object families
+- typical values include `memory`, `state`, `artifact`, `event`
+
+### 5.10 `memory_types` (optional)
+
+Type: `list[string]`
+
+Meaning:
+
+- applies a memory-level semantic filter when `memory` is included in object search
+- typical values include `episodic`, `semantic`, `procedural`, `social`, `reflective`
+
+### 5.11 `relation_constraints`
 
 Type: `list[string]` in the current Go schema
 
@@ -163,7 +207,7 @@ Intended meaning:
 
 If the project evolves this into a richer object later, that change should be reviewed carefully because it is a shared contract.
 
-### 5.8 `response_mode`
+### 5.12 `response_mode`
 
 Type: `string`
 
@@ -179,15 +223,11 @@ Current runtime note:
 
 The docs standardize on `structured_evidence` as the preferred target mode.
 
-## 6. Recommended Future-Compatible Request Extensions
+## 6. Future-Compatible Request Extensions
 
-These are semantically useful in v1 even if not yet present in the current Go request struct:
+These are still semantically useful but are not yet present in the current Go request struct:
 
-- `workspace_id`
-- `tenant_id`
-- `object_types`
-- `memory_types`
-- richer `relation_constraints`
+- richer `relation_constraints` object model
 - `debug`
 
 They should be treated as planned contract directions, not as implemented requirements today.
@@ -342,7 +382,8 @@ Request-side rules:
 3. `session_id` must not be empty
 4. `top_k` must be positive
 5. `response_mode` should be recognized
-6. unsupported relation filters should be rejected or explicitly ignored
+6. if provided, `object_types` and `memory_types` values should be recognized by the runtime
+7. unsupported relation filters should be rejected or explicitly ignored
 
 Response-side rules:
 

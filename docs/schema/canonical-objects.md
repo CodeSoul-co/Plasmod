@@ -36,6 +36,10 @@ The v1 prototype includes:
 - `Artifact`
 - `Edge`
 - `ObjectVersion`
+- `User`
+- `Policy`
+- `Embedding`
+- `ShareContract`
 
 Among these, the operational core of v1 is:
 
@@ -151,6 +155,7 @@ Current Go fields:
 
 `payload` is intentionally flexible because event content varies by event type. Its semantic interpretation belongs to the materialization layer.
 
+
 ### 6.5 Role
 
 `Event` serves as:
@@ -182,6 +187,7 @@ Suggested v1 memory categories:
 - `memory_type`
 - `agent_id`
 - `session_id`
+- `owner_type`
 - `scope`
 - `level`
 - `content`
@@ -199,7 +205,17 @@ Suggested v1 memory categories:
 
 ### 7.4 Field Notes
 
-`scope` is expected to be a simple string in v1, such as `private`, `session`, `workspace`, or `shared`.
+`owner_type` is a coarse visibility/ownership class in v1, for example:
+
+- `private`
+- `public`
+- `partial`
+
+`scope` is a target identifier string whose meaning depends on `owner_type`. For example:
+
+- when `owner_type = private`, `scope` may be empty or a user/agent id
+- when `owner_type = public`, `scope` may be a workspace/tenant id or a well-known scope id
+- when `owner_type = partial`, `scope` should carry a concrete target identifier (e.g. group id, allowlist id, or contract id)
 
 `level` represents distillation depth, for example:
 
@@ -208,6 +224,8 @@ Suggested v1 memory categories:
 - `2`: higher-level abstraction
 
 `source_event_ids` is critical and should not be dropped. It is the most direct provenance bridge between event origin and reusable memory.
+
+`content` is reserved for a content reference rather than inline text. In v1, it is expected to carry an embedding identifier so `Memory` can reference an `Embedding` record (see section 12) which stores both the original text and the vector payload reference for this memory.
 
 ### 7.5 Role
 
@@ -332,13 +350,113 @@ Suggested v1 memory categories:
 - provenance chaining
 - proof-trace explanation
 
-## 11. ObjectVersion
+## 11. User
 
 ### 11.1 Meaning
 
-`ObjectVersion` records lineage for mutable canonical objects.
+`User` represents a human or service identity that can own objects, publish policies, and participate in governance.
+
+In v1, `User` is intentionally minimal and mainly exists to:
+
+- anchor publisher/owner identity
+- support future visibility and access-control work
 
 ### 11.2 Current Fields
+
+- `user_id`
+- `user_name`
+- `user_tenant_id`
+- `user_workspace_id`
+- `visibility`
+
+### 11.3 Role
+
+`User` is used to:
+
+- identify publishers of policies
+- support auditing and governance attribution
+- provide a stable identity handle beyond `Agent`
+
+## 12. Embedding
+
+### 12.1 Meaning
+
+`Embedding` represents a reusable vector representation referenced by other objects. The system may store the vector payload externally and keep only a stable reference in the canonical record.
+
+This object exists to reduce duplication and to support consistent embedding reuse across multiple object types.
+
+Note: `embedding_type` is intentionally omitted for now because v1 does not yet have a stable, agreed-upon embedding taxonomy. It can be reintroduced once classification is defined.
+
+### 12.2 Current Fields
+
+- `vector_id`
+- `vector_context`
+- `original_text`
+- `dim`
+- `model_id`
+- `vector_ref`
+- `created_ts`
+
+### 12.3 Role
+
+`Embedding` is used to:
+
+- share vector payloads across canonical objects
+- allow multiple indexes to reference the same representation
+- keep canonical object records lightweight while supporting retrieval views
+
+## 13. Policy
+
+### 13.1 Meaning
+
+`Policy` defines governance rules that an agent or system component can reference. It is a canonical descriptor for a published policy and is intentionally minimal in v1.
+
+In addition, ANDB uses `PolicyRecord` as an object-level overlay that captures applied governance decisions (e.g. TTL, salience, quarantine) for a specific object.
+
+Note: in v1, `context` is stored on `PolicyRecord` rather than `Policy` so that the concrete applied rule payload is captured alongside the object-level decision and can vary across records even under the same `policy_id`.
+
+### 13.2 Current Fields (`Policy`)
+
+- `policy_id`
+- `policy_version`
+- `policy_start_time`
+- `policy_end_time`
+- `publisher_type`
+- `publisher_id`
+- `policy_type`
+
+### 13.3 Current Fields (`PolicyRecord`)
+
+- `policy_id`
+- `policy_version`
+- `context`
+- `object_id`
+- `object_type`
+- `salience_weight`
+- `ttl`
+- `confidence_override`
+- `verified_state`
+- `quarantine_flag`
+- `visibility_policy`
+- `policy_reason`
+- `policy_source`
+- `policy_event_id`
+
+### 13.4 Role
+
+`Policy` and `PolicyRecord` are used to:
+
+- express governance constraints without baking them into every object type
+- support policy-aware retrieval filtering
+- keep policy changes auditable via `policy_event_id`
+
+## 14. ObjectVersion
+
+### 14.1 Meaning
+
+`ObjectVersion` records lineage for mutable canonical objects.
+
+### 14.2 Current Fields
 
 - `object_id`
 - `object_type`
@@ -348,7 +466,7 @@ Suggested v1 memory categories:
 - `valid_to`
 - `snapshot_tag`
 
-### 11.3 Role
+### 14.3 Role
 
 `ObjectVersion` allows ANDB to:
 
@@ -359,7 +477,35 @@ Suggested v1 memory categories:
 
 In v1, this is intentionally lighter than a full visibility engine.
 
-## 12. Relationship Patterns
+## 15. ShareContract
+
+### 15.1 Meaning
+
+`ShareContract` defines an explicit governance contract for sharing within a scope. It exists to ensure that "shared memory" is not just a string label but a policy-controlled, auditable agreement.
+
+### 15.2 Current Fields
+
+- `contract_id`
+- `scope`
+- `read_acl`
+- `write_acl`
+- `derive_acl`
+- `ttl_policy`
+- `consistency_level`
+- `merge_policy`
+- `quarantine_policy`
+- `audit_policy`
+
+### 15.3 Role
+
+`ShareContract` is used to:
+
+- define who can read/write/derive within a shared scope
+- attach TTL/merge/quarantine/audit rules to sharing
+- serve as the target identifier for partial sharing modes (e.g. `Memory.owner_type = partial`)
+
+
+## 16. Relationship Patterns
 
 Common v1 relationships include:
 
@@ -373,9 +519,41 @@ Common v1 relationships include:
 - `State -> Event`
 - `Artifact -> Event`
 
-These relationships may be represented through explicit edges or direct object references depending on the layer.
+In addition, the v1 prototype recognizes the following governance and representation relationships:
 
-## 13. v1 Simplifications
+- `Agent -> Policy` (via `agent.policy_ref -> policy.policy_id`)
+- `PolicyRecord -> Object` (via `(policy_record.object_type, policy_record.object_id)` targeting any canonical object)
+- `PolicyRecord -> Policy` (via `(policy_record.policy_id, policy_record.policy_version)`)
+- `PolicyRecord -> Event` (via `policy_record.policy_event_id -> event.event_id`)
+- `Policy -> User|Agent` (publisher identity; see naming conventions below)
+- `ShareContract -> Scope` (governs a shareable scope)
+- `Memory(owner_type=partial) -> ShareContract` (via `memory.scope -> share_contract.contract_id`)
+
+Embedding relationships are currently represented as relations rather than strong-typed fields on every object:
+
+- `Object -> Embedding` (recommended via `Edge` when an object is associated with a specific embedding vector)
+- `Event -> Embedding` (optional via `payload` references when embeddings are produced during ingestion)
+
+For `Memory`, the embedding relationship is a direct reference:
+
+- `Memory -> Embedding` (via `memory.content -> embedding.vector_id`)
+
+These relationships may be represented through explicit edges or direct object references depending on the layer and implementation maturity.
+
+### 16.1 Naming and Reference Conventions (v1)
+
+To keep schemas stable and unambiguous, v1 uses the following conventions:
+
+- `*_id`: canonical object identifiers (e.g. `agent_id`, `session_id`, `memory_id`)
+- `*_ref`: references to external payloads (e.g. object store blobs, large text, vector payloads), not canonical objects
+- `(object_type, object_id)`: a generic cross-object reference used by governance/versioning records
+
+For publisher identity fields, prefer a typed pair:
+
+- `publisher_type`: `user` or `agent`
+- `publisher_id`: the corresponding `user_id` or `agent_id`
+
+## 17. v1 Simplifications
 
 The following are explicitly acceptable in v1:
 
@@ -387,7 +565,7 @@ The following are explicitly acceptable in v1:
 
 These simplifications are acceptable only if the contracts remain extensible.
 
-## 14. Design Rules
+## 18. Design Rules
 
 ### Rule 1
 
@@ -409,7 +587,7 @@ Every structure needed for evidence assembly should be representable through exp
 
 In v1, schema stability is more important than field completeness.
 
-## 15. Summary
+## 19. Summary
 
 Canonical objects are the semantic backbone of ANDB. They define what the system fundamentally stores, materializes, retrieves, relates, and returns.
 
