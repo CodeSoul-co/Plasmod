@@ -22,8 +22,12 @@ Current fields:
 - `query_scope`
 - `session_id`
 - `agent_id`
+- `tenant_id` (optional)
+- `workspace_id` (optional)
 - `top_k`
 - `time_window`
+- `object_types` (optional)
+- `memory_types` (optional)
 - `relation_constraints`
 - `response_mode`
 
@@ -40,11 +44,15 @@ Current `time_window` fields:
   "query_scope": "w_demo",
   "session_id": "sess_a",
   "agent_id": "agent_a",
+  "tenant_id": "t_demo",
+  "workspace_id": "w_demo",
   "top_k": 5,
   "time_window": {
     "from": "2026-03-16T00:00:00Z",
     "to": "2026-03-16T23:59:59Z"
   },
+  "object_types": ["memory", "state", "artifact"],
+  "memory_types": ["semantic"],
   "relation_constraints": [],
   "response_mode": "structured_evidence"
 }
