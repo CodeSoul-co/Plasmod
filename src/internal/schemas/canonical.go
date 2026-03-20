@@ -123,11 +123,11 @@ type ObjectVersion struct {
 // User represents a human or service identity that can own or publish objects.
 // It is intentionally minimal and may be extended as governance evolves.
 type User struct {
-	UserID          string `json:"user_id"`
-	UserName        string `json:"user_name"`
-	UserTenantID    string `json:"user_tenant_id"`
-	UserWorkspaceID string `json:"user_workspace_id"`
-	Visibility      string `json:"visibility"`
+	UserID            string `json:"user_id"`
+	UserName          string `json:"user_name"`
+	UserTenantID      string `json:"user_tenant_id"`
+	UserWorkspaceID   string `json:"user_workspace_id"`
+	DefaultVisibility string `json:"default_visibility"`
 }
 
 // Embedding stores a reference to a vector representation that can be shared across objects.
