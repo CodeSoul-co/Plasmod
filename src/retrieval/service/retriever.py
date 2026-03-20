@@ -1,231 +1,201 @@
-"""
-Retriever main entry - unified external interface.
-Member D's Query Worker calls this interface.
-"""
+# Copyright 2024 CogDB Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Retriever - thin wrapper calling cpp/ pybind11 module.
+# NO retrieval logic here - all logic is in C++.
 
-import asyncio
 import logging
-from typing import Optional, List
-from datetime import datetime
-from .types import RetrievalRequest, CandidateList, Candidate, QueryMeta
-from .interfaces import DenseRetriever, SparseRetriever, FilterRetriever
-from .merger import Merger
+from typing import Optional
+import numpy as np
+
+from .types import (
+    RetrievalRequest,
+    RetrievalResult,
+    IndexConfig,
+    MergeConfig,
+    result_from_cpp,
+    index_config_to_cpp,
+    merge_config_to_cpp,
+)
 
 logger = logging.getLogger(__name__)
+
+# Try to import C++ module, fall back to stub if not available
+try:
+    import andb_retrieval as _cpp
+    _CPP_AVAILABLE = True
+    logger.info("C++ retrieval module loaded successfully")
+except ImportError:
+    _cpp = None
+    _CPP_AVAILABLE = False
+    logger.warning("C++ retrieval module not available, using stub implementation")
 
 
 class Retriever:
     """
-    Unified retrieval entry - aligned with week-1 design doc.
+    Retriever - thin wrapper calling cpp/ pybind11 module.
     
-    Execution flow (design doc section 4.1):
-    1. Filter runs FIRST -> produces whitelist of valid object_ids
-    2. Dense + Sparse run in parallel WITHIN the whitelist
-    3. Three-way results merged via RRF
-    4. Safety filter (quarantine/ttl/visible_time/is_active) applied in Merger
-    5. Reranking: final_score = rrf * importance * freshness * confidence
-    
-    Special modes:
-    - enable_filter_only: skip Dense+Sparse, return filter results ordered by importance
-    - for_graph: return top_k*2 with source_event_ids (for member C)
-    
-    Usage:
-        retriever = Retriever(dense, sparse, filter, merger)
-        result = await retriever.retrieve(request)
+    All retrieval logic (dense, sparse, filter, RRF merge, reranking) is in C++.
+    This class only does parameter conversion.
     """
     
     def __init__(
         self,
-        dense: Optional[DenseRetriever] = None,
-        sparse: Optional[SparseRetriever] = None,
-        filter: Optional[FilterRetriever] = None,
-        merger: Optional[Merger] = None,
+        index_config: Optional[IndexConfig] = None,
+        merge_config: Optional[MergeConfig] = None,
+        sparse_index_type: str = "SPARSE_INVERTED_INDEX",
     ):
-        self.dense = dense
-        self.sparse = sparse
-        self.filter = filter
-        self.merger = merger or Merger()
+        self._index_config = index_config or IndexConfig()
+        self._merge_config = merge_config or MergeConfig()
+        self._sparse_index_type = sparse_index_type
+        self._cpp_retriever = None
+        self._ready = False
+        
+        if _CPP_AVAILABLE:
+            self._cpp_retriever = _cpp.Retriever()
     
-    async def retrieve(self, request: RetrievalRequest) -> CandidateList:
-        """
-        Execute retrieval following design doc flow:
-        Filter first -> Dense+Sparse in whitelist -> RRF merge -> safety filter -> rerank
-        """
-        dense_results: List[Candidate] = []
-        sparse_results: List[Candidate] = []
-        filter_results: List[Candidate] = []
-        
-        # Step 1: Filter runs first to produce whitelist
-        if self.filter and request.enable_filter:
-            filter_results = await self._safe_filter(self.filter.filter, request)
-        
-        # Handle filter-only mode: skip Dense+Sparse
-        if request.enable_filter_only:
-            return self._build_filter_only_result(filter_results, request)
-        
-        # Step 2: Dense + Sparse run in parallel (within whitelist context)
-        tasks = []
-        task_names = []
-        
-        if request.enable_dense and self.dense:
-            tasks.append(self._safe_search(self.dense.search, request, "dense"))
-            task_names.append("dense")
-        
-        if request.enable_sparse and self.sparse:
-            tasks.append(self._safe_search(self.sparse.search, request, "sparse"))
-            task_names.append("sparse")
-        
-        if tasks:
-            results = await asyncio.gather(*tasks)
-            for name, result in zip(task_names, results):
-                if name == "dense":
-                    dense_results = result
-                elif name == "sparse":
-                    sparse_results = result
-        
-        # Step 3-7: Merge (RRF + safety filter + rerank + truncate + seed marking)
-        result = self.merger.merge(
-            dense_results=dense_results,
-            sparse_results=sparse_results,
-            filter_results=filter_results,
-            request=request,
-        )
-        
-        return result
-    
-    def _build_filter_only_result(
+    def init(
         self,
-        filter_results: List[Candidate],
-        request: RetrievalRequest,
-    ) -> CandidateList:
-        """Build result for filter-only mode without RRF fusion"""
-        # Set score = 1.0 * salience_weight, source_channels = ["filter"]
-        for c in filter_results:
-            c.score = 1.0 * c.salience_weight
-            c.final_score = c.score * max(c.importance, 0.01) * max(c.freshness_score, 0.01) * max(c.confidence, 0.01)
-            c.source_channels = ["filter"]
+        index_config: Optional[IndexConfig] = None,
+        merge_config: Optional[MergeConfig] = None,
+        sparse_index_type: Optional[str] = None,
+    ) -> bool:
+        """Initialize the retriever with configurations."""
+        if index_config:
+            self._index_config = index_config
+        if merge_config:
+            self._merge_config = merge_config
+        if sparse_index_type:
+            self._sparse_index_type = sparse_index_type
         
-        # Order by importance descending, then confidence descending
-        filter_results.sort(key=lambda c: (c.importance, c.confidence), reverse=True)
+        if not _CPP_AVAILABLE:
+            logger.warning("C++ module not available, init skipped")
+            return False
         
-        # Truncate to top_k (or top_k*2 for graph mode)
-        top_k = request.top_k if request.top_k > 0 else 10
-        effective_k = top_k * 2 if request.for_graph else top_k
-        candidates = filter_results[:effective_k]
+        cpp_index_config = index_config_to_cpp(self._index_config, _cpp)
+        cpp_merge_config = merge_config_to_cpp(self._merge_config, _cpp)
         
-        query_meta = QueryMeta(
-            latency_ms=0,
-            dense_hits=0,
-            sparse_hits=0,
-            filter_hits=len(filter_results),
-            channels_used=["filter"],
+        success = self._cpp_retriever.init(
+            cpp_index_config,
+            self._sparse_index_type,
+            cpp_merge_config,
         )
         
-        return CandidateList(
-            candidates=candidates,
-            total_found=len(filter_results),
-            retrieved_at=datetime.now(),
-            query_meta=query_meta,
-        )
+        if success:
+            self._ready = True
+            logger.info("Retriever initialized successfully")
+        else:
+            logger.error("Retriever initialization failed")
+        
+        return success
     
-    async def _safe_search(self, search_fn, request: RetrievalRequest, name: str) -> List[Candidate]:
-        """Safely execute search, catch exceptions and return empty list"""
-        try:
-            return await search_fn(request)
-        except Exception as e:
-            logger.warning(f"{name} retrieval failed: {e}")
-            return []
-    
-    async def _safe_filter(self, filter_fn, request: RetrievalRequest) -> List[Candidate]:
-        """Safely execute filter, catch exceptions and return empty list"""
-        try:
-            return await filter_fn(request)
-        except Exception as e:
-            logger.warning(f"filter retrieval failed: {e}")
-            return []
-    
-    async def batch_retrieve(
+    def build(
         self,
-        requests: List[RetrievalRequest],
-    ) -> List[CandidateList]:
-        """
-        Batch retrieval for multiple requests.
+        dense_vectors: np.ndarray,
+        sparse_vectors: Optional[list] = None,
+    ) -> bool:
+        """Build indexes from vectors."""
+        if not _CPP_AVAILABLE:
+            logger.warning("C++ module not available, build skipped")
+            return False
         
-        Parallel execution of all requests.
-        Future optimization: share filter results for same scope/agent_id.
-        """
-        if not requests:
-            return []
+        if sparse_vectors is None:
+            sparse_vectors = []
         
-        tasks = [self.retrieve(req) for req in requests]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Convert sparse vectors to C++ format
+        cpp_sparse = []
+        for sv in sparse_vectors:
+            cpp_sv = _cpp.SparseVector()
+            cpp_sv.indices = list(sv.get("indices", []))
+            cpp_sv.values = list(sv.get("values", []))
+            cpp_sparse.append(cpp_sv)
         
-        final_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.warning(f"Batch request {i} failed: {result}")
-                final_results.append(CandidateList(
-                    candidates=[],
-                    total_found=0,
-                    retrieved_at=datetime.now(),
-                    query_meta=QueryMeta(channels_used=[]),
-                ))
-            else:
-                final_results.append(result)
+        success = self._cpp_retriever.build(dense_vectors, cpp_sparse)
         
-        return final_results
+        if success:
+            self._ready = True
+            logger.info(f"Indexes built: {len(dense_vectors)} vectors")
+        else:
+            logger.error("Index build failed")
+        
+        return success
     
-    async def benchmark_retrieve(
-        self,
-        request: RetrievalRequest,
-    ) -> CandidateList:
+    def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
         """
-        Benchmark retrieval for Benchmark Layer (member E).
+        Execute retrieval request.
         
-        Differences from retrieve():
-        - Returns ALL candidates without truncation
-        - Each candidate includes rrf_score, dense_score, sparse_score for analysis
-        - Useful for comparing single-path vs multi-path retrieval
-        
-        Usage by E:
-        - baseline_dense: enable_dense=True, enable_sparse=False
-        - baseline_sparse: enable_dense=False, enable_sparse=True
-        - full_fusion: enable_dense=True, enable_sparse=True
+        This is a thin wrapper - all logic is in C++.
         """
-        dense_results: List[Candidate] = []
-        sparse_results: List[Candidate] = []
-        filter_results: List[Candidate] = []
+        if not _CPP_AVAILABLE or not self._ready:
+            logger.warning("Retriever not ready, returning empty result")
+            return RetrievalResult()
         
-        # Step 1: Filter runs first
-        if self.filter and request.enable_filter:
-            filter_results = await self._safe_filter(self.filter.filter, request)
+        # Prepare query vector
+        query_vector = request.query_vector
+        if query_vector is None:
+            query_vector = np.array([], dtype=np.float32)
+        elif not isinstance(query_vector, np.ndarray):
+            query_vector = np.array(query_vector, dtype=np.float32)
         
-        # Step 2: Dense + Sparse in parallel
-        tasks = []
-        task_names = []
+        # Prepare filter bitset
+        filter_bitset = request.filter_bitset
         
-        if request.enable_dense and self.dense:
-            tasks.append(self._safe_search(self.dense.search, request, "dense"))
-            task_names.append("dense")
-        
-        if request.enable_sparse and self.sparse:
-            tasks.append(self._safe_search(self.sparse.search, request, "sparse"))
-            task_names.append("sparse")
-        
-        if tasks:
-            results = await asyncio.gather(*tasks)
-            for name, result in zip(task_names, results):
-                if name == "dense":
-                    dense_results = result
-                elif name == "sparse":
-                    sparse_results = result
-        
-        # Step 3: Merge WITHOUT truncation (benchmark mode)
-        result = self.merger.merge_for_benchmark(
-            dense_results=dense_results,
-            sparse_results=sparse_results,
-            filter_results=filter_results,
-            request=request,
+        # Call C++ retriever
+        cpp_result = self._cpp_retriever.retrieve(
+            query_vector=query_vector,
+            query_text=request.query_text,
+            top_k=request.top_k,
+            enable_dense=request.enable_dense,
+            enable_sparse=request.enable_sparse,
+            for_graph=request.for_graph,
+            filter_bitset=filter_bitset,
         )
         
-        return result
+        # Convert result to Python
+        return result_from_cpp(cpp_result)
+    
+    def benchmark_retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        """
+        Execute benchmark retrieval (no truncation).
+        
+        Returns all candidates with rrf_score populated.
+        """
+        if not _CPP_AVAILABLE or not self._ready:
+            logger.warning("Retriever not ready, returning empty result")
+            return RetrievalResult()
+        
+        query_vector = request.query_vector
+        if query_vector is None:
+            query_vector = np.array([], dtype=np.float32)
+        elif not isinstance(query_vector, np.ndarray):
+            query_vector = np.array(query_vector, dtype=np.float32)
+        
+        filter_bitset = request.filter_bitset
+        
+        cpp_result = self._cpp_retriever.benchmark_retrieve(
+            query_vector=query_vector,
+            query_text=request.query_text,
+            enable_dense=request.enable_dense,
+            enable_sparse=request.enable_sparse,
+            filter_bitset=filter_bitset,
+        )
+        
+        return result_from_cpp(cpp_result)
+    
+    def is_ready(self) -> bool:
+        """Check if retriever is ready for search."""
+        if not _CPP_AVAILABLE:
+            return False
+        return self._cpp_retriever.is_ready()
+    
+    @staticmethod
+    def cpp_available() -> bool:
+        """Check if C++ module is available."""
+        return _CPP_AVAILABLE
+    
+    @staticmethod
+    def version() -> str:
+        """Get C++ module version."""
+        if _CPP_AVAILABLE:
+            return _cpp.version()
+        return "cpp-not-available"
