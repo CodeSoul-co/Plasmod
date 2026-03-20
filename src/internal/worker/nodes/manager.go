@@ -34,6 +34,9 @@ type Manager struct {
 
 	// Cognitive Compression
 	summarizationWorkers []SummarizationWorker
+
+	// Structure Layer — subgraph execution
+	subgraphWorkers []SubgraphExecutorWorker
 }
 
 func CreateManager() *Manager {
@@ -55,6 +58,7 @@ func CreateManager() *Manager {
 		commWorkers:          []CommunicationWorker{},
 		microBatchWorkers:    []MicroBatchScheduler{},
 		summarizationWorkers: []SummarizationWorker{},
+		subgraphWorkers:      []SubgraphExecutorWorker{},
 	}
 }
 
@@ -244,6 +248,29 @@ func (m *Manager) RegisterMicroBatch(w MicroBatchScheduler) {
 	m.microBatchWorkers = append(m.microBatchWorkers, w)
 }
 
+// ─── Structure Layer registration ──────────────────────────────────────────────
+
+func (m *Manager) RegisterSubgraphExecutor(w SubgraphExecutorWorker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subgraphWorkers = append(m.subgraphWorkers, w)
+}
+
+// DispatchSubgraphExpand runs the first registered SubgraphExecutorWorker and
+// returns its result. Falls back to an empty response if none is registered.
+func (m *Manager) DispatchSubgraphExpand(
+	req schemas.GraphExpandRequest,
+	nodes []schemas.GraphNode,
+	edges []schemas.Edge,
+) schemas.GraphExpandResponse {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.subgraphWorkers) == 0 {
+		return schemas.GraphExpandResponse{}
+	}
+	return m.subgraphWorkers[0].Expand(req, nodes, edges)
+}
+
 // ─── Cognitive Compression registration ─────────────────────────────────────────
 
 func (m *Manager) RegisterSummarization(w SummarizationWorker) {
@@ -335,6 +362,16 @@ func (m *Manager) DispatchSummarization(agentID, sessionID string, maxLevel int)
 	}
 }
 
+// EnqueueMicroBatch adds a payload to all registered MicroBatchSchedulers
+// under the given queryID key.
+func (m *Manager) EnqueueMicroBatch(queryID string, payload any) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, w := range m.microBatchWorkers {
+		w.Enqueue(queryID, payload)
+	}
+}
+
 // FlushMicroBatch collects and returns all batched payloads from every
 // registered MicroBatchScheduler.
 func (m *Manager) FlushMicroBatch() []any {
@@ -402,6 +439,9 @@ func (m *Manager) Topology() []NodeInfo {
 		out = append(out, n.Info())
 	}
 	for _, n := range m.summarizationWorkers {
+		out = append(out, n.Info())
+	}
+	for _, n := range m.subgraphWorkers {
 		out = append(out, n.Info())
 	}
 	return out

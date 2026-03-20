@@ -120,6 +120,7 @@ func BuildServer() (*http.Server, error) {
 		store.Segments(),
 		store.Indexes(),
 	))
+	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
 
 	// ── Multi-Agent Coordination workers ─────────────────────────────────────
 	nodeManager.RegisterCommunication(coordination.CreateInMemoryCommunicationWorker("comm-1", store.Objects()))
