@@ -94,18 +94,16 @@ The execution layer is organised as a **cognitive dataflow pipeline** decomposed
 
 | # | Layer | Workers |
 |---|---|---|
-| 1 | **Data Plane** — Storage & Index | `IndexBuildWorker`, `SegmentWorker` _(compaction)_, `VectorRetrievalExecutor` |
-| 2 | **Event / Log Layer** — WAL & Version Backbone | `IngestWorker`, `LogDispatchWorker` _(pub-sub)_, `TimeTick / TSO Worker` |
-| 3 | **Object Layer** — Canonical Objects | `ObjectMaterializationWorker`, `StateMaterializationWorker`, `ToolTraceWorker` |
-| 4 | **Cognitive Layer** — Memory Lifecycle | `MemoryExtractionWorker`, `MemoryConsolidationWorker`, `SummarizationWorker`, `ReflectionPolicyWorker` |
-| 5 | **Structure Layer** — Graph & Tensor Structure | `GraphRelationWorker`, `EmbeddingBuilderWorker`, `TensorProjectionWorker` _(optional)_ |
-| 6 | **Policy Layer** — Governance & Constraints | `PolicyWorker`, `ConflictMergeWorker`, `AccessControlWorker` |
-| 7 | **Query / Reasoning Layer** — Retrieval & Reasoning | `QueryWorker`, `ProofTraceWorker`, `SubgraphExecutor`, `MicroBatchScheduler` |
-| 8 | **Coordination Layer** — Multi-Agent Interaction | `CommunicationWorker`, `SharedMemorySyncWorker`, `ExecutionOrchestrator` |
+| 1 | **Data Plane** | `IndexBuildWorker`, `CompactionWorker`, `QueryWorker` |
+| 2 | **Event Backbone** | `IngestWorker`, `DispatcherWorker`, `TSO Worker` |
+| 3 | **Object Layer** | `ObjectMaterializationWorker`, `StateWorker` |
+| 4 | **Memory / Cognitive Layer** | `ExtractionWorker`, `ConsolidationWorker`, `ReflectionWorker`, `QueryWorker` |
+| 5 | **Structure Layer** | `GraphWorker`, `EmbeddingWorker`, `QueryWorker` |
+| 6 | **Policy Layer** | `PolicyWorker`, `ConflictWorker`, `QueryWorker` |
+| 7 | **Query / Reasoning Layer** | `QueryWorker`, `ProofTraceWorker`, `SubgraphExecutor` |
+| 8 | **Coordination Layer** | `CommunicationWorker`, `Orchestrator` |
 
 All workers implement typed interfaces defined in [`src/internal/worker/nodes/contracts.go`](src/internal/worker/nodes/contracts.go) and are registered via the pluggable `Manager`. The `ExecutionOrchestrator` ([`src/internal/worker/orchestrator.go`](src/internal/worker/orchestrator.go)) dispatches tasks to chains with priority-aware queuing and backpressure.
-
-> **Current implementation status:** Layers 1–4 and parts of 5–8 are fully implemented. `VectorRetrievalExecutor`, `LogDispatchWorker`, `TSO Worker`, `EmbeddingBuilderWorker`, `TensorProjectionWorker`, `AccessControlWorker`, `SubgraphExecutor`, and `SharedMemorySyncWorker` are planned for v1.x / v2+.
 
 ### 4 Flow Chains
 
