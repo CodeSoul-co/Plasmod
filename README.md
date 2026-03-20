@@ -431,8 +431,11 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 > **Branch:** `integration/all-features-test`
 > **Last updated:** 2026-03-20
 > **Status:** All Go internal tests pass (`go test ./src/internal/... exit 0`). Integration test suite passes end-to-end.
+> **Note:** This section exists only on `integration/all-features-test` and is intentionally not present on `main`.
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
+
+> 👋 **To all members:** Please leave a comment or Slack thread when you complete your section checklist. Cross-dependency items are called out in the [Cross-Member Collaboration](#cross-member-collaboration) section below — check that table first if your work touches a shared interface.
 
 ---
 
@@ -455,15 +458,39 @@ The following review checklist is intended for team members before merging `inte
 
 **Scope merged:** Dense/sparse retrieval Python service, policy filter, version filter, merger, gRPC proto.
 
+#### ⚡ Dual-Interface Ownership (Python ↔ Go) — B's Primary Responsibility
+
+Member B is the **sole owner** of the contract boundary between the Python retrieval service and the Go HTTP layer. Any change to either side must be confirmed with the other side before merging.
+
+**Go-side interface (owned by B, implemented in Go):**
+
+| Go location | Python counterpart | What must stay in sync |
+|---|---|---|
+| `schemas.QueryRequest` (field names + JSON tags) | `andb_sdk/client.py` → `query()` kwargs | Field names, types, and omitempty rules |
+| `schemas.QueryResponse` (JSON shape) | `andb_sdk/retrieval.py` → response parsing | `objects`, `edges`, `proof_trace`, `applied_filters` keys |
+| `access/gateway.go` `/v1/query` POST body | `retrieval/service/retriever.py` request builder | HTTP method, path, Content-Type |
+| `access/gateway.go` `/v1/ingest` POST body | `andb_sdk/client.py` → `ingest_event()` | `event_id`, `agent_id`, `session_id`, `payload` field presence |
+
+**Proto contract (B must keep aligned):**
+
+| File | Rule |
+|---|---|
+| `src/internal/retrieval/proto/retrieval.proto` | Proto field numbers must NOT change once merged — add new fields only, never renumber |
+| gRPC service name | Must match the Go client stub if one is ever generated; agree with D before adding Go gRPC client |
+
+**Checklist before B marks their section done:**
+
 | Item | Status | Notes |
 |---|---|---|
 | Python service files moved to `src/internal/retrieval/` | ✅ | Renamed from `src/retrieval/` in this commit |
-| gRPC proto at `src/internal/retrieval/proto/retrieval.proto` | ✅ | Check proto field naming aligns with Go `schemas.QueryRequest` |
-| `PolicyFilter` and `VersionFilter` applied in correct order | ✅ | `policy_filter.py` runs before `version_filter.py` in `retriever.py` |
-| **Review focus** | ⚠️ | `dense.py` uses cosine similarity stub — must be replaced with actual embedding model before production |
-| **Review focus** | ⚠️ | Python service has no auth/TLS; do not expose port directly in staging without a sidecar proxy |
-| Missing: Python service health-check endpoint | 🔲 | Add `/healthz` equivalent so Kubernetes readiness probe works |
-| Missing: retry logic in `merger.py` when upstream retrieval times out | 🔲 | Currently raises immediately; add exponential back-off |
+| gRPC proto field names align with Go `schemas.QueryRequest` | ✅ | Verified against JSON tags in `schemas/query.go` |
+| `PolicyFilter` runs before `VersionFilter` in `retriever.py` | ✅ | Order matters — policy eliminates before version ranking |
+| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | **B: run `integration_tests/python/run_all.py` and confirm no key mismatch** |
+| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | **B: cross-check with A** — A's workspace filter added `workspace_id` to ingest body |
+| `dense.py` cosine stub replaced with real embedding model | ⚠️ | Must be done before staging; flag to team if blocked on model choice |
+| Python service `/healthz` endpoint added | 🔲 | Needed for K8s readiness probe |
+| Retry back-off in `merger.py` on upstream timeout | 🔲 | Currently raises immediately — add exponential back-off with max 3 retries |
+| No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy confirmation from infra |
 
 ---
 
@@ -502,12 +529,39 @@ The following review checklist is intended for team members before merging `inte
 
 ---
 
-### Pre-merge Checklist (all members)
+---
 
-- [ ] `go test ./src/internal/... -count=1 -timeout 30s` — all green
-- [ ] `go test ./integration_tests/... -v -timeout 120s` — all green
-- [ ] No new `TODO`/`FIXME` markers in committed code
+## Cross-Member Collaboration
+
+The table below lists every point where two members' work **must be confirmed together** before either side is considered done. Please tag the relevant member when you open a PR or reach this checkpoint.
+
+| # | Interface / Touch Point | Owner | Needs confirmation from | What to verify |
+|---|---|---|---|---|
+| 1 | `schemas.QueryRequest` JSON shape | **A** | **B** | B's Python SDK `query()` kwargs still map 1:1 after A added workspace/object-type filters |
+| 2 | `/v1/ingest` POST body | **A** | **B** | `workspace_id` field added by A — B must update `ingest_event()` in Python SDK |
+| 3 | gRPC proto field names | **B** | **D** | If D adds a Go gRPC client stub, B must freeze proto field numbers and agree on service name first |
+| 4 | `QueryResponse.edges` shape (`[]schemas.Edge`) | **C** | **B** | B's Python SDK parses `edges` — C changed edge structure; B must update response parsing |
+| 5 | `ProofTraceWorker` BFS depth in `QueryResponse.proof_trace` | **D** | **B** | B's integration tests assert on `proof_trace` length; default depth=8 may increase trace size |
+| 6 | `GraphEdgeStore.EdgesFrom` O(n) scan | **C** | **D** | D's BFS calls `EdgesFrom` in a loop — if C changes the store implementation, D's BFS performance changes |
+| 7 | `ToolTraceWorker` → `DerivationLog` → `ProofTrace` chain | **D** | **C** | C's graph edges and D's derivation entries both feed `ProofTrace`; run joint test before merging |
+| 8 | Worker `nodes/contracts.go` interface changes | **D** | **A, B, C** | Any interface signature change in contracts.go is a breaking change for all callers — announce in team chat first |
+
+> 💬 **Suggested flow:** When you finish an item in the table above, post a short message in the team channel: _"#N ready for review by [member]"_. The receiving member should confirm within 24 h or flag a blocker.
+
+---
+
+## Pre-merge Checklist (all members)
+
+> Run this checklist **together as a team** in a short sync call or shared doc before opening the merge PR to `main`.
+
+- [ ] `go test ./src/internal/... -count=1 -timeout 30s` — all green (D runs this)
+- [ ] `go test ./integration_tests/... -v -timeout 120s` — all green (A verifies filter tests)
+- [ ] Python SDK tests pass: `cd integration_tests/python && python run_all.py` (B runs this)
+- [ ] No new `TODO`/`FIXME` markers in committed code (each member self-checks their own files)
 - [ ] `go vet ./...` passes
-- [ ] Python retrieval tests pass: `cd integration_tests/python && python run_all.py`
-- [ ] Topology endpoint returns all expected worker types: `GET /v1/admin/topology`
+- [ ] Cross-member table above: all 8 items confirmed ✅
+- [ ] Topology endpoint returns all expected worker types: `GET /v1/admin/topology` (D checks worker count)
+- [ ] `QueryResponse.edges` non-empty after ingest→query round-trip (C verifies)
+- [ ] `proof_trace` contains at least one `derivation:` step for `tool_call` events (D + B verify together)
 - [ ] Squash-merge or fast-forward only — no merge bubbles on `main`
+- [ ] Tag release commit with `v1.0.0-integration-rc1` before merging
