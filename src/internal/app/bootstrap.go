@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 
@@ -11,6 +12,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/evidence"
 	"andb/src/internal/materialization"
+	"andb/src/internal/s3util"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
@@ -38,6 +40,19 @@ func BuildServer() (*http.Server, error) {
 
 	// ── Storage Layer ────────────────────────────────────────────────────────
 	store := storage.NewMemoryRuntimeStorage()
+
+	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
+	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
+	var coldStore storage.ColdObjectStore
+	if s3Cfg, err := s3util.LoadFromEnv(); err == nil {
+		coldStore = storage.NewS3ColdStore(s3Cfg)
+		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
+			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
+	} else {
+		coldStore = storage.NewInMemoryColdStore()
+		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
+	}
+	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), coldStore)
 
 	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
@@ -77,6 +92,7 @@ func BuildServer() (*http.Server, error) {
 	coord.Registry.Register("derivation_log", derivLog)
 	coord.Registry.Register("policy_decision_log", policyDecLog)
 	coord.Registry.Register("runtime_storage", store)
+	coord.Registry.Register("tiered_objects", tieredObjects)
 
 	// ── Worker Node Manager ──────────────────────────────────────────────────
 	nodeManager := nodes.CreateManager()
