@@ -35,4 +35,3 @@ func TestResponseModeConstants(t *testing.T) {
 		t.Fatalf("response mode constants must not be empty")
 	}
 }
-
