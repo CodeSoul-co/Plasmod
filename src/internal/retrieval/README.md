@@ -2,263 +2,165 @@
 
 ## Overview
 
-The Retrieval Module is responsible for multi-signal candidate retrieval over canonical cognitive objects stored in Milvus. It implements a three-path parallel retrieval architecture with RRF (Reciprocal Rank Fusion) merging, safety filtering, and reranking.
+The Retrieval Module is responsible for multi-signal candidate retrieval over canonical cognitive objects. It implements a three-path parallel retrieval architecture with RRF (Reciprocal Rank Fusion) merging, safety filtering, and reranking.
 
-**Location**: `src/retrieval/`
+**Architecture**: Python thin wrapper + C++ core (via pybind11)
+
+**Location**: 
+- `src/internal/retrieval/` - Python thin wrapper (parameter conversion only)
+- `cpp/` - C++ core implementation (all retrieval logic)
 
 **Schema Documentation**: `docs/schema/retrieval-schema.md`
 
 ---
 
+## Architecture
+
+All retrieval logic is implemented in C++. Python layer only does parameter conversion.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Python Layer                              │
+│  src/internal/retrieval/                                     │
+│  - main.py (entry point, --dev flag)                        │
+│  - service/retriever.py (thin wrapper, calls C++)           │
+│  - service/types.py (type definitions)                      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ pybind11
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      C++ Layer                               │
+│  cpp/                                                        │
+│  ├── include/andb/                                          │
+│  │   ├── types.h         (Candidate, SearchResult, etc.)    │
+│  │   ├── dense.h         (DenseRetriever - HNSW)            │
+│  │   ├── sparse.h        (SparseRetriever - SPARSE_INDEX)   │
+│  │   ├── filter.h        (FilterBitset - BitsetView)        │
+│  │   ├── merger.h        (RRF merge + reranking)            │
+│  │   └── retrieval.h     (Unified Retriever + C API)        │
+│  ├── retrieval/                                             │
+│  │   ├── dense.cpp       (Knowhere HNSW integration)        │
+│  │   ├── sparse.cpp      (Knowhere SPARSE_INVERTED_INDEX)   │
+│  │   ├── filter.cpp      (BitsetView mechanism)             │
+│  │   ├── merger.cpp      (RRF k=60, reranking formula)      │
+│  │   └── retrieval.cpp   (Unified implementation)           │
+│  ├── python/bindings.cpp (pybind11 bindings)                │
+│  └── CMakeLists.txt      (FetchContent Knowhere, pybind11)  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Current Features
 
-### 1. Three-Path Parallel Retrieval
+### 1. Three-Path Parallel Retrieval (all in C++)
 
-| Path | Implementation | Description |
-|------|---------------|-------------|
-| **Dense** | `service/dense.py` | Vector similarity search using Milvus ANN (IP metric) |
-| **Sparse** | `service/sparse.py` | BM25-style sparse vector search with FNV-1a hashing |
-| **Filter** | `service/filter.py` | Attribute-based scalar filtering with Milvus expressions |
+| Path | C++ Implementation | Description |
+|------|-------------------|-------------|
+| **Dense** | `cpp/retrieval/dense.cpp` | Knowhere HNSW index, Search with BitsetView |
+| **Sparse** | `cpp/retrieval/sparse.cpp` | Knowhere SPARSE_INVERTED_INDEX |
+| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView mechanism passed to Search |
 
-### 2. RRF Fusion
+### 2. RRF Fusion (C++)
 
-**Implementation**: `service/merger.py`
+**Implementation**: `cpp/retrieval/merger.cpp`
 
 ```
 RRF_score(d) = Σ 1/(k + rank_i(d))
 ```
 
-- `k = 60` (configurable)
+- `k = 60` (configurable via MergeConfig)
 - Accumulates scores across all three channels
 - Per-channel scores tracked: `dense_score`, `sparse_score`
 
-### 3. Safety Filtering
+### 3. Reranking Formula (C++)
 
-**Implementation**: `service/merger.py` → `Merger._safety_filter()`
-
-| Rule | Field Checked | Condition |
-|------|--------------|-----------|
-| 1 | `quarantine_flag` | `== True` → remove |
-| 2 | `ttl` | `< now` → remove (expired) |
-| 3 | `visible_time` | `> now` → remove (not yet visible) |
-| 4 | `is_active` | `== False` → remove |
-| 5 | `visible_time` | `> as_of_ts` → remove (time-travel) |
-| 6 | `valid_from` | `> as_of_ts` → remove (time-travel) |
-| 7 | `version` | `< min_version` → remove |
-
-### 4. Reranking Formula
-
-```python
-final_score = score * max(importance, 0.01) * max(freshness_score, 0.01) * max(confidence, 0.01)
+```cpp
+final_score = rrf_score * max(importance, 0.01f) * max(freshness_score, 0.01f) * max(confidence, 0.01f)
 ```
 
-### 5. Seed Marking (for Graph Expansion)
+### 4. Seed Marking (C++)
 
-- Candidates with `final_score >= 0.7` are marked as seeds
-- Sets `is_seed = True` and `seed_score = final_score`
+- Candidates with `final_score >= seed_threshold` (default 0.7) are marked as seeds
+- Sets `is_seed = true` and `seed_score = final_score`
 - Graph Expansion Layer uses these seeds for 1-hop traversal
 
-### 6. Filter-Only Mode
+### 5. Filter Mechanism (C++)
 
-When `enable_filter_only = True`:
-- Skips Dense and Sparse retrieval
-- Returns filter results with `score = 1.0 * salience_weight`
-- Sorted by `(importance desc, confidence desc)`
-
-### 7. Graph Mode
-
-When `for_graph = True`:
-- Returns `top_k * 2` candidates instead of `top_k`
-- Ensures `source_event_ids` is populated for graph traversal
+Uses Knowhere's BitsetView:
+- Bit = 1 means filtered out (excluded from search)
+- Applied during Search call, not as separate index
+- Supports safety rules: quarantine, TTL, visibility, is_active
 
 ---
 
 ## Module Structure
 
 ```
-src/retrieval/
-├── README.md              # This file
-├── main.py                # Entry point (--dev for debug mode)
-├── requirements.txt       # Python dependencies
+cpp/                              # C++ core (all retrieval logic)
+├── include/andb/
+│   ├── types.h                   # Candidate, SearchResult, IndexConfig, MergeConfig
+│   ├── dense.h                   # DenseRetriever interface
+│   ├── sparse.h                  # SparseRetriever interface
+│   ├── filter.h                  # FilterBitset, FilterBuilder
+│   ├── merger.h                  # Merger (RRF + reranking)
+│   └── retrieval.h               # Unified Retriever + C API
+├── retrieval/
+│   ├── dense.cpp                 # Knowhere HNSW wrapper
+│   ├── sparse.cpp                # Knowhere SPARSE_INVERTED_INDEX wrapper
+│   ├── filter.cpp                # BitsetView implementation
+│   ├── merger.cpp                # RRF merge + reranking
+│   └── retrieval.cpp             # Unified implementation
+├── python/
+│   └── bindings.cpp              # pybind11 bindings
+└── CMakeLists.txt                # Build configuration
+
+src/internal/retrieval/           # Python thin wrapper
+├── README.md                     # This file
+├── main.py                       # Entry point (--dev for debug mode)
+├── requirements.txt              # Python dependencies
 ├── proto/
-│   └── retrieval.proto    # gRPC service definition
+│   └── retrieval.proto           # gRPC service definition
 └── service/
     ├── __init__.py
-    ├── types.py           # RetrievalRequest, Candidate, CandidateList, QueryMeta
-    ├── interfaces.py      # Abstract base classes for retrievers
-    ├── retriever.py       # Unified Retriever orchestrator
-    ├── dense.py           # MilvusDenseRetriever
-    ├── sparse.py          # MilvusSparseRetriever
-    ├── filter.py          # MilvusFilterRetriever
-    ├── merger.py          # Merger (RRF + safety filter + rerank)
-    └── version_filter.py  # Version constraint utilities
+    ├── types.py                  # Type definitions + C++ availability check
+    ├── retriever.py              # Thin wrapper calling C++ module
+    └── errors.py                 # Error codes
 ```
 
 ---
 
-## Interface Contracts
+## Building the C++ Module
 
-### Input: RetrievalRequest (from Query Layer)
+### Prerequisites
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `query_id` | `str` | Yes | Unique query ID for tracing |
-| `query_text` | `str` | Yes | Natural language query |
-| `query_vector` | `List[float]` | No | Pre-computed dense embedding |
-| `tenant_id` | `str` | Yes | Tenant isolation boundary |
-| `workspace_id` | `str` | Yes | Workspace isolation boundary |
-| `agent_id` | `str` | No | Agent filter |
-| `session_id` | `str` | No | Session filter |
-| `scope` | `str` | No | Visibility scope (private/session/workspace/global) |
-| `memory_types` | `List[str]` | No | Memory type filter (episodic/semantic/procedural) |
-| `object_types` | `List[str]` | No | Object type filter (memory/event/artifact/state) |
-| `top_k` | `int` | Yes | Number of candidates to return (default: 10) |
-| `min_confidence` | `float` | No | Minimum confidence threshold |
-| `min_importance` | `float` | No | Minimum importance threshold |
-| `time_range` | `TimeRange` | No | Temporal bounds (from_ts, to_ts) |
-| `as_of_ts` | `datetime` | No | Time-travel constraint |
-| `min_version` | `int` | No | Minimum version constraint |
-| `exclude_quarantined` | `bool` | No | Exclude quarantined objects (default: True) |
-| `enable_dense` | `bool` | No | Enable dense retrieval (default: True) |
-| `enable_sparse` | `bool` | No | Enable sparse retrieval (default: True) |
-| `enable_filter` | `bool` | No | Enable filter retrieval (default: True) |
-| `enable_filter_only` | `bool` | No | Filter-only mode (default: False) |
-| `for_graph` | `bool` | No | Graph expansion mode (default: False) |
+- CMake 3.14+
+- C++17 compiler (GCC 9+, Clang 10+, MSVC 2019+)
+- Python 3.8+ with development headers
 
-### Output: CandidateList (to Query Layer / Graph Expansion Layer)
+### Build Steps
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `candidates` | `List[Candidate]` | Ranked candidates, sorted by `final_score` desc |
-| `total_found` | `int` | Total candidates before truncation |
-| `retrieved_at` | `datetime` | Retrieval timestamp |
-| `query_meta` | `QueryMeta` | Execution metadata |
+```bash
+cd cpp
+mkdir build && cd build
+cmake .. -DANDB_WITH_PYBIND=ON
+make -j$(nproc)
+```
 
-### Candidate Fields
+### CMake Options
 
-| Category | Fields |
-|----------|--------|
-| **Identity** | `object_id`, `object_type` |
-| **Scores** | `score`, `final_score`, `dense_score`, `sparse_score` |
-| **Metadata** | `agent_id`, `session_id`, `scope`, `version`, `provenance_ref`, `content`, `summary`, `level`, `memory_type`, `verified_state` |
-| **Scoring Input** | `confidence`, `importance`, `freshness_score`, `salience_weight` |
-| **Version/Time** | `valid_from`, `valid_to`, `visible_time` |
-| **Governance** | `quarantine_flag`, `visibility_policy`, `is_active`, `ttl` |
-| **Channel Tracking** | `source_channels` |
-| **Graph Expansion** | `is_seed`, `seed_score`, `source_event_ids` |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `ANDB_WITH_PYBIND` | ON | Build pybind11 Python bindings |
+| `ANDB_WITH_GPU` | OFF | Enable GPU support via Knowhere RAFT |
 
-### QueryMeta Fields
+### Cross-Platform Support
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `latency_ms` | `int` | Merge step latency |
-| `dense_hits` | `int` | Dense retriever hit count |
-| `sparse_hits` | `int` | Sparse retriever hit count |
-| `filter_hits` | `int` | Filter retriever hit count |
-| `channels_used` | `List[str]` | Active channels that returned results |
-
----
-
-## Integration with Other Layers
-
-### Upstream: Materialization Layer
-
-| What Materialization Writes | Where | What We Read |
-|----------------------------|-------|--------------|
-| Dense embedding | Milvus `vector` field | Dense retriever searches |
-| Sparse embedding | Milvus `sparse_vector` field | Sparse retriever searches |
-| `freshness_score` | Milvus column | Reranking formula |
-| `source_event_ids` | Milvus column | Graph expansion |
-| `confidence`, `importance` | Milvus columns | Reranking + threshold filter |
-| `is_active`, `quarantine_flag`, `ttl` | Milvus columns | Safety filter |
-| `salience_weight` | Milvus column | Filter-only scoring |
-
-**Constraint**: Materialization Layer and Query Layer must use the same `model_id` for embeddings.
-
-### Downstream: Graph Expansion Layer
-
-| What We Output | How Graph Expansion Uses It |
-|----------------|----------------------------|
-| `Candidate.object_id` | Starting node for graph traversal |
-| `Candidate.source_event_ids` | Edge list for evidence subgraph expansion |
-| `Candidate.is_seed` | Only expands candidates where `is_seed=True` |
-| `Candidate.seed_score` | Prioritizes seed expansion order |
-| `Candidate.provenance_ref` | Traces provenance chain |
-| `for_graph=True` | Tells us to return `top_k*2` candidates |
-
-### Downstream: Query Layer
-
-| What Query Layer Provides | What We Return |
-|--------------------------|----------------|
-| `RetrievalRequest` | `CandidateList` with ranked candidates |
-| `query_vector` (pre-computed) | Dense uses directly |
-| `query_text` | Sparse converts to BM25 sparse vector |
-
-### Downstream: Benchmark Layer
-
-| What We Output | How Benchmark Uses It |
-|----------------|----------------------|
-| `dense_score`, `sparse_score` | Per-channel evaluation |
-| `score`, `final_score` | Ranking quality evaluation |
-| `source_channels` | Channel coverage analysis |
-| `QueryMeta.*_hits` | Hit count metrics |
-| `QueryMeta.latency_ms` | Performance benchmarking |
-
----
-
-## Milvus Collection Requirements
-
-All 24 fields must exist in the Milvus collection:
-
-**Isolation**: `tenant_id`, `workspace_id`
-
-**Identity**: `object_id`, `object_type`
-
-**Metadata**: `agent_id`, `session_id`, `scope`, `version`, `provenance_ref`, `content`, `summary`, `level`, `memory_type`, `verified_state`, `salience_weight`
-
-**Scoring**: `confidence`, `importance`, `freshness_score`
-
-**Safety**: `is_active`, `quarantine_flag`, `ttl`, `valid_from`, `valid_to`, `visible_time`, `visibility_policy`
-
-**Graph**: `source_event_ids`
-
-**Vectors**: `vector` (FLOAT_VECTOR), `sparse_vector` (SPARSE_FLOAT_VECTOR)
-
----
-
-## Changelog
-
-### 2026-03-20 (Evening)
-
-- **Added `benchmark_retrieve()` interface**: Returns ALL candidates without truncation for Benchmark Layer analysis. Supports baseline comparisons (dense-only, sparse-only, full-fusion).
-
-- **Added `rrf_score` field to Candidate**: Preserves RRF score before reranking for benchmark analysis.
-
-- **Added error codes module** (`service/errors.py`): Defines `RetrievalErrorCode` (200/400/404/500/503) and validation utilities aligned with week-3 design doc.
-
-- **Enhanced `--dev` mode logging**: Detailed request/result logging including per-candidate score breakdown (rrf_score, dense_score, sparse_score, importance, freshness, confidence).
-
-- **Added `benchmark_retrieve()` to RetrievalService**: Exposed in main.py for Benchmark Layer integration.
-
-### 2026-03-20 (Morning)
-
-- **Rebased to main** (`3850557`): Synced with latest main branch
-- **Removed test files from git**: Local dev test files (`test_*.py`) excluded from tracking
-
-### 2026-03-19
-
-- **Fixed safety filter bug**: Dense and Sparse now read all 24 fields from Milvus including safety-filter fields (`quarantine_flag`, `is_active`, `ttl`, `visible_time`, `valid_from`, `freshness_score`, `source_event_ids`, `visibility_policy`). Previously these fields were only read by Filter, causing safety filter to silently pass quarantined/inactive/expired objects from Dense/Sparse channels.
-
-- **Replaced member references with module names**: All "member A/B/C/D/E" references in documentation replaced with proper module names (Materialization Layer, Retrieval Layer, Graph Expansion Layer, Query Layer, Benchmark Layer).
-
-- **Rewrote retrieval-schema.md**: Exhaustive field listing with:
-  - Every field's type, default, required status
-  - Written-by and read-by for each field
-  - Field flow traced through Filter, Dense, Sparse, Merger, Retriever
-  - Milvus filter expressions documented per component
-  - Safety filter rules numbered with exact conditions
-  - Interface contracts as explicit tables
-  - No ambiguous language ("etc." removed)
+- Ubuntu 20.04 x86_64
+- Ubuntu 20.04 Aarch64
+- macOS x86_64
+- macOS Apple Silicon (arm64)
 
 ---
 
@@ -267,52 +169,74 @@ All 24 fields must exist in the Milvus collection:
 ### Development Mode
 
 ```bash
-cd src/retrieval
-python main.py --dev
+python -m src.internal.retrieval.main --dev
 ```
 
-### Dependencies
+### Test Mode
 
 ```bash
-pip install -r requirements.txt
+python -m src.internal.retrieval.main --test
+python -m src.internal.retrieval.main --test --dev  # with debug output
 ```
 
-Required packages:
-- `pymilvus` - Milvus Python SDK
-- `grpcio`, `grpcio-tools` - gRPC support
-- `protobuf` - Protocol buffers
+### Command Line Options
 
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MILVUS_URI` | `http://localhost:19530` | Milvus server URI |
-| `MILVUS_COLLECTION` | `cognitive_objects` | Collection name |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dev` | false | Enable dev mode (verbose logging) |
+| `--test` | false | Run basic test |
+| `--index-type` | HNSW | Index type (HNSW, IVF_FLAT) |
+| `--metric-type` | IP | Metric type (IP, L2, COSINE) |
+| `--dim` | 128 | Vector dimension |
+| `--rrf-k` | 60 | RRF smoothing parameter |
+| `--seed-threshold` | 0.7 | Seed marking threshold |
 
 ---
 
 ## Error Codes
 
-Defined in `service/errors.py`, aligned with week-3 design doc:
+Defined in `service/errors.py`:
 
-| Code | Name | Description | Query Layer Action |
-|------|------|-------------|--------------------|
-| 200 | OK | Normal response | Process candidates |
-| 400 | BAD_REQUEST | Missing required fields | Check request format |
-| 404 | NOT_FOUND | No candidates found (valid) | Return empty to agent |
-| 500 | INTERNAL_ERROR | Milvus connection failed, etc. | Log error, return degraded |
-| 503 | SERVICE_UNAVAILABLE | Timeout | Log, may retry |
+| Code | Name | Description |
+|------|------|-------------|
+| 200 | OK | Normal response |
+| 400 | BAD_REQUEST | Missing required fields |
+| 404 | NOT_FOUND | No candidates found (valid) |
+| 500 | INTERNAL_ERROR | Internal error |
+| 503 | SERVICE_UNAVAILABLE | Timeout |
+
+---
+
+## Changelog
+
+### 2026-03-20 (Evening)
+
+- **Migrated to C++ architecture**: All retrieval logic now in `cpp/`, Python layer is thin wrapper only
+- **Knowhere integration**: Dense (HNSW), Sparse (SPARSE_INVERTED_INDEX), Filter (BitsetView)
+- **pybind11 bindings**: Exposes all C++ interfaces to Python
+- **CMake build system**: FetchContent for Knowhere/pybind11, cross-platform support
+- **Removed old Milvus-based Python implementation**: `dense.py`, `sparse.py`, `filter.py`, `merger.py` deleted
+
+### 2026-03-20 (Morning)
+
+- **Added `benchmark_retrieve()` interface**: Returns ALL candidates without truncation
+- **Added `rrf_score` field to Candidate**: For benchmark analysis
+- **Added error codes module** (`service/errors.py`)
+- **Enhanced `--dev` mode logging**
+
+### 2026-03-19
+
+- **Fixed safety filter bug**: All 24 fields now read from storage
+- **Rewrote retrieval-schema.md**: Exhaustive field documentation
 
 ---
 
 ## TODO / Future Work
 
-- [ ] Add `owner_type` filter support (private/public/partial)
-- [ ] Implement `relation_constraints` from query-schema.md
-- [ ] Add C++ high-performance retrieval implementation (see `cpp/` directory)
+- [x] C++ retrieval layer with Knowhere integration (completed 2026-03-20)
+- [x] pybind11 bindings (completed 2026-03-20)
+- [x] Python thin wrapper (completed 2026-03-20)
+- [ ] Replace stub implementations with actual Knowhere calls
+- [ ] GPU support via Knowhere RAFT
 - [ ] Distributed retrieval with sharding
 - [ ] Caching layer for hot queries
-- [x] Add `benchmark_retrieve()` interface (completed 2026-03-20)
-- [x] Add `rrf_score` field for benchmark analysis (completed 2026-03-20)
-- [x] Add error codes definition (completed 2026-03-20)
-- [x] Enhance `--dev` mode logging (completed 2026-03-20)
