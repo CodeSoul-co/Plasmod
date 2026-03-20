@@ -7,6 +7,26 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import datetime
 
+# Try to import C++ module
+try:
+    import andb_retrieval as _cpp
+    _CPP_AVAILABLE = True
+except ImportError:
+    _cpp = None
+    _CPP_AVAILABLE = False
+
+
+def cpp_available() -> bool:
+    """Check if C++ module is available."""
+    return _CPP_AVAILABLE
+
+
+def cpp_version() -> str:
+    """Get C++ module version."""
+    if _CPP_AVAILABLE:
+        return _cpp.version()
+    return "cpp-not-available"
+
 
 @dataclass
 class TimeRange:
@@ -64,9 +84,10 @@ class Candidate:
     score: float = 0.0                   # RRF merged score (before reranking)
     final_score: float = 0.0             # After reranking: rrf * importance * freshness * confidence
     
-    # Per-channel scores (for member E benchmarks)
+    # Per-channel scores (for Benchmark Layer)
     dense_score: float = 0.0
     sparse_score: float = 0.0
+    rrf_score: float = 0.0                   # RRF score before reranking (for benchmark analysis)
     
     # Metadata
     agent_id: str = ""

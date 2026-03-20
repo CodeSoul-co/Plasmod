@@ -63,3 +63,6 @@ server.*.log
 s3-integration-run-record-*.md
 s3-go-integration-output-*.txt
 integration_tests/s3-python-output-*.txt
+
+# Local dev test files (not for push)
+src/retrieval/test_*.py

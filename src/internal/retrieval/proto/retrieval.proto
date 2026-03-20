@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package retrieval;
 
-option go_package = "andb/src/internal/retrieval/generated";
+option go_package = "andb/src/retrieval/generated";
 
 // ============================================================================
 // Retrieval Request
