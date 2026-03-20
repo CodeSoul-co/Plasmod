@@ -21,7 +21,7 @@ func TestManager_RegisterAndTopology(t *testing.T) {
 	m.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
 	m.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
 	m.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
-	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges()))
+	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), nil))
 
 	topo := m.Topology()
 	if topo == nil {

@@ -146,12 +146,13 @@ func (m *Manager) DispatchMemoryExtraction(eventID, agentID, sessionID, content 
 }
 
 // DispatchProofTrace collects trace steps from all registered proof-trace workers.
-func (m *Manager) DispatchProofTrace(objectIDs []string) []string {
+// maxDepth controls BFS depth (0 = default cap of 8).
+func (m *Manager) DispatchProofTrace(objectIDs []string, maxDepth int) []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	trace := []string{}
 	for _, w := range m.proofTraceWorkers {
-		trace = append(trace, w.AssembleTrace(objectIDs)...)
+		trace = append(trace, w.AssembleTrace(objectIDs, maxDepth)...)
 	}
 	return trace
 }

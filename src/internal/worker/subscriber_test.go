@@ -34,7 +34,7 @@ func buildSubscriberRuntime(t *testing.T) (
 	m.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
 	m.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
 	m.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("gr-1", store.Edges()))
-	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges()))
+	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges(), nil))
 	m.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker(
 		"rp-1", store.Objects(), store.Policies(), plog,
 	))
