@@ -59,7 +59,7 @@ func TestCanonicalSchemas_JSONTags(t *testing.T) {
 			name:  "User",
 			value: User{},
 			expected: []string{
-				`"user_id"`, `"user_name"`, `"user_tenant_id"`, `"user_workspace_id"`,
+				`"user_id"`, `"user_name"`, `"user_tenant_id"`, `"user_workspace_id"`, `"default_visibility"`,
 			},
 		},
 		{
