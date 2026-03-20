@@ -24,3 +24,28 @@ type QueryResponse struct {
 	AppliedFilters []string        `json:"applied_filters"`
 	ProofTrace     []string        `json:"proof_trace"`
 }
+
+type GraphExpandRequest struct {
+	QueryText       string     `json:"query_text,omitempty"`
+	SeedObjectIDs   []string   `json:"seed_object_ids"`
+	SeedObjectTypes []string   `json:"seed_object_types,omitempty"`
+	SessionID       string     `json:"session_id,omitempty"`
+	AgentID         string     `json:"agent_id,omitempty"`
+	Hops            int        `json:"hops"`
+	TimeWindow      TimeWindow `json:"time_window"`
+	EdgeTypes       []string   `json:"edge_types,omitempty"`
+	MaxNodes        int        `json:"max_nodes,omitempty"`
+	MaxEdges        int        `json:"max_edges,omitempty"`
+	IncludeProps    bool       `json:"include_props,omitempty"`
+	NeedProvenance  bool       `json:"need_provenance,omitempty"`
+	ResponseMode    string     `json:"response_mode,omitempty"`
+}
+
+type GraphExpandResponse struct {
+	Subgraph       EvidenceSubgraph `json:"subgraph"`
+	AppliedFilters []string         `json:"applied_filters,omitempty"`
+}
+
+type GraphExpander interface {
+	Expand(req GraphExpandRequest) (GraphExpandResponse, error)
+}
