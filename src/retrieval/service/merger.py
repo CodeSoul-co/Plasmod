@@ -74,6 +74,7 @@ class Merger:
         
         # Step 4: Rerank with design doc formula
         for c in candidates:
+            c.rrf_score = c.score  # Preserve RRF score before reranking (for benchmark)
             c.final_score = (c.score
                            * max(c.importance, 0.01)
                            * max(c.freshness_score, 0.01)
@@ -149,6 +150,82 @@ class Merger:
                 elif channel == "sparse":
                     candidate.sparse_score = rrf_score
                 merged[candidate.object_id] = candidate
+    
+    def merge_for_benchmark(
+        self,
+        dense_results: List[Candidate],
+        sparse_results: List[Candidate],
+        filter_results: List[Candidate],
+        request: RetrievalRequest,
+    ) -> CandidateList:
+        """
+        Merge for benchmark mode - NO truncation, returns all candidates.
+        Used by Benchmark Layer (member E) for recall analysis.
+        """
+        start_time = datetime.now()
+        
+        # Step 1: Merge to map, accumulate RRF scores
+        merged: Dict[str, Candidate] = {}
+        
+        self._add_with_rrf(merged, dense_results, "dense")
+        self._add_with_rrf(merged, sparse_results, "sparse")
+        self._add_with_rrf(merged, filter_results, "filter")
+        
+        candidates = list(merged.values())
+        
+        # Step 2: Safety filter (still applied)
+        candidates = self._safety_filter(candidates, request)
+        
+        # Step 3: Filter low confidence and low importance
+        min_conf = request.min_confidence if request.min_confidence > 0 else self.min_confidence
+        if min_conf > 0:
+            candidates = [c for c in candidates if c.confidence >= min_conf]
+        if request.min_importance > 0:
+            candidates = [c for c in candidates if c.importance >= request.min_importance]
+        
+        # Step 4: Rerank
+        for c in candidates:
+            c.rrf_score = c.score
+            c.final_score = (c.score
+                           * max(c.importance, 0.01)
+                           * max(c.freshness_score, 0.01)
+                           * max(c.confidence, 0.01))
+        
+        # Step 5: Sort by final_score descending
+        candidates.sort(key=lambda c: c.final_score, reverse=True)
+        
+        # NO truncation - return all candidates for benchmark analysis
+        
+        # Step 6: Mark seed candidates
+        for c in candidates:
+            if c.final_score >= self.seed_threshold:
+                c.is_seed = True
+                c.seed_score = c.final_score
+        
+        # Build metadata
+        latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+        channels_used = []
+        if dense_results:
+            channels_used.append("dense")
+        if sparse_results:
+            channels_used.append("sparse")
+        if filter_results:
+            channels_used.append("filter")
+        
+        query_meta = QueryMeta(
+            latency_ms=latency_ms,
+            dense_hits=len(dense_results),
+            sparse_hits=len(sparse_results),
+            filter_hits=len(filter_results),
+            channels_used=channels_used,
+        )
+        
+        return CandidateList(
+            candidates=candidates,
+            total_found=len(merged),
+            retrieved_at=datetime.now(),
+            query_meta=query_meta,
+        )
     
     def _safety_filter(self, candidates: List[Candidate], request: RetrievalRequest) -> List[Candidate]:
         """
