@@ -174,15 +174,17 @@ func (c *MemoryPipelineChain) Run(in MemoryPipelineInput) ChainResult {
 // Graph expansion (BulkEdges 1-hop) is handled inside the Evidence Assembler
 // and therefore sits outside this chain.
 type QueryChain struct {
-	mgr      *nodes.Manager
+	mgr       *nodes.Manager
 	dataPlane interface {
 		Search(input interface{}) interface{}
 	}
 }
 
 type QueryChainInput struct {
-	Request    schemas.QueryRequest
-	ObjectIDs  []string
+	Request   schemas.QueryRequest
+	ObjectIDs []string
+	// MaxDepth controls BFS hops in proof trace (0 = default 8).
+	MaxDepth int
 }
 
 type QueryChainOutput struct {
@@ -196,7 +198,7 @@ func CreateQueryChain(mgr *nodes.Manager) *QueryChain {
 // Run assembles a proof trace for the supplied object IDs (collected upstream
 // by the QueryNode / TieredDataPlane).
 func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
-	trace := c.mgr.DispatchProofTrace(in.ObjectIDs)
+	trace := c.mgr.DispatchProofTrace(in.ObjectIDs, in.MaxDepth)
 	return QueryChainOutput{ProofTrace: trace},
 		ok("query_chain", map[string]any{
 			"object_count": len(in.ObjectIDs),

@@ -106,9 +106,11 @@ type GraphRelationWorker interface {
 
 // ProofTraceWorker assembles explainable proof traces from the derivation log
 // and graph index for a given query result set.
+// maxDepth controls how many hops to traverse (1 = immediate edges only,
+// 0 or negative = unlimited BFS up to an internal cap of 8).
 type ProofTraceWorker interface {
 	Info() NodeInfo
-	AssembleTrace(objectIDs []string) []string
+	AssembleTrace(objectIDs []string, maxDepth int) []string
 }
 
 // ─── Ingestion & Materialization worker interfaces ────────────────────────────

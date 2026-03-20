@@ -87,7 +87,7 @@ func BuildServer() (*http.Server, error) {
 	nodeManager.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
 	nodeManager.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
 	nodeManager.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
-	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges()))
+	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), derivLog))
 	nodeManager.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker(
 		"reflect-1",
 		store.Objects(),
@@ -112,7 +112,7 @@ func BuildServer() (*http.Server, error) {
 		store.Objects(),
 		store.Versions(),
 	))
-	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects()))
+	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog))
 
 	// ── Index & Retrieval workers ─────────────────────────────────────────────
 	nodeManager.RegisterIndexBuild(indexing.CreateInMemoryIndexBuildWorker(

@@ -423,3 +423,91 @@ Additional supporting docs already in the repo:
 - Cloud-native distributed orchestration
 
 For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md).
+
+---
+
+## Integration Branch — Team Review Notes
+
+> **Branch:** `integration/all-features-test`
+> **Last updated:** 2026-03-20
+> **Status:** All Go internal tests pass (`go test ./src/internal/... exit 0`). Integration test suite passes end-to-end.
+
+The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
+
+---
+
+### Member A — Schema & Query Filters (`feature/schema-a`)
+
+**Scope merged:** Tenant/workspace filters, object/memory filter predicates on the query path.
+
+| Item | Status | Notes |
+|---|---|---|
+| `QueryRequest` filter fields wired through `PolicyEngine` | ✅ | See `semantic/policy_engine.go` and `access/gateway.go` `/v1/query` handler |
+| Tenant isolation: `workspace_id` and `tenant_id` filter at segment scan | ✅ | `coordinator/query_coordinator.go` applies filters before `DataPlane.Search` |
+| Object-type filter (`memory` / `state` / `artifact`) | ✅ | `QueryRequest.ObjectTypes` applied in `semantic/planner.go` |
+| **Review focus** | ⚠️ | Verify filter short-circuit when `ObjectTypes` is empty — should default to returning all types, not zero results |
+| **Review focus** | ⚠️ | `workspace_id` propagation: ensure events written without `WorkspaceID` are still queryable under default namespace |
+| Edge case: combined tenant + object-type + top_k filter | 🔲 | Needs integration test covering the 3-way combination |
+
+---
+
+### Member B — Python Retrieval Service (`feature/retrieval-b`)
+
+**Scope merged:** Dense/sparse retrieval Python service, policy filter, version filter, merger, gRPC proto.
+
+| Item | Status | Notes |
+|---|---|---|
+| Python service files moved to `src/internal/retrieval/` | ✅ | Renamed from `src/retrieval/` in this commit |
+| gRPC proto at `src/internal/retrieval/proto/retrieval.proto` | ✅ | Check proto field naming aligns with Go `schemas.QueryRequest` |
+| `PolicyFilter` and `VersionFilter` applied in correct order | ✅ | `policy_filter.py` runs before `version_filter.py` in `retriever.py` |
+| **Review focus** | ⚠️ | `dense.py` uses cosine similarity stub — must be replaced with actual embedding model before production |
+| **Review focus** | ⚠️ | Python service has no auth/TLS; do not expose port directly in staging without a sidecar proxy |
+| Missing: Python service health-check endpoint | 🔲 | Add `/healthz` equivalent so Kubernetes readiness probe works |
+| Missing: retry logic in `merger.py` when upstream retrieval times out | 🔲 | Currently raises immediately; add exponential back-off |
+
+---
+
+### Member C — Graph Relations (`feature/graph-c`)
+
+**Scope merged:** `GraphRelationWorker`, `GraphEdgeStore.BulkEdges`, 1-hop expansion in `evidence.Assembler`.
+
+| Item | Status | Notes |
+|---|---|---|
+| `GraphRelationWorker.IndexEdge` wired in `MainChain` | ✅ | `chain.go` step 4: `derived_from` edge written per ingest |
+| `BulkEdges(objectIDs)` 1-hop expansion in `Assembler.Build` | ✅ | Returns typed `[]schemas.Edge` in every `QueryResponse` |
+| `GraphEdgeStore.DeleteEdge` contract defined | ✅ | Available but not yet called in any worker path |
+| **Review focus** | ⚠️ | `EdgesFrom(id)` is O(n) scan — acceptable for current in-memory size, must be replaced with indexed lookup before scaling |
+| **Review focus** | ⚠️ | Multi-hop BFS in `ProofTraceWorker` now default-caps at depth=8; verify there are no cycles in the test graph that could inflate trace size |
+| **Review focus** | ⚠️ | `conflict_resolved` edges created by `ConflictMergeWorker` are currently not surfaced in `QueryResponse.Edges` — intentional? |
+| Missing: edge TTL / expiry | 🔲 | Edges accumulate indefinitely; consider adding `expires_at` to `schemas.Edge` in v1.x |
+
+---
+
+### Member D — Worker Architecture Refactor
+
+**Scope merged:** Worker split into 5 domain subpackages, `Create*` naming convention, multi-hop ProofTrace, DerivationLog integration.
+
+| Item | Status | Notes |
+|---|---|---|
+| Worker subpackages: `ingestion` / `materialization` / `cognitive` / `indexing` / `coordination` | ✅ | Each worker in its own file |
+| `nodes/` retains only contracts + Manager + DataNode/IndexNode/QueryNode | ✅ | `data_node.go`, `index_node.go`, `query_node.go` split out |
+| All constructors renamed `Create*` | ✅ | `eventbackbone` package retains `New*` (not in scope) |
+| `ProofTraceWorker.AssembleTrace` upgraded to BFS with configurable `maxDepth` | ✅ | Default cap = 8; pass `maxDepth=1` for legacy behaviour |
+| `ToolTraceWorker` appends to `DerivationLog` on `tool_call`/`tool_result` | ✅ | Enables `ProofTraceWorker` to walk event → artifact causal path |
+| `QueryChainInput.MaxDepth` field for caller-controlled trace depth | ✅ | Default 0 → resolves to 8 internally |
+| **Review focus** | ⚠️ | `subscriber.go` event handlers run in goroutines without structured error reporting — add a dead-letter channel before production |
+| **Review focus** | ⚠️ | `ExecutionOrchestrator` priority queues are unbounded (`queueCap` is per-level soft cap); add hard-limit + back-pressure signal |
+| Missing: per-subpackage unit tests | 🔲 | `cognitive/`, `coordination/`, `indexing/`, `ingestion/`, `materialization/` subpackages have no `_test.go` yet |
+| Missing: `ProofTraceWorker` BFS cycle detection test | 🔲 | Add test that seeds a cyclic graph and verifies BFS terminates |
+
+---
+
+### Pre-merge Checklist (all members)
+
+- [ ] `go test ./src/internal/... -count=1 -timeout 30s` — all green
+- [ ] `go test ./integration_tests/... -v -timeout 120s` — all green
+- [ ] No new `TODO`/`FIXME` markers in committed code
+- [ ] `go vet ./...` passes
+- [ ] Python retrieval tests pass: `cd integration_tests/python && python run_all.py`
+- [ ] Topology endpoint returns all expected worker types: `GET /v1/admin/topology`
+- [ ] Squash-merge or fast-forward only — no merge bubbles on `main`
