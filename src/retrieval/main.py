@@ -86,21 +86,79 @@ class RetrievalService:
     async def retrieve(self, request: RetrievalRequest) -> CandidateList:
         """Execute retrieval request"""
         if self.dev_mode:
-            self.logger.debug(f"Retrieve request: query_text='{request.query_text}', "
-                            f"tenant_id={request.tenant_id}, workspace_id={request.workspace_id}")
+            self._log_request(request)
         
         result = await self.retriever.retrieve(request)
         
         if self.dev_mode:
-            self.logger.debug(f"Retrieve result: {len(result.candidates)} candidates, "
-                            f"total_found={result.total_found}")
-            if result.query_meta:
-                self.logger.debug(f"  Query meta: dense_hits={result.query_meta.dense_hits}, "
-                                f"sparse_hits={result.query_meta.sparse_hits}, "
-                                f"filter_hits={result.query_meta.filter_hits}, "
-                                f"latency_ms={result.query_meta.latency_ms}")
+            self._log_result(result)
         
         return result
+    
+    async def benchmark_retrieve(self, request: RetrievalRequest) -> CandidateList:
+        """Execute benchmark retrieval (no truncation, for Benchmark Layer)"""
+        if self.dev_mode:
+            self.logger.debug("[BENCHMARK MODE]")
+            self._log_request(request)
+        
+        result = await self.retriever.benchmark_retrieve(request)
+        
+        if self.dev_mode:
+            self._log_result(result, benchmark=True)
+        
+        return result
+    
+    def _log_request(self, request: RetrievalRequest) -> None:
+        """Log request details in dev mode"""
+        self.logger.debug("=" * 50)
+        self.logger.debug("RETRIEVAL REQUEST")
+        self.logger.debug("=" * 50)
+        self.logger.debug(f"  query_id: {request.query_id}")
+        self.logger.debug(f"  query_text: '{request.query_text}'")
+        self.logger.debug(f"  tenant_id: {request.tenant_id}")
+        self.logger.debug(f"  workspace_id: {request.workspace_id}")
+        self.logger.debug(f"  agent_id: {request.agent_id}")
+        self.logger.debug(f"  session_id: {request.session_id}")
+        self.logger.debug(f"  scope: {request.scope}")
+        self.logger.debug(f"  top_k: {request.top_k}")
+        self.logger.debug(f"  enable_dense: {request.enable_dense}")
+        self.logger.debug(f"  enable_sparse: {request.enable_sparse}")
+        self.logger.debug(f"  enable_filter: {request.enable_filter}")
+        self.logger.debug(f"  enable_filter_only: {request.enable_filter_only}")
+        self.logger.debug(f"  for_graph: {request.for_graph}")
+    
+    def _log_result(self, result: CandidateList, benchmark: bool = False) -> None:
+        """Log result details in dev mode"""
+        self.logger.debug("=" * 50)
+        self.logger.debug("RETRIEVAL RESULT" + (" [BENCHMARK]" if benchmark else ""))
+        self.logger.debug("=" * 50)
+        self.logger.debug(f"  total_found: {result.total_found}")
+        self.logger.debug(f"  candidates_returned: {len(result.candidates)}")
+        
+        if result.query_meta:
+            self.logger.debug("-" * 30)
+            self.logger.debug("QUERY META")
+            self.logger.debug(f"  latency_ms: {result.query_meta.latency_ms}")
+            self.logger.debug(f"  dense_hits: {result.query_meta.dense_hits}")
+            self.logger.debug(f"  sparse_hits: {result.query_meta.sparse_hits}")
+            self.logger.debug(f"  filter_hits: {result.query_meta.filter_hits}")
+            self.logger.debug(f"  channels_used: {result.query_meta.channels_used}")
+        
+        if result.candidates:
+            self.logger.debug("-" * 30)
+            self.logger.debug("CANDIDATE SCORES")
+            for i, c in enumerate(result.candidates[:10], 1):  # Show top 10
+                self.logger.debug(
+                    f"  {i}. {c.object_id}: "
+                    f"rrf={c.rrf_score:.4f}, final={c.final_score:.6f}, "
+                    f"dense={c.dense_score:.4f}, sparse={c.sparse_score:.4f}, "
+                    f"importance={c.importance:.2f}, freshness={c.freshness_score:.2f}, "
+                    f"confidence={c.confidence:.2f}, sources={c.source_channels}"
+                )
+            if len(result.candidates) > 10:
+                self.logger.debug(f"  ... and {len(result.candidates) - 10} more candidates")
+        
+        self.logger.debug("=" * 50)
     
     def close(self):
         """Close all connections"""

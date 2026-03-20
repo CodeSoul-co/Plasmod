@@ -174,3 +174,58 @@ class Retriever:
                 final_results.append(result)
         
         return final_results
+    
+    async def benchmark_retrieve(
+        self,
+        request: RetrievalRequest,
+    ) -> CandidateList:
+        """
+        Benchmark retrieval for Benchmark Layer (member E).
+        
+        Differences from retrieve():
+        - Returns ALL candidates without truncation
+        - Each candidate includes rrf_score, dense_score, sparse_score for analysis
+        - Useful for comparing single-path vs multi-path retrieval
+        
+        Usage by E:
+        - baseline_dense: enable_dense=True, enable_sparse=False
+        - baseline_sparse: enable_dense=False, enable_sparse=True
+        - full_fusion: enable_dense=True, enable_sparse=True
+        """
+        dense_results: List[Candidate] = []
+        sparse_results: List[Candidate] = []
+        filter_results: List[Candidate] = []
+        
+        # Step 1: Filter runs first
+        if self.filter and request.enable_filter:
+            filter_results = await self._safe_filter(self.filter.filter, request)
+        
+        # Step 2: Dense + Sparse in parallel
+        tasks = []
+        task_names = []
+        
+        if request.enable_dense and self.dense:
+            tasks.append(self._safe_search(self.dense.search, request, "dense"))
+            task_names.append("dense")
+        
+        if request.enable_sparse and self.sparse:
+            tasks.append(self._safe_search(self.sparse.search, request, "sparse"))
+            task_names.append("sparse")
+        
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            for name, result in zip(task_names, results):
+                if name == "dense":
+                    dense_results = result
+                elif name == "sparse":
+                    sparse_results = result
+        
+        # Step 3: Merge WITHOUT truncation (benchmark mode)
+        result = self.merger.merge_for_benchmark(
+            dense_results=dense_results,
+            sparse_results=sparse_results,
+            filter_results=filter_results,
+            request=request,
+        )
+        
+        return result

@@ -64,9 +64,10 @@ class Candidate:
     score: float = 0.0                   # RRF merged score (before reranking)
     final_score: float = 0.0             # After reranking: rrf * importance * freshness * confidence
     
-    # Per-channel scores (for member E benchmarks)
+    # Per-channel scores (for Benchmark Layer)
     dense_score: float = 0.0
     sparse_score: float = 0.0
+    rrf_score: float = 0.0                   # RRF score before reranking (for benchmark analysis)
     
     # Metadata
     agent_id: str = ""

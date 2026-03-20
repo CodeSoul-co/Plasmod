@@ -228,7 +228,19 @@ All 24 fields must exist in the Milvus collection:
 
 ## Changelog
 
-### 2026-03-20
+### 2026-03-20 (Evening)
+
+- **Added `benchmark_retrieve()` interface**: Returns ALL candidates without truncation for Benchmark Layer analysis. Supports baseline comparisons (dense-only, sparse-only, full-fusion).
+
+- **Added `rrf_score` field to Candidate**: Preserves RRF score before reranking for benchmark analysis.
+
+- **Added error codes module** (`service/errors.py`): Defines `RetrievalErrorCode` (200/400/404/500/503) and validation utilities aligned with week-3 design doc.
+
+- **Enhanced `--dev` mode logging**: Detailed request/result logging including per-candidate score breakdown (rrf_score, dense_score, sparse_score, importance, freshness, confidence).
+
+- **Added `benchmark_retrieve()` to RetrievalService**: Exposed in main.py for Benchmark Layer integration.
+
+### 2026-03-20 (Morning)
 
 - **Rebased to main** (`3850557`): Synced with latest main branch
 - **Removed test files from git**: Local dev test files (`test_*.py`) excluded from tracking
@@ -279,6 +291,20 @@ Required packages:
 
 ---
 
+## Error Codes
+
+Defined in `service/errors.py`, aligned with week-3 design doc:
+
+| Code | Name | Description | Query Layer Action |
+|------|------|-------------|--------------------|
+| 200 | OK | Normal response | Process candidates |
+| 400 | BAD_REQUEST | Missing required fields | Check request format |
+| 404 | NOT_FOUND | No candidates found (valid) | Return empty to agent |
+| 500 | INTERNAL_ERROR | Milvus connection failed, etc. | Log error, return degraded |
+| 503 | SERVICE_UNAVAILABLE | Timeout | Log, may retry |
+
+---
+
 ## TODO / Future Work
 
 - [ ] Add `owner_type` filter support (private/public/partial)
@@ -286,3 +312,7 @@ Required packages:
 - [ ] Add C++ high-performance retrieval implementation (see `cpp/` directory)
 - [ ] Distributed retrieval with sharding
 - [ ] Caching layer for hot queries
+- [x] Add `benchmark_retrieve()` interface (completed 2026-03-20)
+- [x] Add `rrf_score` field for benchmark analysis (completed 2026-03-20)
+- [x] Add error codes definition (completed 2026-03-20)
+- [x] Enhance `--dev` mode logging (completed 2026-03-20)
