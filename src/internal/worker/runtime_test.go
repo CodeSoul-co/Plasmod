@@ -24,10 +24,10 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 	materializer := materialization.NewService()
 	assembler := evidence.NewAssembler()
 	store := storage.NewMemoryRuntimeStorage()
-	nodeManager := nodes.NewManager()
-	nodeManager.RegisterData(nodes.NewInMemoryDataNode("data-1", store.Segments()))
-	nodeManager.RegisterIndex(nodes.NewInMemoryIndexNode("index-1", store.Indexes()))
-	nodeManager.RegisterQuery(nodes.NewInMemoryQueryNode("query-1", plane))
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
+	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
 		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
@@ -42,7 +42,7 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
-	r := NewRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store)
+	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store)
 
 	_, err := r.SubmitIngest(schemas.Event{
 		EventID:     "evt_test_1",

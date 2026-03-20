@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -29,7 +30,7 @@ type Runtime struct {
 	storage      storage.RuntimeStorage
 }
 
-func NewRuntime(
+func CreateRuntime(
 	wal eventbackbone.WAL,
 	bus eventbackbone.Bus,
 	plane dataplane.DataPlane,
@@ -59,6 +60,12 @@ func NewRuntime(
 
 func (r *Runtime) RegisterDefaults() {
 	_ = r.bus.Subscribe("wal.events")
+}
+
+// StartSubscriber launches the EventSubscriber's poll loop as a background
+// goroutine tied to ctx.  The goroutine exits cleanly when ctx is cancelled.
+func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
+	go sub.Run(ctx)
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
