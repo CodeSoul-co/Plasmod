@@ -1,6 +1,6 @@
 """
 Test script for Version Filter
-Run: python -m src.retrieval.test_version_filter
+Run: python -m src.internal.retrieval.test_version_filter
 """
 
 import sys
@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.retrieval.service.version_filter import VersionFilter
-from src.retrieval.service.types import Candidate
+from src.internal.retrieval.service.version_filter import VersionFilter
+from src.internal.retrieval.service.types import Candidate
 
 
 def create_candidate(

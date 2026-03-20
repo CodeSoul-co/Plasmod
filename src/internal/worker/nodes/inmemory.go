@@ -10,7 +10,7 @@ type InMemoryDataNode struct {
 	store storage.SegmentStore
 }
 
-func NewInMemoryDataNode(id string, store storage.SegmentStore) *InMemoryDataNode {
+func CreateInMemoryDataNode(id string, store storage.SegmentStore) *InMemoryDataNode {
 	return &InMemoryDataNode{id: id, store: store}
 }
 
@@ -27,7 +27,7 @@ type InMemoryIndexNode struct {
 	store storage.IndexStore
 }
 
-func NewInMemoryIndexNode(id string, store storage.IndexStore) *InMemoryIndexNode {
+func CreateInMemoryIndexNode(id string, store storage.IndexStore) *InMemoryIndexNode {
 	return &InMemoryIndexNode{id: id, store: store}
 }
 
@@ -51,7 +51,7 @@ type InMemoryQueryNode struct {
 	plane dataplane.DataPlane
 }
 
-func NewInMemoryQueryNode(id string, plane dataplane.DataPlane) *InMemoryQueryNode {
+func CreateInMemoryQueryNode(id string, plane dataplane.DataPlane) *InMemoryQueryNode {
 	return &InMemoryQueryNode{id: id, plane: plane}
 }
 
