@@ -2,9 +2,13 @@ package access
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"andb/src/internal/coordinator"
+	"andb/src/internal/s3util"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
@@ -27,6 +31,8 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("/v1/admin/topology", g.handleTopology)
+	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
+	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
@@ -86,11 +92,139 @@ func (g *Gateway) handleTopology(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(g.runtime.Topology())
 }
 
+// ─── /v1/admin/s3/export ────────────────────────────────────────────────────
+//
+// Dev-only helper:
+// 1) Runtime ingests a sample Event
+// 2) Runtime executes a sample Query
+// 3) Captures {ack, query, response} and uploads it to MinIO/S3 via raw SigV4
+// 4) Performs GET round-trip verification after PUT
+func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	type request struct {
+		ObjectKey string `json:"object_key,omitempty"`
+		Prefix    string `json:"prefix,omitempty"`
+	}
+	var req request
+	if r.Body != nil {
+		decErr := json.NewDecoder(r.Body).Decode(&req)
+		if decErr != nil && decErr != io.EOF {
+			http.Error(w, decErr.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	cfg, err := s3util.LoadFromEnv()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC()
+	timestamp := now.Format("20060102T150405Z")
+
+	prefix := cfg.Prefix
+	if req.Prefix != "" {
+		prefix = strings.TrimRight(req.Prefix, "/")
+	}
+	if prefix == "" {
+		prefix = cfg.Prefix
+	}
+
+	objectKey := req.ObjectKey
+	if strings.TrimSpace(objectKey) == "" {
+		objectKey = prefix + "/runtime_capture_" + timestamp + ".json"
+	}
+
+	// Build sample ingest event (based on integration tests).
+	ev := schemas.Event{
+		EventID:       "evt_rt_" + timestamp,
+		TenantID:      "t_demo",
+		WorkspaceID:   "w_demo",
+		AgentID:       "agent_a",
+		SessionID:     "sess_a",
+		EventType:     "user_message",
+		EventTime:     now.Format(time.RFC3339),
+		IngestTime:    now.Format(time.RFC3339),
+		VisibleTime:   now.Format(time.RFC3339),
+		LogicalTS:     1,
+		ParentEventID: "",
+		CausalRefs:    []string{},
+		Payload:       map[string]any{"text": "hello runtime export"},
+		Source:        "runtime_export",
+		Importance:    0.5,
+		Visibility:    "private",
+		Version:       1,
+	}
+
+	ack, err := g.runtime.SubmitIngest(ev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	qReq := schemas.QueryRequest{
+		QueryText:           "hello runtime export",
+		QueryScope:          "workspace",
+		SessionID:           "sess_a",
+		AgentID:             "agent_a",
+		TenantID:            "t_demo",
+		WorkspaceID:         "w_demo",
+		TopK:                5,
+		TimeWindow:          schemas.TimeWindow{From: "2026-01-01T00:00:00Z", To: "2027-01-01T00:00:00Z"},
+		ObjectTypes:         []string{"memory", "state", "artifact"},
+		MemoryTypes:         []string{"semantic", "episodic", "procedural"},
+		RelationConstraints: []string{},
+		ResponseMode:        schemas.ResponseModeStructuredEvidence,
+	}
+
+	qResp := g.runtime.ExecuteQuery(qReq)
+
+	capture := map[string]any{
+		"captured_at": now.Format(time.RFC3339),
+		"object_key":  objectKey,
+		"ack":          ack,
+		"query":        qReq,
+		"response":    qResp,
+	}
+
+	bytesWritten, roundTripOK, err := s3util.PutBytesAndVerify(r.Context(), nil, cfg, objectKey, mustJSONBytes(capture), "application/json")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":           "ok",
+		"bucket":           cfg.Bucket,
+		"object_key":       objectKey,
+		"bytes_written":    bytesWritten,
+		"roundtrip_ok":     roundTripOK,
+		"captured_at":      now.Format(time.RFC3339),
+		"minio_endpoint":   cfg.Endpoint,
+		"s3_roundtrip_md5": nil,
+	})
+}
+
 // ─── helper ───────────────────────────────────────────────────────────────────
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func mustJSONBytes(v any) []byte {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		// should never happen for map/structs used here
+		panic(err)
+	}
+	return b
 }
 
 // ─── /v1/agents ───────────────────────────────────────────────────────────────
