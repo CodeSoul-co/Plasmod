@@ -29,6 +29,7 @@ const (
 	NodeTypeIndexBuild    NodeType = "index_build_worker"
 	NodeTypeGraphRelation NodeType = "graph_relation_worker"
 	NodeTypeProofTrace    NodeType = "proof_trace_worker"
+	NodeTypeSubgraph      NodeType = "subgraph_executor_worker"
 	NodeTypeMicroBatch    NodeType = "micro_batch_scheduler"
 
 	// Cognitive compression
@@ -102,6 +103,14 @@ type ConflictMergeWorker interface {
 type GraphRelationWorker interface {
 	Info() NodeInfo
 	IndexEdge(srcID, srcType, dstID, dstType, edgeType string, weight float64) error
+}
+
+// SubgraphExecutorWorker expands a seed set of object IDs into an
+// EvidenceSubgraph by performing one-hop (or filtered) graph expansion using
+// the canonical graph_expand logic from the schemas package.
+type SubgraphExecutorWorker interface {
+	Info() NodeInfo
+	Expand(req schemas.GraphExpandRequest, nodes []schemas.GraphNode, edges []schemas.Edge) schemas.GraphExpandResponse
 }
 
 // ProofTraceWorker assembles explainable proof traces from the derivation log
