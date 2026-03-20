@@ -86,6 +86,104 @@ Code layout:
 - [`src/internal/eventbackbone/streamplane`](src/internal/eventbackbone/streamplane): imported stream/event source subtree (behind build tag)
 - [`src/internal/platformpkg`](src/internal/platformpkg): imported shared platform package subtree
 
+## Worker Architecture
+
+The execution layer is organised as a **cognitive dataflow pipeline** decomposed into six worker groups, each with a defined responsibility boundary and pluggable InMemory implementation.
+
+### 6 Worker Groups
+
+| # | Group | Workers | Responsibility |
+|---|---|---|---|
+| 1 | **Ingestion** | `IngestWorker` | Schema validation, field normalisation — runs before WAL write |
+| 2 | **Materialization** | `ObjectMaterializationWorker`, `StateMaterializationWorker`, `ToolTraceWorker` | Event → canonical object (Memory / State / Artifact) routing |
+| 3 | **Cognitive** | `MemoryExtractionWorker`, `MemoryConsolidationWorker`, `SummarizationWorker`, `ReflectionPolicyWorker` | Episodic capture, compression, policy enforcement — the agent-native differentiator |
+| 4 | **Indexing** | `IndexBuildWorker`, `GraphRelationWorker` | Multi-representation index construction and edge graph maintenance |
+| 5 | **Query** | `QueryNode`, `ProofTraceWorker`, `MicroBatchScheduler` | Retrieval execution, explainable trace assembly, cross-agent batching |
+| 6 | **Coordination** | `ConflictMergeWorker`, `CommunicationWorker` | MAS conflict resolution, shared-memory distribution |
+
+All workers implement a typed interface defined in [`src/internal/worker/nodes/contracts.go`](src/internal/worker/nodes/contracts.go) and are registered via the pluggable `Manager`. The `ExecutionOrchestrator` ([`src/internal/worker/orchestrator.go`](src/internal/worker/orchestrator.go)) dispatches tasks to chains with priority-aware queuing and backpressure.
+
+### 4 Flow Chains
+
+Defined in [`src/internal/worker/chain/chain.go`](src/internal/worker/chain/chain.go).
+
+#### 🔴 Main Chain — primary write path
+
+```
+Request
+  ↓
+IngestWorker           (schema validation)
+  ↓
+WAL.Append             (event durability)
+  ↓
+ObjectMaterializationWorker  (Memory / State / Artifact routing)
+  ↓
+ToolTraceWorker        (tool_call artefact capture)
+  ↓
+IndexBuildWorker       (segment + keyword index)
+  ↓
+GraphRelationWorker    (derived_from edge)
+  ↓
+Response
+```
+
+#### 🟡 Memory Pipeline Chain — cognitive upgrade ladder
+
+```
+Event
+  ↓
+MemoryExtractionWorker    (level-0 episodic memory)
+  ↓
+MemoryConsolidationWorker (level-0 → level-1 semantic / procedural)
+  ↓
+SummarizationWorker       (level-1 / level-2 compression)
+  ↓
+ReflectionPolicyWorker    (TTL decay · quarantine · confidence override)
+  ↓
+PolicyDecisionLog
+```
+
+#### 🔵 Query Chain — retrieval + reasoning
+
+```
+QueryRequest
+  ↓
+TieredDataPlane.Search (hot → warm → cold)
+  ↓
+Assembler.Build
+  ↓
+EvidenceCache.GetMany + BulkEdges (1-hop graph expansion)
+  ↓
+ProofTraceWorker       (explainable trace assembly)
+  ↓
+QueryResponse{Objects, Edges, Provenance, ProofTrace}
+```
+
+#### 🟢 Collaboration Chain — multi-agent coordination
+
+```
+Agent A writes Memory
+  ↓
+ConflictMergeWorker    (last-writer-wins, conflict_resolved edge)
+  ↓
+CommunicationWorker    (copy winner → target agent memory space)
+  ↓
+Shared Memory updated
+```
+
+### ExecutionOrchestrator
+
+The `Orchestrator` provides a priority-aware worker pool over the four chains:
+
+| Priority | Level | Used by |
+|---|---|---|
+| `PriorityUrgent` (3) | urgent | system health tasks |
+| `PriorityHigh` (2) | high | ingest pipeline |
+| `PriorityNormal` (1) | normal | memory pipeline, collaboration |
+| `PriorityLow` (0) | low | background summarization |
+
+Backpressure is enforced per priority queue (default 256 slots). Dropped tasks are counted in `OrchestratorStats.Dropped`.
+
 ## Canonical Objects in v1
 
 The main v1 objects are:

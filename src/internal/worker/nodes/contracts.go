@@ -1,6 +1,9 @@
 package nodes
 
-import "andb/src/internal/dataplane"
+import (
+	"andb/src/internal/dataplane"
+	"andb/src/internal/schemas"
+)
 
 type NodeType string
 
@@ -10,11 +13,11 @@ const (
 	NodeTypeQuery NodeType = "query_node"
 
 	// Ingestion & Materialization group (spec section 16.4)
-	NodeTypeIngest               NodeType = "ingest_worker"
+	NodeTypeIngest                NodeType = "ingest_worker"
 	NodeTypeObjectMaterialization NodeType = "object_materialization_worker"
-	NodeTypeMemoryExtraction     NodeType = "memory_extraction_worker"
-	NodeTypeStateMaterialization NodeType = "state_materialization_worker"
-	NodeTypeToolTrace            NodeType = "tool_trace_worker"
+	NodeTypeMemoryExtraction      NodeType = "memory_extraction_worker"
+	NodeTypeStateMaterialization  NodeType = "state_materialization_worker"
+	NodeTypeToolTrace             NodeType = "tool_trace_worker"
 
 	// Memory & Governance group
 	NodeTypeMemoryConsolidation NodeType = "memory_consolidation_worker"
@@ -23,10 +26,13 @@ const (
 	NodeTypeConflictMerge       NodeType = "conflict_merge_worker"
 
 	// Retrieval & Reasoning group
-	NodeTypeIndexBuild          NodeType = "index_build_worker"
-	NodeTypeGraphRelation       NodeType = "graph_relation_worker"
-	NodeTypeProofTrace          NodeType = "proof_trace_worker"
-	NodeTypeMicroBatch          NodeType = "micro_batch_scheduler"
+	NodeTypeIndexBuild    NodeType = "index_build_worker"
+	NodeTypeGraphRelation NodeType = "graph_relation_worker"
+	NodeTypeProofTrace    NodeType = "proof_trace_worker"
+	NodeTypeMicroBatch    NodeType = "micro_batch_scheduler"
+
+	// Cognitive compression
+	NodeTypeSummarization NodeType = "summarization_worker"
 )
 
 type NodeState string
@@ -103,4 +109,68 @@ type GraphRelationWorker interface {
 type ProofTraceWorker interface {
 	Info() NodeInfo
 	AssembleTrace(objectIDs []string) []string
+}
+
+// ─── Ingestion & Materialization worker interfaces ────────────────────────────
+
+// IngestWorker performs schema validation and normalisation on a raw Event
+// before it enters the WAL.  It does not write to the WAL itself.
+type IngestWorker interface {
+	Info() NodeInfo
+	Process(ev schemas.Event) error
+}
+
+// ObjectMaterializationWorker routes a raw Event to the appropriate canonical
+// object store (Memory / State / Artifact) based on event_type.
+type ObjectMaterializationWorker interface {
+	Info() NodeInfo
+	Materialize(ev schemas.Event) error
+}
+
+// StateMaterializationWorker maintains running agent State objects from events
+// and creates periodic checkpoints (ObjectVersion snapshots).
+type StateMaterializationWorker interface {
+	Info() NodeInfo
+	Apply(ev schemas.Event) error
+	Checkpoint(agentID, sessionID string) error
+}
+
+// ToolTraceWorker converts tool_call / tool_result events into structured
+// Artifact records for audit and retrieval.
+type ToolTraceWorker interface {
+	Info() NodeInfo
+	TraceToolCall(ev schemas.Event) error
+}
+
+// ─── Index & Retrieval worker interfaces ─────────────────────────────────────
+
+// IndexBuildWorker submits a materialised object to the segment + keyword
+// indices for later retrieval.
+type IndexBuildWorker interface {
+	Info() NodeInfo
+	IndexObject(objectID, objectType, namespace, text string) error
+}
+
+// ─── Multi-Agent coordination worker interfaces ───────────────────────────────
+
+// CommunicationWorker synchronises agent-to-agent messages and distributes
+// shared Memory objects to target agent memory spaces.
+type CommunicationWorker interface {
+	Info() NodeInfo
+	Broadcast(fromAgentID, toAgentID, memoryID string) error
+}
+
+// MicroBatchScheduler accumulates pending retrieval tasks and flushes them as
+// a micro-batch for cross-agent merging and GPU-friendly execution.
+type MicroBatchScheduler interface {
+	Info() NodeInfo
+	Enqueue(queryID string, payload any)
+	Flush() []any
+}
+
+// SummarizationWorker compresses long-context memory sequences into level-1
+// (summary) and level-2 (abstraction) Memory objects.
+type SummarizationWorker interface {
+	Info() NodeInfo
+	Summarize(agentID, sessionID string, maxLevel int) error
 }

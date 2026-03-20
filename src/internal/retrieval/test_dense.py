@@ -1,6 +1,6 @@
 """
-Test script for Sparse Retriever (Milvus sparse vector search)
-Run: python -m src.retrieval.test_sparse
+Test script for Dense Retriever (Milvus ANN search)
+Run: python -m src.internal.retrieval.test_dense
 """
 
 import sys
@@ -11,57 +11,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from pymilvus import MilvusClient, DataType
-from src.retrieval.service.sparse import MilvusSparseRetriever
-from src.retrieval.service.types import RetrievalRequest
+from src.internal.retrieval.service.dense import MilvusDenseRetriever
+from src.internal.retrieval.service.types import RetrievalRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MILVUS_URI = "http://localhost:19530"
-TEST_COLLECTION = "test_sparse_retrieval"
-
-
-def deterministic_hash(s: str) -> int:
-    """Deterministic hash function using FNV-1a algorithm"""
-    h = 2166136261
-    for c in s.encode('utf-8'):
-        h ^= c
-        h = (h * 16777619) & 0xFFFFFFFF
-    return h
-
-
-def text_to_sparse_vector(text: str) -> dict:
-    """Convert text to sparse vector (same logic as retriever)"""
-    tokens = text.lower().split()
-    if not tokens:
-        return {}
-    
-    token_counts = {}
-    for token in tokens:
-        token_counts[token] = token_counts.get(token, 0) + 1
-    
-    sparse_vec = {}
-    for token, count in token_counts.items():
-        idx = deterministic_hash(token) % 30000
-        weight = count / len(tokens)
-        sparse_vec[idx] = weight
-    
-    return sparse_vec
+TEST_COLLECTION = "test_dense_retrieval"
+VECTOR_DIM = 128
 
 
 def setup_test_collection(client: MilvusClient):
-    """Create test collection with sparse vector field"""
+    """Create test collection with sample data"""
     
+    # Drop if exists
     if client.has_collection(TEST_COLLECTION):
         client.drop_collection(TEST_COLLECTION)
         logger.info(f"Dropped existing collection: {TEST_COLLECTION}")
     
-    # Create schema with sparse vector
+    # Create collection schema
     schema = client.create_schema(auto_id=False, enable_dynamic_field=True)
     schema.add_field("id", DataType.INT64, is_primary=True)
     schema.add_field("object_id", DataType.VARCHAR, max_length=64)
     schema.add_field("object_type", DataType.VARCHAR, max_length=32)
-    schema.add_field("sparse_vector", DataType.SPARSE_FLOAT_VECTOR)
+    schema.add_field("vector", DataType.FLOAT_VECTOR, dim=VECTOR_DIM)
     schema.add_field("tenant_id", DataType.VARCHAR, max_length=64)
     schema.add_field("workspace_id", DataType.VARCHAR, max_length=64)
     schema.add_field("agent_id", DataType.VARCHAR, max_length=64)
@@ -78,14 +52,16 @@ def setup_test_collection(client: MilvusClient):
     schema.add_field("verified_state", DataType.VARCHAR, max_length=32)
     schema.add_field("salience_weight", DataType.FLOAT)
     
-    # Create sparse index
+    # Create index
     index_params = client.prepare_index_params()
     index_params.add_index(
-        field_name="sparse_vector",
-        index_type="SPARSE_INVERTED_INDEX",
+        field_name="vector",
+        index_type="IVF_FLAT",
         metric_type="IP",
+        params={"nlist": 128}
     )
     
+    # Create collection
     client.create_collection(
         collection_name=TEST_COLLECTION,
         schema=schema,
@@ -93,13 +69,21 @@ def setup_test_collection(client: MilvusClient):
     )
     logger.info(f"Created collection: {TEST_COLLECTION}")
     
-    # Insert test data with sparse vectors
+    # Insert test data
+    import random
+    random.seed(42)
+    
+    def random_vector(base_value: float = 0.0) -> list:
+        vec = [base_value + random.uniform(-0.1, 0.1) for _ in range(VECTOR_DIM)]
+        norm = sum(x*x for x in vec) ** 0.5
+        return [x / norm for x in vec]  # normalize for IP similarity
+    
     test_data = [
         {
             "id": 1,
             "object_id": "mem_001",
             "object_type": "memory",
-            "sparse_vector": text_to_sparse_vector("weather forecast beijing temperature"),
+            "vector": random_vector(1.0),  # similar to query
             "tenant_id": "tenant_1",
             "workspace_id": "workspace_1",
             "agent_id": "agent_1",
@@ -107,7 +91,7 @@ def setup_test_collection(client: MilvusClient):
             "scope": "private",
             "version": 1,
             "provenance_ref": "prov_001",
-            "content": "User asked about weather forecast in Beijing",
+            "content": "User asked about weather in Beijing",
             "summary": "Weather query",
             "confidence": 0.9,
             "importance": 0.8,
@@ -120,7 +104,7 @@ def setup_test_collection(client: MilvusClient):
             "id": 2,
             "object_id": "mem_002",
             "object_type": "memory",
-            "sparse_vector": text_to_sparse_vector("metric units celsius fahrenheit"),
+            "vector": random_vector(0.8),  # somewhat similar
             "tenant_id": "tenant_1",
             "workspace_id": "workspace_1",
             "agent_id": "agent_1",
@@ -128,7 +112,7 @@ def setup_test_collection(client: MilvusClient):
             "scope": "private",
             "version": 1,
             "provenance_ref": "prov_002",
-            "content": "User prefers metric units and celsius",
+            "content": "User prefers metric units",
             "summary": "Unit preference",
             "confidence": 0.85,
             "importance": 0.6,
@@ -141,10 +125,10 @@ def setup_test_collection(client: MilvusClient):
             "id": 3,
             "object_id": "mem_003",
             "object_type": "memory",
-            "sparse_vector": text_to_sparse_vector("project deadline friday meeting"),
+            "vector": random_vector(0.3),  # less similar
             "tenant_id": "tenant_1",
             "workspace_id": "workspace_1",
-            "agent_id": "agent_2",
+            "agent_id": "agent_2",  # different agent
             "session_id": "session_2",
             "scope": "workspace",
             "version": 1,
@@ -162,8 +146,8 @@ def setup_test_collection(client: MilvusClient):
             "id": 4,
             "object_id": "mem_004",
             "object_type": "memory",
-            "sparse_vector": text_to_sparse_vector("different tenant data secret"),
-            "tenant_id": "tenant_2",
+            "vector": random_vector(-0.5),  # dissimilar
+            "tenant_id": "tenant_2",  # different tenant
             "workspace_id": "workspace_2",
             "agent_id": "agent_3",
             "session_id": "session_3",
@@ -184,28 +168,31 @@ def setup_test_collection(client: MilvusClient):
     client.insert(collection_name=TEST_COLLECTION, data=test_data)
     logger.info(f"Inserted {len(test_data)} test records")
     
+    # Load collection and wait for indexing
     client.load_collection(TEST_COLLECTION)
-    logger.info(f"Loaded collection: {TEST_COLLECTION}")
-    
-    # Wait for index to be ready
     import time
     time.sleep(1)
+    logger.info(f"Loaded collection: {TEST_COLLECTION}")
 
 
-async def test_basic_sparse_search():
-    """Test basic sparse vector search"""
+async def test_basic_search():
+    """Test basic vector search"""
     print("\n" + "=" * 60)
-    print("Test 1: Basic sparse search")
+    print("Test 1: Basic vector search")
     print("=" * 60)
     
-    retriever = MilvusSparseRetriever(
+    retriever = MilvusDenseRetriever(
         uri=MILVUS_URI,
         collection_name=TEST_COLLECTION,
-        sparse_field="sparse_vector",
+        vector_field="vector",
     )
     
+    # Use simple query vector
+    query_vector = [0.1] * VECTOR_DIM
+    
     request = RetrievalRequest(
-        query_text="weather forecast",
+        query_text="weather query",
+        query_vector=query_vector,
         tenant_id="tenant_1",
         workspace_id="workspace_1",
         top_k=10,
@@ -218,58 +205,28 @@ async def test_basic_sparse_search():
         print(f"  {i}. {c.object_id}: score={c.score:.4f}, content='{c.content[:40]}...'")
     
     assert len(results) > 0, "Should return results"
-    assert results[0].object_id == "mem_001", "mem_001 should match 'weather forecast'"
     
     retriever.close()
-    print("\n[PASS] Basic sparse search works")
-
-
-async def test_keyword_matching():
-    """Test keyword matching - should find exact keyword matches"""
-    print("\n" + "=" * 60)
-    print("Test 2: Keyword matching")
-    print("=" * 60)
-    
-    retriever = MilvusSparseRetriever(
-        uri=MILVUS_URI,
-        collection_name=TEST_COLLECTION,
-        sparse_field="sparse_vector",
-    )
-    
-    request = RetrievalRequest(
-        query_text="deadline friday",
-        tenant_id="tenant_1",
-        workspace_id="workspace_1",
-        top_k=10,
-    )
-    
-    results = await retriever.search(request)
-    
-    print(f"Results count: {len(results)}")
-    for i, c in enumerate(results, 1):
-        print(f"  {i}. {c.object_id}: score={c.score:.4f}")
-    
-    assert len(results) > 0, "Should return results"
-    assert results[0].object_id == "mem_003", "mem_003 should match 'deadline friday'"
-    
-    retriever.close()
-    print("\n[PASS] Keyword matching works")
+    print("\n[PASS] Basic vector search works")
 
 
 async def test_tenant_isolation():
-    """Test tenant isolation in sparse search"""
+    """Test tenant isolation - should not return data from other tenants"""
     print("\n" + "=" * 60)
-    print("Test 3: Tenant isolation")
+    print("Test 2: Tenant isolation")
     print("=" * 60)
     
-    retriever = MilvusSparseRetriever(
+    retriever = MilvusDenseRetriever(
         uri=MILVUS_URI,
         collection_name=TEST_COLLECTION,
-        sparse_field="sparse_vector",
+        vector_field="vector",
     )
     
+    query_vector = [0.1] * VECTOR_DIM
+    
     request = RetrievalRequest(
-        query_text="data secret",  # matches mem_004 content
+        query_text="test",
+        query_vector=query_vector,
         tenant_id="tenant_1",
         workspace_id="workspace_1",
         top_k=10,
@@ -279,7 +236,7 @@ async def test_tenant_isolation():
     
     print(f"Results count: {len(results)}")
     for c in results:
-        print(f"  {c.object_id}")
+        print(f"  {c.object_id}: tenant_id should be tenant_1")
     
     # Should not include mem_004 (tenant_2)
     object_ids = [c.object_id for c in results]
@@ -289,20 +246,57 @@ async def test_tenant_isolation():
     print("\n[PASS] Tenant isolation works")
 
 
-async def test_no_query_text():
-    """Test behavior when no query_text provided"""
+async def test_agent_filter():
+    """Test agent_id filtering"""
     print("\n" + "=" * 60)
-    print("Test 4: No query text")
+    print("Test 3: Agent filtering")
     print("=" * 60)
     
-    retriever = MilvusSparseRetriever(
+    retriever = MilvusDenseRetriever(
         uri=MILVUS_URI,
         collection_name=TEST_COLLECTION,
-        sparse_field="sparse_vector",
+        vector_field="vector",
+    )
+    
+    query_vector = [0.1] * VECTOR_DIM
+    
+    request = RetrievalRequest(
+        query_text="test",
+        query_vector=query_vector,
+        tenant_id="tenant_1",
+        workspace_id="workspace_1",
+        agent_id="agent_1",  # filter by agent
+        top_k=10,
+    )
+    
+    results = await retriever.search(request)
+    
+    print(f"Results count: {len(results)}")
+    for c in results:
+        print(f"  {c.object_id}: agent_id={c.agent_id}")
+    
+    # Should only return agent_1 data
+    for c in results:
+        assert c.agent_id == "agent_1", f"Should only return agent_1 data, got {c.agent_id}"
+    
+    retriever.close()
+    print("\n[PASS] Agent filtering works")
+
+
+async def test_no_query_vector():
+    """Test behavior when no query_vector provided"""
+    print("\n" + "=" * 60)
+    print("Test 4: No query vector")
+    print("=" * 60)
+    
+    retriever = MilvusDenseRetriever(
+        uri=MILVUS_URI,
+        collection_name=TEST_COLLECTION,
+        vector_field="vector",
     )
     
     request = RetrievalRequest(
-        query_text="",
+        query_text="test without vector",
         tenant_id="tenant_1",
         workspace_id="workspace_1",
         top_k=10,
@@ -311,10 +305,10 @@ async def test_no_query_text():
     results = await retriever.search(request)
     
     print(f"Results count: {len(results)}")
-    assert len(results) == 0, "Should return empty when no query_text"
+    assert len(results) == 0, "Should return empty when no query_vector"
     
     retriever.close()
-    print("\n[PASS] No query text returns empty")
+    print("\n[PASS] No query vector returns empty")
 
 
 def cleanup(client: MilvusClient):
@@ -325,22 +319,25 @@ def cleanup(client: MilvusClient):
 
 
 async def main():
-    print("Testing Sparse Retriever (Milvus Sparse Vector)")
+    print("Testing Dense Retriever (Milvus ANN)")
     print()
     
+    # Setup
     client = MilvusClient(uri=MILVUS_URI)
     setup_test_collection(client)
     client.close()
     
-    await test_basic_sparse_search()
-    await test_keyword_matching()
+    # Run tests
+    await test_basic_search()
     await test_tenant_isolation()
-    await test_no_query_text()
+    await test_agent_filter()
+    await test_no_query_vector()
     
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED")
     print("=" * 60)
     
+    # Cleanup after all tests pass
     client = MilvusClient(uri=MILVUS_URI)
     cleanup(client)
     client.close()

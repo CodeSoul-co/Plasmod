@@ -1,6 +1,6 @@
 """
 Test script for Merger (RRF fusion logic)
-Run: python -m src.retrieval.test_merger
+Run: python -m src.internal.retrieval.test_merger
 """
 
 import sys
@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.retrieval.service.types import Candidate, RetrievalRequest
-from src.retrieval.service.merger import Merger
+from src.internal.retrieval.service.types import Candidate, RetrievalRequest
+from src.internal.retrieval.service.merger import Merger
 
 
 def create_candidate(

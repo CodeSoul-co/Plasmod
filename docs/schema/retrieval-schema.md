@@ -4,7 +4,7 @@
 
 This document defines the retrieval module contracts for ANDB. The retrieval module is responsible for finding relevant cognitive objects (memories, events, artifacts) through three parallel retrieval paths: dense vector search, sparse keyword matching, and attribute filtering.
 
-The implementation structs live in [`src/retrieval/service/types.py`](../../src/retrieval/service/types.py) and [`src/retrieval/proto/retrieval.proto`](../../src/retrieval/proto/retrieval.proto).
+The implementation structs live in [`src/internal/retrieval/service/types.py`](../../src/internal/retrieval/service/types.py) and [`src/internal/retrieval/proto/retrieval.proto`](../../src/internal/retrieval/proto/retrieval.proto).
 
 ## 2. Design Principle
 

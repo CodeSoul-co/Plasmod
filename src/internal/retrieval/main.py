@@ -2,9 +2,9 @@
 Retrieval Service Entry Point
 
 Usage:
-    python -m src.retrieval.main --dev          # Run with debug output
-    python -m src.retrieval.main --test         # Run integration tests
-    python -m src.retrieval.main --help         # Show help
+    python -m src.internal.retrieval.main --dev          # Run with debug output
+    python -m src.internal.retrieval.main --test         # Run integration tests
+    python -m src.internal.retrieval.main --help         # Show help
 """
 
 import argparse
@@ -320,11 +320,11 @@ def main():
         print("Retrieval Service")
         print()
         print("Usage:")
-        print("  python -m src.retrieval.main --test        Run integration tests")
-        print("  python -m src.retrieval.main --test --dev  Run tests with debug output")
+        print("  python -m src.internal.retrieval.main --test        Run integration tests")
+        print("  python -m src.internal.retrieval.main --test --dev  Run tests with debug output")
         print()
         print("As a library:")
-        print("  from src.retrieval.main import RetrievalService")
+        print("  from src.internal.retrieval.main import RetrievalService")
         print("  service = RetrievalService(dev_mode=True)")
         print("  result = await service.retrieve(request)")
 

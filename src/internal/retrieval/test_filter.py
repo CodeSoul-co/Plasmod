@@ -1,6 +1,6 @@
 """
 Test script for Filter Retriever (Milvus scalar query)
-Run: python -m src.retrieval.test_filter
+Run: python -m src.internal.retrieval.test_filter
 """
 
 import sys
@@ -12,8 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from pymilvus import MilvusClient, DataType
-from src.retrieval.service.filter import MilvusFilterRetriever
-from src.retrieval.service.types import RetrievalRequest
+from src.internal.retrieval.service.filter import MilvusFilterRetriever
+from src.internal.retrieval.service.types import RetrievalRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

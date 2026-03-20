@@ -1,6 +1,6 @@
 """
 Test script for Policy Filter
-Run: python -m src.retrieval.test_policy_filter
+Run: python -m src.internal.retrieval.test_policy_filter
 """
 
 import sys
@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.retrieval.service.policy_filter import PolicyFilter
-from src.retrieval.service.types import Candidate
+from src.internal.retrieval.service.policy_filter import PolicyFilter
+from src.internal.retrieval.service.types import Candidate
 
 
 def create_candidate(
