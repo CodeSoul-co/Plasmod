@@ -188,3 +188,26 @@ type RetrievalSegment struct {
 	MaxTS           int64  `json:"max_ts"`
 	Tier            string `json:"tier"`
 }
+
+
+
+type GraphNode struct {
+	ObjectID   string         `json:"object_id"`
+	ObjectType string         `json:"object_type"`
+	Label      string         `json:"label,omitempty"`
+	Properties map[string]any `json:"properties,omitempty"`
+}
+
+type ProofStep struct {
+	Step      int    `json:"step"`
+	Operation string `json:"operation"`
+	Detail    string `json:"detail"`
+}
+
+type EvidenceSubgraph struct {
+	SeedIDs    []string    `json:"seed_ids"`
+	Nodes      []GraphNode `json:"nodes"`
+	Edges      []Edge      `json:"edges"`
+	ProofTrace []ProofStep `json:"proof_trace,omitempty"`
+	Provenance interface{} `json:"provenance,omitempty"`
+}
