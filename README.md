@@ -1,34 +1,21 @@
-# Agent-Native Database for Multi-Agent Systems
+# CogDB — Agent-Native Database for Multi-Agent Systems
 
-ANDB (CogDB) is a v1 prototype of an agent-native database for multi-agent systems (MAS). The repository combines a tiered segment-oriented retrieval plane, an event backbone with append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
+CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combines a tiered segment-oriented retrieval plane, an event backbone with an append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
 
-The core thesis is simple:
+> **Core thesis:** agent memory, state, event, artifact, and relation should be modeled as first-class database objects, and query results should return structured evidence rather than only top-k text fragments.
 
-**agent memory, state, event, artifact, and relation should be modeled as first-class database objects, and query results should return structured evidence rather than only top-k text fragments.**
+## What is implemented
 
-## Project Status
-
-This repository is in the **runnable-prototype** stage.  The main ingest/query path is fully wired end-to-end.
-
-What is implemented today:
-
-- Runnable Go server in [`src/cmd/server/main.go`](src/cmd/server/main.go) with 10 HTTP routes
+- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 10 HTTP routes
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
-- `MaterializeEvent` → `MaterializationResult` that produces a canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
-- Three-tier data plane: **hot** (in-memory LRU cache) → **warm** (full segment index) → **cold** (archived tier), all behind a unified `DataPlane` interface
+- `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
+- Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index) → **cold** (archived tier), behind a unified `DataPlane` interface
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
-- `QueryResponse` returns `Objects`, `Edges`, `Provenance`, and `ProofTrace` in every response
-- Module-level test coverage: 12 packages each with their own `*_test.go` file
-- Python SDK bootstrap and demo scripts
-- Architecture, schema, and milestone documentation
-
-What is still intentionally lightweight in v1:
-
-- Distributed runtime and persistence
-- Full policy/governance execution
-- Deep proof construction beyond 1-hop
-- Production-grade indexing and optimization
+- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, and `AppliedFilters` on every query
+- Module-level test coverage: 12 packages each with a `*_test.go` file
+- Python SDK (`sdk/python`) and demo scripts
+- Full architecture, schema, and API documentation
 
 ## Why This Project Exists
 
@@ -265,20 +252,13 @@ make integration-test
 | `S3_REGION` | `us-east-1` | Region (MinIO ignores this) |
 | `S3_PREFIX` | `andb/integration_tests` | Object key prefix |
 
-## Review Notes (Current Prototype)
-
-- `GET /healthz` previously returned `Content-Type: text/plain` — fixed to `application/json` in `access/gateway.go`.
-- The HTTP gateway returns plain-text errors for malformed JSON and method mismatches; a structured error envelope would improve integration debugging.
-- The public API surface is small and stable; `response_mode: structured_evidence` is the canonical value — demo scripts have been updated to match.
-- For repeated integration runs, consider exposing a lightweight dev-only reset endpoint or adding idempotency semantics for seed data to avoid state accumulation.
-
 To run only the Go internal module tests:
 
 ```bash
 go test ./src/internal/... -count=1 -timeout 30s
 ```
 
-All 12 native packages have their own `*_test.go` file.  See [`docs/contributing.md §11`](docs/contributing.md) for the module-level test specification.
+All 12 packages have their own `*_test.go` file. See [`docs/contributing.md`](docs/contributing.md) for the module-level test specification.
 
 ## Repository Structure
 
@@ -319,42 +299,29 @@ Additional supporting docs already in the repo:
 - [Ingest API](docs/api/ingest.md)
 - [Query API](docs/api/query.md)
 
-## Collaboration Principles
+## Roadmap
 
-This repository follows a framework-first development model:
+### v1 — current
 
-1. freeze the main flow before scaling modules
-2. freeze shared schemas before parallel implementation
-3. validate the end-to-end path before optimizing internals
-4. keep v1 focused on proving the architectural thesis
-
-If you are starting implementation work, read [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md) first.
-
-## Near-Term Milestone
-
-The implemented v1 prototype can already demonstrate:
-
-- event ingest through the public API (`POST /v1/ingest/events`)
-- `MaterializeEvent` → canonical `Memory`, `ObjectVersion`, and `Edge` records written to stores
-- tiered retrieval (hot → warm → cold) over canonical-object projections
+- End-to-end event ingest and structured-evidence query
+- Tiered hot → warm → cold retrieval over canonical-object projections
 - 1-hop graph expansion in every `QueryResponse`
-- pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time
+- Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time
+- Go HTTP API with 10 routes, Python SDK, and integration test suite
 
-Next milestones:
+### v1.x — near-term
 
-- benchmark comparison against simple top-k return
-- time-travel queries using WAL `Scan` replay
-- multi-agent session isolation and scope enforcement
+- Benchmark comparison against simple top-k retrieval
+- Time-travel queries using WAL `Scan` replay
+- Multi-agent session isolation and scope enforcement
 
-## Long-Term Direction
+### v2+ — longer-term
 
-Later versions may extend ANDB with:
+- Policy-aware retrieval and visibility enforcement
+- Stronger version and time semantics
+- Share contracts and governance objects
+- Richer graph reasoning and proof replay
+- Tensor memory operators
+- Cloud-native distributed orchestration
 
-- policy-aware retrieval and visibility enforcement
-- stronger version/time semantics
-- share contracts and governance objects
-- richer graph reasoning and proof replay
-- tensor memory operators
-- cloud-native distributed orchestration
-
-v1 does not aim to complete that roadmap. It aims to establish the right abstraction and the right main path.
+For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md).
