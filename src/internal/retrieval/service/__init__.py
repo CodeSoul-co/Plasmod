@@ -1,12 +1,29 @@
-# Retrieval Service - Member B Retrieval Module
-# Python + C Hybrid Architecture
+"""
+Retrieval service - internal interface.
 
-from .retriever import Retriever, RetrievalRequest, CandidateList
-from .merger import Merger
+This is a THIN WRAPPER - all retrieval logic is in cpp/.
+Python layer only does parameter conversion.
+"""
+
+from .types import (
+    RetrievalRequest,
+    CandidateList,
+    Candidate,
+    QueryMeta,
+    cpp_available,
+    cpp_version,
+)
+from .retriever import Retriever
+from .errors import RetrievalErrorCode, RetrievalError
 
 __all__ = [
-    "Retriever",
-    "RetrievalRequest", 
+    "RetrievalRequest",
     "CandidateList",
-    "Merger",
+    "Candidate",
+    "QueryMeta",
+    "Retriever",
+    "RetrievalErrorCode",
+    "RetrievalError",
+    "cpp_available",
+    "cpp_version",
 ]

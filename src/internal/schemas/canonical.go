@@ -125,11 +125,11 @@ type ObjectVersion struct {
 // It represents a human or service identity that can own or publish objects.
 // It is intentionally minimal and may be extended as governance evolves.
 type User struct {
-	UserID          string `json:"user_id"`
-	UserName        string `json:"user_name"`
-	UserTenantID    string `json:"user_tenant_id"`
-	UserWorkspaceID string `json:"user_workspace_id"`
-	Visibility      string `json:"visibility"`
+	UserID            string `json:"user_id"`
+	UserName          string `json:"user_name"`
+	UserTenantID      string `json:"user_tenant_id"`
+	UserWorkspaceID   string `json:"user_workspace_id"`
+	DefaultVisibility string `json:"default_visibility"`
 }
 
 // Embedding stores a vector representation independently so other objects can
@@ -208,4 +208,27 @@ type RetrievalSegment struct {
 	MinTS           int64  `json:"min_ts"`
 	MaxTS           int64  `json:"max_ts"`
 	Tier            string `json:"tier"`
+}
+
+
+
+type GraphNode struct {
+	ObjectID   string         `json:"object_id"`
+	ObjectType string         `json:"object_type"`
+	Label      string         `json:"label,omitempty"`
+	Properties map[string]any `json:"properties,omitempty"`
+}
+
+type ProofStep struct {
+	Step      int    `json:"step"`
+	Operation string `json:"operation"`
+	Detail    string `json:"detail"`
+}
+
+type EvidenceSubgraph struct {
+	SeedIDs    []string    `json:"seed_ids"`
+	Nodes      []GraphNode `json:"nodes"`
+	Edges      []Edge      `json:"edges"`
+	ProofTrace []ProofStep `json:"proof_trace,omitempty"`
+	Provenance interface{} `json:"provenance,omitempty"`
 }

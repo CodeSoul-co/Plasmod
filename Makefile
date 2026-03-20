@@ -1,4 +1,14 @@
-.PHONY: dev build test integration-test cpp sdk-python fmt
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt
+
+# Default MinIO settings for local S3/MinIO integration tests.
+# Override these when invoking make if your MinIO differs.
+S3_ENDPOINT ?= 127.0.0.1:9000
+S3_ACCESS_KEY ?= minioadmin
+S3_SECRET_KEY ?= minioadmin
+S3_BUCKET ?= andb-integration
+S3_SECURE ?= false
+S3_REGION ?= us-east-1
+S3_PREFIX ?= andb/integration_tests
 
 dev:
 	go run ./src/cmd/server
@@ -27,6 +37,13 @@ test:
 integration-test:
 	go test ./integration_tests/... -v -timeout 120s
 	cd integration_tests/python && python run_all.py
+
+integration-test-s3:
+	ANDB_RUN_S3_TESTS=true \
+	S3_ENDPOINT=$(S3_ENDPOINT) S3_ACCESS_KEY=$(S3_ACCESS_KEY) \
+	S3_SECRET_KEY=$(S3_SECRET_KEY) S3_BUCKET=$(S3_BUCKET) \
+	S3_SECURE=$(S3_SECURE) S3_REGION=$(S3_REGION) S3_PREFIX=$(S3_PREFIX) \
+	$(MAKE) integration-test
 
 fmt:
 	gofmt -w $(shell find src -name '*.go')
