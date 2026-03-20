@@ -25,7 +25,7 @@ type S3Config struct {
 	Bucket    string
 	Secure    bool
 	Region    string
-	Prefix 	  string
+	Prefix    string
 }
 
 func LoadFromEnv() (S3Config, error) {
@@ -155,6 +155,68 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 	return len(data), bytes.Equal(got, data), nil
 }
 
+// PutBytes writes data to S3 at objectKey without a round-trip read verification.
+// Use this for high-frequency cold-store writes where latency matters more than
+// immediate consistency checks (ArchiveMemory, ArchiveAgent, etc.).
+func PutBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string, data []byte, contentType string) error {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	objectKey = strings.TrimLeft(objectKey, "/")
+	if err := EnsureBucket(ctx, httpClient, cfg); err != nil {
+		return err
+	}
+	putURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("s3 put new request: %w", err)
+	}
+	req.ContentLength = int64(len(data))
+	s3Sign(req, cfg, data, contentType)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("s3 put do: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("s3 put status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// GetBytes fetches an object from S3 at objectKey.
+// Returns (nil, nil) when the object does not exist (404).
+func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string) ([]byte, error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	objectKey = strings.TrimLeft(objectKey, "/")
+	getURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("s3 get new request: %w", err)
+	}
+	s3Sign(req, cfg, nil, "")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("s3 get do: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("s3 get status %d: %s", resp.StatusCode, string(body))
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("s3 get read: %w", err)
+	}
+	return data, nil
+}
+
 // ─── AWS Signature V4 (stdlib only) ─────────────────────────────────────────
 
 func s3Sign(req *http.Request, cfg S3Config, body []byte, contentType string) {
@@ -264,4 +326,3 @@ func hmacSHA256Bytes(key, data []byte) []byte {
 	_, _ = m.Write(data)
 	return m.Sum(nil)
 }
-
