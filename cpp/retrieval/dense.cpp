@@ -2,17 +2,164 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Dense retrieval implementation using Knowhere HNSW/IVF indexes.
-// Currently provides stub implementation; replace with Knowhere calls when available.
+// Uses real Knowhere when ANDB_USE_KNOWHERE=1, otherwise falls back to stub.
 
 #include "andb/dense.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
+#ifdef ANDB_USE_KNOWHERE
+#include "knowhere/index/index_factory.h"
+#include "knowhere/common/config.h"
+#include "knowhere/common/dataset.h"
+#include "knowhere/utils/bitset_view.h"
+#endif
+
 namespace andb {
 
-// Stub implementation of Knowhere index wrapper
-// Replace with actual Knowhere integration when dependencies are available
+#ifdef ANDB_USE_KNOWHERE
+// Real Knowhere implementation
+class KnowhereIndexWrapper {
+public:
+    KnowhereIndexWrapper() = default;
+    ~KnowhereIndexWrapper() = default;
+    
+    bool Init(const IndexConfig& config) {
+        config_ = config;
+        
+        // Create Knowhere index based on type
+        knowhere::Json json_config;
+        json_config["dim"] = config.dim;
+        json_config["metric_type"] = config.metric_type;
+        
+        if (config.index_type == "HNSW") {
+            json_config["M"] = 16;
+            json_config["efConstruction"] = 200;
+            json_config["ef"] = 100;
+            index_ = knowhere::IndexFactory::Instance().Create(
+                knowhere::IndexEnum::INDEX_HNSW, knowhere::Version::GetCurrentVersion());
+        } else if (config.index_type == "IVF_FLAT") {
+            json_config["nlist"] = 128;
+            json_config["nprobe"] = 16;
+            index_ = knowhere::IndexFactory::Instance().Create(
+                knowhere::IndexEnum::INDEX_FAISS_IVFFLAT, knowhere::Version::GetCurrentVersion());
+        } else {
+            // Default to HNSW
+            json_config["M"] = 16;
+            json_config["efConstruction"] = 200;
+            json_config["ef"] = 100;
+            index_ = knowhere::IndexFactory::Instance().Create(
+                knowhere::IndexEnum::INDEX_HNSW, knowhere::Version::GetCurrentVersion());
+        }
+        
+        config_json_ = json_config;
+        return index_ != nullptr;
+    }
+    
+    bool Build(const float* vectors, int64_t num_vectors) {
+        if (!index_ || !vectors || num_vectors <= 0) {
+            return false;
+        }
+        
+        auto dataset = knowhere::GenDataSet(num_vectors, config_.dim, vectors);
+        auto status = index_->Build(dataset, config_json_);
+        if (status != knowhere::Status::success) {
+            return false;
+        }
+        
+        num_vectors_ = num_vectors;
+        return true;
+    }
+    
+    bool Add(const float* vectors, int64_t num_vectors) {
+        if (!index_ || !vectors || num_vectors <= 0) {
+            return false;
+        }
+        
+        auto dataset = knowhere::GenDataSet(num_vectors, config_.dim, vectors);
+        auto status = index_->Add(dataset, config_json_);
+        if (status != knowhere::Status::success) {
+            return false;
+        }
+        
+        num_vectors_ += num_vectors;
+        return true;
+    }
+    
+    SearchResult Search(
+        const float* query_vectors,
+        int64_t num_queries,
+        int32_t top_k,
+        const uint8_t* filter_bitset,
+        size_t filter_size
+    ) const {
+        SearchResult result;
+        
+        if (!index_ || !query_vectors || num_queries <= 0 || top_k <= 0) {
+            return result;
+        }
+        
+        auto query_dataset = knowhere::GenDataSet(num_queries, config_.dim, query_vectors);
+        
+        knowhere::Json search_config = config_json_;
+        search_config["k"] = top_k;
+        
+        // Apply filter bitset if provided
+        knowhere::BitsetView bitset_view;
+        if (filter_bitset && filter_size > 0) {
+            bitset_view = knowhere::BitsetView(filter_bitset, num_vectors_);
+        }
+        
+        auto search_result = index_->Search(query_dataset, search_config, bitset_view);
+        if (!search_result.has_value()) {
+            return result;
+        }
+        
+        auto& res = search_result.value();
+        auto ids = res->GetIds();
+        auto distances = res->GetDistance();
+        int64_t total = num_queries * top_k;
+        
+        for (int64_t i = 0; i < total; ++i) {
+            if (ids[i] >= 0) {
+                result.ids.push_back(ids[i]);
+                result.distances.push_back(distances[i]);
+            }
+        }
+        
+        result.count = static_cast<int64_t>(result.ids.size());
+        return result;
+    }
+    
+    bool Serialize(std::vector<uint8_t>& output) const {
+        if (!index_) return false;
+        auto binary = index_->Serialize(config_json_);
+        if (!binary.has_value()) return false;
+        output = std::move(binary.value()->data);
+        return true;
+    }
+    
+    bool Deserialize(const std::vector<uint8_t>& input) {
+        if (!index_) return false;
+        knowhere::BinarySet binary_set;
+        binary_set.Append("index", std::make_shared<knowhere::Binary>(input));
+        return index_->Deserialize(binary_set, config_json_) == knowhere::Status::success;
+    }
+    
+    int64_t Count() const { return num_vectors_; }
+    int32_t Dim() const { return config_.dim; }
+    std::string Type() const { return config_.index_type; }
+
+private:
+    IndexConfig config_;
+    knowhere::Json config_json_;
+    std::shared_ptr<knowhere::Index> index_;
+    int64_t num_vectors_ = 0;
+};
+
+#else
+// Stub implementation (brute-force search)
 class KnowhereIndexWrapper {
 public:
     KnowhereIndexWrapper() = default;
@@ -65,7 +212,6 @@ public:
         }
         
         // Brute-force search (stub implementation)
-        // In production, this would call Knowhere's HNSW/IVF Search
         std::vector<std::pair<float, int64_t>> scores;
         scores.reserve(num_vectors_);
         
@@ -74,12 +220,12 @@ public:
             const float* query = query_vectors + q * config_.dim;
             
             for (int64_t i = 0; i < num_vectors_; ++i) {
-                // Check filter bitset
+                // Check filter bitset (bit=1 means filtered out)
                 if (filter_bitset && filter_size > 0) {
                     size_t byte_idx = i / 8;
                     size_t bit_idx = i % 8;
                     if (byte_idx < filter_size && (filter_bitset[byte_idx] & (1 << bit_idx))) {
-                        continue;  // Filtered out
+                        continue;
                     }
                 }
                 
@@ -114,13 +260,10 @@ public:
     }
     
     bool Serialize(std::vector<uint8_t>& output) const {
-        // Stub: serialize vectors and config
-        // In production, call Knowhere's Serialize
         return true;
     }
     
     bool Deserialize(const std::vector<uint8_t>& input) {
-        // Stub: deserialize vectors and config
         return true;
     }
     
@@ -133,6 +276,7 @@ private:
     std::vector<float> vectors_;
     int64_t num_vectors_ = 0;
 };
+#endif
 
 // DenseRetriever implementation
 

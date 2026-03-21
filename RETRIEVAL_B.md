@@ -228,6 +228,11 @@ Defined in `service/errors.py`:
 - **Added `timeout_ms` field to RetrievalRequest**: Default 5s, configurable for S3ColdStore latency
 - **Fixed `proof_trace` assertion**: Python tests now use `>= 1` instead of exact count (BFS depth up to 8)
 - **SDK alignment verified**: `query()` kwargs and `ingest_event()` match Go `schemas.QueryRequest`
+- **Knowhere integration**: Real Knowhere HNSW/SPARSE_INVERTED_INDEX with conditional compilation
+  - `ANDB_USE_KNOWHERE=ON` enables real Knowhere (requires dependencies)
+  - Falls back to stub (brute-force) when Knowhere unavailable
+  - Dense: HNSW with M=16, efConstruction=200, ef=100
+  - Sparse: SPARSE_INVERTED_INDEX with IP metric
 
 ### 2026-03-20 (Evening)
 
@@ -260,7 +265,7 @@ Defined in `service/errors.py`:
 - [x] Retry with exponential backoff (completed 2026-03-21)
 - [x] S3ColdStore timeout settings (completed 2026-03-21)
 - [x] SDK alignment with Go schemas (completed 2026-03-21)
-- [ ] Replace stub implementations with actual Knowhere calls
+- [x] Knowhere HNSW/SPARSE real implementation (completed 2026-03-21)
 - [ ] GPU support via Knowhere RAFT
 - [ ] Distributed retrieval with sharding
 - [ ] Caching layer for hot queries

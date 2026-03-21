@@ -53,13 +53,24 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-# Note: Knowhere has complex dependencies (OpenBLAS, etc.)
-# For now, we provide a stub implementation that can be replaced
-# with actual Knowhere integration when dependencies are available.
-# FetchContent_MakeAvailable(knowhere)
+# Knowhere has complex dependencies (OpenBLAS, FAISS, etc.)
+# Try to fetch and build Knowhere; fall back to stub if dependencies missing
+option(ANDB_USE_KNOWHERE "Use real Knowhere instead of stub" ON)
 
-message(STATUS "Knowhere integration: Using stub implementation")
-message(STATUS "  To enable full Knowhere, install dependencies and uncomment FetchContent_MakeAvailable")
+if(ANDB_USE_KNOWHERE)
+    message(STATUS "Attempting to fetch Knowhere...")
+    FetchContent_MakeAvailable(knowhere)
+    if(TARGET knowhere)
+        message(STATUS "Knowhere integration: ENABLED")
+        set(KNOWHERE_AVAILABLE TRUE)
+    else()
+        message(WARNING "Knowhere fetch failed, using stub implementation")
+        set(KNOWHERE_AVAILABLE FALSE)
+    endif()
+else()
+    message(STATUS "Knowhere integration: DISABLED (using stub)")
+    set(KNOWHERE_AVAILABLE FALSE)
+endif()
 
 # =============================================================================
 # pybind11 for Python bindings
@@ -90,7 +101,10 @@ target_include_directories(andb_retrieval PUBLIC
 )
 
 # Link Knowhere when available
-# target_link_libraries(andb_retrieval PUBLIC knowhere)
+if(KNOWHERE_AVAILABLE)
+    target_link_libraries(andb_retrieval PUBLIC knowhere)
+    target_compile_definitions(andb_retrieval PUBLIC ANDB_USE_KNOWHERE=1)
+endif()
 
 # =============================================================================
 # Python Bindings
