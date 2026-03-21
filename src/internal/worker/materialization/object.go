@@ -29,6 +29,32 @@ func CreateInMemoryObjectMaterializationWorker(
 	return &InMemoryObjectMaterializationWorker{id: id, objStore: objStore, verStore: verStore}
 }
 
+func (w *InMemoryObjectMaterializationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.ObjectMaterializationInput)
+	if !ok {
+		return schemas.ObjectMaterializationOutput{}, fmt.Errorf("object_mat: unexpected input type %T", input)
+	}
+	err := w.Materialize(in.Event)
+	if err != nil {
+		return schemas.ObjectMaterializationOutput{}, err
+	}
+	objType, objID := objectTypeFromEvent(in.Event)
+	return schemas.ObjectMaterializationOutput{ObjectID: objID, ObjectType: objType}, nil
+}
+
+// objectTypeFromEvent mirrors the routing logic in Materialize to compute
+// the canonical object type and deterministic ID for a given event.
+func objectTypeFromEvent(ev schemas.Event) (objectType, objectID string) {
+	switch ev.EventType {
+	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
+		return string(schemas.ObjectTypeArtifact), schemas.IDPrefixArtifact + ev.EventID
+	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
+		return string(schemas.ObjectTypeState), schemas.IDPrefixState + ev.EventID
+	default:
+		return string(schemas.ObjectTypeMemory), schemas.IDPrefixMemory + ev.EventID
+	}
+}
+
 func (w *InMemoryObjectMaterializationWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -41,9 +67,9 @@ func (w *InMemoryObjectMaterializationWorker) Info() nodes.NodeInfo {
 func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	switch ev.EventType {
-	case "tool_call", "tool_result":
+	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
 		artifact := schemas.Artifact{
-			ArtifactID:        fmt.Sprintf("art_%s", ev.EventID),
+			ArtifactID:        schemas.IDPrefixArtifact + ev.EventID,
 			SessionID:         ev.SessionID,
 			OwnerAgentID:      ev.AgentID,
 			ArtifactType:      ev.EventType,
@@ -51,25 +77,25 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			Version:           ev.Version,
 		}
 		if ev.Payload != nil {
-			if uri, ok := ev.Payload["uri"].(string); ok {
+			if uri, ok := ev.Payload[schemas.PayloadKeyURI].(string); ok {
 				artifact.URI = uri
 			}
-			if mime, ok := ev.Payload["mime_type"].(string); ok {
+			if mime, ok := ev.Payload[schemas.PayloadKeyMimeType].(string); ok {
 				artifact.MimeType = mime
 			}
 		}
 		w.objStore.PutArtifact(artifact)
 		w.verStore.PutVersion(schemas.ObjectVersion{
 			ObjectID:        artifact.ArtifactID,
-			ObjectType:      "artifact",
+			ObjectType:      string(schemas.ObjectTypeArtifact),
 			Version:         ev.Version + 1,
 			MutationEventID: ev.EventID,
 			ValidFrom:       now,
 		})
 
-	case "state_update", "state_change", "checkpoint":
+	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
 		state := schemas.State{
-			StateID:            fmt.Sprintf("state_%s", ev.EventID),
+			StateID:            schemas.IDPrefixState + ev.EventID,
 			AgentID:            ev.AgentID,
 			SessionID:          ev.SessionID,
 			StateType:          ev.EventType,
@@ -78,10 +104,10 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			Version:            ev.Version + 1,
 		}
 		if ev.Payload != nil {
-			if k, ok := ev.Payload["state_key"].(string); ok {
+			if k, ok := ev.Payload[schemas.PayloadKeyStateKey].(string); ok {
 				state.StateKey = k
 			}
-			if v, ok := ev.Payload["state_value"].(string); ok {
+			if v, ok := ev.Payload[schemas.PayloadKeyStateValue].(string); ok {
 				state.StateValue = v
 			}
 		}
@@ -90,13 +116,13 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 	default:
 		text := ""
 		if ev.Payload != nil {
-			if t, ok := ev.Payload["text"].(string); ok {
+			if t, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
 				text = t
 			}
 		}
 		w.objStore.PutMemory(schemas.Memory{
-			MemoryID:       fmt.Sprintf("mem_%s", ev.EventID),
-			MemoryType:     "episodic",
+			MemoryID:       schemas.IDPrefixMemory + ev.EventID,
+			MemoryType:     string(schemas.MemoryTypeEpisodic),
 			AgentID:        ev.AgentID,
 			SessionID:      ev.SessionID,
 			Level:          0,

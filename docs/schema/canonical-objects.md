@@ -367,7 +367,10 @@ In v1, `User` is intentionally minimal and mainly exists to:
 - `user_name`
 - `user_tenant_id`
 - `user_workspace_id`
-- `visibility`
+- `default_visibility`
+
+`default_visibility` means the identity-level default visibility scope used when creating new objects.  
+It is different from object-level `visibility`, which is the effective visibility on each specific object instance.
 
 ### 11.3 Role
 

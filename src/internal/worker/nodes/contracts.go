@@ -29,6 +29,7 @@ const (
 	NodeTypeIndexBuild    NodeType = "index_build_worker"
 	NodeTypeGraphRelation NodeType = "graph_relation_worker"
 	NodeTypeProofTrace    NodeType = "proof_trace_worker"
+	NodeTypeSubgraph      NodeType = "subgraph_executor_worker"
 	NodeTypeMicroBatch    NodeType = "micro_batch_scheduler"
 
 	// Cognitive compression
@@ -104,6 +105,14 @@ type GraphRelationWorker interface {
 	IndexEdge(srcID, srcType, dstID, dstType, edgeType string, weight float64) error
 }
 
+// SubgraphExecutorWorker expands a seed set of object IDs into an
+// EvidenceSubgraph by performing one-hop (or filtered) graph expansion using
+// the canonical graph_expand logic from the schemas package.
+type SubgraphExecutorWorker interface {
+	Info() NodeInfo
+	Expand(req schemas.GraphExpandRequest, nodes []schemas.GraphNode, edges []schemas.Edge) schemas.GraphExpandResponse
+}
+
 // ProofTraceWorker assembles explainable proof traces from the derivation log
 // and graph index for a given query result set.
 // maxDepth controls how many hops to traverse (1 = immediate edges only,
@@ -175,4 +184,21 @@ type MicroBatchScheduler interface {
 type SummarizationWorker interface {
 	Info() NodeInfo
 	Summarize(agentID, sessionID string, maxLevel int) error
+}
+
+// ─── Typed-dispatch interface ─────────────────────────────────────────────────
+
+// Runnable is implemented by every worker that supports typed dispatch via
+// schemas.WorkerInput / schemas.WorkerOutput.
+//
+// It is optional — all workers additionally expose concrete domain methods
+// (Process, Materialize, Consolidate, …) for direct chain / manager calls.
+// Run provides a uniform entry point when the caller holds a WorkerInput value
+// without knowing the concrete worker type.
+//
+// Implementations must type-assert the input to their expected Input struct,
+// delegate to the concrete method, and return the corresponding Output struct.
+// An unknown input type must return a descriptive error without panicking.
+type Runnable interface {
+	Run(input schemas.WorkerInput) (schemas.WorkerOutput, error)
 }

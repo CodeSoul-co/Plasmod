@@ -72,8 +72,9 @@ func CreateMainChain(mgr *nodes.Manager) *MainChain { return &MainChain{mgr: mgr
 func (c *MainChain) Run(in MainChainInput) ChainResult {
 	ev := in.Event
 
-	// 1 – Object routing (Memory / State / Artifact)
+	// 1 – Object routing (Memory → ObjectMat; State → StateMat; Artifact → ObjectMat)
 	c.mgr.DispatchObjectMaterialization(ev)
+	c.mgr.DispatchStateMaterialization(ev)
 
 	// 2 – Tool trace capture
 	c.mgr.DispatchToolTrace(ev)
@@ -81,7 +82,7 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	// 3 – Index the primary memory object
 	memID := in.MemoryID
 	if memID == "" {
-		memID = "mem_" + ev.EventID
+		memID = schemas.IDPrefixMemory + ev.EventID
 	}
 	ns := in.Namespace
 	if ns == "" {
@@ -89,14 +90,14 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	}
 	text := ""
 	if ev.Payload != nil {
-		if t, ok := ev.Payload["text"].(string); ok {
+		if t, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
 			text = t
 		}
 	}
-	c.mgr.DispatchIndexBuild(memID, "memory", ns, text)
+	c.mgr.DispatchIndexBuild(memID, string(schemas.ObjectTypeMemory), ns, text)
 
 	// 4 – Graph: link memory to its source event
-	c.mgr.DispatchGraphRelation(memID, "memory", ev.EventID, "event", "derived_from", 1.0)
+	c.mgr.DispatchGraphRelation(memID, string(schemas.ObjectTypeMemory), ev.EventID, string(schemas.ObjectTypeEvent), string(schemas.EdgeTypeDerivedFrom), schemas.DefaultEdgeWeight)
 
 	return ok("main_chain", map[string]any{
 		"memory_id": memID,
@@ -153,8 +154,8 @@ func (c *MemoryPipelineChain) Run(in MemoryPipelineInput) ChainResult {
 	}
 
 	// 3 – Apply governance policies to the freshly extracted memory
-	memID := "mem_" + in.EventID
-	c.mgr.DispatchReflectionPolicy(memID, "memory")
+	memID := schemas.IDPrefixMemory + in.EventID
+	c.mgr.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
 
 	return ok("memory_pipeline_chain", map[string]any{
 		"memory_id":         memID,
@@ -185,24 +186,50 @@ type QueryChainInput struct {
 	ObjectIDs []string
 	// MaxDepth controls BFS hops in proof trace (0 = default 8).
 	MaxDepth int
+	// GraphNodes / GraphEdges are pre-fetched canonical objects for subgraph
+	// expansion; supplied by the runtime after the evidence assembler runs.
+	GraphNodes []schemas.GraphNode
+	GraphEdges []schemas.Edge
+	// EdgeTypeFilter restricts subgraph expansion to specific edge types.
+	// Empty = include all edge types.
+	EdgeTypeFilter []string
 }
 
 type QueryChainOutput struct {
 	ProofTrace []string
+	Subgraph   schemas.EvidenceSubgraph
 }
 
 func CreateQueryChain(mgr *nodes.Manager) *QueryChain {
 	return &QueryChain{mgr: mgr}
 }
 
-// Run assembles a proof trace for the supplied object IDs (collected upstream
-// by the QueryNode / TieredDataPlane).
+// Run assembles a proof trace and a one-hop subgraph for the supplied object
+// IDs. GraphNodes and GraphEdges must be pre-fetched by the caller (typically
+// the runtime / evidence assembler) and passed through QueryChainInput.
 func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
+	// 1 – Multi-hop BFS proof trace
 	trace := c.mgr.DispatchProofTrace(in.ObjectIDs, in.MaxDepth)
-	return QueryChainOutput{ProofTrace: trace},
+
+	// 2 – One-hop subgraph expansion via SubgraphExecutorWorker
+	subgraph := schemas.EvidenceSubgraph{}
+	if len(in.ObjectIDs) > 0 && (len(in.GraphNodes) > 0 || len(in.GraphEdges) > 0) {
+		expResp := c.mgr.DispatchSubgraphExpand(
+			schemas.GraphExpandRequest{
+				SeedObjectIDs: in.ObjectIDs,
+				EdgeTypes:     in.EdgeTypeFilter,
+			},
+			in.GraphNodes,
+			in.GraphEdges,
+		)
+		subgraph = expResp.Subgraph
+	}
+
+	return QueryChainOutput{ProofTrace: trace, Subgraph: subgraph},
 		ok("query_chain", map[string]any{
-			"object_count": len(in.ObjectIDs),
-			"trace_steps":  len(trace),
+			"object_count":   len(in.ObjectIDs),
+			"trace_steps":    len(trace),
+			"subgraph_edges": len(subgraph.Edges),
 		})
 }
 
@@ -247,11 +274,19 @@ func (c *CollaborationChain) Run(in CollaborationChainInput) (CollaborationChain
 	// 2 – Determine winner (higher version survives; we use LeftMemID as default)
 	winnerID := in.LeftMemID
 
-	// 3 – Broadcast winner to target agent's memory space
+	// 3 – Enqueue conflict resolution result to MicroBatchScheduler for
+	// batched cross-agent fan-out (e.g., GPU-friendly embedding updates)
+	c.mgr.EnqueueMicroBatch("conflict_resolved:"+winnerID, map[string]string{
+		"winner_id":       winnerID,
+		"source_agent_id": in.SourceAgentID,
+		"target_agent_id": in.TargetAgentID,
+	})
+
+	// 4 – Broadcast winner to target agent's memory space
 	sharedID := ""
 	if in.TargetAgentID != "" && in.TargetAgentID != in.SourceAgentID {
 		c.mgr.DispatchCommunication(in.SourceAgentID, in.TargetAgentID, winnerID)
-		sharedID = "shared_" + winnerID + "_to_" + in.TargetAgentID
+		sharedID = schemas.IDPrefixShared + winnerID + "_to_" + in.TargetAgentID
 	}
 
 	return CollaborationChainOutput{WinnerMemID: winnerID, SharedMemID: sharedID},

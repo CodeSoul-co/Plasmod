@@ -3,6 +3,7 @@ package coordination
 import (
 	"fmt"
 
+	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
 )
@@ -17,6 +18,25 @@ type InMemoryCommunicationWorker struct {
 
 func CreateInMemoryCommunicationWorker(id string, objStore storage.ObjectStore) *InMemoryCommunicationWorker {
 	return &InMemoryCommunicationWorker{id: id, objStore: objStore}
+}
+
+func (w *InMemoryCommunicationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.BroadcastInput)
+	if !ok {
+		return schemas.BroadcastOutput{}, fmt.Errorf("communication: unexpected input type %T", input)
+	}
+	err := w.Broadcast(in.FromAgentID, in.ToAgentID, in.MemoryID)
+	if err != nil {
+		return schemas.BroadcastOutput{}, err
+	}
+	if in.FromAgentID == in.ToAgentID {
+		return schemas.BroadcastOutput{}, nil
+	}
+	sharedID := schemas.IDPrefixShared + in.MemoryID + "_to_" + in.ToAgentID
+	if _, ok := w.objStore.GetMemory(sharedID); !ok {
+		return schemas.BroadcastOutput{}, nil // source memory did not exist
+	}
+	return schemas.BroadcastOutput{SharedMemoryID: sharedID}, nil
 }
 
 func (w *InMemoryCommunicationWorker) Info() nodes.NodeInfo {
@@ -37,7 +57,7 @@ func (w *InMemoryCommunicationWorker) Broadcast(fromAgentID, toAgentID, memoryID
 		return nil
 	}
 	shared := mem
-	shared.MemoryID = fmt.Sprintf("shared_%s_to_%s", memoryID, toAgentID)
+	shared.MemoryID = schemas.IDPrefixShared + memoryID + "_to_" + toAgentID
 	shared.AgentID = toAgentID
 	shared.ProvenanceRef = fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID)
 	shared.IsActive = true

@@ -2,12 +2,12 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"andb/src/internal/eventbackbone"
+	"andb/src/internal/schemas"
 	"andb/src/internal/worker/nodes"
 )
 
@@ -115,7 +115,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
 		ev := entry.Event
 		switch ev.EventType {
-		case "state_update", "state_change", "checkpoint":
+		case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
 			s.manager.DispatchStateMaterialization(ev)
 		}
 	})
@@ -124,15 +124,15 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
 		ev := entry.Event
 		switch ev.EventType {
-		case "tool_call", "tool_result":
+		case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
 			s.manager.DispatchToolTrace(ev)
 		}
 	})
 	// ── 1. ReflectionPolicy ───────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
 		ev := entry.Event
-		memID := fmt.Sprintf("mem_%s", ev.EventID)
-		s.manager.DispatchReflectionPolicy(memID, "memory")
+		memID := schemas.IDPrefixMemory + ev.EventID
+		s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
 	})
 
 	// ── 2. ConflictMerge ──────────────────────────────────────────────────
@@ -144,7 +144,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 			return
 		}
 		key := ev.AgentID + ":" + ev.SessionID
-		newMemID := fmt.Sprintf("mem_%s", ev.EventID)
+		newMemID := schemas.IDPrefixMemory + ev.EventID
 
 		s.mu.Lock()
 		prevMemID, hasPrev := s.agentLastMem[key]
@@ -152,7 +152,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		s.mu.Unlock()
 
 		if hasPrev {
-			s.manager.DispatchConflictMerge(newMemID, prevMemID, "memory")
+			s.manager.DispatchConflictMerge(newMemID, prevMemID, string(schemas.ObjectTypeMemory))
 		}
 	})
 

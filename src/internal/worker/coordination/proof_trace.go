@@ -4,11 +4,13 @@ import (
 	"fmt"
 
 	"andb/src/internal/eventbackbone"
+	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
 )
 
-const defaultMaxDepth = 8
+// defaultMaxDepth is an alias for the canonical default kept for internal use.
+const defaultMaxDepth = schemas.DefaultMaxProofDepth
 
 // InMemoryProofTraceWorker assembles explainable proof traces by performing a
 // BFS over the GraphEdgeStore starting from the supplied objectIDs.
@@ -31,6 +33,19 @@ func CreateInMemoryProofTraceWorker(
 	derivLog eventbackbone.DerivationLogger,
 ) *InMemoryProofTraceWorker {
 	return &InMemoryProofTraceWorker{id: id, store: store, derivLog: derivLog}
+}
+
+func (w *InMemoryProofTraceWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.ProofTraceInput)
+	if !ok {
+		return schemas.ProofTraceOutput{}, fmt.Errorf("proof_trace: unexpected input type %T", input)
+	}
+	steps := w.AssembleTrace(in.ObjectIDs, in.MaxDepth)
+	depth := in.MaxDepth
+	if depth <= 0 {
+		depth = defaultMaxDepth
+	}
+	return schemas.ProofTraceOutput{Steps: steps, HopCount: depth}, nil
 }
 
 func (w *InMemoryProofTraceWorker) Info() nodes.NodeInfo {
