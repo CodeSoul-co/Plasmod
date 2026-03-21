@@ -47,9 +47,12 @@ B_第二周实现文档.md
 B_第三周实现文档.md
 B_第四周实现文档.md
 方案定位.md
+
 # 根目录个人方案/分工文档（避免 git add . 误加入）
 /方案.md
 /分工情况.pdf
+/分工情况.md
+/系统分层架构图.md
 agent-native-db-spec.md
 rule
 
@@ -69,3 +72,5 @@ server.*.log
 s3-integration-run-record-*.md
 s3-go-integration-output-*.txt
 integration_tests/s3-python-output-*.txt
+arch-design.zh-CN.md
+docs/worker-types-overview.md

@@ -72,6 +72,59 @@ func TestService_MaterializeEvent_EdgeDerivation(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEvent_StateAndArtifact(t *testing.T) {
+	svc := NewService()
+	ev := schemas.Event{
+		EventID:     "evt_state_1",
+		AgentID:     "agent_1",
+		SessionID:   "sess_1",
+		WorkspaceID: "ws_1",
+		EventType:   "user_message",
+		LogicalTS:   7,
+		Payload: map[string]any{
+			"text":          "hello",
+			"artifact_uri":  "s3://bucket/obj1.bin",
+			"mime_type":     "application/octet-stream",
+			"artifact_name": "weights.pt",
+		},
+	}
+	res := svc.MaterializeEvent(ev)
+	if res.State == nil || res.StateVersion == nil {
+		t.Fatal("expected non-nil State and StateVersion")
+	}
+	if res.State.StateValue != res.Memory.MemoryID {
+		t.Errorf("State.StateValue should point to memory id, got %q want %q", res.State.StateValue, res.Memory.MemoryID)
+	}
+	if res.Artifact == nil || res.ArtifactVersion == nil {
+		t.Fatal("expected non-nil Artifact when artifact_uri is set")
+	}
+	if res.Artifact.URI != "s3://bucket/obj1.bin" {
+		t.Errorf("Artifact.URI: %q", res.Artifact.URI)
+	}
+	if res.Artifact.Metadata["name"] != "weights.pt" {
+		t.Errorf("artifact_name in metadata: %#v", res.Artifact.Metadata)
+	}
+}
+
+func TestService_MaterializeEvent_NoArtifactWithoutURI(t *testing.T) {
+	svc := NewService()
+	ev := schemas.Event{
+		EventID:   "evt_plain",
+		AgentID:   "a",
+		SessionID: "s",
+		EventType: "user_message",
+		LogicalTS: 1,
+		Payload:   map[string]any{"text": "only text"},
+	}
+	res := svc.MaterializeEvent(ev)
+	if res.State == nil {
+		t.Fatal("expected State")
+	}
+	if res.Artifact != nil {
+		t.Fatal("expected no Artifact without uri in payload")
+	}
+}
+
 func TestResolveMemoryType(t *testing.T) {
 	cases := []struct {
 		eventType  string

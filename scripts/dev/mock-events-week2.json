@@ -1,0 +1,43 @@
+[
+  {
+    "event_id": "week2_evt_001",
+    "tenant_id": "t_demo",
+    "workspace_id": "w_demo",
+    "agent_id": "agent_a",
+    "session_id": "sess_week2",
+    "event_type": "user_message",
+    "event_time": "2026-03-21T10:00:00Z",
+    "ingest_time": "2026-03-21T10:00:00Z",
+    "visible_time": "2026-03-21T10:00:00Z",
+    "logical_ts": 0,
+    "causal_refs": [],
+    "payload": { "text": "week2 mock: plain message only" },
+    "source": "mock-week2",
+    "importance": 0.5,
+    "visibility": "private",
+    "version": 1
+  },
+  {
+    "event_id": "week2_evt_002",
+    "tenant_id": "t_demo",
+    "workspace_id": "w_demo",
+    "agent_id": "agent_a",
+    "session_id": "sess_week2",
+    "event_type": "user_message",
+    "event_time": "2026-03-21T10:01:00Z",
+    "ingest_time": "2026-03-21T10:01:00Z",
+    "visible_time": "2026-03-21T10:01:00Z",
+    "logical_ts": 0,
+    "causal_refs": [],
+    "payload": {
+      "text": "week2 mock with artifact ref",
+      "artifact_uri": "s3://andb-demo-bucket/artifacts/run1.bin",
+      "mime_type": "application/octet-stream",
+      "artifact_name": "run1.bin"
+    },
+    "source": "mock-week2",
+    "importance": 0.6,
+    "visibility": "private",
+    "version": 1
+  }
+]

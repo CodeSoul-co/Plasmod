@@ -81,6 +81,14 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)
 	}
+	if mat.State != nil && mat.StateVersion != nil {
+		r.storage.Objects().PutState(*mat.State)
+		r.storage.Versions().PutVersion(*mat.StateVersion)
+	}
+	if mat.Artifact != nil && mat.ArtifactVersion != nil {
+		r.storage.Objects().PutArtifact(*mat.Artifact)
+		r.storage.Versions().PutVersion(*mat.ArtifactVersion)
+	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
 	if r.preCompute != nil {
@@ -95,13 +103,20 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.plane.Ingest(record); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	ack := map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
 		"event_id":  ev.EventID,
 		"memory_id": mat.Memory.MemoryID,
 		"edges":     len(mat.Edges),
-	}, nil
+	}
+	if mat.State != nil {
+		ack["state_id"] = mat.State.StateID
+	}
+	if mat.Artifact != nil {
+		ack["artifact_id"] = mat.Artifact.ArtifactID
+	}
+	return ack, nil
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
