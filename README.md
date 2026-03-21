@@ -283,6 +283,17 @@ python scripts/seed_mock_data.py
 python scripts/run_demo.py
 ```
 
+### Validate ingest path locally (dev helper)
+
+Use the week2 mock batch to validate ingest materialization quickly:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/dev/run-mock-events-week2.ps1
+```
+
+This posts events from `scripts/dev/mock-events-week2.json` and prints ingest acknowledgements.
+For endpoint details and ACK fields, see `docs/api/ingest.md`.
+
 ### Run tests
 
 ```bash
