@@ -427,3 +427,375 @@ Additional supporting docs already in the repo:
 - Cloud-native distributed orchestration
 
 For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md).
+
+---
+
+## Integration Branch — Team Review Notes
+
+> **Branch:** `integration/all-features-test`
+> **Last updated:** 2026-03-21
+> **Commit:** `56e9e82`
+> **Status:** All Go internal tests pass (`go test ./src/internal/... exit 0`). Integration test suite passes end-to-end. S3ColdStore + SubgraphExecutorWorker + StateMaterializationWorker + MicroBatchScheduler all wired.
+> **Note:** This section exists only on `integration/all-features-test` and is intentionally not present on `main`.
+
+The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
+
+> 👋 **To all members:** Please leave a comment or Slack thread when you complete your section checklist. Cross-dependency items are called out in the [Cross-Member Collaboration](#cross-member-collaboration) section below — check that table first if your work touches a shared interface.
+
+---
+
+### Member A — Schema & Query Filters (`feature/schema-a`)
+
+**Scope merged:** Tenant/workspace filters, object/memory filter predicates on the query path.
+
+| Item | Status | Notes |
+|---|---|---|
+| `QueryRequest` filter fields wired through `PolicyEngine` | ✅ | See `semantic/policy_engine.go` and `access/gateway.go` `/v1/query` handler |
+| Tenant isolation: `workspace_id` and `tenant_id` filter at segment scan | ✅ | `coordinator/query_coordinator.go` applies filters before `DataPlane.Search` |
+| Object-type filter (`memory` / `state` / `artifact`) | ✅ | `QueryRequest.ObjectTypes` applied in `semantic/planner.go` |
+| `StateMaterializationWorker` now also dispatched in `MainChain` | ✅ | Verify `State` objects honour `ObjectTypes` filter — `state` type must not leak into `memory`-only queries |
+| **Review focus** | ⚠️ | Filter short-circuit when `ObjectTypes` is empty — must default to all types, not zero results |
+| **Review focus** | ⚠️ | `workspace_id` propagation: events written without `WorkspaceID` must still be queryable under default namespace |
+| **Review focus** | ⚠️ | `QueryChainInput.EdgeTypeFilter` is now available — verify `QueryRequest` edge-type filter field (if any) propagates to `SubgraphExecutorWorker` via `EdgeTypeFilter` |
+| **Review focus** | ⚠️ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by the caller before `QueryChain.Run`; confirm the gateway handler populates these from `store.Edges().BulkEdges` before dispatching |
+| Edge case: combined tenant + object-type + top_k filter | 🔲 | Integration test covering the 3-way combination |
+| Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | 🔲 | `StateMaterializationWorker` writes `State` on `tool_call` — confirm it is retrievable with type filter |
+
+---
+
+### Member B — Python Retrieval Service (`feature/retrieval-b`)
+
+**Scope merged:** Dense/sparse retrieval Python service (C++ core + Python thin wrapper), policy filter, version filter, RRF merger, gRPC proto.
+
+#### Architecture: Python Thin Wrapper + C++ Core
+
+```
+┌──────────────────────────────────────────────────┐
+│                  Python Layer                     │
+│  src/internal/retrieval/                          │
+│  - main.py (entry point, --dev flag)              │
+│  - service/retriever.py (thin wrapper, calls C++) │
+│  - service/types.py (type definitions)            │
+└──────────────────────────────────────────────────┘
+                         │ pybind11
+                         ▼
+┌──────────────────────────────────────────────────┐
+│                   C++ Layer                       │
+│  cpp/                                             │
+│  ├── include/andb/                                │
+│  │   ├── types.h    (Candidate, SearchResult)     │
+│  │   ├── dense.h    (DenseRetriever — HNSW)       │
+│  │   ├── sparse.h   (SparseRetriever)             │
+│  │   ├── filter.h   (FilterBitset — BitsetView)   │
+│  │   ├── merger.h   (RRF merge + reranking)       │
+│  │   └── retrieval.h (Unified Retriever + C API)  │
+│  ├── retrieval/                                   │
+│  │   ├── dense.cpp  (Knowhere HNSW)               │
+│  │   ├── sparse.cpp (Knowhere SPARSE_INDEX)       │
+│  │   ├── filter.cpp (BitsetView mechanism)        │
+│  │   ├── merger.cpp (RRF k=60, reranking)         │
+│  │   └── retrieval.cpp (Unified)                  │
+│  ├── python/bindings.cpp (pybind11)               │
+│  └── CMakeLists.txt                               │
+└──────────────────────────────────────────────────┘
+```
+
+#### Three-Path Parallel Retrieval (C++)
+
+| Path | Implementation | Description |
+|---|---|---|
+| **Dense** | `cpp/retrieval/dense.cpp` | Knowhere HNSW, Search with BitsetView |
+| **Sparse** | `cpp/retrieval/sparse.cpp` | Knowhere SPARSE_INVERTED_INDEX |
+| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView passed to Search call |
+
+**RRF Fusion** (`cpp/retrieval/merger.cpp`):
+```
+RRF_score(d) = Σ 1/(k + rank_i(d))    k=60 (configurable)
+```
+
+**Reranking formula**:
+```cpp
+final_score = rrf_score * max(importance, 0.01f)
+                        * max(freshness_score, 0.01f)
+                        * max(confidence, 0.01f)
+```
+
+**Seed marking**: candidates with `final_score >= seed_threshold` (default 0.7) set `is_seed=true` — used by `SubgraphExecutorWorker` for graph expansion.
+
+#### Building the C++ Module
+
+```bash
+cd cpp && mkdir build && cd build
+cmake .. -DANDB_WITH_PYBIND=ON
+make -j$(nproc)
+```
+
+| CMake Option | Default | Description |
+|---|---|---|
+| `ANDB_WITH_PYBIND` | ON | Build pybind11 Python bindings |
+| `ANDB_WITH_GPU` | OFF | GPU support via Knowhere RAFT |
+
+Platforms: Ubuntu 20.04 x86_64/aarch64, macOS x86_64, macOS Apple Silicon.
+
+#### ⚡ Dual-Interface Ownership (Python ↔ Go) — B's Primary Responsibility
+
+Member B is the **sole owner** of the contract boundary between the Python retrieval service and the Go HTTP layer. Any change to either side must be confirmed with the other side before merging.
+
+**Go-side interface (owned by B, implemented in Go):**
+
+| Go location | Python counterpart | What must stay in sync |
+|---|---|---|
+| `schemas.QueryRequest` (field names + JSON tags) | `andb_sdk/client.py` → `query()` kwargs | Field names, types, and omitempty rules |
+| `schemas.QueryResponse` (JSON shape) | `andb_sdk/retrieval.py` → response parsing | `objects`, `edges`, `proof_trace`, `applied_filters` keys |
+| `access/gateway.go` `/v1/query` POST body | `retrieval/service/retriever.py` request builder | HTTP method, path, Content-Type |
+| `access/gateway.go` `/v1/ingest` POST body | `andb_sdk/client.py` → `ingest_event()` | `event_id`, `agent_id`, `session_id`, `payload` field presence |
+
+**Proto contract (B must keep aligned):**
+
+| File | Rule |
+|---|---|
+| `src/internal/retrieval/proto/retrieval.proto` | Proto field numbers must NOT change once merged — add new fields only, never renumber |
+| gRPC service name | Must match the Go client stub if one is ever generated; agree with D before adding Go gRPC client |
+
+**Checklist before B marks their section done:**
+
+| Item | Status | Notes |
+|---|---|---|
+| Python service files in `src/internal/retrieval/` | ✅ | |
+| C++ core in `cpp/` with pybind11 bindings | ✅ | 2026-03-20 migration complete |
+| gRPC proto field names align with Go `schemas.QueryRequest` | ✅ | |
+| `PolicyFilter` runs before `VersionFilter` in `retriever.py` | ✅ | |
+| Knowhere stub → real HNSW / SPARSE calls wired | 🔲 | Replace stub with actual Knowhere index calls |
+| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
+| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
+| Python service `/healthz` endpoint | 🔲 | Needed for K8s readiness probe |
+| Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
+| GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
+| No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
+| **Review focus** | ⚠️ | C++ `is_seed=true` candidates → their IDs should map to `QueryChainInput.ObjectIDs` passed to `SubgraphExecutorWorker`; verify the Go gateway correctly extracts seed IDs from retrieval results before calling `QueryChain.Run` |
+| **Review focus** | ⚠️ | `proof_trace` field in `QueryResponse` may now contain up to depth=8 BFS steps (previously 1-hop); B's Python integration tests that assert `len(proof_trace) == N` must be updated to use `>= 1` instead of exact count |
+| **Review focus** | ⚠️ | When `S3ColdStore` is active, cold-path `GetMemory` adds HTTP round-trip latency; B's timeout settings in `retriever.py` may need to be increased from default if cold reads are expected during integration tests |
+
+---
+
+### Member C — Graph Relations (`feature/graph-c`)
+
+**Scope merged:** `GraphRelationWorker`, `GraphEdgeStore.BulkEdges`, 1-hop expansion in `evidence.Assembler`, subgraph seed expansion.
+
+| Item | Status | Notes |
+|---|---|---|
+| `GraphRelationWorker.IndexEdge` wired in `MainChain` | ✅ | `chain.go` step 4: `derived_from` edge written per ingest |
+| `BulkEdges(objectIDs)` 1-hop expansion in `Assembler.Build` | ✅ | Returns typed `[]schemas.Edge` in every `QueryResponse` |
+| `GraphEdgeStore.DeleteEdge` contract defined | ✅ | Available but not yet called in any worker path |
+| `SubgraphExecutorWorker` uses `schemas.ExpandFromRequest` → `OneHopExpand` | ✅ | Internally calls `EdgesFrom` + `EdgesTo` per seed node |
+| **Review focus** | ⚠️ | `EdgesFrom(id)` is O(n) scan — `SubgraphExecutorWorker` calls it once per seed ID in `OneHopExpand`; with large seed sets this compounds to O(n×seeds); must be replaced with indexed map before scaling |
+| **Review focus** | ⚠️ | `OneHopExpand` in `schemas/graph_expand.go` iterates ALL edges to find matches — verify `BulkEdges` (used in `Assembler.Build`) and `OneHopExpand` (used in `SubgraphExecutorWorker`) return consistent results for the same seed set |
+| **Review focus** | ⚠️ | Multi-hop BFS in `ProofTraceWorker` caps at depth=8; verify no cycles in test graph |
+| **Review focus** | ⚠️ | `conflict_resolved` edges from `ConflictMergeWorker` not surfaced in `QueryResponse.Edges` — confirm whether this is intentional; if not, wire `CollaborationChain` output back to edge store |
+| **Review focus** | ⚠️ | `TieredObjectStore.ArchiveMemory` moves memories to cold tier but edges referencing archived memory IDs remain in the warm `GraphEdgeStore` indefinitely — dangling edge problem; decide eviction policy |
+| Missing: `GraphEdges` pre-fetch caller responsibility | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated by the runtime before calling `QueryChain.Run`; currently the gateway does not call `BulkEdges` before dispatch — C and D must agree on who owns this call |
+| Missing: edge TTL / expiry | 🔲 | Add `expires_at` field to `schemas.Edge`; wire `ReflectionPolicyWorker` to prune expired edges |
+| Missing: cold-tier edge store | 🔲 | `S3ColdStore` only covers `Memory` and `Agent`; edges have no cold-tier path — consider `ColdObjectStore` interface extension or separate `ColdEdgeStore` for v1.x |
+
+---
+
+### Member D — Worker Architecture Refactor
+
+**Scope merged:** Worker split into 5 domain subpackages, `Create*` naming convention, multi-hop ProofTrace, DerivationLog integration, SubgraphExecutorWorker (L5), StateMat + MicroBatch wiring.
+
+| Item | Status | Notes |
+|---|---|---|
+| Worker subpackages: `ingestion` / `materialization` / `cognitive` / `indexing` / `coordination` | ✅ | Each worker in its own file |
+| `nodes/` retains only contracts + Manager + DataNode/IndexNode/QueryNode | ✅ | Split into `data_node.go`, `index_node.go`, `query_node.go` |
+| All constructors renamed `Create*` | ✅ | `eventbackbone` retains `New*` (out of scope) |
+| `ProofTraceWorker.AssembleTrace` upgraded to BFS with configurable `maxDepth` | ✅ | Default cap = 8; pass `maxDepth=1` for legacy |
+| `ToolTraceWorker` appends to `DerivationLog` on `tool_call`/`tool_result` | ✅ | Enables causal path walk in ProofTrace |
+| `QueryChainInput.MaxDepth` field for caller-controlled trace depth | ✅ | Default 0 → 8 internally |
+| `SubgraphExecutorWorker` (`indexing/subgraph.go`) registered as `subgraph-1` | ✅ | Wraps `schemas.ExpandFromRequest`; wired in `QueryChain` step 2 |
+| `StateMaterializationWorker` dispatched in `MainChain` | ✅ | Alongside `ObjectMaterializationWorker` at step 1 |
+| `EnqueueMicroBatch` called in `CollaborationChain` after conflict resolution | ✅ | Payload: `winner_id`, `source_agent_id`, `target_agent_id` |
+| `TieredObjectStore` registered as `"tiered_objects"` in coordinator registry | ✅ | Hot+warm+cold wired; cold = S3 or in-memory per env |
+| **Review focus** | ⚠️ | `subscriber.go` goroutines have no dead-letter channel — panics are silently lost; add structured error reporting before production |
+| **Review focus** | ⚠️ | `ExecutionOrchestrator` queues are unbounded; add hard cap + back-pressure signal to prevent OOM under burst ingest |
+| **Review focus** | ⚠️ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by the caller — the current `Runtime.ExecuteQuery` path does NOT call `BulkEdges` before `QueryChain.Run`; `SubgraphExecutorWorker` will silently return empty subgraph until this is wired |
+| **Review focus** | ⚠️ | `ReflectionPolicyWorker` triggers `ArchiveMemory`-style eviction — confirm it uses `tiered_objects.ArchiveMemory()` rather than directly calling `store.Objects()` to ensure cold-tier promotion works |
+| **Review focus** | ⚠️ | `MicroBatchScheduler.Flush()` is never called in current code paths — micro-batch payloads accumulate without drain; add a periodic flush goroutine or hook into `EventSubscriber` drain cycle |
+| Missing: per-subpackage unit tests | 🔲 | `cognitive/`, `coordination/`, `indexing/`, `ingestion/`, `materialization/` have no `_test.go` |
+| Missing: `ProofTraceWorker` BFS cycle detection test | 🔲 | Seed a cyclic graph and verify BFS terminates at `maxDepth` |
+| Missing: topology assertion for new workers | 🔲 | `GET /v1/admin/topology` must return `subgraph_executor_worker` type; add to `topology_test.go` expected set |
+| Missing: `EnqueueMicroBatch` flush integration test | 🔲 | Verify `MicroBatchScheduler` accumulates and flushes payloads correctly under `CollaborationChain` |
+
+---
+
+### S3 & Cold Storage Module
+
+**Scope merged:** S3-compatible object storage (MinIO) for admin export, snapshot export, and cold-tier archival.
+
+#### Admin API Endpoints (`src/internal/access/gateway.go`)
+
+| Endpoint | Behaviour |
+|---|---|
+| `POST /v1/admin/s3/export` | Ingest sample event → query → serialize → PUT to S3 → GET round-trip verify |
+| `POST /v1/admin/s3/snapshot-export` | Write metadata JSON + manifest Avro + segment data JSON under `S3_PREFIX`; verify all three |
+
+Snapshot key layout:
+```
+S3_PREFIX/snapshots/<collection_id>/metadata/<snapshot_id>.json
+S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
+S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
+```
+
+#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
+
+| Function | Purpose |
+|---|---|
+| `LoadFromEnv()` | Load config from `S3_ENDPOINT / ACCESS_KEY / SECRET_KEY / BUCKET / SECURE / REGION / PREFIX` |
+| `EnsureBucket()` | HEAD → auto-create bucket if absent |
+| `PutBytesAndVerify()` | PUT + GET round-trip validation (admin export path) |
+| `PutBytes()` | Simple PUT without round-trip verify (cold-store archival path) |
+| `GetBytes()` | GET; returns `nil, nil` on 404 |
+| `s3Sign()` | stdlib-only AWS Signature V4 (no external SDK) |
+
+#### Cold-Tier Auto-Selection (`src/internal/storage/s3store.go` + `bootstrap.go`)
+
+At startup, `bootstrap.go` selects the cold tier automatically:
+
+```
+S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET 已设置
+  → S3ColdStore  (MinIO / AWS S3 backed)
+  → 日志: [bootstrap] cold store: S3 endpoint=... bucket=...
+
+未设置
+  → InMemoryColdStore  (in-process simulation, default)
+  → 日志: [bootstrap] cold store: in-memory simulation
+```
+
+`S3ColdStore` objects stored as:
+- `{prefix}/cold/memories/{id}.json`
+- `{prefix}/cold/agents/{id}.json`
+
+#### Local One-Click Scripts (`scripts/dev/`)
+
+| Script | Purpose |
+|---|---|
+| `ensure-docker.ps1` | Verify Docker availability (Windows) |
+| `start-minio.ps1` | Start MinIO container for local S3 |
+| `run-s3-runtime-export.ps1` | One-click runtime capture export |
+| `run-s3-snapshot-export.ps1` | One-click snapshot/segment export |
+
+Run artifacts: `scripts/dev/artifacts/...`
+
+#### Reproducing Locally
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts/dev/run-s3-snapshot-export.ps1"
+```
+
+Expected: `"status": "ok"` with all `roundtrip_ok` flags `true`.  
+Run record: `scripts/dev/artifacts/s3-snapshot-export/<timestamp>/record.md`
+
+#### Required env vars
+
+```
+S3_ENDPOINT    e.g. 127.0.0.1:9000
+S3_ACCESS_KEY  e.g. minioadmin
+S3_SECRET_KEY  e.g. minioadmin
+S3_BUCKET      e.g. andb-integration
+S3_SECURE      false (default)
+S3_REGION      us-east-1 (default)
+S3_PREFIX      andb/integration_tests (default)
+```
+
+#### S3 Module Review Checklist
+
+| Item | Status | Notes |
+|---|---|---|
+| `LoadFromEnv()` → `S3ColdStore` auto-wired at bootstrap | ✅ | Logged at startup; fallback to `InMemoryColdStore` if env absent |
+| `PutBytes` (no-verify) for cold archival path | ✅ | Avoids double HTTP round-trip on every `ArchiveMemory` call |
+| `GetBytes` 404 → `nil, nil` (not error) for cold read miss | ✅ | Caller (`S3ColdStore.GetMemory`) silently returns `false` |
+| Admin export endpoints round-trip verified | ✅ | `PutBytesAndVerify` used for `/s3/export` and `/s3/snapshot-export` |
+| **Review focus** | ⚠️ | `EnsureBucket()` is called on **every** `PutBytes` invocation — this means a HEAD request per cold write; add a one-time `bucketEnsured` flag (sync.Once or atomic bool) inside `S3ColdStore` to avoid redundant HEAD calls |
+| **Review focus** | ⚠️ | `GetBytes` returning `nil` on 404 is silent — add a `log.Printf("s3cold: miss key=%s")` at warn level so operators can detect unexpected cold misses in logs |
+| **Review focus** | ⚠️ | `S3ColdStore` only implements `PutMemory / GetMemory / PutAgent / GetAgent`; `ColdObjectStore` interface may need `PutState / GetState` if `StateMaterializationWorker` output is ever promoted to cold tier |
+| Missing: S3 integration test in `integration_tests/` | 🔲 | Add `ANDB_RUN_S3_TESTS=true` test that ingests, archives via `ArchiveMemory`, then retrieves via cold path and verifies round-trip |
+| Missing: `S3_* → minio.*` unified config mapping | 🔲 | Other runtime modules use different config keys; standardise to `S3_*` prefix across all callers |
+| Missing: cold-tier edge archival | 🔲 | `S3ColdStore` has no edge store — `GraphEdgeStore` has no cold path; decide scope before v1.x |
+
+---
+
+## Cross-Member Collaboration
+
+The table below lists every point where two members' work **must be confirmed together** before either side is considered done. Please tag the relevant member when you open a PR or reach this checkpoint.
+
+| # | Interface / Touch Point | Owner | Needs confirmation from | What to verify |
+|---|---|---|---|---|
+| 1 | `schemas.QueryRequest` JSON shape | **A** | **B** | B's Python SDK `query()` kwargs still map 1:1 after A added workspace/object-type filters |
+| 2 | `/v1/ingest` POST body | **A** | **B** | `workspace_id` field added by A — B must update `ingest_event()` in Python SDK |
+| 3 | gRPC proto field names | **B** | **D** | If D adds a Go gRPC client stub, B must freeze proto field numbers first |
+| 4 | `QueryResponse.edges` shape (`[]schemas.Edge`) | **C** | **B** | B's Python SDK parses `edges` — C changed edge structure; B must update response parsing |
+| 5 | `ProofTraceWorker` BFS depth in `QueryResponse.proof_trace` | **D** | **B** | B's integration tests assert on `proof_trace` length; default depth=8 may increase trace size |
+| 6 | `GraphEdgeStore.EdgesFrom` O(n) scan | **C** | **D** | D's BFS + D's `SubgraphExecutorWorker` both call `EdgesFrom`; if C replaces with indexed map, D's BFS must be retested |
+| 7 | `ToolTraceWorker` → `DerivationLog` → `ProofTrace` chain | **D** | **C** | C's graph edges and D's derivation entries both feed `ProofTrace`; run joint test before merging |
+| 8 | Worker `nodes/contracts.go` interface changes | **D** | **A, B, C** | Any interface signature change in `contracts.go` is a breaking change — announce in team chat first |
+| 9 | `QueryChainInput.GraphNodes/GraphEdges` pre-fetch | **D** | **C** | D owns the `QueryChain.Run` call site; C owns `BulkEdges`; agree on where in `Runtime.ExecuteQuery` the pre-fetch is inserted |
+| 10 | `SubgraphExecutorWorker` seed IDs ← C++ retrieval `is_seed` | **B** | **D** | B's C++ layer marks seeds; D's Go gateway must extract seed IDs and pass to `QueryChainInput.ObjectIDs` before `QueryChain.Run` |
+| 11 | `StateMaterializationWorker` output + A's `ObjectTypes` filter | **D** | **A** | D wired `StateMat` in `MainChain`; A must verify `ObjectTypes=["state"]` filter correctly surfaces `State` objects |
+| 12 | `MicroBatchScheduler.Flush()` drain trigger | **D** | **C** | D owns the scheduler; C's `ConflictMergeWorker` feeds it — agree on flush cadence (timer / WAL watermark / explicit call) before production |
+
+> 💬 **Suggested flow:** When you finish an item in the table above, post a short message in the team channel: _"#N ready for review by [member]"_. The receiving member should confirm within 24 h or flag a blocker.
+
+---
+
+## Pre-merge Checklist (all members)
+
+> Run this checklist **together as a team** in a short sync call or shared doc before opening the merge PR to `main`.
+
+**Go layer (D runs)**
+- [ ] `go test ./src/internal/... -count=1 -timeout 30s` — all green
+- [ ] `go vet ./...` — no errors
+- [ ] `GET /v1/admin/topology` returns 18 nodes, including `subgraph_executor_worker` type
+- [ ] `proof_trace` contains at least one `derivation:` step for `tool_call` events
+- [ ] `MicroBatchScheduler` has at least one flush test passing
+
+**Filter & schema (A runs)**
+- [ ] `go test ./integration_tests/... -v -timeout 120s` — all green
+- [ ] `ObjectTypes` empty → returns all types (not empty list)
+- [ ] `ObjectTypes=["state"]` after `tool_call` ingest → returns `State` object
+- [ ] 3-way filter (workspace + object-type + top_k) integration test passes
+- [ ] `workspace_id` omitted on ingest → queryable under default namespace
+
+**Python & retrieval (B runs)**
+
+_Go side (B owns the Go↔Python contract boundary):_
+- [ ] `go test ./src/internal/retrieval/... -count=1` — all green (or no test files yet — add at least one smoke test)
+- [ ] `go test ./src/internal/schemas/... -count=1` — `QueryRequest` / `QueryResponse` JSON tags match proto field names in `retrieval.proto`
+- [ ] `go vet ./src/internal/retrieval/...` — no errors
+- [ ] `GET /v1/query` returns `proof_trace`, `edges`, `applied_filters` keys in response JSON (verify with `curl` or `integration_tests/ingest_query_test.go`)
+- [ ] `/v1/ingest` accepts `workspace_id` field without error (Go gateway handler)
+- [ ] `GET /v1/admin/topology` — verify no retrieval-related worker is in error/degraded state
+
+_Python / C++ side:_
+- [ ] `cd integration_tests/python && python run_all.py` — all green
+- [ ] `proof_trace` assertion in Python tests uses `>= 1` not exact length
+- [ ] SDK `query()` kwargs verified against current `QueryRequest` JSON shape
+- [ ] `ingest_event()` includes `workspace_id` field
+- [ ] pybind11 C++ module (`cmake .. -DANDB_WITH_PYBIND=ON && make`) builds successfully on CI platform
+- [ ] `python -m src.internal.retrieval.main --test` exits 0
+
+**Graph & edges (C runs)**
+- [ ] `QueryResponse.edges` non-empty after ingest → query round-trip
+- [ ] `SubgraphExecutorWorker` subgraph non-empty when seeds have known edges (requires GraphEdges pre-fetch wired)
+- [ ] `BulkEdges` and `OneHopExpand` return consistent results for same seed set
+- [ ] Cyclic graph BFS terminates at `maxDepth=8`
+
+**S3 cold storage (D + any member with MinIO access)**
+- [ ] Server starts with S3 env vars → logs `cold store: S3 endpoint=...`
+- [ ] Server starts without S3 env vars → logs `cold store: in-memory simulation`
+- [ ] `ANDB_RUN_S3_TESTS=true go test ./integration_tests/... -run TestS3` passes with MinIO running
+- [ ] `EnsureBucket` called only once per `S3ColdStore` lifetime (after sync.Once fix)
+
+**Final gates (all members)**
+- [ ] No new `TODO`/`FIXME` markers in committed code
+- [ ] Cross-member table: all **12** items confirmed ✅
+- [ ] Squash-merge or fast-forward only — no merge bubbles on `main`
+- [ ] Tag release commit with `v1.0.0-integration-rc1` before merging
