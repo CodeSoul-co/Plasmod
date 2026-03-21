@@ -1,9 +1,11 @@
 package cognitive
 
 import (
+	"fmt"
 	"time"
 
 	"andb/src/internal/eventbackbone"
+	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
 )
@@ -30,6 +32,34 @@ func CreateInMemoryReflectionPolicyWorker(
 		polStore:  polStore,
 		policyLog: policyLog,
 	}
+}
+
+func (w *InMemoryReflectionPolicyWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.ReflectionPolicyInput)
+	if !ok {
+		return schemas.ReflectionPolicyOutput{}, fmt.Errorf("reflection: unexpected input type %T", input)
+	}
+	if in.ObjectType != "memory" {
+		return schemas.ReflectionPolicyOutput{}, w.Reflect(in.ObjectID, in.ObjectType)
+	}
+	// capture object state before applying policies so we can report what changed
+	before, exists := w.objStore.GetMemory(in.ObjectID)
+	err := w.Reflect(in.ObjectID, in.ObjectType)
+	if err != nil || !exists {
+		return schemas.ReflectionPolicyOutput{}, err
+	}
+	after, _ := w.objStore.GetMemory(in.ObjectID)
+	var rules []string
+	if before.IsActive && !after.IsActive {
+		rules = append(rules, "quarantined_or_ttl_expired")
+	}
+	if before.Confidence != after.Confidence {
+		rules = append(rules, "confidence_overridden")
+	}
+	if before.Importance != after.Importance {
+		rules = append(rules, "salience_decayed")
+	}
+	return schemas.ReflectionPolicyOutput{Modified: len(rules) > 0, AppliedRules: rules}, nil
 }
 
 func (w *InMemoryReflectionPolicyWorker) Info() nodes.NodeInfo {

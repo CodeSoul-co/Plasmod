@@ -26,6 +26,30 @@ func CreateInMemoryConflictMergeWorker(
 	return &InMemoryConflictMergeWorker{id: id, objStore: objStore, edgeStore: edgeStore}
 }
 
+func (w *InMemoryConflictMergeWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.ConflictMergeInput)
+	if !ok {
+		return schemas.ConflictMergeOutput{}, fmt.Errorf("conflict_merge: unexpected input type %T", input)
+	}
+	err := w.Merge(in.LeftID, in.RightID, in.ObjectType)
+	if err != nil {
+		return schemas.ConflictMergeOutput{}, err
+	}
+	// determine outcome by checking which memory became inactive after the merge
+	left, okL := w.objStore.GetMemory(in.LeftID)
+	right, okR := w.objStore.GetMemory(in.RightID)
+	if !okL || !okR {
+		return schemas.ConflictMergeOutput{}, nil
+	}
+	if !left.IsActive {
+		return schemas.ConflictMergeOutput{WinnerID: in.RightID, LoserID: in.LeftID, Resolved: true}, nil
+	}
+	if !right.IsActive {
+		return schemas.ConflictMergeOutput{WinnerID: in.LeftID, LoserID: in.RightID, Resolved: true}, nil
+	}
+	return schemas.ConflictMergeOutput{}, nil
+}
+
 func (w *InMemoryConflictMergeWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -62,10 +86,10 @@ func (w *InMemoryConflictMergeWorker) Merge(leftID, rightID, objectType string) 
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	w.edgeStore.PutEdge(schemas.Edge{
-		EdgeID:      fmt.Sprintf("edge_%s_conflict_%s", winnerID, loserID),
+		EdgeID:      schemas.IDPrefixEdge + winnerID + "_conflict_" + loserID,
 		SrcObjectID: winnerID,
 		SrcType:     objectType,
-		EdgeType:    "conflict_resolved",
+		EdgeType:    string(schemas.EdgeTypeConflictResolved),
 		DstObjectID: loserID,
 		DstType:     objectType,
 		Weight:      1.0,

@@ -34,6 +34,34 @@ func CreateInMemoryStateMaterializationWorker(
 	}
 }
 
+func (w *InMemoryStateMaterializationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	switch in := input.(type) {
+	case schemas.StateApplyInput:
+		err := w.Apply(in.Event)
+		if err != nil {
+			return schemas.StateApplyOutput{}, err
+		}
+		stateKey, _ := in.Event.Payload[schemas.PayloadKeyStateKey].(string)
+		stateID := schemas.IDPrefixState + in.Event.AgentID + "_" + stateKey
+		var ver int64
+		if s, ok := w.objStore.GetState(stateID); ok {
+			ver = s.Version
+		}
+		return schemas.StateApplyOutput{StateID: stateID, Version: ver}, nil
+
+	case schemas.StateCheckpointInput:
+		err := w.Checkpoint(in.AgentID, in.SessionID)
+		if err != nil {
+			return schemas.StateCheckpointOutput{}, err
+		}
+		states := w.objStore.ListStates(in.AgentID, in.SessionID)
+		return schemas.StateCheckpointOutput{SnapshotCount: len(states)}, nil
+
+	default:
+		return schemas.StateApplyOutput{}, fmt.Errorf("state_mat: unexpected input type %T", input)
+	}
+}
+
 func (w *InMemoryStateMaterializationWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -47,8 +75,8 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 	if ev.Payload == nil {
 		return nil
 	}
-	stateKey, _ := ev.Payload["state_key"].(string)
-	stateVal, _ := ev.Payload["state_value"].(string)
+	stateKey, _ := ev.Payload[schemas.PayloadKeyStateKey].(string)
+	stateVal, _ := ev.Payload[schemas.PayloadKeyStateValue].(string)
 	if stateKey == "" {
 		return nil
 	}
@@ -57,7 +85,7 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 
 	w.mu.Lock()
 	existingID, exists := w.stateKeys[lookupKey]
-	stateID := fmt.Sprintf("state_%s_%s", ev.AgentID, stateKey)
+	stateID := schemas.IDPrefixState + ev.AgentID + "_" + stateKey
 	w.stateKeys[lookupKey] = stateID
 	w.mu.Unlock()
 

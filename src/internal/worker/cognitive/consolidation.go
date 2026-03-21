@@ -19,6 +19,30 @@ func CreateInMemoryMemoryConsolidationWorker(id string, store storage.ObjectStor
 	return &InMemoryMemoryConsolidationWorker{id: id, store: store}
 }
 
+func (w *InMemoryMemoryConsolidationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.MemoryConsolidationInput)
+	if !ok {
+		return schemas.MemoryConsolidationOutput{}, fmt.Errorf("consolidation: unexpected input type %T", input)
+	}
+	// capture source count before consolidation
+	allBefore := w.store.ListMemories(in.AgentID, in.SessionID)
+	sourceCount := 0
+	for _, m := range allBefore {
+		if m.Level == 0 && m.IsActive {
+			sourceCount++
+		}
+	}
+	err := w.Consolidate(in.AgentID, in.SessionID)
+	if err != nil {
+		return schemas.MemoryConsolidationOutput{}, err
+	}
+	summaryID := schemas.IDPrefixSummary + in.AgentID + "_" + in.SessionID
+	if _, ok := w.store.GetMemory(summaryID); !ok {
+		return schemas.MemoryConsolidationOutput{SourceCount: sourceCount}, nil
+	}
+	return schemas.MemoryConsolidationOutput{SummaryID: summaryID, SourceCount: sourceCount}, nil
+}
+
 func (w *InMemoryMemoryConsolidationWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -45,7 +69,7 @@ func (w *InMemoryMemoryConsolidationWorker) Consolidate(agentID, sessionID strin
 		return nil
 	}
 	w.store.PutMemory(schemas.Memory{
-		MemoryID:       fmt.Sprintf("summary_%s_%s", agentID, sessionID),
+		MemoryID:       schemas.IDPrefixSummary + agentID + "_" + sessionID,
 		MemoryType:     string(schemas.MemoryTypeSemantic),
 		AgentID:        agentID,
 		SessionID:      sessionID,

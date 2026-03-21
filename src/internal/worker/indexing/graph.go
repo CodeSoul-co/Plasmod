@@ -19,6 +19,20 @@ func CreateInMemoryGraphRelationWorker(id string, store storage.GraphEdgeStore) 
 	return &InMemoryGraphRelationWorker{id: id, store: store}
 }
 
+func (w *InMemoryGraphRelationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.GraphRelationInput)
+	if !ok {
+		return schemas.GraphRelationOutput{}, fmt.Errorf("graph_relation: unexpected input type %T", input)
+	}
+	err := w.IndexEdge(in.SrcID, in.SrcType, in.DstID, in.DstType, in.EdgeType, in.Weight)
+	if err != nil {
+		return schemas.GraphRelationOutput{}, err
+	}
+	return schemas.GraphRelationOutput{
+		EdgeID: schemas.IDPrefixEdge + in.SrcID + "_" + in.EdgeType + "_" + in.DstID,
+	}, nil
+}
+
 func (w *InMemoryGraphRelationWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -30,7 +44,7 @@ func (w *InMemoryGraphRelationWorker) Info() nodes.NodeInfo {
 
 func (w *InMemoryGraphRelationWorker) IndexEdge(srcID, srcType, dstID, dstType, edgeType string, weight float64) error {
 	w.store.PutEdge(schemas.Edge{
-		EdgeID:      fmt.Sprintf("edge_%s_%s_%s", srcID, edgeType, dstID),
+		EdgeID:      schemas.IDPrefixEdge + srcID + "_" + edgeType + "_" + dstID,
 		SrcObjectID: srcID,
 		SrcType:     srcType,
 		EdgeType:    edgeType,

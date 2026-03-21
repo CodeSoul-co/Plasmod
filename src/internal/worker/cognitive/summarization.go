@@ -25,6 +25,33 @@ func CreateInMemorySummarizationWorker(id string, objStore storage.ObjectStore) 
 	return &InMemorySummarizationWorker{id: id, objStore: objStore}
 }
 
+func (w *InMemorySummarizationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.SummarizationInput)
+	if !ok {
+		return schemas.SummarizationOutput{}, fmt.Errorf("summarization: unexpected input type %T", input)
+	}
+	// snapshot existing summary IDs before the call so we can diff afterwards
+	allBefore := w.objStore.ListMemories(in.AgentID, in.SessionID)
+	existingIDs := make(map[string]bool, len(allBefore))
+	for _, m := range allBefore {
+		if m.Level > 0 {
+			existingIDs[m.MemoryID] = true
+		}
+	}
+	err := w.Summarize(in.AgentID, in.SessionID, in.MaxLevel)
+	if err != nil {
+		return schemas.SummarizationOutput{}, err
+	}
+	allAfter := w.objStore.ListMemories(in.AgentID, in.SessionID)
+	var newIDs []string
+	for _, m := range allAfter {
+		if m.Level > 0 && !existingIDs[m.MemoryID] {
+			newIDs = append(newIDs, m.MemoryID)
+		}
+	}
+	return schemas.SummarizationOutput{ProducedIDs: newIDs}, nil
+}
+
 func (w *InMemorySummarizationWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -62,13 +89,13 @@ func (w *InMemorySummarizationWorker) Summarize(agentID, sessionID string, maxLe
 			parts = append(parts, m.Content)
 			totalImportance += m.Importance
 		}
-		memType := "semantic"
+		memType := string(schemas.MemoryTypeSemantic)
 		if level == 2 {
-			memType = "procedural"
+			memType = string(schemas.MemoryTypeProcedural)
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		w.objStore.PutMemory(schemas.Memory{
-			MemoryID:       fmt.Sprintf("summary_l%d_%s_%s_%d", level, agentID, sessionID, time.Now().UnixNano()),
+			MemoryID:       fmt.Sprintf("%sl%d_%s_%s_%d", schemas.IDPrefixSummary, level, agentID, sessionID, time.Now().UnixNano()),
 			MemoryType:     memType,
 			AgentID:        agentID,
 			SessionID:      sessionID,
@@ -76,7 +103,7 @@ func (w *InMemorySummarizationWorker) Summarize(agentID, sessionID string, maxLe
 			Content:        strings.Join(parts, " | "),
 			Summary:        fmt.Sprintf("Level-%d compression of %d memories", level, len(srcs)),
 			SourceEventIDs: srcIDs,
-			Confidence:     0.85,
+			Confidence:     schemas.DefaultConfidence,
 			Importance:     totalImportance / float64(len(srcs)),
 			IsActive:       true,
 			ValidFrom:      now,
