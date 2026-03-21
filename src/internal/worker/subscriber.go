@@ -116,7 +116,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		ev := entry.Event
 		switch ev.EventType {
 		case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
-			s.manager.DispatchStateMaterialization(ev)
+			_ = s.manager.DispatchStateMaterialization(ev)
 		}
 	})
 
@@ -125,14 +125,14 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		ev := entry.Event
 		switch ev.EventType {
 		case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
-			s.manager.DispatchToolTrace(ev)
+			_ = s.manager.DispatchToolTrace(ev)
 		}
 	})
 	// ── 1. ReflectionPolicy ───────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
 		ev := entry.Event
 		memID := schemas.IDPrefixMemory + ev.EventID
-		s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
+		_ = s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
 	})
 
 	// ── 2. ConflictMerge ──────────────────────────────────────────────────
@@ -152,7 +152,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		s.mu.Unlock()
 
 		if hasPrev {
-			s.manager.DispatchConflictMerge(newMemID, prevMemID, string(schemas.ObjectTypeMemory))
+			_, _ = s.manager.DispatchConflictMerge(newMemID, prevMemID, string(schemas.ObjectTypeMemory))
 		}
 	})
 
@@ -170,7 +170,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		s.mu.Unlock()
 
 		if count%s.consolidateEvery == 0 {
-			s.manager.DispatchMemoryConsolidation(ev.AgentID, ev.SessionID)
+			_ = s.manager.DispatchMemoryConsolidation(ev.AgentID, ev.SessionID)
 		}
 	})
 }

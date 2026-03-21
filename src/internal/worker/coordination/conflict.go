@@ -31,23 +31,18 @@ func (w *InMemoryConflictMergeWorker) Run(input schemas.WorkerInput) (schemas.Wo
 	if !ok {
 		return schemas.ConflictMergeOutput{}, fmt.Errorf("conflict_merge: unexpected input type %T", input)
 	}
-	err := w.Merge(in.LeftID, in.RightID, in.ObjectType)
+	winnerID, err := w.Merge(in.LeftID, in.RightID, in.ObjectType)
 	if err != nil {
 		return schemas.ConflictMergeOutput{}, err
 	}
-	// determine outcome by checking which memory became inactive after the merge
-	left, okL := w.objStore.GetMemory(in.LeftID)
-	right, okR := w.objStore.GetMemory(in.RightID)
-	if !okL || !okR {
+	if winnerID == "" {
 		return schemas.ConflictMergeOutput{}, nil
 	}
-	if !left.IsActive {
-		return schemas.ConflictMergeOutput{WinnerID: in.RightID, LoserID: in.LeftID, Resolved: true}, nil
+	loserID := in.LeftID
+	if winnerID == in.LeftID {
+		loserID = in.RightID
 	}
-	if !right.IsActive {
-		return schemas.ConflictMergeOutput{WinnerID: in.LeftID, LoserID: in.RightID, Resolved: true}, nil
-	}
-	return schemas.ConflictMergeOutput{}, nil
+	return schemas.ConflictMergeOutput{WinnerID: winnerID, LoserID: loserID, Resolved: true}, nil
 }
 
 func (w *InMemoryConflictMergeWorker) Info() nodes.NodeInfo {
@@ -59,20 +54,20 @@ func (w *InMemoryConflictMergeWorker) Info() nodes.NodeInfo {
 	}
 }
 
-func (w *InMemoryConflictMergeWorker) Merge(leftID, rightID, objectType string) error {
+func (w *InMemoryConflictMergeWorker) Merge(leftID, rightID, objectType string) (string, error) {
 	if objectType != "memory" || leftID == rightID {
-		return nil
+		return "", nil
 	}
 	left, okL := w.objStore.GetMemory(leftID)
 	right, okR := w.objStore.GetMemory(rightID)
 	if !okL || !okR {
-		return nil
+		return "", nil
 	}
 	if left.AgentID != right.AgentID || left.SessionID != right.SessionID {
-		return nil
+		return "", nil
 	}
 	if !left.IsActive || !right.IsActive {
-		return nil
+		return "", nil
 	}
 	var winnerID, loserID string
 	if left.Version >= right.Version {
@@ -95,5 +90,5 @@ func (w *InMemoryConflictMergeWorker) Merge(leftID, rightID, objectType string) 
 		Weight:      1.0,
 		CreatedTS:   now,
 	})
-	return nil
+	return winnerID, nil
 }

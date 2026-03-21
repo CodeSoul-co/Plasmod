@@ -141,63 +141,84 @@ func (m *Manager) DispatchQuery(input dataplane.SearchInput, fallback dataplane.
 }
 
 // DispatchMemoryExtraction runs all registered memory extraction workers.
-func (m *Manager) DispatchMemoryExtraction(eventID, agentID, sessionID, content string) {
+// Returns the first error encountered, or nil if all succeed.
+func (m *Manager) DispatchMemoryExtraction(eventID, agentID, sessionID, content string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.memExtractionWorkers {
-		_ = w.Extract(eventID, agentID, sessionID, content)
+		if err := w.Extract(eventID, agentID, sessionID, content); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchProofTrace collects trace steps from all registered proof-trace workers.
 // maxDepth controls BFS depth (0 = default cap of 8).
-func (m *Manager) DispatchProofTrace(objectIDs []string, maxDepth int) []string {
+func (m *Manager) DispatchProofTrace(objectIDs []string, maxDepth int) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	trace := []string{}
 	for _, w := range m.proofTraceWorkers {
 		trace = append(trace, w.AssembleTrace(objectIDs, maxDepth)...)
 	}
-	return trace
+	return trace, nil
 }
 
 // DispatchMemoryConsolidation runs all registered consolidation workers for the
 // given agent+session pair.  Called by the async subscriber after N events.
-func (m *Manager) DispatchMemoryConsolidation(agentID, sessionID string) {
+func (m *Manager) DispatchMemoryConsolidation(agentID, sessionID string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.memConsolidWorkers {
-		_ = w.Consolidate(agentID, sessionID)
+		if err := w.Consolidate(agentID, sessionID); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchReflectionPolicy evaluates governance rules for objectID via all
 // registered reflection-policy workers.
-func (m *Manager) DispatchReflectionPolicy(objectID, objectType string) {
+func (m *Manager) DispatchReflectionPolicy(objectID, objectType string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.reflectionWorkers {
-		_ = w.Reflect(objectID, objectType)
+		if err := w.Reflect(objectID, objectType); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchConflictMerge resolves a competing-write conflict between leftID and
-// rightID via all registered conflict-merge workers.
-func (m *Manager) DispatchConflictMerge(leftID, rightID, objectType string) {
+// rightID via all registered conflict-merge workers. Returns the winnerID from
+// the first worker that resolves the conflict.
+func (m *Manager) DispatchConflictMerge(leftID, rightID, objectType string) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.conflictMergeWorkers {
-		_ = w.Merge(leftID, rightID, objectType)
+		winnerID, err := w.Merge(leftID, rightID, objectType)
+		if err != nil {
+			return "", err
+		}
+		if winnerID != "" {
+			return winnerID, nil
+		}
 	}
+	return leftID, nil // fallback to leftID if no worker resolved
 }
 
 // DispatchGraphRelation indexes a typed edge via all registered graph workers.
-func (m *Manager) DispatchGraphRelation(srcID, srcType, dstID, dstType, edgeType string, weight float64) {
+func (m *Manager) DispatchGraphRelation(srcID, srcType, dstID, dstType, edgeType string, weight float64) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.graphWorkers {
-		_ = w.IndexEdge(srcID, srcType, dstID, dstType, edgeType, weight)
+		if err := w.IndexEdge(srcID, srcType, dstID, dstType, edgeType, weight); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // ─── Ingestion & Materialization registration ────────────────────────────────────
@@ -296,70 +317,91 @@ func (m *Manager) DispatchIngestValidation(ev schemas.Event) error {
 
 // DispatchObjectMaterialization routes ev through all registered
 // ObjectMaterializationWorkers (Memory / State / Artifact routing).
-func (m *Manager) DispatchObjectMaterialization(ev schemas.Event) {
+func (m *Manager) DispatchObjectMaterialization(ev schemas.Event) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.objMatWorkers {
-		_ = w.Materialize(ev)
+		if err := w.Materialize(ev); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchStateMaterialization applies ev to all registered
 // StateMaterializationWorkers.
-func (m *Manager) DispatchStateMaterialization(ev schemas.Event) {
+func (m *Manager) DispatchStateMaterialization(ev schemas.Event) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.stateMatWorkers {
-		_ = w.Apply(ev)
+		if err := w.Apply(ev); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchStateCheckpoint triggers a checkpoint snapshot for agentID+sessionID.
-func (m *Manager) DispatchStateCheckpoint(agentID, sessionID string) {
+func (m *Manager) DispatchStateCheckpoint(agentID, sessionID string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.stateMatWorkers {
-		_ = w.Checkpoint(agentID, sessionID)
+		if err := w.Checkpoint(agentID, sessionID); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchToolTrace sends a tool_call / tool_result event to all registered
 // ToolTraceWorkers.
-func (m *Manager) DispatchToolTrace(ev schemas.Event) {
+func (m *Manager) DispatchToolTrace(ev schemas.Event) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.toolTraceWorkers {
-		_ = w.TraceToolCall(ev)
+		if err := w.TraceToolCall(ev); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchIndexBuild submits an object to all registered IndexBuildWorkers.
-func (m *Manager) DispatchIndexBuild(objectID, objectType, namespace, text string) {
+func (m *Manager) DispatchIndexBuild(objectID, objectType, namespace, text string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.indexBuildWorkers {
-		_ = w.IndexObject(objectID, objectType, namespace, text)
+		if err := w.IndexObject(objectID, objectType, namespace, text); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchCommunication broadcasts a memory from fromAgent to toAgent via all
 // registered CommunicationWorkers.
-func (m *Manager) DispatchCommunication(fromAgentID, toAgentID, memoryID string) {
+func (m *Manager) DispatchCommunication(fromAgentID, toAgentID, memoryID string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.commWorkers {
-		_ = w.Broadcast(fromAgentID, toAgentID, memoryID)
+		if err := w.Broadcast(fromAgentID, toAgentID, memoryID); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // DispatchSummarization compresses memories for agentID+sessionID up to
 // maxLevel via all registered SummarizationWorkers.
-func (m *Manager) DispatchSummarization(agentID, sessionID string, maxLevel int) {
+func (m *Manager) DispatchSummarization(agentID, sessionID string, maxLevel int) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, w := range m.summarizationWorkers {
-		_ = w.Summarize(agentID, sessionID, maxLevel)
+		if err := w.Summarize(agentID, sessionID, maxLevel); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // EnqueueMicroBatch adds a payload to all registered MicroBatchSchedulers

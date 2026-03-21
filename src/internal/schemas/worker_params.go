@@ -356,8 +356,9 @@ func (MicroBatchEnqueueInput) WorkerKind() WorkerKind { return WorkerKindMicroBa
 
 // MicroBatchFlushOutput carries all items drained from the batch queue (FIFO).
 type MicroBatchFlushOutput struct {
-	Items []any `json:"items"`
-	Count int   `json:"count"`
+	Items   []any `json:"items"`
+	Count   int   `json:"count"`
+	Flushed int   `json:"flushed"` // number of items auto-flushed due to threshold
 }
 
 func (o MicroBatchFlushOutput) IsEmpty() bool { return o.Count == 0 }

@@ -615,15 +615,23 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | `StateMaterializationWorker` dispatched in `MainChain` | ✅ | Alongside `ObjectMaterializationWorker` at step 1 |
 | `EnqueueMicroBatch` called in `CollaborationChain` after conflict resolution | ✅ | Payload: `winner_id`, `source_agent_id`, `target_agent_id` |
 | `TieredObjectStore` registered as `"tiered_objects"` in coordinator registry | ✅ | Hot+warm+cold wired; cold = S3 or in-memory per env |
+| **Global error handling for all `DispatchXXX` methods** | ✅ | All 12 `DispatchXXX` methods in `manager.go` now return `error`; four Chains capture errors and return `fail(chainName, err.Error())` |
+| **`ConflictMergeWorker.Merge` returns `(winnerID, error)`** | ✅ | Implements higher-version-wins strategy; `CollaborationChain.Run` uses returned `winnerID` |
+| **`MicroBatchScheduler` threshold-based flush** | ✅ | `Enqueue` returns auto-flushed `[]any` when `len(queue) >= threshold`; added `SetThreshold(size int)` method |
+| **Anti-corruption layer for `MemoryConsolidationWorker`** | ✅ | Added `LLMProvider` interface, `ConsolidationStrategy` interface, `dummyConsolidationStrategy` placeholder; `SetLLMProvider()` injection point |
+| **Anti-corruption layer for `SummarizationWorker`** | ✅ | Added `SummarizationStrategy` interface, `dummySummarizationStrategy` placeholder; `SetLLMProvider()` injection point |
+| **`QueryChain` architecture boundary documentation** | ✅ | Detailed Godoc: Runtime owns Retrieval + Evidence Assemble; QueryChain owns Reasoning / Post-processing; Anti-Pattern Warning added |
+| **Unit tests for `chain.go`** | ✅ | `chain_test.go`: 17 tests covering MainChain, MemoryPipelineChain, QueryChain, CollaborationChain task flow and error propagation |
+| **Unit tests for `subscriber.go`** | ✅ | `subscriber_test.go`: 12 tests covering WAL drain, conflict merge tracking, event type filtering, multi-agent session isolation |
 | **Review focus** | ⚠️ | `subscriber.go` goroutines have no dead-letter channel — panics are silently lost; add structured error reporting before production |
 | **Review focus** | ⚠️ | `ExecutionOrchestrator` queues are unbounded; add hard cap + back-pressure signal to prevent OOM under burst ingest |
 | **Review focus** | ⚠️ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by the caller — the current `Runtime.ExecuteQuery` path does NOT call `BulkEdges` before `QueryChain.Run`; `SubgraphExecutorWorker` will silently return empty subgraph until this is wired |
 | **Review focus** | ⚠️ | `ReflectionPolicyWorker` triggers `ArchiveMemory`-style eviction — confirm it uses `tiered_objects.ArchiveMemory()` rather than directly calling `store.Objects()` to ensure cold-tier promotion works |
-| **Review focus** | ⚠️ | `MicroBatchScheduler.Flush()` is never called in current code paths — micro-batch payloads accumulate without drain; add a periodic flush goroutine or hook into `EventSubscriber` drain cycle |
-| Missing: per-subpackage unit tests | 🔲 | `cognitive/`, `coordination/`, `indexing/`, `ingestion/`, `materialization/` have no `_test.go` |
+| **Review focus** | ⚠️ | `MicroBatchScheduler.Flush()` periodic drain — threshold-based auto-flush now implemented; consider adding periodic flush goroutine in `EventSubscriber` for time-based drain |
 | Missing: `ProofTraceWorker` BFS cycle detection test | 🔲 | Seed a cyclic graph and verify BFS terminates at `maxDepth` |
 | Missing: topology assertion for new workers | 🔲 | `GET /v1/admin/topology` must return `subgraph_executor_worker` type; add to `topology_test.go` expected set |
 | Missing: `EnqueueMicroBatch` flush integration test | 🔲 | Verify `MicroBatchScheduler` accumulates and flushes payloads correctly under `CollaborationChain` |
+| Missing: LLM integration for cognitive workers | 🔲 | Implement `llmConsolidationStrategy` and `llmSummarizationStrategy` when `pkg/llm` is available |
 
 ---
 

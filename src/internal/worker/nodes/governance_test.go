@@ -183,7 +183,7 @@ func TestConflictMergeWorker_LastWriterWins(t *testing.T) {
 	seedMemory(st.Objects(), "mem_right", "agent1", "sess1", 5, true)
 
 	w := coordination.CreateInMemoryConflictMergeWorker("conflict-test", st.Objects(), st.Edges())
-	if err := w.Merge("mem_left", "mem_right", "memory"); err != nil {
+	if _, err := w.Merge("mem_left", "mem_right", "memory"); err != nil {
 		t.Fatalf("Merge error: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestConflictMergeWorker_ConflictEdgeCreated(t *testing.T) {
 	seedMemory(st.Objects(), "mem_l", "a", "s", 3, true)
 
 	w := coordination.CreateInMemoryConflictMergeWorker("conflict-edge", st.Objects(), st.Edges())
-	_ = w.Merge("mem_w", "mem_l", "memory")
+	_, _ = w.Merge("mem_w", "mem_l", "memory")
 
 	edges := st.Edges().ListEdges()
 	found := false
@@ -226,7 +226,7 @@ func TestConflictMergeWorker_DifferentAgents_NoOp(t *testing.T) {
 	seedMemory(st.Objects(), "mem_b", "agent2", "sess1", 5, true)
 
 	w := coordination.CreateInMemoryConflictMergeWorker("conflict-diff", st.Objects(), st.Edges())
-	_ = w.Merge("mem_a", "mem_b", "memory")
+	_, _ = w.Merge("mem_a", "mem_b", "memory")
 
 	a, _ := st.Objects().GetMemory("mem_a")
 	b, _ := st.Objects().GetMemory("mem_b")
@@ -238,7 +238,7 @@ func TestConflictMergeWorker_DifferentAgents_NoOp(t *testing.T) {
 func TestConflictMergeWorker_NonMemoryType_NoOp(t *testing.T) {
 	st := newTestStorage()
 	w := coordination.CreateInMemoryConflictMergeWorker("conflict-type", st.Objects(), st.Edges())
-	if err := w.Merge("x", "y", "artifact"); err != nil {
+	if _, err := w.Merge("x", "y", "artifact"); err != nil {
 		t.Fatalf("non-memory type should be a no-op, got: %v", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestConflictMergeWorker_SameID_NoOp(t *testing.T) {
 	st := newTestStorage()
 	seedMemory(st.Objects(), "mem_same", "a", "s", 1, true)
 	w := coordination.CreateInMemoryConflictMergeWorker("conflict-same", st.Objects(), st.Edges())
-	if err := w.Merge("mem_same", "mem_same", "memory"); err != nil {
+	if _, err := w.Merge("mem_same", "mem_same", "memory"); err != nil {
 		t.Fatalf("same-ID merge should be a no-op, got: %v", err)
 	}
 }

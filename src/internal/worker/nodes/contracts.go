@@ -77,8 +77,40 @@ type MemoryExtractionWorker interface {
 
 // MemoryConsolidationWorker merges or distils lower-level memories into
 // higher-level summaries (level 0 → 1 → 2 distillation chain).
+//
+// # Anti-Corruption Layer Design
+//
+// This interface defines the contract for memory consolidation without coupling
+// to any specific implementation. The current in-memory implementation uses
+// simple string concatenation as a placeholder (defaultDummyImplementation).
+//
+// # Future LLM Integration
+//
+// Production implementations SHOULD inject an LLMProvider dependency to perform
+// true semantic compression. The recommended integration pattern:
+//
+//	type LLMConsolidationWorker struct {
+//	    llm       LLMProvider           // injected dependency
+//	    store     storage.ObjectStore
+//	    promptTpl string                // consolidation prompt template
+//	}
+//
+// The LLMProvider interface (to be defined in pkg/llm) should expose:
+//
+//	type LLMProvider interface {
+//	    Complete(ctx context.Context, prompt string) (string, error)
+//	    Embed(ctx context.Context, text string) ([]float32, error)
+//	}
+//
+// Implementations may integrate with MemGPT, Letta, LangMem, or custom LLM
+// backends for advanced memory management strategies.
 type MemoryConsolidationWorker interface {
 	Info() NodeInfo
+	// Consolidate merges all active level-0 episodic memories for the given
+	// agent+session into a single level-1 semantic memory.
+	//
+	// Current implementation: simple string concatenation (placeholder).
+	// Future implementation: LLM-based semantic compression.
 	Consolidate(agentID, sessionID string) error
 }
 
@@ -90,10 +122,10 @@ type ReflectionPolicyWorker interface {
 }
 
 // ConflictMergeWorker detects and resolves fact / plan / state conflicts
-// between concurrent agent writes.
+// between concurrent agent writes. Returns the winnerID (higher version wins).
 type ConflictMergeWorker interface {
 	Info() NodeInfo
-	Merge(leftID, rightID, objectType string) error
+	Merge(leftID, rightID, objectType string) (winnerID string, err error)
 }
 
 // ─── Retrieval & Reasoning worker interfaces ──────────────────────────────────
@@ -173,16 +205,61 @@ type CommunicationWorker interface {
 
 // MicroBatchScheduler accumulates pending retrieval tasks and flushes them as
 // a micro-batch for cross-agent merging and GPU-friendly execution.
+// Enqueue returns any auto-flushed payloads when the threshold is reached.
 type MicroBatchScheduler interface {
 	Info() NodeInfo
-	Enqueue(queryID string, payload any)
+	Enqueue(queryID string, payload any) (flushed []any)
 	Flush() []any
+	SetThreshold(size int)
 }
 
 // SummarizationWorker compresses long-context memory sequences into level-1
 // (summary) and level-2 (abstraction) Memory objects.
+//
+// # Anti-Corruption Layer Design
+//
+// This interface defines the contract for multi-level memory summarization
+// without coupling to any specific implementation. The current in-memory
+// implementation uses simple string concatenation as a placeholder
+// (defaultDummyImplementation).
+//
+// # Memory Hierarchy
+//
+//	Level 0: Episodic memories (raw event extractions)
+//	Level 1: Semantic summaries (consolidated from level-0)
+//	Level 2: Procedural abstractions (meta-summaries from level-1)
+//
+// # Future LLM Integration
+//
+// Production implementations SHOULD inject an LLMProvider dependency to perform
+// true semantic summarization. The recommended integration pattern:
+//
+//	type LLMSummarizationWorker struct {
+//	    llm          LLMProvider           // injected dependency
+//	    store        storage.ObjectStore
+//	    summaryTpl   string                // level-1 summary prompt
+//	    abstractTpl  string                // level-2 abstraction prompt
+//	    maxTokens    int                   // context window budget
+//	}
+//
+// The LLMProvider interface (to be defined in pkg/llm) should expose:
+//
+//	type LLMProvider interface {
+//	    Complete(ctx context.Context, prompt string) (string, error)
+//	    Embed(ctx context.Context, text string) ([]float32, error)
+//	}
+//
+// Implementations may integrate with MemGPT, Letta, LangMem, or custom LLM
+// backends for advanced memory compression and retrieval-augmented generation.
 type SummarizationWorker interface {
 	Info() NodeInfo
+	// Summarize compresses memories for the given agent+session up to maxLevel.
+	//
+	// maxLevel=1: Consolidate level-0 → level-1 semantic summaries.
+	// maxLevel=2: Additionally compress level-1 → level-2 abstractions.
+	//
+	// Current implementation: simple string concatenation (placeholder).
+	// Future implementation: LLM-based hierarchical summarization.
 	Summarize(agentID, sessionID string, maxLevel int) error
 }
 

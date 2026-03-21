@@ -73,11 +73,17 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	ev := in.Event
 
 	// 1 – Object routing (Memory → ObjectMat; State → StateMat; Artifact → ObjectMat)
-	c.mgr.DispatchObjectMaterialization(ev)
-	c.mgr.DispatchStateMaterialization(ev)
+	if err := c.mgr.DispatchObjectMaterialization(ev); err != nil {
+		return fail("main_chain", err.Error())
+	}
+	if err := c.mgr.DispatchStateMaterialization(ev); err != nil {
+		return fail("main_chain", err.Error())
+	}
 
 	// 2 – Tool trace capture
-	c.mgr.DispatchToolTrace(ev)
+	if err := c.mgr.DispatchToolTrace(ev); err != nil {
+		return fail("main_chain", err.Error())
+	}
 
 	// 3 – Index the primary memory object
 	memID := in.MemoryID
@@ -94,10 +100,14 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 			text = t
 		}
 	}
-	c.mgr.DispatchIndexBuild(memID, string(schemas.ObjectTypeMemory), ns, text)
+	if err := c.mgr.DispatchIndexBuild(memID, string(schemas.ObjectTypeMemory), ns, text); err != nil {
+		return fail("main_chain", err.Error())
+	}
 
 	// 4 – Graph: link memory to its source event
-	c.mgr.DispatchGraphRelation(memID, string(schemas.ObjectTypeMemory), ev.EventID, string(schemas.ObjectTypeEvent), string(schemas.EdgeTypeDerivedFrom), schemas.DefaultEdgeWeight)
+	if err := c.mgr.DispatchGraphRelation(memID, string(schemas.ObjectTypeMemory), ev.EventID, string(schemas.ObjectTypeEvent), string(schemas.EdgeTypeDerivedFrom), schemas.DefaultEdgeWeight); err != nil {
+		return fail("main_chain", err.Error())
+	}
 
 	return ok("main_chain", map[string]any{
 		"memory_id": memID,
@@ -140,22 +150,30 @@ func CreateMemoryPipelineChain(mgr *nodes.Manager) *MemoryPipelineChain {
 // Run executes the cognitive memory pipeline synchronously.
 func (c *MemoryPipelineChain) Run(in MemoryPipelineInput) ChainResult {
 	// 1 – Extract episodic memory from the event
-	c.mgr.DispatchMemoryExtraction(in.EventID, in.AgentID, in.SessionID, in.Content)
+	if err := c.mgr.DispatchMemoryExtraction(in.EventID, in.AgentID, in.SessionID, in.Content); err != nil {
+		return fail("memory_pipeline_chain", err.Error())
+	}
 
 	// 2 – Consolidate + summarize (optional, driven by caller's batch logic)
 	if in.RunConsolidation {
-		c.mgr.DispatchMemoryConsolidation(in.AgentID, in.SessionID)
+		if err := c.mgr.DispatchMemoryConsolidation(in.AgentID, in.SessionID); err != nil {
+			return fail("memory_pipeline_chain", err.Error())
+		}
 
 		maxLevel := in.MaxSummaryLevel
 		if maxLevel < 1 {
 			maxLevel = 1
 		}
-		c.mgr.DispatchSummarization(in.AgentID, in.SessionID, maxLevel)
+		if err := c.mgr.DispatchSummarization(in.AgentID, in.SessionID, maxLevel); err != nil {
+			return fail("memory_pipeline_chain", err.Error())
+		}
 	}
 
 	// 3 – Apply governance policies to the freshly extracted memory
 	memID := schemas.IDPrefixMemory + in.EventID
-	c.mgr.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
+	if err := c.mgr.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory)); err != nil {
+		return fail("memory_pipeline_chain", err.Error())
+	}
 
 	return ok("memory_pipeline_chain", map[string]any{
 		"memory_id":         memID,
@@ -166,16 +184,68 @@ func (c *MemoryPipelineChain) Run(in MemoryPipelineInput) ChainResult {
 
 // ─── 3. QueryChain ────────────────────────────────────────────────────────────
 
-// QueryChain executes the retrieval + reasoning pipeline:
+// QueryChain handles the **Reasoning / Post-processing** phase of query execution.
 //
-//	QueryNode (multi-index search via DataPlane)
-//	  ↓
-//	ProofTraceWorker (explainable trace assembly)
+// # Architecture Boundary (CRITICAL DESIGN DECISION)
 //
-// Graph expansion (BulkEdges 1-hop) is handled inside the Evidence Assembler
-// and therefore sits outside this chain.
+// The query execution pipeline is deliberately split between Runtime and QueryChain:
+//
+//	┌─────────────────────────────────────────────────────────────────────────┐
+//	│                         Runtime (runtime.go)                            │
+//	│  ┌─────────────────────────────────────────────────────────────────┐    │
+//	│  │  1. Query Planning     → QueryPlanner.Build(request)            │    │
+//	│  │  2. Vector Retrieval   → DataPlane.Search(searchInput)          │    │
+//	│  │  3. Evidence Assembly  → Assembler.Build(results, filters)      │    │
+//	│  └─────────────────────────────────────────────────────────────────┘    │
+//	│                              ↓ (objectIDs, graphNodes, graphEdges)      │
+//	└─────────────────────────────────────────────────────────────────────────┘
+//	                               ↓
+//	┌─────────────────────────────────────────────────────────────────────────┐
+//	│                       QueryChain (this file)                            │
+//	│  ┌─────────────────────────────────────────────────────────────────┐    │
+//	│  │  4. Proof Trace        → ProofTraceWorker.AssembleTrace()       │    │
+//	│  │  5. Subgraph Expansion → SubgraphExecutorWorker.Expand()        │    │
+//	│  └─────────────────────────────────────────────────────────────────┘    │
+//	└─────────────────────────────────────────────────────────────────────────┘
+//
+// # Why This Boundary?
+//
+//   - **Runtime owns Retrieval**: Vector search, index lookup, and basic filtering
+//     are stateless, high-throughput operations that belong in the data plane.
+//     They should NOT be coupled to the worker/chain abstraction.
+//
+//   - **QueryChain owns Reasoning**: Proof trace assembly, subgraph expansion,
+//     and future LLM-based re-ranking are stateful, compute-intensive operations
+//     that benefit from the worker pool and priority scheduling.
+//
+//   - **Separation of Concerns**: This boundary prevents the temptation to add
+//     "just one more filter" to QueryChain, which would blur responsibilities
+//     and create tight coupling between retrieval and reasoning.
+//
+// # Anti-Pattern Warning
+//
+// DO NOT add the following to QueryChain:
+//
+//   - Vector similarity search (use DataPlane.Search)
+//   - Keyword/BM25 search (use DataPlane.Search)
+//   - Basic filtering by agent_id, session_id, time_range (use QueryPlanner)
+//   - Hot cache lookups (use Runtime.storage.HotCache)
+//
+// QueryChain should ONLY receive pre-fetched objectIDs and graph data from Runtime.
+//
+// # Future Extensions
+//
+// QueryChain is the right place for:
+//
+//   - LLM-based re-ranking of retrieval results
+//   - Multi-hop reasoning over the evidence subgraph
+//   - Confidence scoring and uncertainty quantification
+//   - Explainability and citation generation
 type QueryChain struct {
-	mgr       *nodes.Manager
+	mgr *nodes.Manager
+	// dataPlane is intentionally NOT used in Run(). It exists only for legacy
+	// compatibility and will be removed in a future refactor.
+	// All retrieval should happen in Runtime before calling QueryChain.
 	dataPlane interface {
 		Search(input interface{}) interface{}
 	}
@@ -204,12 +274,48 @@ func CreateQueryChain(mgr *nodes.Manager) *QueryChain {
 	return &QueryChain{mgr: mgr}
 }
 
-// Run assembles a proof trace and a one-hop subgraph for the supplied object
-// IDs. GraphNodes and GraphEdges must be pre-fetched by the caller (typically
-// the runtime / evidence assembler) and passed through QueryChainInput.
+// Run executes the reasoning/post-processing phase of query execution.
+//
+// # Preconditions (enforced by architecture boundary)
+//
+// The caller (Runtime.ExecuteQuery) MUST have already completed:
+//
+//  1. Query planning via QueryPlanner.Build()
+//  2. Vector retrieval via DataPlane.Search()
+//  3. Evidence assembly via Assembler.Build()
+//
+// The resulting objectIDs, graphNodes, and graphEdges are passed through
+// QueryChainInput. This chain does NOT perform any retrieval operations.
+//
+// # What This Method Does
+//
+//  1. **Proof Trace Assembly**: Calls ProofTraceWorker to build a multi-hop
+//     BFS trace from the derivation log, providing explainability for each
+//     retrieved object.
+//
+//  2. **Subgraph Expansion**: Calls SubgraphExecutorWorker to expand the
+//     seed objectIDs into a one-hop evidence subgraph for visualization
+//     and downstream reasoning.
+//
+// # What This Method Does NOT Do (by design)
+//
+//   - Vector similarity search
+//   - Index lookups
+//   - Filtering by metadata
+//   - Cache operations
+//
+// These operations belong in Runtime, not in QueryChain.
+//
+// # Error Handling
+//
+// Returns a failed ChainResult if any worker dispatch fails. The caller
+// should check result.Success before using the QueryChainOutput.
 func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
 	// 1 – Multi-hop BFS proof trace
-	trace := c.mgr.DispatchProofTrace(in.ObjectIDs, in.MaxDepth)
+	trace, err := c.mgr.DispatchProofTrace(in.ObjectIDs, in.MaxDepth)
+	if err != nil {
+		return QueryChainOutput{}, fail("query_chain", err.Error())
+	}
 
 	// 2 – One-hop subgraph expansion via SubgraphExecutorWorker
 	subgraph := schemas.EvidenceSubgraph{}
@@ -268,13 +374,13 @@ func CreateCollaborationChain(mgr *nodes.Manager) *CollaborationChain {
 
 // Run resolves the conflict and broadcasts the winner to the target agent.
 func (c *CollaborationChain) Run(in CollaborationChainInput) (CollaborationChainOutput, ChainResult) {
-	// 1 – Conflict resolution (mutates the loser in-place)
-	c.mgr.DispatchConflictMerge(in.LeftMemID, in.RightMemID, in.ObjectType)
+	// 1 – Conflict resolution (mutates the loser in-place, returns winnerID)
+	winnerID, err := c.mgr.DispatchConflictMerge(in.LeftMemID, in.RightMemID, in.ObjectType)
+	if err != nil {
+		return CollaborationChainOutput{}, fail("collaboration_chain", err.Error())
+	}
 
-	// 2 – Determine winner (higher version survives; we use LeftMemID as default)
-	winnerID := in.LeftMemID
-
-	// 3 – Enqueue conflict resolution result to MicroBatchScheduler for
+	// 2 – Enqueue conflict resolution result to MicroBatchScheduler for
 	// batched cross-agent fan-out (e.g., GPU-friendly embedding updates)
 	c.mgr.EnqueueMicroBatch("conflict_resolved:"+winnerID, map[string]string{
 		"winner_id":       winnerID,
@@ -282,10 +388,12 @@ func (c *CollaborationChain) Run(in CollaborationChainInput) (CollaborationChain
 		"target_agent_id": in.TargetAgentID,
 	})
 
-	// 4 – Broadcast winner to target agent's memory space
+	// 3 – Broadcast winner to target agent's memory space
 	sharedID := ""
 	if in.TargetAgentID != "" && in.TargetAgentID != in.SourceAgentID {
-		c.mgr.DispatchCommunication(in.SourceAgentID, in.TargetAgentID, winnerID)
+		if err := c.mgr.DispatchCommunication(in.SourceAgentID, in.TargetAgentID, winnerID); err != nil {
+			return CollaborationChainOutput{}, fail("collaboration_chain", err.Error())
+		}
 		sharedID = schemas.IDPrefixShared + winnerID + "_to_" + in.TargetAgentID
 	}
 
