@@ -30,6 +30,24 @@ func CreateInMemoryToolTraceWorker(
 	return &InMemoryToolTraceWorker{id: id, objStore: objStore, derivLog: derivLog}
 }
 
+func (w *InMemoryToolTraceWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.ToolTraceInput)
+	if !ok {
+		return schemas.ToolTraceOutput{}, fmt.Errorf("tool_trace: unexpected input type %T", input)
+	}
+	err := w.TraceToolCall(in.Event)
+	if err != nil {
+		return schemas.ToolTraceOutput{}, err
+	}
+	if in.Event.EventType != string(schemas.EventTypeToolCall) && in.Event.EventType != string(schemas.EventTypeToolResult) {
+		return schemas.ToolTraceOutput{}, nil
+	}
+	return schemas.ToolTraceOutput{
+		ArtifactID:       schemas.IDPrefixToolTrace + in.Event.EventID,
+		DerivationLogged: w.derivLog != nil,
+	}, nil
+}
+
 func (w *InMemoryToolTraceWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -40,7 +58,7 @@ func (w *InMemoryToolTraceWorker) Info() nodes.NodeInfo {
 }
 
 func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
-	if ev.EventType != "tool_call" && ev.EventType != "tool_result" {
+	if ev.EventType != string(schemas.EventTypeToolCall) && ev.EventType != string(schemas.EventTypeToolResult) {
 		return nil
 	}
 	meta := map[string]any{}
@@ -49,16 +67,16 @@ func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
 			meta[k] = v
 		}
 	}
-	meta["traced_event_id"] = ev.EventID
-	meta["traced_agent_id"] = ev.AgentID
+	meta[schemas.EventIDKey] = ev.EventID
+	meta[schemas.AgentIDKey] = ev.AgentID
 
-	artifactID := fmt.Sprintf("tool_trace_%s", ev.EventID)
+	artifactID := fmt.Sprintf("%s%s", schemas.IDPrefixToolTrace, ev.EventID)
 	w.objStore.PutArtifact(schemas.Artifact{
 		ArtifactID:        artifactID,
 		SessionID:         ev.SessionID,
 		OwnerAgentID:      ev.AgentID,
-		ArtifactType:      "tool_trace",
-		MimeType:          "application/json",
+		ArtifactType:      string(schemas.ArtifactTypeToolTrace),
+		MimeType:          schemas.MimeTypeJSON,
 		Metadata:          meta,
 		ProducedByEventID: ev.EventID,
 		Version:           1,

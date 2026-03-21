@@ -185,3 +185,20 @@ type SummarizationWorker interface {
 	Info() NodeInfo
 	Summarize(agentID, sessionID string, maxLevel int) error
 }
+
+// ─── Typed-dispatch interface ─────────────────────────────────────────────────
+
+// Runnable is implemented by every worker that supports typed dispatch via
+// schemas.WorkerInput / schemas.WorkerOutput.
+//
+// It is optional — all workers additionally expose concrete domain methods
+// (Process, Materialize, Consolidate, …) for direct chain / manager calls.
+// Run provides a uniform entry point when the caller holds a WorkerInput value
+// without knowing the concrete worker type.
+//
+// Implementations must type-assert the input to their expected Input struct,
+// delegate to the concrete method, and return the corresponding Output struct.
+// An unknown input type must return a descriptive error without panicking.
+type Runnable interface {
+	Run(input schemas.WorkerInput) (schemas.WorkerOutput, error)
+}

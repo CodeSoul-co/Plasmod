@@ -144,7 +144,7 @@ func (o *Orchestrator) SubmitIngest(ev schemas.Event) bool {
 // SubmitMemory enqueues a memory-pipeline task at PriorityNormal.
 func (o *Orchestrator) SubmitMemory(in chain.MemoryPipelineInput) bool {
 	return o.Submit(Task{
-		ID:       "mem_" + in.EventID,
+		ID:       schemas.IDPrefixMemory + in.EventID,
 		Type:     TaskTypeMemory,
 		Priority: PriorityNormal,
 		Payload:  in,

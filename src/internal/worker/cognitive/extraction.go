@@ -19,6 +19,18 @@ func CreateInMemoryMemoryExtractionWorker(id string, store storage.ObjectStore) 
 	return &InMemoryMemoryExtractionWorker{id: id, store: store}
 }
 
+func (w *InMemoryMemoryExtractionWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.MemoryExtractionInput)
+	if !ok {
+		return schemas.MemoryExtractionOutput{}, fmt.Errorf("memory_extraction: unexpected input type %T", input)
+	}
+	err := w.Extract(in.EventID, in.AgentID, in.SessionID, in.Content)
+	if err != nil {
+		return schemas.MemoryExtractionOutput{}, err
+	}
+	return schemas.MemoryExtractionOutput{MemoryID: schemas.IDPrefixMemory + in.EventID}, nil
+}
+
 func (w *InMemoryMemoryExtractionWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
