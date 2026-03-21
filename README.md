@@ -6,16 +6,42 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 
 ## What is implemented
 
+<<<<<<< HEAD
 - Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes
+=======
+## Project Status
+
+This repository is in the **runnable-prototype** stage.  The main ingest/query path is fully wired end-to-end.
+
+What is implemented today:
+
+- Runnable Go server in [`src/cmd/server/main.go`](src/cmd/server/main.go) with 11 HTTP routes (incl. `GET /v1/admin/storage`)
+>>>>>>> a2c07755 (feat(storage): add memory and Badger backends with hybrid composition)
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index) → **cold** (archived tier), behind a unified `DataPlane` interface
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
+<<<<<<< HEAD
 - `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, and `AppliedFilters` on every query
 - Module-level test coverage: 12 packages each with a `*_test.go` file
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
+=======
+- `QueryResponse` returns `Objects`, `Edges`, `Provenance`, and `ProofTrace` in every response
+- Module-level test coverage: 12 packages each with their own `*_test.go` file
+- Python SDK bootstrap and demo scripts
+- Architecture, schema, and milestone documentation
+
+**Storage backends (design):** Memory vs Badger vs hybrid per sub-store — see [`STORAGE_BACKEND.md`](STORAGE_BACKEND.md) (implementation may be in progress).
+
+What is still intentionally lightweight in v1:
+
+- Distributed runtime and persistence
+- Full policy/governance execution
+- Deep proof construction beyond 1-hop
+- Production-grade indexing and optimization
+>>>>>>> a2c07755 (feat(storage): add memory and Badger backends with hybrid composition)
 
 ## Why This Project Exists
 
@@ -67,7 +93,11 @@ HTTP API (access)
 
 Code layout:
 
+<<<<<<< HEAD
 - [`src/internal/access`](src/internal/access): HTTP gateway, 14 routes including ingest, query, and canonical CRUD
+=======
+- [`src/internal/access`](src/internal/access): HTTP gateway, 11 routes including ingest, query, canonical CRUD, and `GET /v1/admin/storage`
+>>>>>>> a2c07755 (feat(storage): add memory and Badger backends with hybrid composition)
 - [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
 - [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
 - [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
@@ -308,7 +338,33 @@ cd integration_tests/python && python run_all.py
 
 ### Optional: S3/MinIO dataflow test
 
-The S3 test (available in both Go and Python layers) ingests an event, runs a query, serialises the full capture as JSON, writes it to a MinIO bucket, and reads it back to verify byte-exact round-trip integrity.
+This subsection covers (a) **local runtime storage: memory vs disk** (recent change) and (b) **optional S3/MinIO round-trip tests**. The S3/MinIO flow is separate from where ANDB keeps its canonical objects on the machine.
+
+#### The two storage interfaces — memory vs disk
+
+Here **「两个接口」** means **two implementations of the same `RuntimeStorage` contract**: one keeps data **in process memory**, one persists via **Badger on disk** (same public HTTP API either way).
+
+| 接口 / 实现 | 数据放哪 | 说明 |
+|-------------|----------|------|
+| **内存** | 进程内 map（`MemoryRuntimeStorage`） | 默认；快；**重启即丢** |
+| **磁盘** | Badger 目录 `ANDB_DATA_DIR`（默认 `.andb_data`） | `ANDB_STORAGE=disk` 或 hybrid 里把某个子 store 设为 `disk`；**可跨重启保留** |
+
+测试或磁盘空间紧张时可用 **`ANDB_BADGER_INMEMORY=true`**：仍走 Badger 代码路径，但 **不落本地文件**（数据只在内存里的 Badger 实例中）。
+
+**混合：** `ANDB_STORAGE=hybrid` + `ANDB_STORE_*` 可指定每个子 store（segments、objects 等）单独用内存或磁盘。详见 [`STORAGE_BACKEND.md`](STORAGE_BACKEND.md)。
+
+**查看当前解析结果：** `GET /v1/admin/storage`（v1 仍 **不** 持久化 WAL，`wal_persistence` 为 `false`）。
+
+#### S3/MinIO — dev-only admin routes (not the memory/disk split)
+
+Optional **object export to S3-compatible storage** uses **two `POST` admin handlers** (SigV4; MinIO is the usual local server). These are **only** for validating upload/read-back to **remote** object storage — they do **not** choose between “save in RAM” vs “save on local disk” (that is entirely `RuntimeStorage` + env vars above).
+
+| Endpoint | What it does |
+|----------|----------------|
+| **`POST /v1/admin/s3/export`** | Sample ingest + query in-process → one capture JSON **PUT** to bucket → **GET** back → `roundtrip_ok` |
+| **`POST /v1/admin/s3/snapshot-export`** | Writes snapshot-style keys under `S3_PREFIX` (metadata, Avro manifest, segment JSON) → read back each → per-artifact `roundtrip_ok` |
+
+The **Go integration test** `s3_dataflow_test.go` and the **Python** layer follow the same pattern as **`/v1/admin/s3/export`**: ingest → query → upload capture JSON → read back for byte-level verification. Enable them with `ANDB_RUN_S3_TESTS=true` after MinIO is up.
 
 **Start MinIO locally** (choose one):
 
@@ -343,6 +399,10 @@ make integration-test
 |---|---|---|
 | `ANDB_BASE_URL` | `http://127.0.0.1:8080` | Server address for all tests |
 | `ANDB_HTTP_TIMEOUT` | `10` | HTTP timeout in seconds (Python SDK) |
+| `ANDB_STORAGE` | `memory` | Runtime store mode: `memory`, `disk`, or `hybrid` (see [`STORAGE_BACKEND.md`](STORAGE_BACKEND.md)) |
+| `ANDB_DATA_DIR` | `.andb_data` | Badger on-disk directory when any sub-store uses `disk` |
+| `ANDB_STORE_*` | _(inherit mode)_ | Per-store override (`SEGMENTS`, `INDEXES`, `OBJECTS`, `EDGES`, `VERSIONS`, `POLICIES`, `CONTRACTS`) — each `memory` or `disk`; meaningful when `ANDB_STORAGE=hybrid` |
+| `ANDB_BADGER_INMEMORY` | _(empty)_ | Set `true` to use in-RAM Badger (no mmap files); useful when the temp disk is full |
 | `ANDB_RUN_S3_TESTS` | _(empty)_ | Set to `true` to enable S3 dataflow tests |
 | `S3_ENDPOINT` | — | MinIO/S3 host:port |
 | `S3_ACCESS_KEY` | — | Access key |
