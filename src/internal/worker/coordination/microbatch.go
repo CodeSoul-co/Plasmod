@@ -1,8 +1,10 @@
 package coordination
 
 import (
+	"fmt"
 	"sync"
 
+	"andb/src/internal/schemas"
 	"andb/src/internal/worker/nodes"
 )
 
@@ -20,6 +22,18 @@ func CreateInMemoryMicroBatchScheduler(id string, batchSize int) *InMemoryMicroB
 		batchSize = 32
 	}
 	return &InMemoryMicroBatchScheduler{id: id, batchSize: batchSize, queue: make([]any, 0, batchSize)}
+}
+
+func (w *InMemoryMicroBatchScheduler) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.MicroBatchEnqueueInput)
+	if !ok {
+		return schemas.MicroBatchFlushOutput{}, fmt.Errorf("micro_batch: unexpected input type %T (use Flush() directly to drain)", input)
+	}
+	w.Enqueue(in.QueryID, in.Payload)
+	w.mu.Lock()
+	pending := len(w.queue)
+	w.mu.Unlock()
+	return schemas.MicroBatchFlushOutput{Count: pending}, nil
 }
 
 func (w *InMemoryMicroBatchScheduler) Info() nodes.NodeInfo {

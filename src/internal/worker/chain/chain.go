@@ -82,7 +82,7 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	// 3 – Index the primary memory object
 	memID := in.MemoryID
 	if memID == "" {
-		memID = "mem_" + ev.EventID
+		memID = schemas.IDPrefixMemory + ev.EventID
 	}
 	ns := in.Namespace
 	if ns == "" {
@@ -90,14 +90,14 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	}
 	text := ""
 	if ev.Payload != nil {
-		if t, ok := ev.Payload["text"].(string); ok {
+		if t, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
 			text = t
 		}
 	}
-	c.mgr.DispatchIndexBuild(memID, "memory", ns, text)
+	c.mgr.DispatchIndexBuild(memID, string(schemas.ObjectTypeMemory), ns, text)
 
 	// 4 – Graph: link memory to its source event
-	c.mgr.DispatchGraphRelation(memID, "memory", ev.EventID, "event", "derived_from", 1.0)
+	c.mgr.DispatchGraphRelation(memID, string(schemas.ObjectTypeMemory), ev.EventID, string(schemas.ObjectTypeEvent), string(schemas.EdgeTypeDerivedFrom), schemas.DefaultEdgeWeight)
 
 	return ok("main_chain", map[string]any{
 		"memory_id": memID,
@@ -154,8 +154,8 @@ func (c *MemoryPipelineChain) Run(in MemoryPipelineInput) ChainResult {
 	}
 
 	// 3 – Apply governance policies to the freshly extracted memory
-	memID := "mem_" + in.EventID
-	c.mgr.DispatchReflectionPolicy(memID, "memory")
+	memID := schemas.IDPrefixMemory + in.EventID
+	c.mgr.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
 
 	return ok("memory_pipeline_chain", map[string]any{
 		"memory_id":         memID,
@@ -286,7 +286,7 @@ func (c *CollaborationChain) Run(in CollaborationChainInput) (CollaborationChain
 	sharedID := ""
 	if in.TargetAgentID != "" && in.TargetAgentID != in.SourceAgentID {
 		c.mgr.DispatchCommunication(in.SourceAgentID, in.TargetAgentID, winnerID)
-		sharedID = "shared_" + winnerID + "_to_" + in.TargetAgentID
+		sharedID = schemas.IDPrefixShared + winnerID + "_to_" + in.TargetAgentID
 	}
 
 	return CollaborationChainOutput{WinnerMemID: winnerID, SharedMemID: sharedID},

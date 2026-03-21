@@ -28,6 +28,19 @@ func (w *InMemoryIngestWorker) Info() nodes.NodeInfo {
 	}
 }
 
+func (w *InMemoryIngestWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.IngestInput)
+	if !ok {
+		return schemas.IngestOutput{}, fmt.Errorf("ingest: unexpected input type %T", input)
+	}
+	err := w.Process(in.Event)
+	out := schemas.IngestOutput{Valid: err == nil}
+	if err != nil {
+		out.Error = err.Error()
+	}
+	return out, err
+}
+
 func (w *InMemoryIngestWorker) Process(ev schemas.Event) error {
 	if strings.TrimSpace(ev.EventID) == "" {
 		return fmt.Errorf("ingest: event_id is required")

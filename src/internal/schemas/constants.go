@@ -47,19 +47,19 @@ const (
 type ObjectType string
 
 const (
-	ObjectTypeAgent          ObjectType = "agent"
-	ObjectTypeSession        ObjectType = "session"
-	ObjectTypeEvent          ObjectType = "event"
-	ObjectTypeMemory         ObjectType = "memory"
-	ObjectTypeState          ObjectType = "state"
-	ObjectTypeArtifact       ObjectType = "artifact"
-	ObjectTypeEdge           ObjectType = "edge"
-	ObjectTypeObjectVersion  ObjectType = "object_version"
-	ObjectTypeUser           ObjectType = "user"
-	ObjectTypePolicyRecord   ObjectType = "policy_record"
-	ObjectTypeEmbedding      ObjectType = "embedding"
-	ObjectTypeShareContract  ObjectType = "share_contract"
-	ObjectTypeRetrievalSeg   ObjectType = "retrieval_segment"
+	ObjectTypeAgent         ObjectType = "agent"
+	ObjectTypeSession       ObjectType = "session"
+	ObjectTypeEvent         ObjectType = "event"
+	ObjectTypeMemory        ObjectType = "memory"
+	ObjectTypeState         ObjectType = "state"
+	ObjectTypeArtifact      ObjectType = "artifact"
+	ObjectTypeEdge          ObjectType = "edge"
+	ObjectTypeObjectVersion ObjectType = "object_version"
+	ObjectTypeUser          ObjectType = "user"
+	ObjectTypePolicyRecord  ObjectType = "policy_record"
+	ObjectTypeEmbedding     ObjectType = "embedding"
+	ObjectTypeShareContract ObjectType = "share_contract"
+	ObjectTypeRetrievalSeg  ObjectType = "retrieval_segment"
 )
 
 // VerifiedState captures the epistemic status of a memory or policy record.
@@ -108,4 +108,108 @@ const (
 	SessionStatusCompleted SessionStatus = "completed"
 	SessionStatusFailed    SessionStatus = "failed"
 	SessionStatusPaused    SessionStatus = "paused"
+)
+
+// WorkerKind identifies which worker type a WorkerInput targets.
+// Values are intentionally identical to the NodeType constants in
+// worker/nodes so WorkerInput.WorkerKind() can be compared to node
+// registry keys without creating an import cycle.
+type WorkerKind string
+
+const (
+	WorkerKindIngest                WorkerKind = "ingest_worker"
+	WorkerKindObjectMaterialization WorkerKind = "object_materialization_worker"
+	WorkerKindStateMaterialization  WorkerKind = "state_materialization_worker"
+	WorkerKindToolTrace             WorkerKind = "tool_trace_worker"
+	WorkerKindMemoryExtraction      WorkerKind = "memory_extraction_worker"
+	WorkerKindMemoryConsolidation   WorkerKind = "memory_consolidation_worker"
+	WorkerKindSummarization         WorkerKind = "summarization_worker"
+	WorkerKindReflectionPolicy      WorkerKind = "reflection_policy_worker"
+	WorkerKindIndexBuild            WorkerKind = "index_build_worker"
+	WorkerKindGraphRelation         WorkerKind = "graph_relation_worker"
+	WorkerKindSubgraphExecutor      WorkerKind = "subgraph_executor_worker"
+	WorkerKindConflictMerge         WorkerKind = "conflict_merge_worker"
+	WorkerKindCommunication         WorkerKind = "communication_worker"
+	WorkerKindMicroBatch            WorkerKind = "micro_batch_scheduler"
+	WorkerKindProofTrace            WorkerKind = "proof_trace_worker"
+)
+
+// Additional EventType constants used for routing in the worker and subscriber layers.
+// Note: EventTypeToolCallIssued / EventTypeToolResultReturned (above) are the formal
+// canonical names; these shorter aliases are the actual values emitted in the runtime
+// ingest path and checked by ObjectMaterialization / ToolTrace workers.
+const (
+	EventTypeToolCall    EventType = "tool_call"
+	EventTypeToolResult  EventType = "tool_result"
+	EventTypeStateUpdate EventType = "state_update"
+	EventTypeStateChange EventType = "state_change"
+	EventTypeCheckpoint  EventType = "checkpoint"
+	EventTypeReflection  EventType = "reflection"
+)
+
+// MemoryTypeFactual classifies knowledge derived from tool outputs or retrieved facts.
+const MemoryTypeFactual MemoryType = "factual"
+
+// Additional EdgeType constants.
+const (
+	EdgeTypeConflictResolved EdgeType = "conflict_resolved"
+	EdgeTypeToolProduces     EdgeType = "tool_produces"
+	EdgeTypeBelongsToSession EdgeType = "belongs_to_session"
+	EdgeTypeOwnedByAgent     EdgeType = "owned_by_agent"
+)
+
+// IDPrefix constants for deterministic canonical object ID generation.
+// All generated IDs follow: IDPrefixXxx + primaryKey.
+const (
+	IDPrefixMemory    = "mem_"
+	IDPrefixArtifact  = "art_"
+	IDPrefixState     = "state_"
+	IDPrefixEdge      = "edge_"
+	IDPrefixSegment   = "seg_"
+	IDPrefixToolTrace = "tool_trace_"
+	IDPrefixSummary   = "summary_"
+	IDPrefixShared    = "shared_"
+)
+
+// PayloadKey constants for well-known fields embedded in Event.Payload.
+const (
+	PayloadKeyText       = "text"
+	PayloadKeyStateKey   = "state_key"
+	PayloadKeyStateValue = "state_value"
+	PayloadKeyURI        = "uri"
+	PayloadKeyMimeType   = "mime_type"
+)
+
+// Numeric defaults shared across worker implementations.
+const (
+	DefaultConfidence    float64 = 0.85
+	DefaultEdgeWeight    float64 = 1.0
+	DefaultCausalWeight  float64 = 0.8
+	DefaultBatchSize             = 32
+	DefaultMaxProofDepth         = 8
+)
+
+// TimeBucketFormat is the Go time format string used for segment time-bucket partitioning.
+const TimeBucketFormat = "2006-01-02"
+
+// ArtifactType classifies what kind of artifact a record represents.
+type ArtifactType string
+
+const (
+	ArtifactTypeToolTrace  ArtifactType = "tool_trace"
+	ArtifactTypeToolCall   ArtifactType = "tool_call"
+	ArtifactTypeToolResult ArtifactType = "tool_result"
+)
+
+// MimeType constants for artifact content encoding.
+const (
+	MimeTypeJSON      = "application/json"
+	MimeTypePlainText = "text/plain"
+)
+
+// Metadata key constants embedded in Artifact.Metadata maps.
+const (
+	EventIDKey   = "event_id"
+	AgentIDKey   = "agent_id"
+	SessionIDKey = "session_id"
 )

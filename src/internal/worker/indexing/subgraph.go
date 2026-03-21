@@ -1,6 +1,8 @@
 package indexing
 
 import (
+	"fmt"
+
 	"andb/src/internal/schemas"
 	"andb/src/internal/worker/nodes"
 )
@@ -13,6 +15,15 @@ type InMemorySubgraphExecutorWorker struct {
 
 func CreateInMemorySubgraphExecutorWorker(id string) *InMemorySubgraphExecutorWorker {
 	return &InMemorySubgraphExecutorWorker{id: id}
+}
+
+func (w *InMemorySubgraphExecutorWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
+	in, ok := input.(schemas.SubgraphExpandInput)
+	if !ok {
+		return schemas.SubgraphExpandOutput{}, fmt.Errorf("subgraph: unexpected input type %T", input)
+	}
+	resp := w.Expand(in.Req, in.Nodes, in.Edges)
+	return schemas.SubgraphExpandOutput{GraphExpandResponse: resp}, nil
 }
 
 func (w *InMemorySubgraphExecutorWorker) Info() nodes.NodeInfo {
