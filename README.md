@@ -460,7 +460,77 @@ The following review checklist is intended for team members before merging `inte
 
 ### Member B — Python Retrieval Service (`feature/retrieval-b`)
 
-**Scope merged:** Dense/sparse retrieval Python service, policy filter, version filter, merger, gRPC proto.
+**Scope merged:** Dense/sparse retrieval Python service (C++ core + Python thin wrapper), policy filter, version filter, RRF merger, gRPC proto.
+
+#### Architecture: Python Thin Wrapper + C++ Core
+
+```
+┌──────────────────────────────────────────────────┐
+│                  Python Layer                     │
+│  src/internal/retrieval/                          │
+│  - main.py (entry point, --dev flag)              │
+│  - service/retriever.py (thin wrapper, calls C++) │
+│  - service/types.py (type definitions)            │
+└──────────────────────────────────────────────────┘
+                         │ pybind11
+                         ▼
+┌──────────────────────────────────────────────────┐
+│                   C++ Layer                       │
+│  cpp/                                             │
+│  ├── include/andb/                                │
+│  │   ├── types.h    (Candidate, SearchResult)     │
+│  │   ├── dense.h    (DenseRetriever — HNSW)       │
+│  │   ├── sparse.h   (SparseRetriever)             │
+│  │   ├── filter.h   (FilterBitset — BitsetView)   │
+│  │   ├── merger.h   (RRF merge + reranking)       │
+│  │   └── retrieval.h (Unified Retriever + C API)  │
+│  ├── retrieval/                                   │
+│  │   ├── dense.cpp  (Knowhere HNSW)               │
+│  │   ├── sparse.cpp (Knowhere SPARSE_INDEX)       │
+│  │   ├── filter.cpp (BitsetView mechanism)        │
+│  │   ├── merger.cpp (RRF k=60, reranking)         │
+│  │   └── retrieval.cpp (Unified)                  │
+│  ├── python/bindings.cpp (pybind11)               │
+│  └── CMakeLists.txt                               │
+└──────────────────────────────────────────────────┘
+```
+
+#### Three-Path Parallel Retrieval (C++)
+
+| Path | Implementation | Description |
+|---|---|---|
+| **Dense** | `cpp/retrieval/dense.cpp` | Knowhere HNSW, Search with BitsetView |
+| **Sparse** | `cpp/retrieval/sparse.cpp` | Knowhere SPARSE_INVERTED_INDEX |
+| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView passed to Search call |
+
+**RRF Fusion** (`cpp/retrieval/merger.cpp`):
+```
+RRF_score(d) = Σ 1/(k + rank_i(d))    k=60 (configurable)
+```
+
+**Reranking formula**:
+```cpp
+final_score = rrf_score * max(importance, 0.01f)
+                        * max(freshness_score, 0.01f)
+                        * max(confidence, 0.01f)
+```
+
+**Seed marking**: candidates with `final_score >= seed_threshold` (default 0.7) set `is_seed=true` — used by `SubgraphExecutorWorker` for graph expansion.
+
+#### Building the C++ Module
+
+```bash
+cd cpp && mkdir build && cd build
+cmake .. -DANDB_WITH_PYBIND=ON
+make -j$(nproc)
+```
+
+| CMake Option | Default | Description |
+|---|---|---|
+| `ANDB_WITH_PYBIND` | ON | Build pybind11 Python bindings |
+| `ANDB_WITH_GPU` | OFF | GPU support via Knowhere RAFT |
+
+Platforms: Ubuntu 20.04 x86_64/aarch64, macOS x86_64, macOS Apple Silicon.
 
 #### ⚡ Dual-Interface Ownership (Python ↔ Go) — B's Primary Responsibility
 
@@ -486,15 +556,17 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| Python service files moved to `src/internal/retrieval/` | ✅ | Renamed from `src/retrieval/` in this commit |
-| gRPC proto field names align with Go `schemas.QueryRequest` | ✅ | Verified against JSON tags in `schemas/query.go` |
-| `PolicyFilter` runs before `VersionFilter` in `retriever.py` | ✅ | Order matters — policy eliminates before version ranking |
-| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | **B: run `integration_tests/python/run_all.py` and confirm no key mismatch** |
-| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | **B: cross-check with A** — A's workspace filter added `workspace_id` to ingest body |
-| `dense.py` cosine stub replaced with real embedding model | ⚠️ | Must be done before staging; flag to team if blocked on model choice |
-| Python service `/healthz` endpoint added | 🔲 | Needed for K8s readiness probe |
-| Retry back-off in `merger.py` on upstream timeout | 🔲 | Currently raises immediately — add exponential back-off with max 3 retries |
-| No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy confirmation from infra |
+| Python service files in `src/internal/retrieval/` | ✅ | |
+| C++ core in `cpp/` with pybind11 bindings | ✅ | 2026-03-20 migration complete |
+| gRPC proto field names align with Go `schemas.QueryRequest` | ✅ | |
+| `PolicyFilter` runs before `VersionFilter` in `retriever.py` | ✅ | |
+| Knowhere stub → real HNSW / SPARSE calls wired | 🔲 | Replace stub with actual Knowhere index calls |
+| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
+| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
+| Python service `/healthz` endpoint | 🔲 | Needed for K8s readiness probe |
+| Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
+| GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
+| No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
 
 ---
 
@@ -532,6 +604,91 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | Missing: `ProofTraceWorker` BFS cycle detection test | 🔲 | Add test that seeds a cyclic graph and verifies BFS terminates |
 
 ---
+
+### S3 & Cold Storage Module
+
+**Scope merged:** S3-compatible object storage (MinIO) for admin export, snapshot export, and cold-tier archival.
+
+#### Admin API Endpoints (`src/internal/access/gateway.go`)
+
+| Endpoint | Behaviour |
+|---|---|
+| `POST /v1/admin/s3/export` | Ingest sample event → query → serialize → PUT to S3 → GET round-trip verify |
+| `POST /v1/admin/s3/snapshot-export` | Write metadata JSON + manifest Avro + segment data JSON under `S3_PREFIX`; verify all three |
+
+Snapshot key layout:
+```
+S3_PREFIX/snapshots/<collection_id>/metadata/<snapshot_id>.json
+S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
+S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
+```
+
+#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
+
+| Function | Purpose |
+|---|---|
+| `LoadFromEnv()` | Load config from `S3_ENDPOINT / ACCESS_KEY / SECRET_KEY / BUCKET / SECURE / REGION / PREFIX` |
+| `EnsureBucket()` | HEAD → auto-create bucket if absent |
+| `PutBytesAndVerify()` | PUT + GET round-trip validation (admin export path) |
+| `PutBytes()` | Simple PUT without round-trip verify (cold-store archival path) |
+| `GetBytes()` | GET; returns `nil, nil` on 404 |
+| `s3Sign()` | stdlib-only AWS Signature V4 (no external SDK) |
+
+#### Cold-Tier Auto-Selection (`src/internal/storage/s3store.go` + `bootstrap.go`)
+
+At startup, `bootstrap.go` selects the cold tier automatically:
+
+```
+S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET 已设置
+  → S3ColdStore  (MinIO / AWS S3 backed)
+  → 日志: [bootstrap] cold store: S3 endpoint=... bucket=...
+
+未设置
+  → InMemoryColdStore  (in-process simulation, default)
+  → 日志: [bootstrap] cold store: in-memory simulation
+```
+
+`S3ColdStore` objects stored as:
+- `{prefix}/cold/memories/{id}.json`
+- `{prefix}/cold/agents/{id}.json`
+
+#### Local One-Click Scripts (`scripts/dev/`)
+
+| Script | Purpose |
+|---|---|
+| `ensure-docker.ps1` | Verify Docker availability (Windows) |
+| `start-minio.ps1` | Start MinIO container for local S3 |
+| `run-s3-runtime-export.ps1` | One-click runtime capture export |
+| `run-s3-snapshot-export.ps1` | One-click snapshot/segment export |
+
+Run artifacts: `scripts/dev/artifacts/...`
+
+#### Reproducing Locally
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts/dev/run-s3-snapshot-export.ps1"
+```
+
+Expected: `"status": "ok"` with all `roundtrip_ok` flags `true`.  
+Run record: `scripts/dev/artifacts/s3-snapshot-export/<timestamp>/record.md`
+
+#### Required env vars
+
+```
+S3_ENDPOINT    e.g. 127.0.0.1:9000
+S3_ACCESS_KEY  e.g. minioadmin
+S3_SECRET_KEY  e.g. minioadmin
+S3_BUCKET      e.g. andb-integration
+S3_SECURE      false (default)
+S3_REGION      us-east-1 (default)
+S3_PREFIX      andb/integration_tests (default)
+```
+
+#### Known Limitations & Next Steps
+
+- Current S3 path provides local-delivery write/read validation — not the full production-grade Milvus-migration path
+- `FIXME`-related areas in extended modules still need follow-up for full parity
+- Next: unify `S3_* → minio.*` config mapping across all runtime modules; progressively replace dev-only snapshot export with full production writer path
 
 ---
 
