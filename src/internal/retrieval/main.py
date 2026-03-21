@@ -8,13 +8,17 @@ Python layer only does parameter conversion.
 Usage:
     python -m src.internal.retrieval.main --dev          # Run with debug output
     python -m src.internal.retrieval.main --test         # Run basic test
+    python -m src.internal.retrieval.main --serve        # Run HTTP server with /healthz
     python -m src.internal.retrieval.main --help         # Show help
 """
 
 import argparse
 import logging
 import time
+import json
 from typing import Optional
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from threading import Thread
 
 import numpy as np
 
@@ -22,6 +26,9 @@ from .service.types import RetrievalRequest, CandidateList, cpp_available, cpp_v
 from .service.retriever import Retriever
 
 logger = logging.getLogger(__name__)
+
+# Global service instance for HTTP handlers
+_service_instance: Optional["RetrievalService"] = None
 
 
 class RetrievalService:
@@ -168,6 +175,63 @@ class RetrievalService:
     def is_ready(self) -> bool:
         """Check if service is ready."""
         return self.retriever.is_ready()
+    
+    def healthz(self) -> dict:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if self.is_ready() else "degraded",
+            "cpp_available": cpp_available(),
+            "cpp_version": cpp_version(),
+            "ready": self.is_ready(),
+        }
+
+
+class HealthzHandler(BaseHTTPRequestHandler):
+    """HTTP handler for /healthz endpoint."""
+    
+    def log_message(self, format, *args):
+        logger.debug(f"HTTP: {format % args}")
+    
+    def do_GET(self):
+        if self.path == "/healthz":
+            self._handle_healthz()
+        else:
+            self.send_error(404, "Not Found")
+    
+    def _handle_healthz(self):
+        global _service_instance
+        if _service_instance is None:
+            data = {
+                "status": "unavailable",
+                "cpp_available": cpp_available(),
+                "cpp_version": cpp_version(),
+                "ready": False,
+            }
+        else:
+            data = _service_instance.healthz()
+        
+        response = json.dumps(data).encode("utf-8")
+        self.send_response(200 if data.get("ready") else 503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+
+def run_server(host: str, port: int, service: "RetrievalService"):
+    """Run HTTP server with /healthz endpoint."""
+    global _service_instance
+    _service_instance = service
+    
+    server = HTTPServer((host, port), HealthzHandler)
+    logger.info(f"Starting HTTP server on {host}:{port}")
+    logger.info(f"  /healthz endpoint available")
+    
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Shutting down HTTP server")
+        server.shutdown()
 
 
 def run_test(dev_mode: bool = False):
@@ -296,10 +360,42 @@ Examples:
         help="Seed marking threshold",
     )
     
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run HTTP server with /healthz endpoint",
+    )
+    
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="HTTP server host",
+    )
+    
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8081,
+        help="HTTP server port",
+    )
+    
     args = parser.parse_args()
     
     if args.test:
         run_test(dev_mode=args.dev)
+        return
+    
+    if args.serve:
+        service = RetrievalService(
+            index_type=args.index_type,
+            metric_type=args.metric_type,
+            dim=args.dim,
+            rrf_k=args.rrf_k,
+            seed_threshold=args.seed_threshold,
+            dev_mode=args.dev,
+        )
+        run_server(args.host, args.port, service)
         return
     
     # Print configuration and status

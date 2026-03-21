@@ -179,12 +179,24 @@ python -m src.internal.retrieval.main --test
 python -m src.internal.retrieval.main --test --dev  # with debug output
 ```
 
+### HTTP Server Mode
+
+```bash
+python -m src.internal.retrieval.main --serve --port 8081
+python -m src.internal.retrieval.main --serve --port 8081 --dev  # with debug output
+```
+
+Provides `/healthz` endpoint for K8s readiness probe.
+
 ### Command Line Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--dev` | false | Enable dev mode (verbose logging) |
 | `--test` | false | Run basic test |
+| `--serve` | false | Run HTTP server with /healthz |
+| `--host` | 127.0.0.1 | HTTP server host |
+| `--port` | 8081 | HTTP server port |
 | `--index-type` | HNSW | Index type (HNSW, IVF_FLAT) |
 | `--metric-type` | IP | Metric type (IP, L2, COSINE) |
 | `--dim` | 128 | Vector dimension |
@@ -208,6 +220,14 @@ Defined in `service/errors.py`:
 ---
 
 ## Changelog
+
+### 2026-03-21
+
+- **Added `/healthz` endpoint**: HTTP server mode with `--serve` flag for K8s readiness probe
+- **Added retry with exponential backoff**: `retriever.py` now retries on timeout (max 3 retries, base 0.1s, max 2s)
+- **Added `timeout_ms` field to RetrievalRequest**: Default 5s, configurable for S3ColdStore latency
+- **Fixed `proof_trace` assertion**: Python tests now use `>= 1` instead of exact count (BFS depth up to 8)
+- **SDK alignment verified**: `query()` kwargs and `ingest_event()` match Go `schemas.QueryRequest`
 
 ### 2026-03-20 (Evening)
 
@@ -236,6 +256,10 @@ Defined in `service/errors.py`:
 - [x] C++ retrieval layer with Knowhere integration (completed 2026-03-20)
 - [x] pybind11 bindings (completed 2026-03-20)
 - [x] Python thin wrapper (completed 2026-03-20)
+- [x] `/healthz` endpoint for K8s (completed 2026-03-21)
+- [x] Retry with exponential backoff (completed 2026-03-21)
+- [x] S3ColdStore timeout settings (completed 2026-03-21)
+- [x] SDK alignment with Go schemas (completed 2026-03-21)
 - [ ] Replace stub implementations with actual Knowhere calls
 - [ ] GPU support via Knowhere RAFT
 - [ ] Distributed retrieval with sharding
