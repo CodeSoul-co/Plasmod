@@ -765,11 +765,22 @@ The table below lists every point where two members' work **must be confirmed to
 - [ ] `workspace_id` omitted on ingest → queryable under default namespace
 
 **Python & retrieval (B runs)**
+
+_Go side (B owns the Go↔Python contract boundary):_
+- [ ] `go test ./src/internal/retrieval/... -count=1` — all green (or no test files yet — add at least one smoke test)
+- [ ] `go test ./src/internal/schemas/... -count=1` — `QueryRequest` / `QueryResponse` JSON tags match proto field names in `retrieval.proto`
+- [ ] `go vet ./src/internal/retrieval/...` — no errors
+- [ ] `GET /v1/query` returns `proof_trace`, `edges`, `applied_filters` keys in response JSON (verify with `curl` or `integration_tests/ingest_query_test.go`)
+- [ ] `/v1/ingest` accepts `workspace_id` field without error (Go gateway handler)
+- [ ] `GET /v1/admin/topology` — verify no retrieval-related worker is in error/degraded state
+
+_Python / C++ side:_
 - [ ] `cd integration_tests/python && python run_all.py` — all green
 - [ ] `proof_trace` assertion in Python tests uses `>= 1` not exact length
 - [ ] SDK `query()` kwargs verified against current `QueryRequest` JSON shape
 - [ ] `ingest_event()` includes `workspace_id` field
-- [ ] pybind11 C++ module builds successfully on CI platform
+- [ ] pybind11 C++ module (`cmake .. -DANDB_WITH_PYBIND=ON && make`) builds successfully on CI platform
+- [ ] `python -m src.internal.retrieval.main --test` exits 0
 
 **Graph & edges (C runs)**
 - [ ] `QueryResponse.edges` non-empty after ingest → query round-trip
