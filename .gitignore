@@ -47,6 +47,9 @@ B_第二周实现文档.md
 B_第三周实现文档.md
 B_第四周实现文档.md
 方案定位.md
+# 根目录个人方案/分工文档（避免 git add . 误加入）
+/方案.md
+/分工情况.pdf
 agent-native-db-spec.md
 rule
 
@@ -58,6 +61,9 @@ server.*.log
 
 # Local MinIO data (Docker volume)
 .minio-data/
+
+# Embedded Badger / local ANDB data dir (see STORAGE_BACKEND.md)
+.andb_data/
 
 # Old integration run artifacts (moved to scripts/dev/artifacts/)
 s3-integration-run-record-*.md

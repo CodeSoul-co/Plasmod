@@ -345,6 +345,7 @@ func NewMemoryRuntimeStorage() *MemoryRuntimeStorage {
 	}
 }
 
+// ─── MemoryRuntimeStorage ─────────────────────────────────────────────────────
 func (s *MemoryRuntimeStorage) Segments() SegmentStore        { return s.segmentStore }
 func (s *MemoryRuntimeStorage) Indexes() IndexStore           { return s.indexStore }
 func (s *MemoryRuntimeStorage) Objects() ObjectStore          { return s.objectStore }
@@ -353,3 +354,12 @@ func (s *MemoryRuntimeStorage) Versions() SnapshotVersionStore { return s.versio
 func (s *MemoryRuntimeStorage) Policies() PolicyStore         { return s.policyStore }
 func (s *MemoryRuntimeStorage) Contracts() ShareContractStore  { return s.contractStore }
 func (s *MemoryRuntimeStorage) HotCache() *HotObjectCache      { return s.hotCache }
+
+// ─── Exported constructors for hybrid / composite runtimes ───────────────────
+func NewMemorySegmentStore() SegmentStore { return newMemorySegmentStore() }
+func NewMemoryIndexStore() IndexStore { return newMemoryIndexStore() }
+func NewMemoryObjectStore() ObjectStore { return newMemoryObjectStore() }
+func NewMemoryGraphEdgeStore() GraphEdgeStore { return newMemoryGraphEdgeStore() }
+func NewMemorySnapshotVersionStore() SnapshotVersionStore { return newMemorySnapshotVersionStore() }
+func NewMemoryPolicyStore() PolicyStore { return newMemoryPolicyStore() }
+func NewMemoryShareContractStore() ShareContractStore { return newMemoryShareContractStore() }

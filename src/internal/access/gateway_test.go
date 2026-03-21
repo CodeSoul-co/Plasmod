@@ -49,7 +49,7 @@ func buildTestGateway() *Gateway {
 	runtime := worker.NewRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, nodeManager, store)
 	runtime.RegisterDefaults()
 
-	return NewGateway(coord, runtime, store)
+	return NewGateway(coord, runtime, store, nil)
 }
 
 func TestGateway_Healthz(t *testing.T) {

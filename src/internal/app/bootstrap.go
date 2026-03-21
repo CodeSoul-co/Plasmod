@@ -16,7 +16,9 @@ import (
 	"andb/src/internal/worker/nodes"
 )
 
-func BuildServer() (*http.Server, error) {
+// BuildServer constructs the HTTP server and a cleanup function that must be
+// invoked on shutdown to close Badger when on-disk stores are enabled.
+func BuildServer() (*http.Server, func() error, error) {
 	addr := os.Getenv("ANDB_HTTP_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:8080"
@@ -30,8 +32,14 @@ func BuildServer() (*http.Server, error) {
 	derivLog := eventbackbone.NewDerivationLog(clock, bus)
 	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 
-	// ── Storage Layer ────────────────────────────────────────────────────────
-	store := storage.NewMemoryRuntimeStorage()
+	// ── Storage Layer (memory / Badger / hybrid — see STORAGE_BACKEND.md) ────
+	bundle, err := storage.BuildRuntimeFromEnv()
+	if err != nil {
+		return nil, nil, err
+	}
+	store := bundle.RuntimeStorage
+	storageCfg := bundle.Config
+	cleanup := bundle.Close
 
 	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
@@ -71,6 +79,7 @@ func BuildServer() (*http.Server, error) {
 	coord.Registry.Register("derivation_log", derivLog)
 	coord.Registry.Register("policy_decision_log", policyDecLog)
 	coord.Registry.Register("runtime_storage", store)
+	coord.Registry.Register("storage_config", storageCfg)
 
 	// ── Worker Node Manager ──────────────────────────────────────────────────
 	nodeManager := nodes.NewManager()
@@ -93,9 +102,9 @@ func BuildServer() (*http.Server, error) {
 	runtime.RegisterDefaults()
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
-	gateway := access.NewGateway(coord, runtime, store)
+	gateway := access.NewGateway(coord, runtime, store, storageCfg)
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
 
-	return &http.Server{Addr: addr, Handler: mux}, nil
+	return &http.Server{Addr: addr, Handler: mux}, cleanup, nil
 }
