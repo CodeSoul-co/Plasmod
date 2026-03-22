@@ -470,6 +470,4 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | R7 | Edge TTL / expiry field (`expires_at`) not modelled; dangling edges after `ArchiveMemory` | Medium | C |
 | R8 | Knowhere stub in `cpp/retrieval/` not yet wired to real HNSW/SPARSE calls | Medium | B |
 
-<!-- Member A/B/C/D review checklists, S3 module review checklist, Cross-Member Collaboration table,
-     and Pre-merge Checklist live in the integration/all-features-test branch README only. -->
 
