@@ -124,7 +124,44 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	filters := r.policy.ApplyQueryFilters(req)
-	return r.assembler.Build(result, filters)
+	resp := r.assembler.Build(result, filters)
+
+	// R1 fix: wire QueryChain workers with pre-fetched edges.
+	// The assembler already does 1-hop BulkEdges expansion internally; here we
+	// additionally run the multi-hop BFS ProofTraceWorker and pass pre-fetched
+	// edges to SubgraphExecutorWorker (which does NOT fetch edges itself).
+	//
+	// TODO(member-D+C): review maxDepth default (0→8) and edge dedup strategy
+	// before merging to main.
+	if len(result.ObjectIDs) > 0 {
+		preEdges := r.storage.Edges().BulkEdges(result.ObjectIDs)
+
+		// 1. Multi-hop BFS proof trace via ProofTraceWorker (maxDepth 0 = default 8).
+		if bfsTrace := r.nodeManager.DispatchProofTrace(result.ObjectIDs, 0); len(bfsTrace) > 0 {
+			resp.ProofTrace = append(resp.ProofTrace, bfsTrace...)
+		}
+
+		// 2. Subgraph expansion — SubgraphExecutorWorker needs pre-fetched edges.
+		if len(preEdges) > 0 {
+			expResp := r.nodeManager.DispatchSubgraphExpand(
+				schemas.GraphExpandRequest{SeedObjectIDs: result.ObjectIDs, Hops: 1},
+				nil,
+				preEdges,
+			)
+			seen := make(map[string]bool, len(resp.Edges))
+			for _, e := range resp.Edges {
+				seen[e.EdgeID] = true
+			}
+			for _, e := range expResp.Subgraph.Edges {
+				if !seen[e.EdgeID] {
+					resp.Edges = append(resp.Edges, e)
+					seen[e.EdgeID] = true
+				}
+			}
+		}
+	}
+
+	return resp
 }
 
 func (r *Runtime) Topology() map[string]any {

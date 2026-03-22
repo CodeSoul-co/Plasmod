@@ -453,16 +453,18 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 | # | Item | Severity | Owner |
 |---|---|---|---|
-| R1 | `Runtime.ExecuteQuery` does NOT call `BulkEdges` before `QueryChain.Run` → `SubgraphExecutorWorker` always receives empty `GraphEdges` and returns empty subgraph | **Blocking** | D + C |
+| ~~R1~~ | ~~`Runtime.ExecuteQuery` does NOT call `BulkEdges` before `QueryChain.Run`~~ | ✅ **FIXED** | D+C — `worker/runtime.go` now pre-fetches edges, calls `DispatchProofTrace` + `DispatchSubgraphExpand` |
 | R2 | `EdgesFrom(id)` is O(n) scan over all edges; `SubgraphExecutorWorker` calls it once per seed — O(n×seeds) at scale | **High** | C |
-| R3 | `ExecutionOrchestrator` priority queues are unbounded; burst ingest can OOM the process | **High** | D |
-| R4 | `subscriber.go` dispatch goroutines have no dead-letter channel; panics inside handlers are silently swallowed | **High** | D |
-| R5 | `S3ColdStore` only covers Memory + Agent; `State` objects have no cold-tier path | Medium | D/S3 owner |
+| ~~R3~~ | ~~`ExecutionOrchestrator` priority queues are unbounded~~| ✅ **RESOLVED** (pre-existing) | Queues bounded at 256/level; excess tasks dropped + `Dropped` counter incremented (`orchestrator.go`) |
+| ~~R4~~ | ~~`subscriber.go` panics silently swallowed~~ | ✅ **FIXED** | `safeDispatch` wrapper with `recover()` + `log.Printf` added to `subscriber.go` |
+| ~~R5~~ | ~~`S3ColdStore` only covers Memory + Agent~~ | ✅ **FIXED** | `PutState`/`GetState` added to `ColdObjectStore` interface, `InMemoryColdStore`, and `S3ColdStore` (`tiered.go`, `s3store.go`) |
 | R6 | Edges have no cold-tier path; `GraphEdgeStore` is warm-only indefinitely | Medium | C |
 | R7 | Edge TTL / expiry field (`expires_at`) not modelled; dangling edges after `ArchiveMemory` | Medium | C |
 | R8 | Knowhere stub in `cpp/retrieval/` not yet wired to real HNSW/SPARSE calls | Medium | B |
-| R9 | Python service `/healthz` endpoint missing (needed for K8s probe) | Low | B |
-| R10 | `EnqueueMicroBatch` flush integration test (verify accumulate + drain round-trip) | Low | D |
+| ~~R9~~ | ~~Python service `/healthz` endpoint missing~~ | ✅ **FIXED** | `run_server()` + `--serve`/`--port` flags added to `retrieval/main.py`; `GET /healthz` returns `{"status":"ok","ready":bool}` |
+| ~~R10~~ | ~~`EnqueueMicroBatch` flush integration test missing~~ | ✅ **FIXED** | `TestMicroBatch_FlushIntegration` added to `worker/subscriber_test.go` — verifies CollaborationChain enqueue → FlushMicroBatch → subscriber drain cycle |
+
+**Remaining blockers for main merge:** R2 (performance, not correctness), R6, R7, R8 are medium/low risk and may be deferred to v1.x with explicit TODO markers.
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 
@@ -649,8 +651,11 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | Per-subpackage unit tests ✅ **FIXED** | ✅ | `cognitive/`, `coordination/`, `indexing/`, `ingestion/`, `materialization/`, `chain/` all have `_test.go` (added in integration-lead pass) |
 | `ProofTraceWorker` BFS cycle detection test ✅ **FIXED** | ✅ | `TestProofTraceWorker_AssembleTrace_CyclicGraph_Terminates` in `coordination/coordination_test.go` |
 | Missing: topology assertion for new workers | 🔲 | `GET /v1/admin/topology` must return `subgraph_executor_worker` type; add to `topology_test.go` expected set |
-| Missing: `EnqueueMicroBatch` flush integration test | 🔲 | Verify `MicroBatchScheduler` accumulates and flushes payloads correctly under `CollaborationChain` — unit flush behaviour covered; end-to-end test still needed |
-| **Blocking (R1)** | 🔲 | `Runtime.ExecuteQuery` does NOT call `BulkEdges` before `QueryChain.Run`; `SubgraphExecutorWorker` always receives empty edges — wire `store.Edges().BulkEdges(objectIDs)` into `ExecuteQuery` |
+| ~~Missing: `EnqueueMicroBatch` flush integration test~~ ✅ **FIXED** | ✅ | `TestMicroBatch_FlushIntegration` in `worker/subscriber_test.go` verifies CollaborationChain enqueue → FlushMicroBatch → subscriber drain cycle |
+| ~~Blocking (R1)~~ ✅ **FIXED** | ✅ | `Runtime.ExecuteQuery` now pre-fetches edges via `BulkEdges`, runs `DispatchProofTrace` + `DispatchSubgraphExpand` (`worker/runtime.go`) |
+| ~~R4~~ ✅ **FIXED** | ✅ | `safeDispatch` wrapper added; handler panics are recovered and logged (`worker/subscriber.go`) |
+| ~~R5~~ ✅ **FIXED** | ✅ | `PutState`/`GetState` added to `ColdObjectStore`, `InMemoryColdStore`, `S3ColdStore` (`storage/tiered.go`, `storage/s3store.go`) |
+| ~~R10~~ ✅ **FIXED** | ✅ | `TestMicroBatch_FlushIntegration` added to `worker/subscriber_test.go` |
 
 ---
 
@@ -778,12 +783,12 @@ The table below lists every point where two members' work **must be confirmed to
 > Run this checklist **together as a team** in a short sync call or shared doc before opening the merge PR to `main`.
 
 **Go layer (D runs)**
-- [x] `go test ./src/internal/... -count=1 -timeout 30s` — all 21 packages green (verified in integration-lead pass)
-- [ ] `go vet ./...` — run and confirm no errors
+- [x] `go test ./src/internal/... -count=1 -timeout 30s` — all 21 packages green (verified twice)
+- [x] `go vet ./...` — exit 0
 - [ ] `GET /v1/admin/topology` returns 18 nodes, including `subgraph_executor_worker` type
 - [x] `proof_trace` contains at least one `derivation:` step for `tool_call` events
-- [x] `MicroBatchScheduler.Flush()` called in `EventSubscriber.drainWAL`; unit tests pass
-- [ ] **[R1 blocker]** `Runtime.ExecuteQuery` calls `BulkEdges` before `QueryChain.Run`
+- [x] `MicroBatchScheduler.Flush()` called in `EventSubscriber.drainWAL`; integration test `TestMicroBatch_FlushIntegration` passes
+- [x] ~~R1 blocker~~ `Runtime.ExecuteQuery` now pre-fetches `BulkEdges`, calls `DispatchProofTrace` + `DispatchSubgraphExpand`
 
 **Filter & schema (A runs)**
 - [ ] `go test ./integration_tests/... -v -timeout 120s` — all green

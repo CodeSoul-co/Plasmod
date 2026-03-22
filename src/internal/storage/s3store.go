@@ -49,6 +49,10 @@ func (s *S3ColdStore) agentKey(id string) string {
 	return fmt.Sprintf("%s/cold/agents/%s.json", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) stateKey(id string) string {
+	return fmt.Sprintf("%s/cold/states/%s.json", s.cfg.Prefix, id)
+}
+
 func (s *S3ColdStore) PutMemory(m schemas.Memory) {
 	s.doEnsureBucket()
 	data, err := json.Marshal(m)
@@ -107,4 +111,34 @@ func (s *S3ColdStore) GetAgent(id string) (schemas.Agent, bool) {
 		return schemas.Agent{}, false
 	}
 	return a, true
+}
+
+func (s *S3ColdStore) PutState(st schemas.State) {
+	s.doEnsureBucket()
+	data, err := json.Marshal(st)
+	if err != nil {
+		log.Printf("s3cold: marshal state %s: %v", st.StateID, err)
+		return
+	}
+	if err := s3util.PutBytes(context.Background(), nil, s.cfg, s.stateKey(st.StateID), data, "application/json"); err != nil {
+		log.Printf("s3cold: put state %s: %v", st.StateID, err)
+	}
+}
+
+func (s *S3ColdStore) GetState(id string) (schemas.State, bool) {
+	data, err := s3util.GetBytes(context.Background(), nil, s.cfg, s.stateKey(id))
+	if err != nil {
+		log.Printf("s3cold: get state %s: %v", id, err)
+		return schemas.State{}, false
+	}
+	if data == nil {
+		log.Printf("s3cold: miss state key=%s", s.stateKey(id))
+		return schemas.State{}, false
+	}
+	var st schemas.State
+	if err := json.Unmarshal(data, &st); err != nil {
+		log.Printf("s3cold: unmarshal state %s: %v", id, err)
+		return schemas.State{}, false
+	}
+	return st, true
 }

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,13 +96,28 @@ func (s *EventSubscriber) drainWAL() {
 	entries := s.wal.Scan(fromLSN)
 	for _, entry := range entries {
 		for _, h := range s.handlers {
-			h(entry)
+			safeDispatch(h, entry)
 		}
 		s.lastLSN.Store(entry.LSN)
 	}
 	if len(entries) > 0 {
 		_ = s.manager.FlushMicroBatch()
 	}
+}
+
+// safeDispatch calls h(entry) and recovers from any panic, logging the
+// incident so the poll goroutine keeps running.
+//
+// TODO(member-D): replace log.Printf with structured error reporting
+// (e.g. dead-letter channel) before deploying to production.
+func safeDispatch(h DispatchHandler, entry eventbackbone.WALEntry) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("subscriber: handler panic (lsn=%d event=%s): %v",
+				entry.LSN, entry.Event.EventID, r)
+		}
+	}()
+	h(entry)
 }
 
 // addBuiltinHandlers wires the built-in async dispatch passes.
