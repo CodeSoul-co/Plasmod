@@ -52,7 +52,6 @@ B_第四周实现文档.md
 /方案.md
 /分工情况.pdf
 /分工情况.md
-/系统分层架构图.md
 agent-native-db-spec.md
 rule
 
@@ -74,3 +73,7 @@ s3-go-integration-output-*.txt
 integration_tests/s3-python-output-*.txt
 arch-design.zh-CN.md
 docs/worker-types-overview.md
+
+# Ingest / Storage / Object Worker 说明（本地笔记，默认不入库）
+/ingest-storage-object-workers.md
+系统分层架构图.md

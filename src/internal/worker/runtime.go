@@ -1,9 +1,6 @@
 package worker
 
 import (
-	"errors"
-	"strings"
-
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
 	"andb/src/internal/eventbackbone"
@@ -21,12 +18,11 @@ type Runtime struct {
 	plane        dataplane.DataPlane
 	coord        *coordinator.Hub
 	policy       *semantic.PolicyEngine
-	planner      semantic.QueryPlanner
-	materializer *materialization.Service
-	preCompute   *materialization.PreComputeService
-	assembler    *evidence.Assembler
+	planner   semantic.QueryPlanner
+	assembler *evidence.Assembler
 	nodeManager  *nodes.Manager
 	storage      storage.RuntimeStorage
+	ingest       IngestWorker
 }
 
 func NewRuntime(
@@ -42,18 +38,21 @@ func NewRuntime(
 	nodeManager *nodes.Manager,
 	store storage.RuntimeStorage,
 ) *Runtime {
+	var sched *coordinator.WorkerScheduler
+	if coord != nil {
+		sched = coord.Schedule
+	}
 	return &Runtime{
 		wal:          wal,
 		bus:          bus,
 		plane:        plane,
 		coord:        coord,
-		policy:       policy,
-		planner:      planner,
-		materializer: materializer,
-		preCompute:   preCompute,
-		assembler:    assembler,
+		policy:    policy,
+		planner:   planner,
+		assembler: assembler,
 		nodeManager:  nodeManager,
 		storage:      store,
+		ingest:       NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
 	}
 }
 
@@ -62,61 +61,12 @@ func (r *Runtime) RegisterDefaults() {
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
-	if strings.TrimSpace(ev.EventID) == "" {
-		return nil, errors.New("event_id is required")
-	}
-	entry, err := r.wal.Append(ev)
-	if err != nil {
-		return nil, err
-	}
-	if ev.LogicalTS == 0 {
-		ev.LogicalTS = entry.LSN
-	}
-	mat := r.materializer.MaterializeEvent(ev)
-	record := mat.Record
+	return r.ingest.Accept(ev)
+}
 
-	// ── Persist canonical objects ─────────────────────────────────────────
-	r.storage.Objects().PutMemory(mat.Memory)
-	r.storage.Versions().PutVersion(mat.Version)
-	for _, edge := range mat.Edges {
-		r.storage.Edges().PutEdge(edge)
-	}
-	if mat.State != nil && mat.StateVersion != nil {
-		r.storage.Objects().PutState(*mat.State)
-		r.storage.Versions().PutVersion(*mat.StateVersion)
-	}
-	if mat.Artifact != nil && mat.ArtifactVersion != nil {
-		r.storage.Objects().PutArtifact(*mat.Artifact)
-		r.storage.Versions().PutVersion(*mat.ArtifactVersion)
-	}
-
-	// ── Pre-compute evidence fragment ─────────────────────────────────────
-	if r.preCompute != nil {
-		frag := r.preCompute.Compute(ev, record)
-		if frag.SalienceScore >= 0.5 {
-			r.storage.HotCache().Put(record.ObjectID, ev.EventType, record, frag.SalienceScore)
-		}
-	}
-
-	// ── Retrieval plane ───────────────────────────────────────────────────
-	r.nodeManager.DispatchIngest(record)
-	if err := r.plane.Ingest(record); err != nil {
-		return nil, err
-	}
-	ack := map[string]any{
-		"status":    "accepted",
-		"lsn":       entry.LSN,
-		"event_id":  ev.EventID,
-		"memory_id": mat.Memory.MemoryID,
-		"edges":     len(mat.Edges),
-	}
-	if mat.State != nil {
-		ack["state_id"] = mat.State.StateID
-	}
-	if mat.Artifact != nil {
-		ack["artifact_id"] = mat.Artifact.ArtifactID
-	}
-	return ack, nil
+// IngestWorker returns the active ingest pipeline (for registry wiring or tests).
+func (r *Runtime) IngestWorker() IngestWorker {
+	return r.ingest
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {

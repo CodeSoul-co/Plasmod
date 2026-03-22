@@ -99,6 +99,7 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.NewRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store)
+	coord.Registry.Register("ingest_worker", runtime.IngestWorker())
 	runtime.RegisterDefaults()
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────

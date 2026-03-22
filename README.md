@@ -14,7 +14,7 @@ What is implemented today:
 
 - Runnable Go server in [`src/cmd/server/main.go`](src/cmd/server/main.go) with 11 HTTP routes (incl. `GET /v1/admin/storage`)
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
-- `MaterializeEvent` → `MaterializationResult` that produces a canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
+- `MaterializeEvent` → `MaterializationResult` that produces a canonical `Memory`, `ObjectVersion`, typed `Edge` records, and optional `State` / `Artifact` (+ versions) at ingest time
 - Three-tier data plane: **hot** (in-memory LRU cache) → **warm** (full segment index) → **cold** (archived tier), all behind a unified `DataPlane` interface
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
@@ -67,15 +67,19 @@ The system is organized around three execution layers:
 ```
 HTTP API (access)
     └─ Runtime (worker)
-          ├─ WAL + Bus  (eventbackbone)
-          ├─ MaterializeEvent → Memory / ObjectVersion / Edges  (materialization)
-          ├─ PreComputeService → EvidenceFragment cache  (materialization)
-          ├─ HotCache → TieredDataPlane (hot→warm→cold)  (dataplane)
-          └─ Assembler.Build → BulkEdges + EvidenceCache  (evidence)
+          ├─ PipelineIngestWorker.Accept  (ingest pipeline; see below)
+          │     └─ WAL + Bus  (eventbackbone)
+          │     └─ MaterializeEvent → Memory / ObjectVersion / Edges / optional State·Artifact  (materialization)
+          │     └─ PreComputeService → EvidenceFragment cache  (materialization)
+          │     └─ nodeManager.DispatchIngest → TieredDataPlane.Ingest  (dataplane + worker nodes)
+          └─ Assembler.Build → BulkEdges + EvidenceCache  (query path only)
 ```
 
-**Ingest path:**
-`API → WAL.Append → MaterializeEvent → PutMemory + PutVersion + PutEdge → PreCompute → HotCache → TieredDataPlane.Ingest`
+**Ingest path (code):** `API → Runtime.SubmitIngest → PipelineIngestWorker.Accept` — internally:
+
+`validate(event_id) → WAL.Append → MaterializeEvent → PutMemory/PutState/PutArtifact + PutVersion + PutEdge → PreCompute → HotCache (if salient) → DispatchIngest(data/index nodes) → DataPlane.Ingest`
+
+The active pipeline is also registered on the coordinator **module registry** as `ingest_worker` (see `app.BuildServer`). When a `WorkerScheduler` is attached, each successful `Accept` records a `WorkerTypeIngest` dispatch/complete pair for metrics.
 
 **Query path:**
 `API → TieredDataPlane.Search → Assembler.Build → EvidenceCache.GetMany + BulkEdges(1-hop) → QueryResponse{Objects, Edges, ProofTrace}`
@@ -85,11 +89,11 @@ Code layout:
 - [`src/internal/access`](src/internal/access): HTTP gateway, 11 routes including ingest, query, canonical CRUD, and `GET /v1/admin/storage`
 - [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
 - [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
-- [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
+- [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` (delegates to `IngestWorker.Accept`), `PipelineIngestWorker`, `Runtime.ExecuteQuery`, `Runtime.IngestWorker()` / registry key `ingest_worker`
 - [`src/internal/worker/nodes`](src/internal/worker/nodes): 14 worker-node type contracts (data, index, query, memory extraction, graph, proof trace, etc.)
 - [`src/internal/dataplane`](src/internal/dataplane): `TieredDataPlane` (hot/warm/cold), `SegmentDataPlane`, and `DataPlane` interface
 - [`src/internal/dataplane/segmentstore`](src/internal/dataplane/segmentstore): `Index`, `Shard`, `Searcher`, `Planner` — the physical segment layer
-- [`src/internal/materialization`](src/internal/materialization): `Service.MaterializeEvent` → `MaterializationResult{Record, Memory, Version, Edges}`; `PreComputeService`
+- [`src/internal/materialization`](src/internal/materialization): `Service.MaterializeEvent` → `MaterializationResult` (record, memory, version, edges, optional state/artifact); `PreComputeService`
 - [`src/internal/evidence`](src/internal/evidence): `Assembler` (cache-aware, graph-expansion via `WithEdgeStore`), `EvidenceFragment`, `Cache`
 - [`src/internal/storage`](src/internal/storage): 7 stores + `HotObjectCache` + `TieredObjectStore`; `GraphEdgeStore` with `BulkEdges`/`DeleteEdge`
 - [`src/internal/semantic`](src/internal/semantic): `ObjectModelRegistry`, `PolicyEngine`, 5 query plan types
@@ -177,7 +181,7 @@ powershell -ExecutionPolicy Bypass -File scripts/dev/run-mock-events-week2.ps1
 ```
 
 This posts events from `scripts/dev/mock-events-week2.json` and prints ingest acknowledgements.
-For endpoint details and ACK fields, see `docs/api/ingest.md`.
+For endpoint details, ACK fields (`memory_id`, optional `state_id` / `artifact_id`), runtime order, and implementation pointers (`PipelineIngestWorker`, `ingest_worker` registry), see [`docs/api/ingest.md`](docs/api/ingest.md).
 
 ### Run tests
 
@@ -378,7 +382,7 @@ If you are starting implementation work, read [`docs/v1-scope.md`](docs/v1-scope
 The implemented v1 prototype can already demonstrate:
 
 - event ingest through the public API (`POST /v1/ingest/events`)
-- `MaterializeEvent` → canonical `Memory`, `ObjectVersion`, and `Edge` records written to stores
+- `MaterializeEvent` → canonical `Memory`, `ObjectVersion`, `Edge` records, and optional `State` / `Artifact` written to stores
 - tiered retrieval (hot → warm → cold) over canonical-object projections
 - 1-hop graph expansion in every `QueryResponse`
 - pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time

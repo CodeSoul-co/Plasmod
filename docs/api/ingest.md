@@ -6,6 +6,8 @@ This document defines the `POST /v1/ingest/events` contract for the ANDB v1 prot
 
 The endpoint accepts an event payload, appends it to WAL, materializes canonical objects, and projects retrieval records.
 
+**Implementation:** the synchronous pipeline lives in `worker.PipelineIngestWorker` (`src/internal/worker/ingest_worker.go`), invoked by `worker.Runtime.SubmitIngest`. The coordinator module registry exposes it as `ingest_worker` after `app.BuildServer` wiring.
+
 ## Endpoint
 
 - Method: `POST`
