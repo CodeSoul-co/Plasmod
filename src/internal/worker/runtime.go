@@ -123,6 +123,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		IncludeGrowing: plan.IncludeGrowing,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
+	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(result, filters)
 

@@ -28,6 +28,12 @@ Current fields:
 - `time_window`
 - `object_types` (optional)
 - `memory_types` (optional)
+
+### `object_types`
+
+- **Omitted or `[]`:** treated as **all queryable kinds** for v1: `memory`, `state`, and `artifact`. An empty list does **not** mean “match nothing”.
+- **Non-empty:** only IDs whose canonical kind is in the list are kept after retrieval (inferred from ID prefixes: `mem_`, `state_`, `art_`). Unknown ID shapes are kept for forward compatibility.
+- Unknown type strings in the request are ignored; if none remain after validation, the server falls back to the same **all three** defaults.
 - `relation_constraints`
 - `response_mode`
 

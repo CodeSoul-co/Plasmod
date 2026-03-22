@@ -18,6 +18,9 @@ type QueryPlan struct {
 	IncludeGrowing bool
 	// ResponseMode drives which extended operator the retrieval layer uses.
 	ResponseMode ResponseMode
+	// ObjectTypes is the effective allow-list (never empty): omitted or empty
+	// request fields are expanded to memory, state, and artifact.
+	ObjectTypes []string
 }
 
 // ResponseMode selects the retrieval execution strategy (section 11).
@@ -67,6 +70,7 @@ func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 		TimeToUnixTS:   toTS,
 		IncludeGrowing: true,
 		ResponseMode:   mode,
+		ObjectTypes:    EffectiveObjectTypes(req.ObjectTypes),
 	}
 }
 
