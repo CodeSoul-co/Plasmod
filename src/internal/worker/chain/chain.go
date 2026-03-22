@@ -268,11 +268,9 @@ func CreateCollaborationChain(mgr *nodes.Manager) *CollaborationChain {
 
 // Run resolves the conflict and broadcasts the winner to the target agent.
 func (c *CollaborationChain) Run(in CollaborationChainInput) (CollaborationChainOutput, ChainResult) {
-	// 1 – Conflict resolution (mutates the loser in-place)
-	c.mgr.DispatchConflictMerge(in.LeftMemID, in.RightMemID, in.ObjectType)
-
-	// 2 – Determine winner (higher version survives; we use LeftMemID as default)
-	winnerID := in.LeftMemID
+	// 1 – Conflict resolution: LWW winner determined by the merge worker.
+	// Falls back to LeftMemID for cross-agent scenarios where Merge is a no-op.
+	winnerID := c.mgr.DispatchConflictMergeWithWinner(in.LeftMemID, in.RightMemID, in.ObjectType)
 
 	// 3 – Enqueue conflict resolution result to MicroBatchScheduler for
 	// batched cross-agent fan-out (e.g., GPU-friendly embedding updates)

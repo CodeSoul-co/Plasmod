@@ -58,9 +58,9 @@ func (e *HotEntry) hotness() float64 {
 // objects (recent session memories, high-salience facts, current agent states).
 // It is the fast lane of the memory activation path.
 type HotObjectCache struct {
-	mu       sync.RWMutex
-	entries  map[string]*HotEntry
-	maxSize  int
+	mu      sync.RWMutex
+	entries map[string]*HotEntry
+	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
 	order []string
 }
@@ -238,47 +238,71 @@ func (t *TieredObjectStore) ArchiveMemory(memoryID string) {
 
 // ColdObjectStore is the interface for the cold/disk tier.
 // In production this would be backed by a file-based or object storage engine.
+//
+// TODO(member-D): extend with PutArtifact/GetArtifact when artifact cold-tier
+// promotion is needed. Edge cold-tier remains out of scope until v1.x (R6).
 type ColdObjectStore interface {
 	PutMemory(m schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
 	PutAgent(a schemas.Agent)
 	GetAgent(id string) (schemas.Agent, bool)
+	PutState(s schemas.State)
+	GetState(id string) (schemas.State, bool)
 }
 
 // InMemoryColdStore is the in-process simulation of the cold tier.
 // It is functionally identical to the warm store but models the architectural
 // boundary.  A real implementation would replace this with a file/RocksDB backend.
 type InMemoryColdStore struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	memories map[string]schemas.Memory
 	agents   map[string]schemas.Agent
+	states   map[string]schemas.State
 }
 
 func NewInMemoryColdStore() *InMemoryColdStore {
 	return &InMemoryColdStore{
 		memories: map[string]schemas.Memory{},
 		agents:   map[string]schemas.Agent{},
+		states:   map[string]schemas.State{},
 	}
 }
 
 func (s *InMemoryColdStore) PutMemory(m schemas.Memory) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.memories[m.MemoryID] = m
 }
 
 func (s *InMemoryColdStore) GetMemory(id string) (schemas.Memory, bool) {
-	s.mu.RLock(); defer s.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	m, ok := s.memories[id]
 	return m, ok
 }
 
 func (s *InMemoryColdStore) PutAgent(a schemas.Agent) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.agents[a.AgentID] = a
 }
 
 func (s *InMemoryColdStore) GetAgent(id string) (schemas.Agent, bool) {
-	s.mu.RLock(); defer s.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	a, ok := s.agents[id]
 	return a, ok
+}
+
+func (s *InMemoryColdStore) PutState(st schemas.State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states[st.StateID] = st
+}
+
+func (s *InMemoryColdStore) GetState(id string) (schemas.State, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	st, ok := s.states[id]
+	return st, ok
 }

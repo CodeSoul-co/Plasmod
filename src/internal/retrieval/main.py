@@ -12,8 +12,10 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
 import numpy as np
@@ -170,6 +172,38 @@ class RetrievalService:
         return self.retriever.is_ready()
 
 
+def run_server(service: "RetrievalService", host: str = "0.0.0.0", port: int = 8080):
+    """Start a minimal HTTP server exposing /healthz for K8s readiness probes.
+
+    GET /healthz → 200 {"status":"ok","ready":true|false}
+    Any other path → 404
+
+    TODO(member-B): extend with /metrics and /v1/retrieve HTTP endpoints
+    once the gRPC proto contract is frozen.
+    """
+    ready = service.is_ready()
+
+    class HealthzHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                body = json.dumps({"status": "ok", "ready": ready}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, fmt, *args):
+            logger.debug("healthz: " + fmt, *args)
+
+    server = HTTPServer((host, port), HealthzHandler)
+    logger.info("retrieval service listening on %s:%d", host, port)
+    server.serve_forever()
+
+
 def run_test(dev_mode: bool = False):
     """Run basic test to verify the module works."""
     print("=" * 60)
@@ -295,13 +329,39 @@ Examples:
         default=0.7,
         help="Seed marking threshold",
     )
-    
+
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Start HTTP server exposing /healthz (K8s readiness probe)",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="HTTP server port (used with --serve, default: 8080)",
+    )
+
     args = parser.parse_args()
-    
+
     if args.test:
         run_test(dev_mode=args.dev)
         return
-    
+
+    if args.serve:
+        service = RetrievalService(
+            index_type=args.index_type,
+            metric_type=args.metric_type,
+            dim=args.dim,
+            rrf_k=args.rrf_k,
+            seed_threshold=args.seed_threshold,
+            dev_mode=args.dev,
+        )
+        service.init()
+        run_server(service, port=args.port)
+        return
+
     # Print configuration and status
     print("CogDB Retrieval Service")
     print("=" * 40)
