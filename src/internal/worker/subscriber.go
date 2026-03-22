@@ -87,6 +87,9 @@ func (s *EventSubscriber) Run(ctx context.Context) {
 
 // drainWAL scans entries with LSN > lastLSN and dispatches each one to all
 // registered handlers, then advances lastLSN.
+// After processing at least one entry the MicroBatch queue is flushed so that
+// payloads enqueued by ConflictMergeWorker / CollaborationChain are drained on
+// every poll cycle rather than accumulating indefinitely.
 func (s *EventSubscriber) drainWAL() {
 	fromLSN := s.lastLSN.Load() + 1
 	entries := s.wal.Scan(fromLSN)
@@ -95,6 +98,9 @@ func (s *EventSubscriber) drainWAL() {
 			h(entry)
 		}
 		s.lastLSN.Store(entry.LSN)
+	}
+	if len(entries) > 0 {
+		_ = s.manager.FlushMicroBatch()
 	}
 }
 

@@ -191,6 +191,33 @@ func (m *Manager) DispatchConflictMerge(leftID, rightID, objectType string) {
 	}
 }
 
+// DispatchConflictMergeWithWinner resolves a conflict and returns the surviving
+// memory ID (last-writer-wins by Version). It calls Run on each Runnable worker
+// so the result is based on the actual merge outcome rather than a hard-coded
+// default. Falls back to leftID when no worker resolves the conflict (e.g.
+// cross-agent scenarios where Merge is intentionally a no-op).
+func (m *Manager) DispatchConflictMergeWithWinner(leftID, rightID, objectType string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, w := range m.conflictMergeWorkers {
+		if r, ok := w.(Runnable); ok {
+			out, err := r.Run(schemas.ConflictMergeInput{
+				LeftID:     leftID,
+				RightID:    rightID,
+				ObjectType: objectType,
+			})
+			if err == nil {
+				if result, ok2 := out.(schemas.ConflictMergeOutput); ok2 && result.WinnerID != "" {
+					return result.WinnerID
+				}
+			}
+		} else {
+			_ = w.Merge(leftID, rightID, objectType)
+		}
+	}
+	return leftID
+}
+
 // DispatchGraphRelation indexes a typed edge via all registered graph workers.
 func (m *Manager) DispatchGraphRelation(srcID, srcType, dstID, dstType, edgeType string, weight float64) {
 	m.mu.RLock()

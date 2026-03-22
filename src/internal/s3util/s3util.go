@@ -158,14 +158,14 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 // PutBytes writes data to S3 at objectKey without a round-trip read verification.
 // Use this for high-frequency cold-store writes where latency matters more than
 // immediate consistency checks (ArchiveMemory, ArchiveAgent, etc.).
+//
+// NOTE: bucket creation is the caller's responsibility. S3ColdStore calls
+// EnsureBucket once via sync.Once before its first write.
 func PutBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string, data []byte, contentType string) error {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	objectKey = strings.TrimLeft(objectKey, "/")
-	if err := EnsureBucket(ctx, httpClient, cfg); err != nil {
-		return err
-	}
 	putURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(data))
 	if err != nil {
