@@ -1,4 +1,4 @@
-package s3util
+package storage
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ type S3Config struct {
 	Bucket    string
 	Secure    bool
 	Region    string
-	Prefix 	  string
+	Prefix    string
 }
 
 func LoadFromEnv() (S3Config, error) {
@@ -180,17 +180,14 @@ func s3Sign(req *http.Request, cfg S3Config, body []byte, contentType string) {
 	sort.Strings(signedNames)
 
 	canonHeaders := bytes.Buffer{}
-	canonHeaderParts := make([]string, 0, len(signedNames))
 	for _, name := range signedNames {
 		// Note: header values must be trimmed and sequential spaces collapsed.
 		val := strings.TrimSpace(req.Header.Get(httpHeaderCanonicalName(name)))
 		val = strings.Join(strings.Fields(val), " ")
-		canonHeaderParts = append(canonHeaderParts, name)
 		canonHeaders.WriteString(name)
 		canonHeaders.WriteByte(':')
 		canonHeaders.WriteString(val)
 		canonHeaders.WriteByte('\n')
-		_ = canonHeaderParts // keep for readability
 	}
 
 	canonURI := req.URL.EscapedPath()

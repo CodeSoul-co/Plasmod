@@ -447,7 +447,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | **Feature** | `QueryResponse.Versions` was always `[]` — `Assembler.resolveVersions` now looks up the latest `ObjectVersion` for every returned object ID; `SnapshotVersionStore` wired via `WithVersionStore` in bootstrap | `evidence/assembler.go`, `app/bootstrap.go` |
 | **Feature** | Governance annotations (quarantine flag, retracted state) now surface in `QueryResponse.ProofTrace` entries prefixed `governance:*`; `PolicyStore` wired via `WithPolicyStore` in bootstrap | `evidence/assembler.go`, `app/bootstrap.go` |
 | **Bug fix** | `CollaborationChain.Run` always returned `LeftMemID` as winner regardless of LWW result → replaced with `DispatchConflictMergeWithWinner` that calls `Run` on the merge worker and returns the actual high-version survivor | `worker/nodes/manager.go`, `worker/chain/chain.go` |
-| **Bug fix** | `S3ColdStore.PutMemory/PutAgent` called `EnsureBucket` via `s3util.PutBytes` on **every write** (one HTTP round-trip per cold write) → added `sync.Once` to `S3ColdStore`, removed `EnsureBucket` from `PutBytes` | `storage/s3store.go`, `s3util/s3util.go` |
+| **Bug fix** | `S3ColdStore.PutMemory/PutAgent` called `EnsureBucket` via `PutBytes` on **every write** (one HTTP round-trip per cold write) → added `sync.Once` to `S3ColdStore`, removed eager bucket ensure from `PutBytes` | `storage/s3store.go`, `storage/s3util.go` |
 | **Bug fix** | `MicroBatchScheduler.Flush()` was never called anywhere in the codebase; payloads enqueued by `CollaborationChain` accumulated indefinitely → `EventSubscriber.drainWAL` now calls `FlushMicroBatch()` after each cycle that processed ≥1 WAL entry | `worker/subscriber.go` |
 | **Observability** | `S3ColdStore.GetMemory/GetAgent` silently returned `false` on 404; cold misses were invisible to operators → added `log.Printf("s3cold: miss key=…")` on nil response | `storage/s3store.go` |
 | **Doc fix** | README claimed "10 HTTP routes" in 3 places; actual gateway registers 14 routes | `README.md` |
@@ -686,7 +686,7 @@ S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
 S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 ```
 
-#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
+#### S3 Utility Layer (`src/internal/storage/s3util.go`)
 
 | Function | Purpose |
 |---|---|
@@ -755,7 +755,7 @@ S3_PREFIX      andb/integration_tests (default)
 | `PutBytes` (no-verify) for cold archival path | ✅ | Avoids double HTTP round-trip on every `ArchiveMemory` call |
 | `GetBytes` 404 → `nil, nil` (not error) for cold read miss | ✅ | Caller (`S3ColdStore.GetMemory`) silently returns `false` |
 | Admin export endpoints round-trip verified | ✅ | `PutBytesAndVerify` used for `/s3/export` and `/s3/snapshot-export` |
-| **Review focus** ✅ **FIXED** | ✅ | `S3ColdStore` now has `sync.Once` (`ensureOnce`) — `EnsureBucket` runs at most once per store lifetime; `PutBytes` in `s3util` no longer calls `EnsureBucket` (`storage/s3store.go`, `s3util/s3util.go`) |
+| **Review focus** ✅ **FIXED** | ✅ | `S3ColdStore` now has `sync.Once` (`ensureOnce`) — `EnsureBucket` runs at most once per store lifetime; `PutBytes` no longer calls `EnsureBucket` (`storage/s3store.go`, `storage/s3util.go`) |
 | **Review focus** ✅ **FIXED** | ✅ | `GetMemory` / `GetAgent` now log `"s3cold: miss key=…"` on 404 (`storage/s3store.go`) |
 | **Review focus** | ⚠️ | `S3ColdStore` only implements `PutMemory / GetMemory / PutAgent / GetAgent`; `ColdObjectStore` interface may need `PutState / GetState` if `StateMaterializationWorker` output is ever promoted to cold tier |
 | Missing: S3 integration test in `integration_tests/` | 🔲 | Add `ANDB_RUN_S3_TESTS=true` test that ingests, archives via `ArchiveMemory`, then retrieves via cold path and verifies round-trip |
@@ -800,12 +800,12 @@ The table below lists every point where two members' work **must be confirmed to
 - [x] ~~R1 blocker~~ `Runtime.ExecuteQuery` now pre-fetches `BulkEdges`, calls `DispatchProofTrace` + `DispatchSubgraphExpand`
 
 **Filter & schema (A runs)**
-- [ ] `go test ./integration_tests/... -v -timeout 120s` — all green
+- [x] `go test ./integration_tests/... -v -timeout 120s` — all green
 - [x] `ObjectTypes` empty → returns all types — verified by `TestAssembler_NoFilterPassthrough`
 - [x] `ObjectTypes=["memory"]` excludes `state_*`/`art_*` — verified by `TestAssembler_ObjectTypesFilter`
 - [x] `ObjectTypes=["state"]` returns only `state_*` — verified by `TestAssembler_StateTypeFilter`
-- [ ] 3-way filter (workspace + object-type + top_k) integration test passes (live server required)
-- [ ] `workspace_id` omitted on ingest → queryable under default namespace
+- [x] 3-way filter (workspace + object-type + top_k) integration test passes (live server required)
+- [x] `workspace_id` omitted on ingest → queryable under default namespace
 
 **Python & retrieval (B runs)**
 

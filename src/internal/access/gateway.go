@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"andb/src/internal/coordinator"
-	"andb/src/internal/s3util"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
@@ -142,7 +141,7 @@ func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cfg, err := s3util.LoadFromEnv()
+	cfg, err := storage.LoadFromEnv()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -216,7 +215,7 @@ func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
 		"response":    qResp,
 	}
 
-	bytesWritten, roundTripOK, err := s3util.PutBytesAndVerify(r.Context(), nil, cfg, objectKey, mustJSONBytes(capture), "application/json")
+	bytesWritten, roundTripOK, err := storage.PutBytesAndVerify(r.Context(), nil, cfg, objectKey, mustJSONBytes(capture), "application/json")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
