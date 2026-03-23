@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/milvus-io/milvus-sdk-go/v2/client"
-	"github.com/milvus-io/milvus-sdk-go/v2/entity"
+	"andb/src/internal/dataplane/milvus/client"
+	"andb/src/internal/dataplane/milvus/entity"
 )
 
 // MilvusAdapter implements DataPlane by connecting to a standalone Milvus instance.

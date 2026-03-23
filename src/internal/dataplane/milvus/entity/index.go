@@ -1,0 +1,163 @@
+// Copyright (C) 2019-2021 Zilliz. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed under the License
+// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+// or implied. See the License for the specific language governing permissions and limitations under the License.
+
+package entity
+
+import common "andb/src/internal/dataplane/milvus/proto/commonpb"
+
+//go:generate go run genidx/genidx.go
+
+// IndexState export index state
+type IndexState common.IndexState
+
+// IndexType index type
+type IndexType string
+
+// MetricType metric type
+type MetricType string
+
+// Index Constants
+const (
+	Flat       IndexType = "FLAT" //faiss
+	BinFlat    IndexType = "BIN_FLAT"
+	IvfFlat    IndexType = "IVF_FLAT" //faiss
+	BinIvfFlat IndexType = "BIN_IVF_FLAT"
+	IvfPQ      IndexType = "IVF_PQ" //faiss
+	IvfSQ8     IndexType = "IVF_SQ8"
+	HNSW       IndexType = "HNSW"
+	IvfHNSW    IndexType = "IVF_HNSW"
+	AUTOINDEX  IndexType = "AUTOINDEX"
+	DISKANN    IndexType = "DISKANN"
+	SCANN      IndexType = "SCANN"
+
+	GPUIvfFlat IndexType = "GPU_IVF_FLAT"
+	GPUIvfPQ   IndexType = "GPU_IVF_PQ"
+
+	GPUCagra      IndexType = "GPU_CAGRA"
+	GPUBruteForce IndexType = "GPU_BRUTE_FORCE"
+
+	// Sparse
+	SparseInverted IndexType = "SPARSE_INVERTED_INDEX"
+	SparseWAND     IndexType = "SPARSE_WAND"
+
+	// DEPRECATED
+	Scalar IndexType = ""
+
+	Trie     IndexType = "Trie"
+	Sorted   IndexType = "STL_SORT"
+	Inverted IndexType = "INVERTED"
+	Bitmap   IndexType = "BITMAP"
+)
+
+// Metric Constants
+const (
+	L2             MetricType = "L2"
+	IP             MetricType = "IP"
+	COSINE         MetricType = "COSINE"
+	HAMMING        MetricType = "HAMMING"
+	JACCARD        MetricType = "JACCARD"
+	TANIMOTO       MetricType = "TANIMOTO"
+	SUBSTRUCTURE   MetricType = "SUBSTRUCTURE"
+	SUPERSTRUCTURE MetricType = "SUPERSTRUCTURE"
+)
+
+// index param field tag
+const (
+	tParams     = `params`
+	tIndexType  = `index_type`
+	tMetricType = `metric_type`
+)
+
+// Index represent index in milvus
+type Index interface {
+	Name() string
+	IndexType() IndexType
+	Params() map[string]string
+}
+
+// SearchParam interface for index related search param
+type SearchParam interface {
+	// returns parameters for search/query
+	Params() map[string]interface{}
+	AddRadius(radius float64)
+	AddRangeFilter(rangeFilter float64)
+}
+
+type baseSearchParams struct {
+	params map[string]interface{}
+}
+
+func (sp *baseSearchParams) Params() map[string]interface{} {
+	params := make(map[string]interface{})
+	for k, v := range sp.params {
+		params[k] = v
+	}
+	return params
+}
+
+func (sp *baseSearchParams) AddRadius(radius float64) {
+	sp.params["radius"] = radius
+}
+
+func (sp *baseSearchParams) AddRangeFilter(rangeFilter float64) {
+	sp.params["range_filter"] = rangeFilter
+}
+
+func newBaseSearchParams() baseSearchParams {
+	return baseSearchParams{
+		params: make(map[string]interface{}),
+	}
+}
+
+type baseIndex struct {
+	it   IndexType
+	name string
+}
+
+// Name implements Index
+func (b baseIndex) Name() string {
+	return b.name
+}
+
+// IndexType implements Index
+func (b baseIndex) IndexType() IndexType {
+	return b.it
+}
+
+// GenericIndex index struct for general usage
+// no constraint for index is applied
+type GenericIndex struct {
+	baseIndex
+	params map[string]string
+}
+
+// Params implements Index
+func (gi GenericIndex) Params() map[string]string {
+	m := make(map[string]string)
+	if gi.baseIndex.it != "" {
+		m[tIndexType] = string(gi.IndexType())
+	}
+	for k, v := range gi.params {
+		m[k] = v
+	}
+	return m
+}
+
+// NewGenericIndex create generic index instance
+func NewGenericIndex(name string, it IndexType, params map[string]string) Index {
+	return GenericIndex{
+		baseIndex: baseIndex{
+			it:   it,
+			name: name,
+		},
+		params: params,
+	}
+}
