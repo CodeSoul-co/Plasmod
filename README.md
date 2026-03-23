@@ -469,11 +469,11 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | ~~R5~~ | ~~`S3ColdStore` only covers Memory + Agent~~ | ✅ **FIXED** | `PutState`/`GetState` added to `ColdObjectStore` interface, `InMemoryColdStore`, and `S3ColdStore` (`tiered.go`, `s3store.go`) |
 | ~~R6~~ | ~~Edges have no cold-tier path; `GraphEdgeStore` is warm-only indefinitely~~ | ✅ **FIXED (pass 3)** | Lead — `ColdObjectStore` extended; `InMemoryColdStore` + `S3ColdStore` implement edge methods; `TieredObjectStore.ArchiveEdge` added |
 | ~~R7~~ | ~~Edge TTL / expiry field (`expires_at`) not modelled; dangling edges after `ArchiveMemory`~~ | ✅ **FIXED (pass 3)** | Lead — `schemas.Edge.ExpiresAt` added; `GraphEdgeStore.PruneExpiredEdges(now)` implemented with index cleanup |
-| R8 | Knowhere stub in `cpp/retrieval/` not yet wired to real HNSW/SPARSE calls | Medium | B |
+| R8 | **Knowhere C++ stub — two-layer gap (owner B):** **(1) C++ layer** — `KnowhereIndexWrapper` in `cpp/retrieval/dense.cpp` is a brute-force inner-product fallback, NOT real Knowhere HNSW/IVF/SPARSE calls; all `Search`/`Serialize`/`Deserialize` paths are stubs. **(2) Go→C++ bridge** — `src/internal/dataplane/retrievalplane/fixme_external_deps.go` is disabled via `//go:build extended`; the CGO wiring depends on `github.com/milvus-io/milvus/internal/...` packages not present in this repo (agg, allocator, distributed/querynode/client, proto, storage, util/cgo, etc.). **Resolution options:** (a) vendor required Milvus packages and rename import paths, or (b) implement CogDB-native equivalents of the same interfaces. Until resolved, `go build` without `-tags extended` succeeds but the retrieval plane runs brute-force only. | Medium | B |
 | ~~R9~~ | ~~Python service `/healthz` endpoint missing~~ | ✅ **FIXED** | `run_server()` + `--serve`/`--port` flags added to `retrieval/main.py`; `GET /healthz` returns `{"status":"ok","ready":bool}` |
 | ~~R10~~ | ~~`EnqueueMicroBatch` flush integration test missing~~ | ✅ **FIXED** | `TestMicroBatch_FlushIntegration` added to `worker/subscriber_test.go` — verifies CollaborationChain enqueue → FlushMicroBatch → subscriber drain cycle |
 
-**Remaining blockers for main merge:** Only R8 (Knowhere C++ wiring, owner B) remains open. All other known issues are resolved.
+**Remaining blockers for main merge:** Only R8 (Knowhere C++ wiring, owner B) remains open. All other known issues are resolved. R8 does not block the Go service from running — the brute-force stub is functional but not production-grade for large vector sets.
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 
