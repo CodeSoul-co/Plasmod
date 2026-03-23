@@ -108,6 +108,10 @@ type Edge struct {
 	Weight        float64 `json:"weight"`
 	ProvenanceRef string  `json:"provenance_ref"`
 	CreatedTS     string  `json:"created_ts"`
+	// ExpiresAt is an optional RFC-3339 timestamp after which the edge is
+	// considered expired and eligible for pruning via GraphEdgeStore.PruneExpiredEdges.
+	// Empty string means the edge never expires.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 type ObjectVersion struct {
@@ -209,8 +213,6 @@ type RetrievalSegment struct {
 	MaxTS           int64  `json:"max_ts"`
 	Tier            string `json:"tier"`
 }
-
-
 
 type GraphNode struct {
 	ObjectID   string         `json:"object_id"`

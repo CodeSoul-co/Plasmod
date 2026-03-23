@@ -24,6 +24,13 @@ type SearchInput struct {
 	// IncludeCold extends the search to the cold/archived tier.  Set by
 	// time-travel and historical evidence queries.  Comes with extra latency.
 	IncludeCold bool
+	// ObjectTypes restricts results to the given canonical object types.
+	// Empty means no restriction.  The in-memory plane ignores this field;
+	// it is applied as a post-filter in the evidence assembler.
+	ObjectTypes []string
+	// MemoryTypes restricts Memory results to specific sub-types.
+	// Empty means no restriction.
+	MemoryTypes []string
 }
 
 // SegmentTrace describes one physical shard that was evaluated during search.

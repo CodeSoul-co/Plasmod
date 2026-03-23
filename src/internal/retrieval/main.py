@@ -8,17 +8,15 @@ Python layer only does parameter conversion.
 Usage:
     python -m src.internal.retrieval.main --dev          # Run with debug output
     python -m src.internal.retrieval.main --test         # Run basic test
-    python -m src.internal.retrieval.main --serve        # Run HTTP server with /healthz
     python -m src.internal.retrieval.main --help         # Show help
 """
 
 import argparse
+import json
 import logging
 import time
-import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from threading import Thread
 
 import numpy as np
 
@@ -26,9 +24,6 @@ from .service.types import RetrievalRequest, CandidateList, cpp_available, cpp_v
 from .service.retriever import Retriever
 
 logger = logging.getLogger(__name__)
-
-# Global service instance for HTTP handlers
-_service_instance: Optional["RetrievalService"] = None
 
 
 class RetrievalService:
@@ -175,63 +170,38 @@ class RetrievalService:
     def is_ready(self) -> bool:
         """Check if service is ready."""
         return self.retriever.is_ready()
-    
-    def healthz(self) -> dict:
-        """Health check endpoint data."""
-        return {
-            "status": "healthy" if self.is_ready() else "degraded",
-            "cpp_available": cpp_available(),
-            "cpp_version": cpp_version(),
-            "ready": self.is_ready(),
-        }
 
 
-class HealthzHandler(BaseHTTPRequestHandler):
-    """HTTP handler for /healthz endpoint."""
-    
-    def log_message(self, format, *args):
-        logger.debug(f"HTTP: {format % args}")
-    
-    def do_GET(self):
-        if self.path == "/healthz":
-            self._handle_healthz()
-        else:
-            self.send_error(404, "Not Found")
-    
-    def _handle_healthz(self):
-        global _service_instance
-        if _service_instance is None:
-            data = {
-                "status": "unavailable",
-                "cpp_available": cpp_available(),
-                "cpp_version": cpp_version(),
-                "ready": False,
-            }
-        else:
-            data = _service_instance.healthz()
-        
-        response = json.dumps(data).encode("utf-8")
-        self.send_response(200 if data.get("ready") else 503)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(response)))
-        self.end_headers()
-        self.wfile.write(response)
+def run_server(service: "RetrievalService", host: str = "0.0.0.0", port: int = 8080):
+    """Start a minimal HTTP server exposing /healthz for K8s readiness probes.
 
+    GET /healthz → 200 {"status":"ok","ready":true|false}
+    Any other path → 404
 
-def run_server(host: str, port: int, service: "RetrievalService"):
-    """Run HTTP server with /healthz endpoint."""
-    global _service_instance
-    _service_instance = service
-    
+    TODO(member-B): extend with /metrics and /v1/retrieve HTTP endpoints
+    once the gRPC proto contract is frozen.
+    """
+    ready = service.is_ready()
+
+    class HealthzHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                body = json.dumps({"status": "ok", "ready": ready}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, fmt, *args):
+            logger.debug("healthz: " + fmt, *args)
+
     server = HTTPServer((host, port), HealthzHandler)
-    logger.info(f"Starting HTTP server on {host}:{port}")
-    logger.info(f"  /healthz endpoint available")
-    
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("Shutting down HTTP server")
-        server.shutdown()
+    logger.info("retrieval service listening on %s:%d", host, port)
+    server.serve_forever()
 
 
 def run_test(dev_mode: bool = False):
@@ -359,33 +329,26 @@ Examples:
         default=0.7,
         help="Seed marking threshold",
     )
-    
+
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="Run HTTP server with /healthz endpoint",
+        help="Start HTTP server exposing /healthz (K8s readiness probe)",
     )
-    
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="HTTP server host",
-    )
-    
+
     parser.add_argument(
         "--port",
         type=int,
-        default=8081,
-        help="HTTP server port",
+        default=8080,
+        help="HTTP server port (used with --serve, default: 8080)",
     )
-    
+
     args = parser.parse_args()
-    
+
     if args.test:
         run_test(dev_mode=args.dev)
         return
-    
+
     if args.serve:
         service = RetrievalService(
             index_type=args.index_type,
@@ -395,9 +358,10 @@ Examples:
             seed_threshold=args.seed_threshold,
             dev_mode=args.dev,
         )
-        run_server(args.host, args.port, service)
+        service.init()
+        run_server(service, port=args.port)
         return
-    
+
     # Print configuration and status
     print("CogDB Retrieval Service")
     print("=" * 40)

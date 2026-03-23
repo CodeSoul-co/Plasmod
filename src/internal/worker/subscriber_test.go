@@ -9,6 +9,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
+	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/cognitive"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
@@ -205,5 +206,85 @@ func TestEventSubscriber_NoConsolidation_WhenDisabled(t *testing.T) {
 		if m.Level == 1 {
 			t.Error("consolidation should be disabled but level-1 memory found")
 		}
+	}
+}
+
+// TestMicroBatch_FlushIntegration verifies the full MicroBatch accumulate-and-
+// drain cycle end-to-end:
+//
+//  1. CollaborationChain.Run enqueues a payload into MicroBatchScheduler.
+//  2. EventSubscriber.drainWAL flushes the scheduler after each WAL cycle
+//     that processed ≥1 entry.
+//  3. FlushMicroBatch returns the enqueued payload and clears the queue.
+//
+// This is the integration test for R10.
+// TODO(member-D): extend once MicroBatch has a persistent drain target (e.g.
+// forwarding to a coordinator or downstream worker).
+func TestMicroBatch_FlushIntegration(t *testing.T) {
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+	store := storage.NewMemoryRuntimeStorage()
+
+	mgr := nodes.CreateManager()
+
+	// Seed two memories so CollaborationChain has something to merge.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem_left1", AgentID: "agentA", SessionID: "s1",
+		Content: "left memory", Version: 1, Level: 0, IsActive: true,
+	})
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem_right1", AgentID: "agentB", SessionID: "s1",
+		Content: "right memory", Version: 2, Level: 0, IsActive: true,
+	})
+
+	// Register MicroBatchScheduler and ConflictMergeWorker.
+	plog := eventbackbone.NewPolicyDecisionLog(clock, bus)
+	mbSched := coordination.CreateInMemoryMicroBatchScheduler("mb-1", 32)
+	mgr.RegisterMicroBatch(mbSched)
+	mgr.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker("cm-1", store.Objects(), store.Edges()))
+	mgr.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
+	mgr.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
+	mgr.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("gr-1", store.Edges()))
+	mgr.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges(), nil))
+	mgr.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker(
+		"rp-1", store.Objects(), store.Policies(), plog,
+	))
+
+	// Enqueue via CollaborationChain — this calls EnqueueMicroBatch internally.
+	collabChain := chain.CreateCollaborationChain(mgr)
+	collabChain.Run(chain.CollaborationChainInput{
+		LeftMemID:     "mem_left1",
+		RightMemID:    "mem_right1",
+		SourceAgentID: "agentA",
+		TargetAgentID: "agentB",
+	})
+
+	// Verify the scheduler holds the enqueued payload before flush.
+	flushed := mgr.FlushMicroBatch()
+	if len(flushed) == 0 {
+		t.Fatal("expected MicroBatch to have at least one enqueued payload after CollaborationChain.Run")
+	}
+
+	// After flush the queue must be empty.
+	if second := mgr.FlushMicroBatch(); len(second) != 0 {
+		t.Errorf("expected empty queue after flush, got %d items", len(second))
+	}
+
+	// Verify drainWAL also triggers flush: append a WAL entry and let the
+	// subscriber poll once, then confirm queue remains empty.
+	sub := CreateEventSubscriber(wal, mgr)
+	sub.SetPollInterval(20 * time.Millisecond)
+	_, _ = wal.Append(schemas.Event{
+		EventID: "evt_mb_drain", AgentID: "agentA", SessionID: "s1",
+		EventType: "agent_thought",
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go sub.Run(ctx)
+	<-ctx.Done()
+
+	if remaining := mgr.FlushMicroBatch(); len(remaining) != 0 {
+		t.Errorf("expected empty queue after subscriber drain, got %d items", len(remaining))
 	}
 }

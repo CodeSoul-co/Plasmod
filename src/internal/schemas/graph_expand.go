@@ -59,7 +59,42 @@ func ExpandFromRequest(req GraphExpandRequest, nodes []GraphNode, edges []Edge) 
 		}
 	}
 
-	subgraph := OneHopExpand(req.SeedObjectIDs[0], nodes, edges, req.EdgeTypes)
+	// Expand each seed and merge the results, deduplicating nodes and edges.
+	nodeMap := make(map[string]GraphNode)
+	edgeMap := make(map[string]Edge)
+	var allSeeds []string
+
+	for _, seedID := range req.SeedObjectIDs {
+		sub := OneHopExpand(seedID, nodes, edges, req.EdgeTypes)
+		allSeeds = append(allSeeds, sub.SeedIDs...)
+		for _, n := range sub.Nodes {
+			nodeMap[n.ObjectID] = n
+		}
+		for _, e := range sub.Edges {
+			edgeMap[e.EdgeID] = e
+		}
+	}
+
+	mergedNodes := make([]GraphNode, 0, len(nodeMap))
+	for _, n := range nodeMap {
+		mergedNodes = append(mergedNodes, n)
+	}
+	mergedEdges := make([]Edge, 0, len(edgeMap))
+	for _, e := range edgeMap {
+		mergedEdges = append(mergedEdges, e)
+	}
+
+	subgraph := EvidenceSubgraph{
+		SeedIDs: allSeeds,
+		Nodes:   mergedNodes,
+		Edges:   mergedEdges,
+		ProofTrace: []ProofStep{
+			{Step: 1, Operation: "seed_lookup", Detail: "load seed nodes"},
+			{Step: 2, Operation: "edge_filter", Detail: "filter edges by edge types"},
+			{Step: 3, Operation: "multi_seed_expand", Detail: "collect directly connected edges and nodes for all seeds"},
+			{Step: 4, Operation: "subgraph_assemble", Detail: "merge and deduplicate evidence subgraph"},
+		},
+	}
 
 	return GraphExpandResponse{
 		Subgraph:       subgraph,
