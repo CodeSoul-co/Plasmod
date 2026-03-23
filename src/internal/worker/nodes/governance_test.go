@@ -7,7 +7,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
-	"andb/src/internal/worker/cognitive"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/nodes"
@@ -52,7 +52,7 @@ func TestReflectionPolicyWorker_QuarantineDeactivates(t *testing.T) {
 		PolicyReason:   "test quarantine",
 	})
 
-	w := cognitive.CreateInMemoryReflectionPolicyWorker("reflect-test", st.Objects(), st.Policies(), plog)
+	w := baseline.CreateInMemoryReflectionPolicyWorker("reflect-test", st.Objects(), st.Policies(), plog)
 	if err := w.Reflect("mem_q1", "memory"); err != nil {
 		t.Fatalf("Reflect: unexpected error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestReflectionPolicyWorker_TTLExpiry(t *testing.T) {
 		TTL:      60,
 	})
 
-	w := cognitive.CreateInMemoryReflectionPolicyWorker("reflect-ttl", st.Objects(), st.Policies(), plog)
+	w := baseline.CreateInMemoryReflectionPolicyWorker("reflect-ttl", st.Objects(), st.Policies(), plog)
 	if err := w.Reflect("mem_ttl", "memory"); err != nil {
 		t.Fatalf("Reflect: unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestReflectionPolicyWorker_ConfidenceOverride(t *testing.T) {
 		ConfidenceOverride: 0.4,
 	})
 
-	w := cognitive.CreateInMemoryReflectionPolicyWorker("reflect-conf", st.Objects(), st.Policies(), plog)
+	w := baseline.CreateInMemoryReflectionPolicyWorker("reflect-conf", st.Objects(), st.Policies(), plog)
 	_ = w.Reflect("mem_conf", "memory")
 
 	mem, _ := st.Objects().GetMemory("mem_conf")
@@ -136,7 +136,7 @@ func TestReflectionPolicyWorker_SalienceDecay(t *testing.T) {
 		DecayFn:        "linear",
 	})
 
-	w := cognitive.CreateInMemoryReflectionPolicyWorker("reflect-sal", st.Objects(), st.Policies(), plog)
+	w := baseline.CreateInMemoryReflectionPolicyWorker("reflect-sal", st.Objects(), st.Policies(), plog)
 	_ = w.Reflect("mem_sal", "memory")
 
 	mem, _ := st.Objects().GetMemory("mem_sal")
@@ -153,7 +153,7 @@ func TestReflectionPolicyWorker_NoPolicies_NoOp(t *testing.T) {
 
 	seedMemory(st.Objects(), "mem_nop", "a", "s", 1, true)
 
-	w := cognitive.CreateInMemoryReflectionPolicyWorker("reflect-nop", st.Objects(), st.Policies(), plog)
+	w := baseline.CreateInMemoryReflectionPolicyWorker("reflect-nop", st.Objects(), st.Policies(), plog)
 	if err := w.Reflect("mem_nop", "memory"); err != nil {
 		t.Fatalf("expected no-op, got error: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestReflectionPolicyWorker_UnknownObject_NoError(t *testing.T) {
 	bus := eventbackbone.NewInMemoryBus()
 	plog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 
-	w := cognitive.CreateInMemoryReflectionPolicyWorker("reflect-miss", st.Objects(), st.Policies(), plog)
+	w := baseline.CreateInMemoryReflectionPolicyWorker("reflect-miss", st.Objects(), st.Policies(), plog)
 	if err := w.Reflect("nonexistent", "memory"); err != nil {
 		t.Fatalf("missing object should be a no-op, got: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestManager_DispatchReflectionPolicy(t *testing.T) {
 	})
 
 	m := nodes.CreateManager()
-	m.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker("rp-1", st.Objects(), st.Policies(), plog))
+	m.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker("rp-1", st.Objects(), st.Policies(), plog))
 	m.DispatchReflectionPolicy("mem_r", "memory")
 
 	mem, _ := st.Objects().GetMemory("mem_r")
@@ -298,7 +298,7 @@ func TestManager_DispatchMemoryConsolidation(t *testing.T) {
 	seedMemory(st.Objects(), "mem_c2", "agentC", "sessC", 2, true)
 
 	m := nodes.CreateManager()
-	m.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("consol-1", st.Objects()))
+	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("consol-1", st.Objects()))
 	m.DispatchMemoryConsolidation("agentC", "sessC")
 
 	// Consolidation should produce a level-1 summary memory.

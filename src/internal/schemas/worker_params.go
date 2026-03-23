@@ -362,6 +362,42 @@ type MicroBatchFlushOutput struct {
 
 func (o MicroBatchFlushOutput) IsEmpty() bool { return o.Count == 0 }
 
+// ─── AlgorithmDispatchWorker ─────────────────────────────────────────────────
+
+// AlgorithmDispatchInput triggers a MemoryManagementAlgorithm operation on a
+// set of memory objects.
+//
+// Supported operations:
+//   - "ingest"    → algo.Ingest(); writes MemoryAlgorithmState per memory
+//   - "decay"     → algo.Decay(nowTS); persists states; SuggestedLifecycleState applied verbatim
+//   - "recall"    → algo.Recall(query, candidates); returns scored ordering (no state written)
+//   - "compress"  → algo.Compress(); stores derived Memory objects verbatim
+//   - "summarize" → algo.Summarize(); stores summary Memory objects verbatim
+//   - "update"    → algo.Update(memories, signals); persists returned state updates
+type AlgorithmDispatchInput struct {
+	Operation string             `json:"operation"` // "ingest" | "decay" | "recall" | "compress" | "summarize" | "update"
+	MemoryIDs []string           `json:"memory_ids"`
+	Query     string             `json:"query,omitempty"`   // for "recall"
+	NowTS     string             `json:"now_ts,omitempty"`  // for "decay" (RFC-3339); defaults to time.Now()
+	Signals   map[string]float64 `json:"signals,omitempty"` // for "update" — external reinforcement signals keyed by memory_id
+	AgentID   string             `json:"agent_id,omitempty"`
+	SessionID string             `json:"session_id,omitempty"`
+}
+
+func (AlgorithmDispatchInput) WorkerKind() WorkerKind { return WorkerKindAlgorithmDispatch }
+
+// AlgorithmDispatchOutput reports the results of an algorithm operation.
+type AlgorithmDispatchOutput struct {
+	Operation    string   `json:"operation"`
+	UpdatedCount int      `json:"updated_count"`          // MemoryAlgorithmState records written
+	ProducedIDs  []string `json:"produced_ids,omitempty"` // compress / summarize: new memory IDs
+	ScoredRefs   []string `json:"scored_refs,omitempty"`  // recall: memory IDs in score-descending order
+}
+
+func (o AlgorithmDispatchOutput) IsEmpty() bool {
+	return o.UpdatedCount == 0 && len(o.ProducedIDs) == 0 && len(o.ScoredRefs) == 0
+}
+
 // ─── L8  CommunicationWorker ──────────────────────────────────────────────────
 
 // BroadcastInput copies a Memory object into a target agent's memory space.

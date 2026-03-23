@@ -131,21 +131,95 @@ GraphRelationWorker    (derived_from edge)
 Response
 ```
 
-#### 🟡 Memory Pipeline Chain — cognitive upgrade ladder
+#### 🟡 Memory Pipeline Chain — six-layer cognitive management
+
+The memory pipeline implements the six-layer memory management architecture from the design specification.  Every path honours the core principle: **upper-layer agents may only consume `MemoryView`; they never access the raw object store or index directly.**
+
+The pipeline separates **fixed generic infrastructure** from **algorithm-owned pipeline workers**:
+
+- `AlgorithmDispatchWorker` and `GraphRelationWorker` are fixed nodes present in every deployment (`worker/cognitive/`).
+- Everything else — extraction, consolidation, summarization, governance — is owned by the algorithm and lives under `worker/cognitive/<algo>/`.  Different algorithms may implement these stages completely differently, or omit stages they do not need.
+
+**Materialization path — write-time (generic design):**
 
 ```
-Event
+Event / Interaction
   ↓
-MemoryExtractionWorker    (level-0 episodic memory)
+[algo pipeline: materialization workers]   ← algorithm-specific
+    e.g. raw event → level-0 memory → level-1 consolidation → level-2 summary
   ↓
-MemoryConsolidationWorker (level-0 → level-1 semantic / procedural)
+GraphRelationWorker                        ← fixed
+    relation binding: owned_by · derived_from · scoped_to · observed_by
   ↓
-SummarizationWorker       (level-1 / level-2 compression)
+AlgorithmDispatchWorker [ingest]           ← fixed
+    algo.Ingest() → MemoryAlgorithmState persisted
+    AlgorithmStateRef set on Memory
   ↓
-ReflectionPolicyWorker    (TTL decay · quarantine · confidence override)
-  ↓
-PolicyDecisionLog
+[algo pipeline: governance workers]        ← algorithm-specific
+    e.g. TTL / quarantine / confidence / salience rules
+    → PolicyDecisionLog + AuditStore
 ```
+
+**Materialization path — write-time (baseline algorithm concrete example):**
+
+```
+Event / Interaction
+  ↓
+baseline.MemoryExtractionWorker       level-0 episodic memory, LifecycleState=active
+  ↓
+baseline.MemoryConsolidationWorker    level-0 → level-1 semantic/procedural
+  ↓
+baseline.SummarizationWorker          level-1/level-2 compression
+  ↓
+GraphRelationWorker
+  ↓
+AlgorithmDispatchWorker [ingest]
+  ↓
+baseline.ReflectionPolicyWorker
+    TTL expiry    → LifecycleState = decayed
+    quarantine    → LifecycleState = quarantined
+    confidence override · salience decay
+    → PolicyDecisionLog + AuditStore
+```
+
+**Background maintenance path — async (generic, driven by AlgorithmDispatchWorker):**
+
+```
+Scheduler trigger
+  ↓
+AlgorithmDispatchWorker [decay | compress | summarize]
+    algo.Decay(nowTS)       → MemoryAlgorithmState · SuggestedLifecycleState honoured verbatim
+    algo.Compress(memories) → derived Memory objects stored verbatim
+    algo.Summarize(memories)→ summary Memory objects stored verbatim
+    AuditRecord emitted for each state update
+```
+
+**Retrieval path — read-time (generic):**
+
+```
+QueryRequest
+  ↓
+AlgorithmDispatchWorker [recall]
+    algo.Recall(query, candidates) → ScoredRefs in algorithm order
+  ↓
+MemoryViewBuilder
+    1. scope filter  — AccessGraphSnapshot.VisibleScopes
+    2. policy filter — quarantined / hidden / logically-deleted excluded
+    3. algorithm rerank — AlgorithmScorer func (pluggable)
+    4. MemoryView assembled
+  ↓
+MemoryView{RequestID, ResolvedScope, VisibleMemoryRefs, Payloads,
+           AlgorithmNotes, ConstructionTrace}
+  ↓
+Query Worker / Planner / Reasoner  (consumes MemoryView only)
+```
+
+**Algorithm plugin contract:**
+
+- The `MemoryManagementAlgorithm` interface (`schemas/memory_management.go`) defines: `Ingest · Update · Recall · Compress · Decay · Summarize · ExportState · LoadState`.
+- Lifecycle transitions are driven **exclusively** by `MemoryAlgorithmState.SuggestedLifecycleState` — the dispatcher applies no thresholds or heuristics of its own.
+- Algorithm state is persisted in `MemoryAlgorithmStateStore` keyed by `(memory_id, algorithm_id)`, leaving the canonical `Memory` schema unchanged.
+- Each algorithm is self-contained under `worker/cognitive/<algo>/` and registers its own pipeline workers; other algorithms (e.g. MemoryBank) plug in by implementing this interface without affecting existing deployments.
 
 #### 🔵 Query Chain — retrieval + reasoning
 
@@ -163,17 +237,42 @@ ProofTraceWorker       (explainable trace assembly)
 QueryResponse{Objects, Edges, Provenance, ProofTrace}
 ```
 
-#### 🟢 Collaboration Chain — multi-agent coordination
+#### 🟢 Collaboration Chain — multi-agent coordination with governed sharing
+
+Memory sharing in a multi-agent system is **not** copying a record to a shared namespace.  It is a **controlled projection** — the original Memory retains its provenance and owner; the target agent receives a scope-filtered, policy-conditioned view.
 
 ```
 Agent A writes Memory
   ↓
-ConflictMergeWorker    (last-writer-wins, conflict_resolved edge)
+ConflictMergeWorker          (last-writer-wins · causal merge · conflict_resolved edge)
   ↓
-CommunicationWorker    (copy winner → target agent memory space)
+ShareContract evaluation     (read_acl · write_acl · derive_acl
+                               ttl_policy · consistency_level · merge_policy
+                               quarantine_policy · audit_policy)
   ↓
-Shared Memory updated
+AccessGraphSnapshot resolved (user → agent call-graph · agent → resource access-graph
+                               → VisibleScopes for requesting agent at this moment)
+  ↓
+CommunicationWorker          (projection, not copy:
+                               raw Memory keeps original owner + provenance
+                               target agent receives scope-bound MemoryView)
+  ↓
+AuditRecord written          (record_id · target_memory_id · operation_type=share
+                               actor_id · policy_snapshot_id · decision · timestamp)
+  ↓
+Target agent reads via MemoryViewBuilder
+    scope filter  → AccessGraphSnapshot.VisibleScopes
+    policy filter → quarantine / hidden / logically-deleted excluded
+    algorithm rerank → pluggable AlgorithmScorer
+    → MemoryView delivered to target Query Worker
 ```
+
+**Key design principles:**
+
+- **Sharing is projection, not copy** — provenance, owner, and base payload remain with the original object; what the target sees is a governance-conditioned view.
+- **Access boundaries are dynamic** — `AccessGraphSnapshot` resolves visible scopes at request time, not as a static ACL field on the memory record.
+- **Every share and projection is audited** — `AuditStore` records each share, read, algorithm-update, and policy-change action.
+- **`ShareContract` is the protocol unit** — it encodes `read_acl`, `write_acl`, `derive_acl`, `ttl_policy`, `consistency_level`, `merge_policy`, `quarantine_policy`, and `audit_policy` as a first-class object rather than scattered metadata fields.
 
 ### ExecutionOrchestrator
 

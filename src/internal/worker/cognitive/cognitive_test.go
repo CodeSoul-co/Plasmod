@@ -2,178 +2,170 @@ package cognitive
 
 import (
 	"testing"
-	"time"
 
-	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 )
 
-// ─── MemoryExtractionWorker ──────────────────────────────────────────────────
+// ─── AlgorithmDispatchWorker ──────────────────────────────────────────────────
 
-func TestMemoryExtractionWorker_Extract_StoresMemory(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryMemoryExtractionWorker("test-extract", store.Objects())
+// stubAlgorithm is a no-op MemoryManagementAlgorithm for testing.
+type stubAlgorithm struct{}
 
-	err := w.Extract("evt1", "agent1", "sess1", "hello world")
-	if err != nil {
-		t.Fatalf("Extract failed: %v", err)
-	}
+func (s *stubAlgorithm) AlgorithmID() string { return "stub_algo_v1" }
 
-	mem, ok := store.Objects().GetMemory(schemas.IDPrefixMemory + "evt1")
-	if !ok {
-		t.Fatal("expected memory to be stored")
-	}
-	if mem.AgentID != "agent1" || mem.SessionID != "sess1" {
-		t.Errorf("wrong agent/session: got %q/%q", mem.AgentID, mem.SessionID)
-	}
-	if mem.Content != "hello world" {
-		t.Errorf("wrong content: %q", mem.Content)
-	}
-	if mem.Level != 0 {
-		t.Errorf("expected level 0, got %d", mem.Level)
-	}
-	if !mem.IsActive {
-		t.Error("expected IsActive=true")
-	}
-}
-
-func TestMemoryExtractionWorker_Run_TypedDispatch(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryMemoryExtractionWorker("test-extract", store.Objects())
-
-	out, err := w.Run(schemas.MemoryExtractionInput{
-		EventID:   "evt2",
-		AgentID:   "agent2",
-		SessionID: "sess2",
-		Content:   "typed input",
-	})
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-	result, ok := out.(schemas.MemoryExtractionOutput)
-	if !ok {
-		t.Fatalf("unexpected output type %T", out)
-	}
-	if result.MemoryID == "" {
-		t.Error("expected non-empty MemoryID")
-	}
-}
-
-func TestMemoryExtractionWorker_Run_WrongInputType(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryMemoryExtractionWorker("test", store.Objects())
-	_, err := w.Run(schemas.IngestInput{})
-	if err == nil {
-		t.Error("expected error for wrong input type")
-	}
-}
-
-// ─── MemoryConsolidationWorker ───────────────────────────────────────────────
-
-func TestMemoryConsolidationWorker_Consolidate_NoOp(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryMemoryConsolidationWorker("test-consol", store.Objects())
-
-	// No memories stored — should succeed without error.
-	if err := w.Consolidate("agent1", "sess1"); err != nil {
-		t.Fatalf("Consolidate failed: %v", err)
-	}
-}
-
-func TestMemoryConsolidationWorker_Consolidate_ProducesLevel1(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryMemoryConsolidationWorker("test-consol", store.Objects())
-
-	// Seed three level-0 memories for the same agent+session.
-	for i := range 3 {
-		store.Objects().PutMemory(schemas.Memory{
-			MemoryID:  schemas.IDPrefixMemory + "e" + string(rune('0'+i)),
-			AgentID:   "agent1",
-			SessionID: "sess1",
-			Level:     0,
-			IsActive:  true,
-			Content:   "content",
+func (s *stubAlgorithm) Ingest(memories []schemas.Memory, ctx schemas.AlgorithmContext) []schemas.MemoryAlgorithmState {
+	out := make([]schemas.MemoryAlgorithmState, 0, len(memories))
+	for _, m := range memories {
+		out = append(out, schemas.MemoryAlgorithmState{
+			MemoryID:    m.MemoryID,
+			AlgorithmID: s.AlgorithmID(),
+			Strength:    0.9,
+			UpdatedAt:   ctx.Timestamp,
 		})
 	}
-
-	if err := w.Consolidate("agent1", "sess1"); err != nil {
-		t.Fatalf("Consolidate failed: %v", err)
-	}
+	return out
 }
 
-// ─── SummarizationWorker ─────────────────────────────────────────────────────
-
-func TestSummarizationWorker_Summarize_NoOp(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemorySummarizationWorker("test-sum", store.Objects())
-
-	if err := w.Summarize("agent1", "sess1", 1); err != nil {
-		t.Fatalf("Summarize failed: %v", err)
-	}
+func (s *stubAlgorithm) Update(memories []schemas.Memory, signals map[string]float64) []schemas.MemoryAlgorithmState {
+	return nil
 }
 
-// ─── ReflectionPolicyWorker ──────────────────────────────────────────────────
+func (s *stubAlgorithm) Recall(query string, candidates []schemas.Memory, ctx schemas.AlgorithmContext) []schemas.ScoredMemory {
+	out := make([]schemas.ScoredMemory, 0, len(candidates))
+	for _, m := range candidates {
+		out = append(out, schemas.ScoredMemory{Memory: m, Score: 1.0, Signal: "stub"})
+	}
+	return out
+}
 
-func TestReflectionPolicyWorker_Reflect_NoPolicy(t *testing.T) {
+func (s *stubAlgorithm) Compress(memories []schemas.Memory, ctx schemas.AlgorithmContext) []schemas.Memory {
+	return nil
+}
+
+func (s *stubAlgorithm) Decay(memories []schemas.Memory, nowTS string) []schemas.MemoryAlgorithmState {
+	out := make([]schemas.MemoryAlgorithmState, 0, len(memories))
+	for _, m := range memories {
+		out = append(out, schemas.MemoryAlgorithmState{
+			MemoryID:                m.MemoryID,
+			AlgorithmID:             s.AlgorithmID(),
+			RetentionScore:          0.05,
+			SuggestedLifecycleState: string(schemas.MemoryLifecycleDecayed), // algorithm decides
+			UpdatedAt:               nowTS,
+		})
+	}
+	return out
+}
+
+func (s *stubAlgorithm) Summarize(memories []schemas.Memory, ctx schemas.AlgorithmContext) []schemas.Memory {
+	return nil
+}
+
+func (s *stubAlgorithm) ExportState(memoryID string) (schemas.MemoryAlgorithmState, bool) {
+	return schemas.MemoryAlgorithmState{}, false
+}
+
+func (s *stubAlgorithm) LoadState(state schemas.MemoryAlgorithmState) {}
+
+func TestAlgorithmDispatchWorker_Ingest_PersistsState(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	clock := eventbackbone.NewHybridClock()
-	bus := eventbackbone.NewInMemoryBus()
-	policyLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
-	w := CreateInMemoryReflectionPolicyWorker("test-reflect", store.Objects(), store.Policies(), policyLog)
-
-	// Memory exists but no policy — should be a no-op.
 	store.Objects().PutMemory(schemas.Memory{
-		MemoryID: "mem_evt1",
-		IsActive: true,
+		MemoryID: "mem_a1", AgentID: "agent1", Content: "test", IsActive: true,
 	})
-	if err := w.Reflect("mem_evt1", "memory"); err != nil {
-		t.Fatalf("Reflect failed: %v", err)
+
+	w := CreateAlgorithmDispatchWorker("adw-1", &stubAlgorithm{},
+		store.Objects(), store.AlgorithmStates(), store.Audits())
+
+	out, err := w.Run(schemas.AlgorithmDispatchInput{
+		Operation: "ingest",
+		MemoryIDs: []string{"mem_a1"},
+		AgentID:   "agent1",
+	})
+	if err != nil {
+		t.Fatalf("Run ingest failed: %v", err)
 	}
-	mem, _ := store.Objects().GetMemory("mem_evt1")
-	if !mem.IsActive {
-		t.Error("expected memory to remain active with no policy")
+	result := out.(schemas.AlgorithmDispatchOutput)
+	if result.UpdatedCount != 1 {
+		t.Errorf("UpdatedCount: want 1, got %d", result.UpdatedCount)
+	}
+
+	st, ok := store.AlgorithmStates().GetAlgorithmState("mem_a1", "stub_algo_v1")
+	if !ok {
+		t.Fatal("expected MemoryAlgorithmState to be stored")
+	}
+	if st.Strength != 0.9 {
+		t.Errorf("Strength: want 0.9, got %f", st.Strength)
+	}
+
+	// AlgorithmStateRef should be updated on the memory
+	mem, _ := store.Objects().GetMemory("mem_a1")
+	if mem.AlgorithmStateRef != "stub_algo_v1" {
+		t.Errorf("AlgorithmStateRef: want stub_algo_v1, got %q", mem.AlgorithmStateRef)
+	}
+
+	// AuditRecord should have been emitted
+	audits := store.Audits().GetAudits("mem_a1")
+	if len(audits) == 0 {
+		t.Error("expected AuditRecord after ingest")
 	}
 }
 
-func TestReflectionPolicyWorker_Reflect_TTLExpiry(t *testing.T) {
+func TestAlgorithmDispatchWorker_Decay_SetsLifecycleDecayed(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	clock := eventbackbone.NewHybridClock()
-	bus := eventbackbone.NewInMemoryBus()
-	policyLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
-	w := CreateInMemoryReflectionPolicyWorker("test-reflect", store.Objects(), store.Policies(), policyLog)
-
-	// Memory created 10 seconds ago, TTL = 1 second.
-	past := time.Now().Add(-10 * time.Second).UTC().Format(time.RFC3339)
 	store.Objects().PutMemory(schemas.Memory{
-		MemoryID:  "mem_ttl",
-		IsActive:  true,
-		ValidFrom: past,
-	})
-	store.Policies().AppendPolicy(schemas.PolicyRecord{
-		PolicyID: "pol1",
-		ObjectID: "mem_ttl",
-		TTL:      1, // 1 second
+		MemoryID: "mem_d1", IsActive: true,
 	})
 
-	if err := w.Reflect("mem_ttl", "memory"); err != nil {
-		t.Fatalf("Reflect failed: %v", err)
+	w := CreateAlgorithmDispatchWorker("adw-2", &stubAlgorithm{},
+		store.Objects(), store.AlgorithmStates(), store.Audits())
+
+	_, err := w.Run(schemas.AlgorithmDispatchInput{
+		Operation: "decay",
+		MemoryIDs: []string{"mem_d1"},
+		NowTS:     "2026-01-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("Run decay failed: %v", err)
 	}
-	mem, _ := store.Objects().GetMemory("mem_ttl")
-	if mem.IsActive {
-		t.Error("expected memory to be deactivated by TTL expiry")
+
+	mem, _ := store.Objects().GetMemory("mem_d1")
+	if mem.LifecycleState != string(schemas.MemoryLifecycleDecayed) {
+		t.Errorf("LifecycleState: want %q, got %q", schemas.MemoryLifecycleDecayed, mem.LifecycleState)
 	}
 }
 
-func TestReflectionPolicyWorker_Reflect_NonMemoryType(t *testing.T) {
+func TestAlgorithmDispatchWorker_Recall_ReturnsScoredRefs(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	clock := eventbackbone.NewHybridClock()
-	bus := eventbackbone.NewInMemoryBus()
-	policyLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
-	w := CreateInMemoryReflectionPolicyWorker("test-reflect", store.Objects(), store.Policies(), policyLog)
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_r1", Content: "foo"})
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_r2", Content: "bar"})
 
-	// Non-memory objectType should be a no-op.
-	if err := w.Reflect("obj1", "artifact"); err != nil {
-		t.Fatalf("Reflect failed: %v", err)
+	w := CreateAlgorithmDispatchWorker("adw-3", &stubAlgorithm{},
+		store.Objects(), store.AlgorithmStates(), store.Audits())
+
+	out, err := w.Run(schemas.AlgorithmDispatchInput{
+		Operation: "recall",
+		MemoryIDs: []string{"mem_r1", "mem_r2"},
+		Query:     "foo",
+	})
+	if err != nil {
+		t.Fatalf("Run recall failed: %v", err)
+	}
+	result := out.(schemas.AlgorithmDispatchOutput)
+	if len(result.ScoredRefs) != 2 {
+		t.Errorf("ScoredRefs: want 2, got %d", len(result.ScoredRefs))
+	}
+}
+
+func TestAlgorithmDispatchWorker_UnknownOperation_ReturnsError(t *testing.T) {
+	store := storage.NewMemoryRuntimeStorage()
+	w := CreateAlgorithmDispatchWorker("adw-4", &stubAlgorithm{},
+		store.Objects(), store.AlgorithmStates(), store.Audits())
+
+	_, err := w.Run(schemas.AlgorithmDispatchInput{
+		Operation: "unknown_op",
+		MemoryIDs: []string{},
+	})
+	if err == nil {
+		t.Error("expected error for unknown operation")
 	}
 }

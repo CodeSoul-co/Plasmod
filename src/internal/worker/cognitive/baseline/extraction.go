@@ -1,4 +1,4 @@
-package cognitive
+package baseline
 
 import (
 	"fmt"
@@ -8,8 +8,9 @@ import (
 	"andb/src/internal/worker/nodes"
 )
 
-// InMemoryMemoryExtractionWorker derives a level-0 Memory object from an
-// event payload and persists it via the ObjectStore.
+// InMemoryMemoryExtractionWorker derives a level-0 episodic Memory from an
+// event payload.  This is the baseline algorithm's extraction pipeline step;
+// other algorithms may implement this pattern differently.
 type InMemoryMemoryExtractionWorker struct {
 	id    string
 	store storage.ObjectStore
@@ -24,8 +25,7 @@ func (w *InMemoryMemoryExtractionWorker) Run(input schemas.WorkerInput) (schemas
 	if !ok {
 		return schemas.MemoryExtractionOutput{}, fmt.Errorf("memory_extraction: unexpected input type %T", input)
 	}
-	err := w.Extract(in.EventID, in.AgentID, in.SessionID, in.Content)
-	if err != nil {
+	if err := w.Extract(in.EventID, in.AgentID, in.SessionID, in.Content); err != nil {
 		return schemas.MemoryExtractionOutput{}, err
 	}
 	return schemas.MemoryExtractionOutput{MemoryID: schemas.IDPrefixMemory + in.EventID}, nil
@@ -50,6 +50,7 @@ func (w *InMemoryMemoryExtractionWorker) Extract(eventID, agentID, sessionID, co
 		Content:        content,
 		Level:          0,
 		IsActive:       true,
+		LifecycleState: string(schemas.MemoryLifecycleActive),
 		Version:        1,
 	})
 	return nil
