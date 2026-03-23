@@ -53,6 +53,10 @@ func (s *S3ColdStore) stateKey(id string) string {
 	return fmt.Sprintf("%s/cold/states/%s.json", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) edgeKey(id string) string {
+	return fmt.Sprintf("%s/cold/edges/%s.json", s.cfg.Prefix, id)
+}
+
 func (s *S3ColdStore) PutMemory(m schemas.Memory) {
 	s.doEnsureBucket()
 	data, err := json.Marshal(m)
@@ -141,4 +145,41 @@ func (s *S3ColdStore) GetState(id string) (schemas.State, bool) {
 		return schemas.State{}, false
 	}
 	return st, true
+}
+
+func (s *S3ColdStore) PutEdge(e schemas.Edge) {
+	s.doEnsureBucket()
+	data, err := json.Marshal(e)
+	if err != nil {
+		log.Printf("s3cold: marshal edge %s: %v", e.EdgeID, err)
+		return
+	}
+	if err := s3util.PutBytes(context.Background(), nil, s.cfg, s.edgeKey(e.EdgeID), data, "application/json"); err != nil {
+		log.Printf("s3cold: put edge %s: %v", e.EdgeID, err)
+	}
+}
+
+func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
+	data, err := s3util.GetBytes(context.Background(), nil, s.cfg, s.edgeKey(id))
+	if err != nil {
+		log.Printf("s3cold: get edge %s: %v", id, err)
+		return schemas.Edge{}, false
+	}
+	if data == nil {
+		log.Printf("s3cold: miss edge key=%s", s.edgeKey(id))
+		return schemas.Edge{}, false
+	}
+	var e schemas.Edge
+	if err := json.Unmarshal(data, &e); err != nil {
+		log.Printf("s3cold: unmarshal edge %s: %v", id, err)
+		return schemas.Edge{}, false
+	}
+	return e, true
+}
+
+// ListEdges is not supported for the S3 cold store — scanning all cold edge
+// objects would require a list-objects API call with an unbounded result set.
+// Callers should use GetEdge for point lookups.  Returns empty slice always.
+func (s *S3ColdStore) ListEdges() []schemas.Edge {
+	return []schemas.Edge{}
 }

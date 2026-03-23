@@ -98,3 +98,37 @@ func TestExpandFromRequest(t *testing.T) {
 		t.Fatalf("expected 2 nodes, got %d", len(resp.Subgraph.Nodes))
 	}
 }
+
+func TestExpandFromRequest_MultiSeed(t *testing.T) {
+	nodes := []GraphNode{
+		{ObjectID: "mem_1", ObjectType: "memory", Label: "Memory 1"},
+		{ObjectID: "mem_2", ObjectType: "memory", Label: "Memory 2"},
+		{ObjectID: "evt_1", ObjectType: "event", Label: "Event 1"},
+		{ObjectID: "evt_2", ObjectType: "event", Label: "Event 2"},
+	}
+	edges := []Edge{
+		{EdgeID: "e1", SrcObjectID: "mem_1", EdgeType: "derived_from", DstObjectID: "evt_1", Weight: 1.0},
+		{EdgeID: "e2", SrcObjectID: "mem_2", EdgeType: "derived_from", DstObjectID: "evt_2", Weight: 1.0},
+	}
+
+	req := GraphExpandRequest{
+		SeedObjectIDs: []string{"mem_1", "mem_2"},
+		EdgeTypes:     []string{"derived_from"},
+	}
+	resp := ExpandFromRequest(req, nodes, edges)
+
+	if len(resp.Subgraph.Edges) != 2 {
+		t.Errorf("multi-seed: expected 2 edges (one per seed), got %d", len(resp.Subgraph.Edges))
+	}
+	if len(resp.Subgraph.SeedIDs) != 2 {
+		t.Errorf("multi-seed: expected 2 seed IDs, got %d: %v", len(resp.Subgraph.SeedIDs), resp.Subgraph.SeedIDs)
+	}
+}
+
+func TestExpandFromRequest_EmptySeeds(t *testing.T) {
+	req := GraphExpandRequest{SeedObjectIDs: []string{}}
+	resp := ExpandFromRequest(req, nil, nil)
+	if len(resp.Subgraph.Edges) != 0 || len(resp.Subgraph.Nodes) != 0 {
+		t.Error("empty seeds: expected empty subgraph")
+	}
+}

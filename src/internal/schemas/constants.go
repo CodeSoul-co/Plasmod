@@ -135,9 +135,17 @@ const (
 )
 
 // Additional EventType constants used for routing in the worker and subscriber layers.
-// Note: EventTypeToolCallIssued / EventTypeToolResultReturned (above) are the formal
-// canonical names; these shorter aliases are the actual values emitted in the runtime
-// ingest path and checked by ObjectMaterialization / ToolTrace workers.
+//
+// Naming convention:
+//   - EventTypeToolCallIssued / EventTypeToolResultReturned (defined above) are the
+//     formal canonical event names used in schema documentation and the WAL.
+//   - EventTypeToolCall / EventTypeToolResult (below) are the shorter runtime aliases
+//     that agents and the SDK actually emit.  The subscriber and ObjectMaterialization /
+//     ToolTrace workers check for these shorter values.
+//   - Do NOT mix the two sets: when producing events always use the runtime aliases;
+//     when matching against canonical schema use the formal names.
+//   - EventTypeStateUpdate is the value emitted by agents; EventTypeStateChange is the
+//     internal routing alias used by StateMaterializationWorker.
 const (
 	EventTypeToolCall    EventType = "tool_call"
 	EventTypeToolResult  EventType = "tool_result"
