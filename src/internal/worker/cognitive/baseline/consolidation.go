@@ -1,4 +1,4 @@
-package cognitive
+package baseline
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 
 // InMemoryMemoryConsolidationWorker reads level-0 memories for an
 // agent/session and produces a level-1 summary record.
+// This is the baseline algorithm's consolidation pipeline step.
 type InMemoryMemoryConsolidationWorker struct {
 	id    string
 	store storage.ObjectStore
@@ -24,7 +25,6 @@ func (w *InMemoryMemoryConsolidationWorker) Run(input schemas.WorkerInput) (sche
 	if !ok {
 		return schemas.MemoryConsolidationOutput{}, fmt.Errorf("consolidation: unexpected input type %T", input)
 	}
-	// capture source count before consolidation
 	allBefore := w.store.ListMemories(in.AgentID, in.SessionID)
 	sourceCount := 0
 	for _, m := range allBefore {
@@ -32,8 +32,7 @@ func (w *InMemoryMemoryConsolidationWorker) Run(input schemas.WorkerInput) (sche
 			sourceCount++
 		}
 	}
-	err := w.Consolidate(in.AgentID, in.SessionID)
-	if err != nil {
+	if err := w.Consolidate(in.AgentID, in.SessionID); err != nil {
 		return schemas.MemoryConsolidationOutput{}, err
 	}
 	summaryID := schemas.IDPrefixSummary + in.AgentID + "_" + in.SessionID
@@ -58,7 +57,7 @@ func (w *InMemoryMemoryConsolidationWorker) Consolidate(agentID, sessionID strin
 		return nil
 	}
 	combined := ""
-	sourceIDs := []string{}
+	var sourceIDs []string
 	for _, m := range memories {
 		if m.Level == 0 && m.IsActive {
 			combined += m.Content + " "
@@ -78,6 +77,7 @@ func (w *InMemoryMemoryConsolidationWorker) Consolidate(agentID, sessionID strin
 		Summary:        fmt.Sprintf("Consolidated from %d level-0 memories", len(sourceIDs)),
 		Level:          1,
 		IsActive:       true,
+		LifecycleState: string(schemas.MemoryLifecycleActive),
 		Version:        1,
 	})
 	return nil

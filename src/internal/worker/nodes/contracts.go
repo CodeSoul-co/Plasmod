@@ -34,6 +34,9 @@ const (
 
 	// Cognitive compression
 	NodeTypeSummarization NodeType = "summarization_worker"
+
+	// Memory entity management algorithm plugin dispatcher
+	NodeTypeAlgorithmDispatch NodeType = "algorithm_dispatch_worker"
 )
 
 type NodeState string
@@ -184,6 +187,14 @@ type MicroBatchScheduler interface {
 type SummarizationWorker interface {
 	Info() NodeInfo
 	Summarize(agentID, sessionID string, maxLevel int) error
+}
+
+// AlgorithmDispatchWorker bridges a MemoryManagementAlgorithm plugin into the
+// cognitive worker pipeline.  It handles ingest, decay, recall, compress, and
+// summarize operations and persists MemoryAlgorithmState results.
+type AlgorithmDispatchWorker interface {
+	Info() NodeInfo
+	Dispatch(operation string, memoryIDs []string, query, nowTS, agentID, sessionID string, signals map[string]float64) (schemas.AlgorithmDispatchOutput, error)
 }
 
 // ─── Typed-dispatch interface ─────────────────────────────────────────────────

@@ -10,7 +10,7 @@ import (
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/chain"
-	"andb/src/internal/worker/cognitive"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/nodes"
@@ -32,11 +32,11 @@ func buildSubscriberRuntime(t *testing.T) (
 	store := storage.NewMemoryRuntimeStorage()
 
 	m := nodes.CreateManager()
-	m.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
-	m.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
+	m.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
+	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
 	m.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("gr-1", store.Edges()))
 	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges(), nil))
-	m.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker(
+	m.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
 		"rp-1", store.Objects(), store.Policies(), plog,
 	))
 	m.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker(
@@ -243,11 +243,11 @@ func TestMicroBatch_FlushIntegration(t *testing.T) {
 	mbSched := coordination.CreateInMemoryMicroBatchScheduler("mb-1", 32)
 	mgr.RegisterMicroBatch(mbSched)
 	mgr.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker("cm-1", store.Objects(), store.Edges()))
-	mgr.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
-	mgr.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
+	mgr.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
+	mgr.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
 	mgr.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("gr-1", store.Edges()))
 	mgr.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges(), nil))
-	mgr.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker(
+	mgr.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
 		"rp-1", store.Objects(), store.Policies(), plog,
 	))
 

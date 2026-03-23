@@ -70,6 +70,15 @@ type Memory struct {
 	ProvenanceRef  string   `json:"provenance_ref"`
 	Version        int64    `json:"version"`
 	IsActive       bool     `json:"is_active"`
+	// LifecycleState tracks the management stage (active/compressed/decayed/archived/…).
+	// See MemoryLifecycle constants. Complements IsActive with finer-grained states.
+	LifecycleState string `json:"lifecycle_state,omitempty"`
+	// EmbeddingRef points to the Embedding object holding the vector for this memory.
+	EmbeddingRef string `json:"embedding_ref,omitempty"`
+	// PolicyTags are governance labels applied by the policy layer (e.g. "quarantine").
+	PolicyTags []string `json:"policy_tags,omitempty"`
+	// AlgorithmStateRef links to the MemoryAlgorithmState record keyed by memory_id+algorithm_id.
+	AlgorithmStateRef string `json:"algorithm_state_ref,omitempty"`
 }
 
 type State struct {

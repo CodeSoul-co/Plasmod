@@ -1,4 +1,4 @@
-package cognitive
+package baseline
 
 import (
 	"fmt"
@@ -11,11 +11,8 @@ import (
 )
 
 // InMemorySummarizationWorker produces level-1 (summary) and level-2
-// (abstraction) Memory objects by compressing existing level-(n-1) memories
-// for the given agent+session up to maxLevel.
-//
-// Level-1: concatenates all level-0 active memories into a single summary.
-// Level-2: concatenates all level-1 summaries into an abstraction.
+// (abstraction) Memory objects by compressing existing level-(n-1) memories.
+// This is the baseline algorithm's summarization pipeline step.
 type InMemorySummarizationWorker struct {
 	id       string
 	objStore storage.ObjectStore
@@ -30,7 +27,6 @@ func (w *InMemorySummarizationWorker) Run(input schemas.WorkerInput) (schemas.Wo
 	if !ok {
 		return schemas.SummarizationOutput{}, fmt.Errorf("summarization: unexpected input type %T", input)
 	}
-	// snapshot existing summary IDs before the call so we can diff afterwards
 	allBefore := w.objStore.ListMemories(in.AgentID, in.SessionID)
 	existingIDs := make(map[string]bool, len(allBefore))
 	for _, m := range allBefore {
@@ -38,8 +34,7 @@ func (w *InMemorySummarizationWorker) Run(input schemas.WorkerInput) (schemas.Wo
 			existingIDs[m.MemoryID] = true
 		}
 	}
-	err := w.Summarize(in.AgentID, in.SessionID, in.MaxLevel)
-	if err != nil {
+	if err := w.Summarize(in.AgentID, in.SessionID, in.MaxLevel); err != nil {
 		return schemas.SummarizationOutput{}, err
 	}
 	allAfter := w.objStore.ListMemories(in.AgentID, in.SessionID)
@@ -69,13 +64,11 @@ func (w *InMemorySummarizationWorker) Summarize(agentID, sessionID string, maxLe
 		maxLevel = 2
 	}
 	for level := 1; level <= maxLevel; level++ {
-		srcLevel := level - 1
 		all := w.objStore.ListMemories(agentID, sessionID)
-
 		var srcs []schemas.Memory
 		var srcIDs []string
 		for _, m := range all {
-			if m.Level == srcLevel && m.IsActive {
+			if m.Level == level-1 && m.IsActive {
 				srcs = append(srcs, m)
 				srcIDs = append(srcIDs, m.MemoryID)
 			}
@@ -106,6 +99,7 @@ func (w *InMemorySummarizationWorker) Summarize(agentID, sessionID string, maxLe
 			Confidence:     schemas.DefaultConfidence,
 			Importance:     totalImportance / float64(len(srcs)),
 			IsActive:       true,
+			LifecycleState: string(schemas.MemoryLifecycleActive),
 			ValidFrom:      now,
 			Version:        1,
 		})

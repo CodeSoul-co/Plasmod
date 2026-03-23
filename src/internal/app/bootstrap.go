@@ -16,7 +16,7 @@ import (
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
-	"andb/src/internal/worker/cognitive"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/ingestion"
@@ -104,11 +104,11 @@ func BuildServer() (*http.Server, error) {
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-hot", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-hot", store.Indexes()))
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
-	nodeManager.RegisterMemoryExtraction(cognitive.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
-	nodeManager.RegisterMemoryConsolidation(cognitive.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
+	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
 	nodeManager.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
 	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), derivLog))
-	nodeManager.RegisterReflectionPolicy(cognitive.CreateInMemoryReflectionPolicyWorker(
+	nodeManager.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
 		"reflect-1",
 		store.Objects(),
 		store.Policies(),
@@ -147,7 +147,7 @@ func BuildServer() (*http.Server, error) {
 	nodeManager.RegisterMicroBatch(coordination.CreateInMemoryMicroBatchScheduler("micro-batch-1", 64))
 
 	// ── Cognitive Compression workers ─────────────────────────────────────────
-	nodeManager.RegisterSummarization(cognitive.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
 
 	coord.Registry.Register("node_manager", nodeManager)
 

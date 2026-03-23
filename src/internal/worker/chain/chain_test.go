@@ -6,7 +6,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
-	"andb/src/internal/worker/cognitive"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/ingestion"
@@ -42,13 +42,13 @@ func buildManager(t *testing.T) (*nodes.Manager, storage.RuntimeStorage) {
 	mgr.RegisterSubgraphExecutor(
 		indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
 	mgr.RegisterMemoryExtraction(
-		cognitive.CreateInMemoryMemoryExtractionWorker("mem-ext-1", store.Objects()))
+		baseline.CreateInMemoryMemoryExtractionWorker("mem-ext-1", store.Objects()))
 	mgr.RegisterMemoryConsolidation(
-		cognitive.CreateInMemoryMemoryConsolidationWorker("mem-consol-1", store.Objects()))
+		baseline.CreateInMemoryMemoryConsolidationWorker("mem-consol-1", store.Objects()))
 	mgr.RegisterSummarization(
-		cognitive.CreateInMemorySummarizationWorker("sum-1", store.Objects()))
+		baseline.CreateInMemorySummarizationWorker("sum-1", store.Objects()))
 	mgr.RegisterReflectionPolicy(
-		cognitive.CreateInMemoryReflectionPolicyWorker("reflect-1", store.Objects(), store.Policies(), policyLog))
+		baseline.CreateInMemoryReflectionPolicyWorker("reflect-1", store.Objects(), store.Policies(), policyLog))
 	mgr.RegisterConflictMerge(
 		coordination.CreateInMemoryConflictMergeWorker("cm-1", store.Objects(), store.Edges()))
 	mgr.RegisterCommunication(
