@@ -146,7 +146,6 @@ ReflectionPolicyWorker    (TTL decay · quarantine · confidence override)
   ↓
 PolicyDecisionLog
 ```
-
 #### 🔵 Query Chain — retrieval + reasoning
 
 ```
@@ -174,7 +173,6 @@ CommunicationWorker    (copy winner → target agent memory space)
   ↓
 Shared Memory updated
 ```
-
 ### ExecutionOrchestrator
 
 The `Orchestrator` provides a priority-aware worker pool over the four chains:

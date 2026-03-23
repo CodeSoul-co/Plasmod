@@ -1,35 +1,39 @@
-package nodes
+package nodes_test
 
 import (
 	"testing"
 
 	"andb/src/internal/dataplane"
 	"andb/src/internal/storage"
+	baseline "andb/src/internal/worker/cognitive/baseline"
+	"andb/src/internal/worker/coordination"
+	"andb/src/internal/worker/indexing"
+	"andb/src/internal/worker/nodes"
 )
 
 func TestManager_RegisterAndTopology(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	m := NewManager()
+	m := nodes.CreateManager()
 
-	m.RegisterData(NewInMemoryDataNode("data-1", store.Segments()))
-	m.RegisterIndex(NewInMemoryIndexNode("index-1", store.Indexes()))
-	m.RegisterQuery(NewInMemoryQueryNode("query-1", nil))
-	m.RegisterMemoryExtraction(NewInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
-	m.RegisterMemoryConsolidation(NewInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
-	m.RegisterGraphRelation(NewInMemoryGraphRelationWorker("graph-1", store.Edges()))
-	m.RegisterProofTrace(NewInMemoryProofTraceWorker("proof-1", store.Edges()))
+	m.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
+	m.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
+	m.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", nil))
+	m.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
+	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	m.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
+	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), nil))
 
-	nodes := m.Topology()
-	if nodes == nil {
+	topo := m.Topology()
+	if topo == nil {
 		t.Fatal("Topology: should not be nil")
 	}
 
 	data, idx := 0, 0
-	for _, n := range nodes {
+	for _, n := range topo {
 		switch n.Type {
-		case NodeTypeData:
+		case nodes.NodeTypeData:
 			data++
-		case NodeTypeIndex:
+		case nodes.NodeTypeIndex:
 			idx++
 		}
 	}
@@ -42,7 +46,7 @@ func TestManager_RegisterAndTopology(t *testing.T) {
 }
 
 func TestManager_DispatchIngest_NoWorkers_NoError(t *testing.T) {
-	m := NewManager()
+	m := nodes.CreateManager()
 	// Should not panic with an empty manager.
 	m.DispatchIngest(newTestIngestRecord())
 }

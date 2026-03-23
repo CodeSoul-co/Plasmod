@@ -18,7 +18,7 @@ func TestPipelineIngestWorker_Accept_requiresEventID(t *testing.T) {
 		eventbackbone.NewInMemoryWAL(eventbackbone.NewInMemoryBus(), eventbackbone.NewHybridClock()),
 		materialization.NewService(),
 		nil,
-		nodes.NewManager(),
+		nodes.CreateManager(),
 		dataplane.NewSegmentDataPlane(),
 		storage.NewMemoryRuntimeStorage(),
 	)
@@ -33,10 +33,10 @@ func TestPipelineIngestWorker_Accept_happyPath(t *testing.T) {
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
 	store := storage.NewMemoryRuntimeStorage()
-	nm := nodes.NewManager()
+	nm := nodes.CreateManager()
 	plane := dataplane.NewSegmentDataPlane()
-	nm.RegisterData(nodes.NewInMemoryDataNode("d1", store.Segments()))
-	nm.RegisterIndex(nodes.NewInMemoryIndexNode("i1", store.Indexes()))
+	nm.RegisterData(nodes.CreateInMemoryDataNode("d1", store.Segments()))
+	nm.RegisterIndex(nodes.CreateInMemoryIndexNode("i1", store.Indexes()))
 
 	sched := coordinator.NewWorkerScheduler()
 	w := NewPipelineIngestWorker(

@@ -305,6 +305,17 @@ func (s *badgerGraphEdgeStore) ListEdges() []schemas.Edge {
 	return s.allEdges()
 }
 
+func (s *badgerGraphEdgeStore) PruneExpiredEdges(now string) int {
+	pruned := 0
+	for _, e := range s.allEdges() {
+		if e.ExpiresAt != "" && e.ExpiresAt <= now {
+			s.DeleteEdge(e.EdgeID)
+			pruned++
+		}
+	}
+	return pruned
+}
+
 // ─── SnapshotVersionStore ────────────────────────────────────────────────────
 
 type badgerSnapshotVersionStore struct{ db *badger.DB }

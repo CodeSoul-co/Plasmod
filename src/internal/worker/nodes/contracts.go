@@ -1,6 +1,9 @@
 package nodes
 
-import "andb/src/internal/dataplane"
+import (
+	"andb/src/internal/dataplane"
+	"andb/src/internal/schemas"
+)
 
 type NodeType string
 
@@ -10,11 +13,11 @@ const (
 	NodeTypeQuery NodeType = "query_node"
 
 	// Ingestion & Materialization group (spec section 16.4)
-	NodeTypeIngest               NodeType = "ingest_worker"
+	NodeTypeIngest                NodeType = "ingest_worker"
 	NodeTypeObjectMaterialization NodeType = "object_materialization_worker"
-	NodeTypeMemoryExtraction     NodeType = "memory_extraction_worker"
-	NodeTypeStateMaterialization NodeType = "state_materialization_worker"
-	NodeTypeToolTrace            NodeType = "tool_trace_worker"
+	NodeTypeMemoryExtraction      NodeType = "memory_extraction_worker"
+	NodeTypeStateMaterialization  NodeType = "state_materialization_worker"
+	NodeTypeToolTrace             NodeType = "tool_trace_worker"
 
 	// Memory & Governance group
 	NodeTypeMemoryConsolidation NodeType = "memory_consolidation_worker"
@@ -23,10 +26,17 @@ const (
 	NodeTypeConflictMerge       NodeType = "conflict_merge_worker"
 
 	// Retrieval & Reasoning group
-	NodeTypeIndexBuild          NodeType = "index_build_worker"
-	NodeTypeGraphRelation       NodeType = "graph_relation_worker"
-	NodeTypeProofTrace          NodeType = "proof_trace_worker"
-	NodeTypeMicroBatch          NodeType = "micro_batch_scheduler"
+	NodeTypeIndexBuild    NodeType = "index_build_worker"
+	NodeTypeGraphRelation NodeType = "graph_relation_worker"
+	NodeTypeProofTrace    NodeType = "proof_trace_worker"
+	NodeTypeSubgraph      NodeType = "subgraph_executor_worker"
+	NodeTypeMicroBatch    NodeType = "micro_batch_scheduler"
+
+	// Cognitive compression
+	NodeTypeSummarization NodeType = "summarization_worker"
+
+	// Memory entity management algorithm plugin dispatcher
+	NodeTypeAlgorithmDispatch NodeType = "algorithm_dispatch_worker"
 )
 
 type NodeState string
@@ -98,9 +108,108 @@ type GraphRelationWorker interface {
 	IndexEdge(srcID, srcType, dstID, dstType, edgeType string, weight float64) error
 }
 
+// SubgraphExecutorWorker expands a seed set of object IDs into an
+// EvidenceSubgraph by performing one-hop (or filtered) graph expansion using
+// the canonical graph_expand logic from the schemas package.
+type SubgraphExecutorWorker interface {
+	Info() NodeInfo
+	Expand(req schemas.GraphExpandRequest, nodes []schemas.GraphNode, edges []schemas.Edge) schemas.GraphExpandResponse
+}
+
 // ProofTraceWorker assembles explainable proof traces from the derivation log
 // and graph index for a given query result set.
+// maxDepth controls how many hops to traverse (1 = immediate edges only,
+// 0 or negative = unlimited BFS up to an internal cap of 8).
 type ProofTraceWorker interface {
 	Info() NodeInfo
-	AssembleTrace(objectIDs []string) []string
+	AssembleTrace(objectIDs []string, maxDepth int) []string
+}
+
+// ─── Ingestion & Materialization worker interfaces ────────────────────────────
+
+// IngestWorker performs schema validation and normalisation on a raw Event
+// before it enters the WAL.  It does not write to the WAL itself.
+type IngestWorker interface {
+	Info() NodeInfo
+	Process(ev schemas.Event) error
+}
+
+// ObjectMaterializationWorker routes a raw Event to the appropriate canonical
+// object store (Memory / State / Artifact) based on event_type.
+type ObjectMaterializationWorker interface {
+	Info() NodeInfo
+	Materialize(ev schemas.Event) error
+}
+
+// StateMaterializationWorker maintains running agent State objects from events
+// and creates periodic checkpoints (ObjectVersion snapshots).
+type StateMaterializationWorker interface {
+	Info() NodeInfo
+	Apply(ev schemas.Event) error
+	Checkpoint(agentID, sessionID string) error
+}
+
+// ToolTraceWorker converts tool_call / tool_result events into structured
+// Artifact records for audit and retrieval.
+type ToolTraceWorker interface {
+	Info() NodeInfo
+	TraceToolCall(ev schemas.Event) error
+}
+
+// ─── Index & Retrieval worker interfaces ─────────────────────────────────────
+
+// IndexBuildWorker submits a materialised object to the segment + keyword
+// indices for later retrieval.
+type IndexBuildWorker interface {
+	Info() NodeInfo
+	IndexObject(objectID, objectType, namespace, text string) error
+}
+
+// ─── Multi-Agent coordination worker interfaces ───────────────────────────────
+
+// CommunicationWorker synchronises agent-to-agent messages and distributes
+// shared Memory objects to target agent memory spaces.
+type CommunicationWorker interface {
+	Info() NodeInfo
+	Broadcast(fromAgentID, toAgentID, memoryID string) error
+}
+
+// MicroBatchScheduler accumulates pending retrieval tasks and flushes them as
+// a micro-batch for cross-agent merging and GPU-friendly execution.
+type MicroBatchScheduler interface {
+	Info() NodeInfo
+	Enqueue(queryID string, payload any)
+	Flush() []any
+}
+
+// SummarizationWorker compresses long-context memory sequences into level-1
+// (summary) and level-2 (abstraction) Memory objects.
+type SummarizationWorker interface {
+	Info() NodeInfo
+	Summarize(agentID, sessionID string, maxLevel int) error
+}
+
+// AlgorithmDispatchWorker bridges a MemoryManagementAlgorithm plugin into the
+// cognitive worker pipeline.  It handles ingest, decay, recall, compress, and
+// summarize operations and persists MemoryAlgorithmState results.
+type AlgorithmDispatchWorker interface {
+	Info() NodeInfo
+	Dispatch(operation string, memoryIDs []string, query, nowTS, agentID, sessionID string, signals map[string]float64) (schemas.AlgorithmDispatchOutput, error)
+}
+
+// ─── Typed-dispatch interface ─────────────────────────────────────────────────
+
+// Runnable is implemented by every worker that supports typed dispatch via
+// schemas.WorkerInput / schemas.WorkerOutput.
+//
+// It is optional — all workers additionally expose concrete domain methods
+// (Process, Materialize, Consolidate, …) for direct chain / manager calls.
+// Run provides a uniform entry point when the caller holds a WorkerInput value
+// without knowing the concrete worker type.
+//
+// Implementations must type-assert the input to their expected Input struct,
+// delegate to the concrete method, and return the corresponding Output struct.
+// An unknown input type must return a descriptive error without panicking.
+type Runnable interface {
+	Run(input schemas.WorkerInput) (schemas.WorkerOutput, error)
 }

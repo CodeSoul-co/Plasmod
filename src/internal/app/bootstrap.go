@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"os"
 
@@ -13,6 +15,11 @@ import (
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
+	baseline "andb/src/internal/worker/cognitive/baseline"
+	"andb/src/internal/worker/coordination"
+	"andb/src/internal/worker/indexing"
+	"andb/src/internal/worker/ingestion"
+	matworker "andb/src/internal/worker/materialization"
 	"andb/src/internal/worker/nodes"
 )
 
@@ -41,6 +48,19 @@ func BuildServer() (*http.Server, func() error, error) {
 	storageCfg := bundle.Config
 	cleanup := bundle.Close
 
+	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
+	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
+	var coldStore storage.ColdObjectStore
+	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
+		coldStore = storage.NewS3ColdStore(s3Cfg)
+		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
+			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
+	} else {
+		coldStore = storage.NewInMemoryColdStore()
+		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
+	}
+	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), coldStore)
+
 	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
 	policyEngine := semantic.NewPolicyEngine()
@@ -50,7 +70,11 @@ func BuildServer() (*http.Server, func() error, error) {
 	evCache := evidence.NewCache(10000)
 	materializer := materialization.NewService()
 	preCompute := materialization.NewPreComputeService(evCache)
-	assembler := evidence.NewCachedAssembler(evCache).WithEdgeStore(store.Edges())
+	assembler := evidence.NewCachedAssembler(evCache).
+		WithEdgeStore(store.Edges()).
+		WithVersionStore(store.Versions()).
+		WithObjectStore(store.Objects()).
+		WithPolicyStore(store.Policies())
 
 	// ── Data Plane (Tiered: hot → warm → cold) ──────────────────────────────────
 	plane := dataplane.NewTieredDataPlane()
@@ -80,17 +104,59 @@ func BuildServer() (*http.Server, func() error, error) {
 	coord.Registry.Register("policy_decision_log", policyDecLog)
 	coord.Registry.Register("runtime_storage", store)
 	coord.Registry.Register("storage_config", storageCfg)
+	coord.Registry.Register("tiered_objects", tieredObjects)
 
 	// ── Worker Node Manager ──────────────────────────────────────────────────
-	nodeManager := nodes.NewManager()
+	nodeManager := nodes.CreateManager()
 	// Hot tier: dedicated data/index nodes wired to the tiered plane's warm layer
-	nodeManager.RegisterData(nodes.NewInMemoryDataNode("data-hot", store.Segments()))
-	nodeManager.RegisterIndex(nodes.NewInMemoryIndexNode("index-hot", store.Indexes()))
-	nodeManager.RegisterQuery(nodes.NewInMemoryQueryNode("query-1", plane))
-	nodeManager.RegisterMemoryExtraction(nodes.NewInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
-	nodeManager.RegisterMemoryConsolidation(nodes.NewInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
-	nodeManager.RegisterGraphRelation(nodes.NewInMemoryGraphRelationWorker("graph-1", store.Edges()))
-	nodeManager.RegisterProofTrace(nodes.NewInMemoryProofTraceWorker("proof-1", store.Edges()))
+	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-hot", store.Segments()))
+	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-hot", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
+	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	nodeManager.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
+	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), derivLog))
+	nodeManager.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
+		"reflect-1",
+		store.Objects(),
+		store.Policies(),
+		policyDecLog,
+	))
+	nodeManager.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker(
+		"conflict-merge-1",
+		store.Objects(),
+		store.Edges(),
+	))
+
+	// ── Ingestion & Materialization workers ───────────────────────────────────
+	nodeManager.RegisterIngest(ingestion.CreateInMemoryIngestWorker("ingest-1"))
+	nodeManager.RegisterObjectMaterialization(matworker.CreateInMemoryObjectMaterializationWorker(
+		"obj-mat-1",
+		store.Objects(),
+		store.Versions(),
+	))
+	nodeManager.RegisterStateMaterialization(matworker.CreateInMemoryStateMaterializationWorker(
+		"state-mat-1",
+		store.Objects(),
+		store.Versions(),
+	))
+	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog))
+
+	// ── Index & Retrieval workers ─────────────────────────────────────────────
+	nodeManager.RegisterIndexBuild(indexing.CreateInMemoryIndexBuildWorker(
+		"idx-build-1",
+		store.Segments(),
+		store.Indexes(),
+	))
+	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
+
+	// ── Multi-Agent Coordination workers ─────────────────────────────────────
+	nodeManager.RegisterCommunication(coordination.CreateInMemoryCommunicationWorker("comm-1", store.Objects()))
+	nodeManager.RegisterMicroBatch(coordination.CreateInMemoryMicroBatchScheduler("micro-batch-1", 64))
+
+	// ── Cognitive Compression workers ─────────────────────────────────────────
+	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+
 	coord.Registry.Register("node_manager", nodeManager)
 
 	// ── Module Registry: evidence + pre-compute services ──────────────────────
@@ -98,9 +164,25 @@ func BuildServer() (*http.Server, func() error, error) {
 	coord.Registry.Register("pre_compute", preCompute)
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
-	runtime := worker.NewRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store)
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store)
 	coord.Registry.Register("ingest_worker", runtime.IngestWorker())
 	runtime.RegisterDefaults()
+
+	// ── Async Worker Subscriber ───────────────────────────────────────────────
+	// The subscriber polls the WAL every 200 ms and drives governance workers
+	// (ReflectionPolicy, ConflictMerge, MemoryConsolidation) asynchronously.
+	// It is tied to the process lifetime via context.Background(); for graceful
+	// shutdown, replace with a cancellable context from the caller.
+	subscriber := worker.CreateEventSubscriber(wal, nodeManager)
+	runtime.StartSubscriber(context.Background(), subscriber)
+	coord.Registry.Register("event_subscriber", subscriber)
+
+	// ── Execution Orchestrator ─────────────────────────────────────────────────
+	// The orchestrator provides priority-aware task dispatch across the 4 flow
+	// chains.  concurrency=4, queueCap=256 per priority level.
+	orch := worker.CreateOrchestrator(nodeManager, 4, 256)
+	go orch.Run(context.Background())
+	coord.Registry.Register("orchestrator", orch)
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
 	gateway := access.NewGateway(coord, runtime, store, storageCfg)

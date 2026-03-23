@@ -8,7 +8,7 @@ import (
 
 type SegmentRecord struct {
 	SegmentID       string    `json:"segment_id"`
-	ObjectType      string 	  `json:"object_type"`
+	ObjectType      string    `json:"object_type"`
 	Namespace       string    `json:"namespace"`
 	TimeBucket      string    `json:"time_bucket"`
 	EmbeddingFamily string    `json:"embedding_family"`
@@ -72,12 +72,17 @@ type GraphEdgeStore interface {
 	GetEdge(id string) (schemas.Edge, bool)
 	DeleteEdge(id string)
 	// EdgesFrom returns all edges originating from the given object.
+	// Implemented with a secondary src-index; O(k) where k = out-degree.
 	EdgesFrom(srcObjectID string) []schemas.Edge
 	// EdgesTo returns all edges pointing to the given object.
+	// Implemented with a secondary dst-index; O(k) where k = in-degree.
 	EdgesTo(dstObjectID string) []schemas.Edge
 	// BulkEdges returns all edges between any of the given object IDs.
 	BulkEdges(objectIDs []string) []schemas.Edge
 	ListEdges() []schemas.Edge
+	// PruneExpiredEdges removes all edges whose ExpiresAt is non-empty and
+	// lexicographically ≤ now (RFC-3339 string).  Returns the count pruned.
+	PruneExpiredEdges(now string) int
 }
 
 // SnapshotVersionStore persists object version / snapshot records.
@@ -102,6 +107,23 @@ type ShareContractStore interface {
 	ListContracts() []schemas.ShareContract
 }
 
+// AuditStore is an append-only log of memory governance actions.
+// All operations that change memory visibility, sharing, or lifecycle
+// should emit an AuditRecord here.
+type AuditStore interface {
+	AppendAudit(r schemas.AuditRecord)
+	GetAudits(targetMemoryID string) []schemas.AuditRecord
+	ListAudits() []schemas.AuditRecord
+}
+
+// MemoryAlgorithmStateStore persists per-memory, per-algorithm state records.
+// Keyed by (memoryID, algorithmID) so multiple algorithms can coexist.
+type MemoryAlgorithmStateStore interface {
+	PutAlgorithmState(s schemas.MemoryAlgorithmState)
+	GetAlgorithmState(memoryID, algorithmID string) (schemas.MemoryAlgorithmState, bool)
+	ListAlgorithmStates(memoryID string) []schemas.MemoryAlgorithmState
+}
+
 // RuntimeStorage is the unified accessor for all in-process stores.
 type RuntimeStorage interface {
 	Segments() SegmentStore
@@ -111,6 +133,10 @@ type RuntimeStorage interface {
 	Versions() SnapshotVersionStore
 	Policies() PolicyStore
 	Contracts() ShareContractStore
+	// Audits returns the append-only memory governance audit log.
+	Audits() AuditStore
+	// AlgorithmStates returns the per-memory, per-algorithm state store.
+	AlgorithmStates() MemoryAlgorithmStateStore
 	// HotCache exposes the in-memory hot-object cache so the ingest path can
 	// immediately promote high-salience objects for instant activation.
 	HotCache() *HotObjectCache

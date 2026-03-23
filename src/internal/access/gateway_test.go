@@ -29,10 +29,10 @@ func buildTestGateway() *Gateway {
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
 	assembler := evidence.NewCachedAssembler(evCache).WithEdgeStore(store.Edges())
-	nodeManager := nodes.NewManager()
-	nodeManager.RegisterData(nodes.NewInMemoryDataNode("d1", store.Segments()))
-	nodeManager.RegisterIndex(nodes.NewInMemoryIndexNode("i1", store.Indexes()))
-	nodeManager.RegisterQuery(nodes.NewInMemoryQueryNode("q1", plane))
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("d1", store.Segments()))
+	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("i1", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("q1", plane))
 
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(model),
@@ -46,7 +46,7 @@ func buildTestGateway() *Gateway {
 		coordinator.NewQueryCoordinator(planner, policy),
 	)
 
-	runtime := worker.NewRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, nodeManager, store)
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, nodeManager, store)
 	runtime.RegisterDefaults()
 
 	return NewGateway(coord, runtime, store, nil)

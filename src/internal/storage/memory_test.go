@@ -30,6 +30,12 @@ func TestMemoryRuntimeStorage_Stores(t *testing.T) {
 	if store.HotCache() == nil {
 		t.Fatal("HotCache() should not be nil")
 	}
+	if store.Audits() == nil {
+		t.Fatal("Audits() should not be nil")
+	}
+	if store.AlgorithmStates() == nil {
+		t.Fatal("AlgorithmStates() should not be nil")
+	}
 }
 
 func TestMemoryObjectStore_PutAndGet(t *testing.T) {
@@ -88,5 +94,185 @@ func TestMemoryGraphEdgeStore_DeleteEdge(t *testing.T) {
 	edges := es.BulkEdges([]string{"a"})
 	if len(edges) != 0 {
 		t.Errorf("expected 0 edges after DeleteEdge, got %d", len(edges))
+	}
+}
+
+// R2: secondary-index EdgesFrom/EdgesTo
+func TestMemoryGraphEdgeStore_EdgesFrom_Indexed(t *testing.T) {
+	es := newMemoryGraphEdgeStore()
+	es.PutEdge(schemas.Edge{EdgeID: "e1", SrcObjectID: "src1", DstObjectID: "dst1", EdgeType: "x"})
+	es.PutEdge(schemas.Edge{EdgeID: "e2", SrcObjectID: "src1", DstObjectID: "dst2", EdgeType: "y"})
+	es.PutEdge(schemas.Edge{EdgeID: "e3", SrcObjectID: "src2", DstObjectID: "dst1", EdgeType: "z"})
+
+	got := es.EdgesFrom("src1")
+	if len(got) != 2 {
+		t.Errorf("EdgesFrom src1: want 2, got %d", len(got))
+	}
+	got2 := es.EdgesFrom("nonexistent")
+	if len(got2) != 0 {
+		t.Errorf("EdgesFrom nonexistent: want 0, got %d", len(got2))
+	}
+}
+
+func TestMemoryGraphEdgeStore_EdgesTo_Indexed(t *testing.T) {
+	es := newMemoryGraphEdgeStore()
+	es.PutEdge(schemas.Edge{EdgeID: "e1", SrcObjectID: "s1", DstObjectID: "dst1", EdgeType: "a"})
+	es.PutEdge(schemas.Edge{EdgeID: "e2", SrcObjectID: "s2", DstObjectID: "dst1", EdgeType: "b"})
+	es.PutEdge(schemas.Edge{EdgeID: "e3", SrcObjectID: "s3", DstObjectID: "dst2", EdgeType: "c"})
+
+	got := es.EdgesTo("dst1")
+	if len(got) != 2 {
+		t.Errorf("EdgesTo dst1: want 2, got %d", len(got))
+	}
+}
+
+func TestMemoryGraphEdgeStore_IndexConsistencyAfterDelete(t *testing.T) {
+	es := newMemoryGraphEdgeStore()
+	es.PutEdge(schemas.Edge{EdgeID: "e1", SrcObjectID: "src1", DstObjectID: "dst1"})
+	es.DeleteEdge("e1")
+
+	if len(es.EdgesFrom("src1")) != 0 {
+		t.Error("index not cleaned after DeleteEdge from srcIdx")
+	}
+	if len(es.EdgesTo("dst1")) != 0 {
+		t.Error("index not cleaned after DeleteEdge from dstIdx")
+	}
+}
+
+// R7: ExpiresAt field + PruneExpiredEdges
+func TestMemoryGraphEdgeStore_PruneExpiredEdges(t *testing.T) {
+	es := newMemoryGraphEdgeStore()
+	es.PutEdge(schemas.Edge{EdgeID: "live", SrcObjectID: "a", DstObjectID: "b", ExpiresAt: "2099-01-01T00:00:00Z"})
+	es.PutEdge(schemas.Edge{EdgeID: "dead", SrcObjectID: "c", DstObjectID: "d", ExpiresAt: "2000-01-01T00:00:00Z"})
+	es.PutEdge(schemas.Edge{EdgeID: "eternal", SrcObjectID: "e", DstObjectID: "f"}) // no expiry
+
+	pruned := es.PruneExpiredEdges("2026-01-01T00:00:00Z")
+	if pruned != 1 {
+		t.Errorf("PruneExpiredEdges: want 1 pruned, got %d", pruned)
+	}
+	if _, ok := es.GetEdge("dead"); ok {
+		t.Error("expired edge 'dead' should have been removed")
+	}
+	if _, ok := es.GetEdge("live"); !ok {
+		t.Error("non-expired edge 'live' should still exist")
+	}
+	if _, ok := es.GetEdge("eternal"); !ok {
+		t.Error("no-expiry edge 'eternal' should still exist")
+	}
+	// verify index was cleaned for pruned edge
+	if len(es.EdgesFrom("c")) != 0 {
+		t.Error("srcIdx not cleaned for pruned edge")
+	}
+}
+
+// R6: InMemoryColdStore edge methods
+func TestInMemoryColdStore_EdgeRoundtrip(t *testing.T) {
+	cold := NewInMemoryColdStore()
+
+	e := schemas.Edge{EdgeID: "cold_e1", SrcObjectID: "mem_1", DstObjectID: "evt_1", EdgeType: "derived_from", Weight: 1.0}
+	cold.PutEdge(e)
+
+	got, ok := cold.GetEdge("cold_e1")
+	if !ok {
+		t.Fatal("GetEdge: expected to find cold_e1")
+	}
+	if got.EdgeType != "derived_from" {
+		t.Errorf("EdgeType: want derived_from, got %s", got.EdgeType)
+	}
+
+	list := cold.ListEdges()
+	if len(list) != 1 {
+		t.Errorf("ListEdges: want 1, got %d", len(list))
+	}
+}
+
+// PC: AuditStore
+func TestInMemoryAuditStore_AppendAndGet(t *testing.T) {
+	store := NewMemoryRuntimeStorage()
+
+	r1 := schemas.AuditRecord{
+		RecordID:       "audit_1",
+		TargetMemoryID: "mem_audit_1",
+		OperationType:  string(schemas.AuditOpRead),
+		ActorType:      "agent",
+		ActorID:        "agent_1",
+		Decision:       "allow",
+		Timestamp:      "2026-01-01T00:00:00Z",
+	}
+	r2 := schemas.AuditRecord{
+		RecordID:       "audit_2",
+		TargetMemoryID: "mem_audit_1",
+		OperationType:  string(schemas.AuditOpShare),
+		ActorType:      "agent",
+		ActorID:        "agent_2",
+		Decision:       "deny",
+		Timestamp:      "2026-01-02T00:00:00Z",
+	}
+	store.Audits().AppendAudit(r1)
+	store.Audits().AppendAudit(r2)
+
+	got := store.Audits().GetAudits("mem_audit_1")
+	if len(got) != 2 {
+		t.Errorf("GetAudits: want 2 records, got %d", len(got))
+	}
+	all := store.Audits().ListAudits()
+	if len(all) != 2 {
+		t.Errorf("ListAudits: want 2 total, got %d", len(all))
+	}
+	// unrelated memory should return empty
+	none := store.Audits().GetAudits("mem_nonexistent")
+	if len(none) != 0 {
+		t.Errorf("GetAudits nonexistent: want 0, got %d", len(none))
+	}
+}
+
+// PC: MemoryAlgorithmStateStore
+func TestInMemoryAlgorithmStateStore_PutAndGet(t *testing.T) {
+	store := NewMemoryRuntimeStorage()
+
+	st := schemas.MemoryAlgorithmState{
+		MemoryID:       "mem_1",
+		AlgorithmID:    "memorybank_v1",
+		Strength:       0.85,
+		RetentionScore: 0.72,
+		RecallCount:    3,
+		UpdatedAt:      "2026-01-01T00:00:00Z",
+	}
+	store.AlgorithmStates().PutAlgorithmState(st)
+
+	got, ok := store.AlgorithmStates().GetAlgorithmState("mem_1", "memorybank_v1")
+	if !ok {
+		t.Fatal("GetAlgorithmState: expected to find mem_1/memorybank_v1")
+	}
+	if got.Strength != 0.85 {
+		t.Errorf("Strength: want 0.85, got %f", got.Strength)
+	}
+
+	list := store.AlgorithmStates().ListAlgorithmStates("mem_1")
+	if len(list) != 1 {
+		t.Errorf("ListAlgorithmStates: want 1, got %d", len(list))
+	}
+	_, miss := store.AlgorithmStates().GetAlgorithmState("mem_1", "other_algo")
+	if miss {
+		t.Error("GetAlgorithmState: should not find state for unknown algorithmID")
+	}
+}
+
+func TestTieredObjectStore_ArchiveEdge(t *testing.T) {
+	hot := NewHotObjectCache(100)
+	warm := newMemoryObjectStore()
+	cold := NewInMemoryColdStore()
+	tiered := NewTieredObjectStore(hot, warm, cold)
+
+	warmEdges := newMemoryGraphEdgeStore()
+	warmEdges.PutEdge(schemas.Edge{EdgeID: "e_arc", SrcObjectID: "m1", DstObjectID: "m2", EdgeType: "derived_from"})
+
+	tiered.ArchiveEdge(warmEdges, "e_arc")
+
+	if _, ok := warmEdges.GetEdge("e_arc"); ok {
+		t.Error("ArchiveEdge: edge should be removed from warm store")
+	}
+	if _, ok := cold.GetEdge("e_arc"); !ok {
+		t.Error("ArchiveEdge: edge should exist in cold store")
 	}
 }

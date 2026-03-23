@@ -45,7 +45,7 @@ func NewService() *Service {
 func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	text := extractText(ev)
 	namespace := resolveNamespace(ev)
-	memoryID := fmt.Sprintf("mem_%s", ev.EventID)
+	memoryID := schemas.IDPrefixMemory + ev.EventID
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	record := dataplane.IngestRecord{
@@ -77,7 +77,7 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 
 	version := schemas.ObjectVersion{
 		ObjectID:        memoryID,
-		ObjectType:      "memory",
+		ObjectType:      string(schemas.ObjectTypeMemory),
 		Version:         ev.LogicalTS,
 		MutationEventID: ev.EventID,
 		ValidFrom:       now,
@@ -107,7 +107,7 @@ func (s *Service) ProjectEvent(ev schemas.Event) dataplane.IngestRecord {
 }
 
 func extractText(ev schemas.Event) string {
-	if msg, ok := ev.Payload["text"]; ok {
+	if msg, ok := ev.Payload[schemas.PayloadKeyText]; ok {
 		if value, ok := msg.(string); ok {
 			return value
 		}
@@ -124,16 +124,16 @@ func resolveNamespace(ev schemas.Event) string {
 
 func resolveMemoryType(ev schemas.Event) string {
 	switch ev.EventType {
-	case "user_message", "assistant_message":
-		return "episodic"
-	case "critique_generated", "reflection":
-		return "reflective"
-	case "plan_updated":
-		return "procedural"
-	case "tool_result_returned":
-		return "factual"
+	case string(schemas.EventTypeUserMessage), string(schemas.EventTypeAssistantMessage):
+		return string(schemas.MemoryTypeEpisodic)
+	case string(schemas.EventTypeCritiqueGenerated), string(schemas.EventTypeReflection):
+		return string(schemas.MemoryTypeReflective)
+	case string(schemas.EventTypePlanUpdated):
+		return string(schemas.MemoryTypeProcedural)
+	case string(schemas.EventTypeToolResultReturned):
+		return string(schemas.MemoryTypeFactual)
 	default:
-		return "episodic"
+		return string(schemas.MemoryTypeEpisodic)
 	}
 }
 
@@ -148,39 +148,39 @@ func deriveEdges(ev schemas.Event, memoryID string) []schemas.Edge {
 
 	if ev.SessionID != "" {
 		edges = append(edges, schemas.Edge{
-			EdgeID:        fmt.Sprintf("edge_%s_session", memoryID),
+			EdgeID:        schemas.IDPrefixEdge + memoryID + "_session",
 			SrcObjectID:   memoryID,
-			SrcType:       "memory",
-			EdgeType:      "belongs_to_session",
+			SrcType:       string(schemas.ObjectTypeMemory),
+			EdgeType:      string(schemas.EdgeTypeBelongsToSession),
 			DstObjectID:   ev.SessionID,
-			DstType:       "session",
-			Weight:        1.0,
+			DstType:       string(schemas.ObjectTypeSession),
+			Weight:        schemas.DefaultEdgeWeight,
 			ProvenanceRef: ev.EventID,
 			CreatedTS:     now,
 		})
 	}
 	if ev.AgentID != "" {
 		edges = append(edges, schemas.Edge{
-			EdgeID:        fmt.Sprintf("edge_%s_agent", memoryID),
+			EdgeID:        schemas.IDPrefixEdge + memoryID + "_agent",
 			SrcObjectID:   memoryID,
-			SrcType:       "memory",
-			EdgeType:      "owned_by_agent",
+			SrcType:       string(schemas.ObjectTypeMemory),
+			EdgeType:      string(schemas.EdgeTypeOwnedByAgent),
 			DstObjectID:   ev.AgentID,
-			DstType:       "agent",
-			Weight:        1.0,
+			DstType:       string(schemas.ObjectTypeAgent),
+			Weight:        schemas.DefaultEdgeWeight,
 			ProvenanceRef: ev.EventID,
 			CreatedTS:     now,
 		})
 	}
 	for i, ref := range ev.CausalRefs {
 		edges = append(edges, schemas.Edge{
-			EdgeID:        fmt.Sprintf("edge_%s_causal_%d", memoryID, i),
+			EdgeID:        fmt.Sprintf("%s%s_causal_%d", schemas.IDPrefixEdge, memoryID, i),
 			SrcObjectID:   memoryID,
-			SrcType:       "memory",
-			EdgeType:      "derived_from",
+			SrcType:       string(schemas.ObjectTypeMemory),
+			EdgeType:      string(schemas.EdgeTypeDerivedFrom),
 			DstObjectID:   ref,
-			DstType:       "event",
-			Weight:        0.8,
+			DstType:       string(schemas.ObjectTypeEvent),
+			Weight:        schemas.DefaultCausalWeight,
 			ProvenanceRef: ev.EventID,
 			CreatedTS:     now,
 		})

@@ -10,6 +10,8 @@ type compositeRuntimeStorage struct {
 	ver SnapshotVersionStore
 	pol PolicyStore
 	ctr ShareContractStore
+	adt AuditStore
+	alg MemoryAlgorithmStateStore
 	hot *HotObjectCache
 }
 
@@ -36,6 +38,8 @@ func NewCompositeRuntimeStorage(
 		ver: ver,
 		pol: pol,
 		ctr: ctr,
+		adt: newInMemoryAuditStore(),
+		alg: newInMemoryAlgorithmStateStore(),
 		hot: hot,
 	}
 }
@@ -47,4 +51,6 @@ func (c *compositeRuntimeStorage) Edges() GraphEdgeStore        { return c.edg }
 func (c *compositeRuntimeStorage) Versions() SnapshotVersionStore { return c.ver }
 func (c *compositeRuntimeStorage) Policies() PolicyStore       { return c.pol }
 func (c *compositeRuntimeStorage) Contracts() ShareContractStore { return c.ctr }
+func (c *compositeRuntimeStorage) Audits() AuditStore          { return c.adt }
+func (c *compositeRuntimeStorage) AlgorithmStates() MemoryAlgorithmStateStore { return c.alg }
 func (c *compositeRuntimeStorage) HotCache() *HotObjectCache   { return c.hot }

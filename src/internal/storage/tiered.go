@@ -58,9 +58,9 @@ func (e *HotEntry) hotness() float64 {
 // objects (recent session memories, high-salience facts, current agent states).
 // It is the fast lane of the memory activation path.
 type HotObjectCache struct {
-	mu       sync.RWMutex
-	entries  map[string]*HotEntry
-	maxSize  int
+	mu      sync.RWMutex
+	entries map[string]*HotEntry
+	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
 	order []string
 }
@@ -234,51 +234,114 @@ func (t *TieredObjectStore) ArchiveMemory(memoryID string) {
 	}
 }
 
+// ArchiveEdge moves an edge from the warm GraphEdgeStore to the cold tier and
+// deletes it from warm.  This is typically called when both endpoints have been
+// archived, preventing dangling warm-tier edges (R6 / R7 fix).
+func (t *TieredObjectStore) ArchiveEdge(warmEdges GraphEdgeStore, edgeID string) {
+	if e, ok := warmEdges.GetEdge(edgeID); ok {
+		t.cold.PutEdge(e)
+		warmEdges.DeleteEdge(edgeID)
+	}
+}
+
 // ─── ColdObjectStore ─────────────────────────────────────────────────────────
 
 // ColdObjectStore is the interface for the cold/disk tier.
 // In production this would be backed by a file-based or object storage engine.
+//
+// TODO(member-D): extend with PutArtifact/GetArtifact when artifact cold-tier
+// promotion is needed.
 type ColdObjectStore interface {
 	PutMemory(m schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
 	PutAgent(a schemas.Agent)
 	GetAgent(id string) (schemas.Agent, bool)
+	PutState(s schemas.State)
+	GetState(id string) (schemas.State, bool)
+	// Edge cold-tier (R6): edges archived when their src/dst memory is promoted to cold.
+	PutEdge(e schemas.Edge)
+	GetEdge(id string) (schemas.Edge, bool)
+	ListEdges() []schemas.Edge
 }
 
 // InMemoryColdStore is the in-process simulation of the cold tier.
 // It is functionally identical to the warm store but models the architectural
 // boundary.  A real implementation would replace this with a file/RocksDB backend.
 type InMemoryColdStore struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	memories map[string]schemas.Memory
 	agents   map[string]schemas.Agent
+	states   map[string]schemas.State
+	edges    map[string]schemas.Edge
 }
 
 func NewInMemoryColdStore() *InMemoryColdStore {
 	return &InMemoryColdStore{
 		memories: map[string]schemas.Memory{},
 		agents:   map[string]schemas.Agent{},
+		states:   map[string]schemas.State{},
+		edges:    map[string]schemas.Edge{},
 	}
 }
 
 func (s *InMemoryColdStore) PutMemory(m schemas.Memory) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.memories[m.MemoryID] = m
 }
 
 func (s *InMemoryColdStore) GetMemory(id string) (schemas.Memory, bool) {
-	s.mu.RLock(); defer s.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	m, ok := s.memories[id]
 	return m, ok
 }
 
 func (s *InMemoryColdStore) PutAgent(a schemas.Agent) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.agents[a.AgentID] = a
 }
 
 func (s *InMemoryColdStore) GetAgent(id string) (schemas.Agent, bool) {
-	s.mu.RLock(); defer s.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	a, ok := s.agents[id]
 	return a, ok
+}
+
+func (s *InMemoryColdStore) PutState(st schemas.State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states[st.StateID] = st
+}
+
+func (s *InMemoryColdStore) GetState(id string) (schemas.State, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	st, ok := s.states[id]
+	return st, ok
+}
+
+func (s *InMemoryColdStore) PutEdge(e schemas.Edge) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.edges[e.EdgeID] = e
+}
+
+func (s *InMemoryColdStore) GetEdge(id string) (schemas.Edge, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.edges[id]
+	return e, ok
+}
+
+func (s *InMemoryColdStore) ListEdges() []schemas.Edge {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]schemas.Edge, 0, len(s.edges))
+	for _, e := range s.edges {
+		out = append(out, e)
+	}
+	return out
 }
