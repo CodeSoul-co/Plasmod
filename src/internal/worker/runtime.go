@@ -13,16 +13,16 @@ import (
 )
 
 type Runtime struct {
-	wal          eventbackbone.WAL
-	bus          eventbackbone.Bus
-	plane        dataplane.DataPlane
-	coord        *coordinator.Hub
-	policy       *semantic.PolicyEngine
-	planner   semantic.QueryPlanner
-	assembler *evidence.Assembler
-	nodeManager  *nodes.Manager
-	storage      storage.RuntimeStorage
-	ingest       IngestWorker
+	wal         eventbackbone.WAL
+	bus         eventbackbone.Bus
+	plane       dataplane.DataPlane
+	coord       *coordinator.Hub
+	policy      *semantic.PolicyEngine
+	planner     semantic.QueryPlanner
+	assembler   *evidence.Assembler
+	nodeManager *nodes.Manager
+	storage     storage.RuntimeStorage
+	ingest      IngestWorker
 }
 
 func NewRuntime(
@@ -43,16 +43,16 @@ func NewRuntime(
 		sched = coord.Schedule
 	}
 	return &Runtime{
-		wal:          wal,
-		bus:          bus,
-		plane:        plane,
-		coord:        coord,
-		policy:    policy,
-		planner:   planner,
-		assembler: assembler,
-		nodeManager:  nodeManager,
-		storage:      store,
-		ingest:       NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
+		wal:         wal,
+		bus:         bus,
+		plane:       plane,
+		coord:       coord,
+		policy:      policy,
+		planner:     planner,
+		assembler:   assembler,
+		nodeManager: nodeManager,
+		storage:     store,
+		ingest:      NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
 	}
 }
 
@@ -82,7 +82,28 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	filters := r.policy.ApplyQueryFilters(req)
-	return r.assembler.Build(result, filters)
+	resp := r.assembler.Build(result, filters)
+	if len(req.EdgeTypes) > 0 {
+		resp.Edges = filterEdgesByType(resp.Edges, req.EdgeTypes)
+	}
+	return resp
+}
+
+func filterEdgesByType(edges []schemas.Edge, allowed []string) []schemas.Edge {
+	if len(allowed) == 0 || len(edges) == 0 {
+		return edges
+	}
+	allow := make(map[string]bool, len(allowed))
+	for _, t := range allowed {
+		allow[t] = true
+	}
+	out := make([]schemas.Edge, 0, len(edges))
+	for _, e := range edges {
+		if allow[e.EdgeType] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (r *Runtime) Topology() map[string]any {

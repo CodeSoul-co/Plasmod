@@ -21,6 +21,7 @@ type QueryRequest struct {
 	TimeWindow          TimeWindow `json:"time_window"`
 	ObjectTypes         []string   `json:"object_types,omitempty"`
 	MemoryTypes         []string   `json:"memory_types,omitempty"`
+	EdgeTypes           []string   `json:"edge_types,omitempty"`
 	RelationConstraints []string   `json:"relation_constraints"`
 	ResponseMode        string     `json:"response_mode"`
 }

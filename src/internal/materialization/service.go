@@ -119,9 +119,6 @@ func resolveNamespace(ev schemas.Event) string {
 	if ev.WorkspaceID != "" {
 		return ev.WorkspaceID
 	}
-	if ev.SessionID != "" {
-		return ev.SessionID
-	}
 	return "default"
 }
 
