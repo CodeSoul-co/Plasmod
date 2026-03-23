@@ -72,6 +72,11 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if strings.TrimSpace(ev.EventID) == "" {
 		return nil, errors.New("event_id is required")
 	}
+	// IngestWorker validation: runs all registered IngestWorkers before WAL
+	// append so malformed events are rejected before touching durable state.
+	if err := r.nodeManager.DispatchIngestValidation(ev); err != nil {
+		return nil, err
+	}
 	entry, err := r.wal.Append(ev)
 	if err != nil {
 		return nil, err
@@ -121,11 +126,13 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		TimeFromUnixTS: plan.TimeFromUnixTS,
 		TimeToUnixTS:   plan.TimeToUnixTS,
 		IncludeGrowing: plan.IncludeGrowing,
+		ObjectTypes:    plan.ObjectTypes,
+		MemoryTypes:    plan.MemoryTypes,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	filters := r.policy.ApplyQueryFilters(req)
-	resp := r.assembler.Build(result, filters)
+	resp := r.assembler.Build(searchInput, result, filters)
 
 	// R1 fix: wire QueryChain workers with pre-fetched edges.
 	// The assembler already does 1-hop BulkEdges expansion internally; here we

@@ -21,18 +21,21 @@ type QueryPlan struct {
 	// ObjectTypes is the effective allow-list (never empty): omitted or empty
 	// request fields are expanded to memory, state, and artifact.
 	ObjectTypes []string
+	// MemoryTypes restricts results to specific memory sub-types
+	// ("episodic", "semantic", "procedural", …).  Empty means all.
+	MemoryTypes []string
 }
 
 // ResponseMode selects the retrieval execution strategy (section 11).
 type ResponseMode string
 
 const (
-	ResponseModeDefault        ResponseMode = "default"
-	ResponseModeSubgraph       ResponseMode = "subgraph"
-	ResponseModeMultiHop       ResponseMode = "multi_hop"
-	ResponseModeSlice          ResponseMode = "slice"
-	ResponseModeAggregate      ResponseMode = "aggregate"
-	ResponseModeProofTrace     ResponseMode = "proof_trace"
+	ResponseModeDefault    ResponseMode = "default"
+	ResponseModeSubgraph   ResponseMode = "subgraph"
+	ResponseModeMultiHop   ResponseMode = "multi_hop"
+	ResponseModeSlice      ResponseMode = "slice"
+	ResponseModeAggregate  ResponseMode = "aggregate"
+	ResponseModeProofTrace ResponseMode = "proof_trace"
 )
 
 // QueryPlanner builds a QueryPlan from a QueryRequest.
@@ -71,6 +74,7 @@ func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 		IncludeGrowing: true,
 		ResponseMode:   mode,
 		ObjectTypes:    EffectiveObjectTypes(req.ObjectTypes),
+		MemoryTypes:    req.MemoryTypes,
 	}
 }
 
@@ -132,9 +136,9 @@ const (
 type AggregateOperatorType string
 
 const (
-	AggregateConsensusReduce  AggregateOperatorType = "consensus_reduce"
-	AggregateConflictCompare  AggregateOperatorType = "conflict_compare"
-	AggregateScopedAggregate  AggregateOperatorType = "scoped_aggregate"
+	AggregateConsensusReduce AggregateOperatorType = "consensus_reduce"
+	AggregateConflictCompare AggregateOperatorType = "conflict_compare"
+	AggregateScopedAggregate AggregateOperatorType = "scoped_aggregate"
 )
 
 // AggregateQueryPlan drives multi-agent aggregation, consensus, or conflict

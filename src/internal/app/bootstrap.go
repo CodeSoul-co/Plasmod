@@ -63,7 +63,11 @@ func BuildServer() (*http.Server, error) {
 	evCache := evidence.NewCache(10000)
 	materializer := materialization.NewService()
 	preCompute := materialization.NewPreComputeService(evCache)
-	assembler := evidence.NewCachedAssembler(evCache).WithEdgeStore(store.Edges())
+	assembler := evidence.NewCachedAssembler(evCache).
+		WithEdgeStore(store.Edges()).
+		WithVersionStore(store.Versions()).
+		WithObjectStore(store.Objects()).
+		WithPolicyStore(store.Policies())
 
 	// ── Data Plane (Tiered: hot → warm → cold) ──────────────────────────────────
 	plane := dataplane.NewTieredDataPlane()

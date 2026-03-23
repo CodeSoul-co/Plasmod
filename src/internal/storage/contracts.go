@@ -8,7 +8,7 @@ import (
 
 type SegmentRecord struct {
 	SegmentID       string    `json:"segment_id"`
-	ObjectType      string 	  `json:"object_type"`
+	ObjectType      string    `json:"object_type"`
 	Namespace       string    `json:"namespace"`
 	TimeBucket      string    `json:"time_bucket"`
 	EmbeddingFamily string    `json:"embedding_family"`
@@ -72,12 +72,17 @@ type GraphEdgeStore interface {
 	GetEdge(id string) (schemas.Edge, bool)
 	DeleteEdge(id string)
 	// EdgesFrom returns all edges originating from the given object.
+	// Implemented with a secondary src-index; O(k) where k = out-degree.
 	EdgesFrom(srcObjectID string) []schemas.Edge
 	// EdgesTo returns all edges pointing to the given object.
+	// Implemented with a secondary dst-index; O(k) where k = in-degree.
 	EdgesTo(dstObjectID string) []schemas.Edge
 	// BulkEdges returns all edges between any of the given object IDs.
 	BulkEdges(objectIDs []string) []schemas.Edge
 	ListEdges() []schemas.Edge
+	// PruneExpiredEdges removes all edges whose ExpiresAt is non-empty and
+	// lexicographically ≤ now (RFC-3339 string).  Returns the count pruned.
+	PruneExpiredEdges(now string) int
 }
 
 // SnapshotVersionStore persists object version / snapshot records.

@@ -8,12 +8,13 @@ import (
 
 func TestAssembler_Build_Basic(t *testing.T) {
 	a := NewAssembler()
+	input := dataplane.SearchInput{TopK: 10}
 	result := dataplane.SearchOutput{
-		ObjectIDs:      []string{"mem_1", "mem_2"},
+		ObjectIDs:       []string{"mem_1", "mem_2"},
 		ScannedSegments: []string{"shard_a"},
-		Tier:           "warm",
+		Tier:            "warm",
 	}
-	resp := a.Build(result, []string{"visibility:private"})
+	resp := a.Build(input, result, []string{"visibility:private"})
 
 	if len(resp.Objects) != 2 {
 		t.Errorf("Build: Objects len: want 2, got %d", len(resp.Objects))
@@ -46,11 +47,12 @@ func TestCachedAssembler_FragmentMerge(t *testing.T) {
 		Level:         1,
 	})
 
+	input := dataplane.SearchInput{TopK: 5}
 	result := dataplane.SearchOutput{
 		ObjectIDs: []string{"mem_1"},
 		Tier:      "hot",
 	}
-	resp := a.Build(result, nil)
+	resp := a.Build(input, result, nil)
 
 	fragFound := false
 	for _, step := range resp.ProofTrace {
@@ -101,6 +103,65 @@ func TestEvidenceCache_GetMany(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Errorf("GetMany: want 2 populated fragments, got %d", hits)
+	}
+}
+
+func TestAssembler_ObjectTypesFilter(t *testing.T) {
+	a := NewAssembler()
+	input := dataplane.SearchInput{
+		TopK:        10,
+		ObjectTypes: []string{"memory"},
+	}
+	result := dataplane.SearchOutput{
+		ObjectIDs: []string{"mem_1", "state_x", "art_y", "mem_2"},
+		Tier:      "warm",
+	}
+	resp := a.Build(input, result, nil)
+
+	if len(resp.Objects) != 2 {
+		t.Errorf("ObjectTypesFilter: want 2 memory objects, got %d: %v", len(resp.Objects), resp.Objects)
+	}
+	for _, id := range resp.Objects {
+		if id != "mem_1" && id != "mem_2" {
+			t.Errorf("ObjectTypesFilter: unexpected non-memory object in result: %s", id)
+		}
+	}
+	// object_type_filter token should appear in proof trace
+	filterFound := false
+	for _, step := range resp.ProofTrace {
+		if len(step) > 18 && step[:19] == "object_type_filter:" {
+			filterFound = true
+		}
+	}
+	if !filterFound {
+		t.Errorf("ObjectTypesFilter: expected 'object_type_filter:' in ProofTrace, got: %v", resp.ProofTrace)
+	}
+}
+
+func TestAssembler_StateTypeFilter(t *testing.T) {
+	a := NewAssembler()
+	input := dataplane.SearchInput{
+		TopK:        10,
+		ObjectTypes: []string{"state"},
+	}
+	result := dataplane.SearchOutput{
+		ObjectIDs: []string{"mem_1", "state_x", "art_y"},
+	}
+	resp := a.Build(input, result, nil)
+	if len(resp.Objects) != 1 || resp.Objects[0] != "state_x" {
+		t.Errorf("StateTypeFilter: want [state_x], got %v", resp.Objects)
+	}
+}
+
+func TestAssembler_NoFilterPassthrough(t *testing.T) {
+	a := NewAssembler()
+	input := dataplane.SearchInput{TopK: 10} // no ObjectTypes
+	result := dataplane.SearchOutput{
+		ObjectIDs: []string{"mem_1", "state_x", "art_y"},
+	}
+	resp := a.Build(input, result, nil)
+	if len(resp.Objects) != 3 {
+		t.Errorf("NoFilter: want 3 objects, got %d", len(resp.Objects))
 	}
 }
 
