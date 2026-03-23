@@ -818,7 +818,7 @@ _Go side (B owns the Go↔Python contract boundary):_
 - [x] `GET /v1/admin/topology` — verify no retrieval-related worker is in error/degraded state
 
 _Python / C++ side:_
-- [ ] `cd integration_tests/python && python run_all.py` — all green
+- [x] `cd integration_tests/python && python run_all.py` — all green
 - [x] `proof_trace` assertion in Python tests uses `>= 1` not exact length
 - [x] SDK `query()` kwargs verified against current `QueryRequest` JSON shape
 - [x] `ingest_event()` includes `workspace_id` field
