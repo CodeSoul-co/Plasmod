@@ -35,6 +35,9 @@ type Manager struct {
 	// Cognitive Compression
 	summarizationWorkers []SummarizationWorker
 
+	// Memory algorithm dispatch
+	algoDispatchWorkers []AlgorithmDispatchWorker
+
 	// Structure Layer — subgraph execution
 	subgraphWorkers []SubgraphExecutorWorker
 }
@@ -58,6 +61,7 @@ func CreateManager() *Manager {
 		commWorkers:          []CommunicationWorker{},
 		microBatchWorkers:    []MicroBatchScheduler{},
 		summarizationWorkers: []SummarizationWorker{},
+		algoDispatchWorkers:  []AlgorithmDispatchWorker{},
 		subgraphWorkers:      []SubgraphExecutorWorker{},
 	}
 }
@@ -306,6 +310,12 @@ func (m *Manager) RegisterSummarization(w SummarizationWorker) {
 	m.summarizationWorkers = append(m.summarizationWorkers, w)
 }
 
+func (m *Manager) RegisterAlgorithmDispatch(w AlgorithmDispatchWorker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.algoDispatchWorkers = append(m.algoDispatchWorkers, w)
+}
+
 // ─── New Dispatch methods ────────────────────────────────────────────────────────
 
 // DispatchIngestValidation validates ev through all registered IngestWorkers.
@@ -411,6 +421,20 @@ func (m *Manager) FlushMicroBatch() []any {
 	return all
 }
 
+func (m *Manager) DispatchAlgorithm(
+	operation string,
+	memoryIDs []string,
+	query, nowTS, agentID, sessionID string,
+	signals map[string]float64,
+) (schemas.AlgorithmDispatchOutput, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.algoDispatchWorkers) == 0 {
+		return schemas.AlgorithmDispatchOutput{Operation: operation}, nil
+	}
+	return m.algoDispatchWorkers[0].Dispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
+}
+
 // ─── Topology ─────────────────────────────────────────────────────────────────
 
 func (m *Manager) Topology() []NodeInfo {
@@ -466,6 +490,9 @@ func (m *Manager) Topology() []NodeInfo {
 		out = append(out, n.Info())
 	}
 	for _, n := range m.summarizationWorkers {
+		out = append(out, n.Info())
+	}
+	for _, n := range m.algoDispatchWorkers {
 		out = append(out, n.Info())
 	}
 	for _, n := range m.subgraphWorkers {

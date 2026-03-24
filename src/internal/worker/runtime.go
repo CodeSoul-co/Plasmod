@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"strings"
+	"time"
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
 	"andb/src/internal/eventbackbone"
@@ -95,6 +96,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+	result.ObjectIDs = r.rebuildWithMemoryView(req, result.ObjectIDs)
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
@@ -145,6 +147,89 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	return resp
+}
+
+func (r *Runtime) rebuildWithMemoryView(req schemas.QueryRequest, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	memories := make([]schemas.Memory, 0, len(ids))
+	memoryIDs := make([]string, 0, len(ids))
+	otherIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if m, ok := r.storage.Objects().GetMemory(id); ok {
+			memories = append(memories, m)
+			memoryIDs = append(memoryIDs, id)
+			continue
+		}
+		otherIDs = append(otherIDs, id)
+	}
+	if len(memories) == 0 {
+		return ids
+	}
+
+	visibleScopes := []string{
+		string(schemas.MemoryScopePrivateUser),
+		string(schemas.MemoryScopePrivateAgent),
+		string(schemas.MemoryScopeSessionLocal),
+		string(schemas.MemoryScopeWorkspaceShared),
+		string(schemas.MemoryScopeTeamShared),
+		string(schemas.MemoryScopeGlobalShared),
+		string(schemas.MemoryScopeRestrictedShared),
+	}
+	snapshot := &schemas.AccessGraphSnapshot{
+		SnapshotID:    "local-query",
+		AgentID:       req.AgentID,
+		SessionID:     req.SessionID,
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		VisibleScopes: visibleScopes,
+	}
+
+	scorer := func(query string, candidates []schemas.Memory, ctx schemas.AlgorithmContext) []schemas.ScoredMemory {
+		candidateIDs := make([]string, 0, len(candidates))
+		byID := make(map[string]schemas.Memory, len(candidates))
+		for _, c := range candidates {
+			candidateIDs = append(candidateIDs, c.MemoryID)
+			byID[c.MemoryID] = c
+		}
+		out, err := r.nodeManager.DispatchAlgorithm(
+			"recall",
+			candidateIDs,
+			query,
+			ctx.Timestamp,
+			req.AgentID,
+			req.SessionID,
+			nil,
+		)
+		if err != nil || len(out.ScoredRefs) == 0 {
+			return nil
+		}
+		scored := make([]schemas.ScoredMemory, 0, len(out.ScoredRefs))
+		for i, id := range out.ScoredRefs {
+			if m, ok := byID[id]; ok {
+				scored = append(scored, schemas.ScoredMemory{
+					Memory: m,
+					Score:  float64(len(out.ScoredRefs) - i),
+					Signal: "algorithm_dispatch_recall",
+				})
+			}
+		}
+		return scored
+	}
+
+	view := storage.NewMemoryViewBuilder(req.SessionID, req.TenantID, req.AgentID).
+		WithSnapshot(snapshot).
+		WithPolicyStore(r.storage.Policies()).
+		WithAlgorithmScorer(scorer).
+		Build(memories, req.QueryText)
+
+	out := make([]string, 0, len(view.VisibleMemoryRefs)+len(otherIDs))
+	out = append(out, view.VisibleMemoryRefs...)
+	out = append(out, otherIDs...)
+	if len(out) == 0 {
+		return ids
+	}
+	return out
 }
 
 func filterEdgesByType(edges []schemas.Edge, allowed []string) []schemas.Edge {

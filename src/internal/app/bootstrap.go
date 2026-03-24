@@ -15,6 +15,7 @@ import (
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
+	"andb/src/internal/worker/cognitive"
 	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
@@ -158,6 +159,13 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Cognitive Compression workers ─────────────────────────────────────────
 	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
+		"algo-dispatch-1",
+		baseline.NewDefault(),
+		store.Objects(),
+		store.AlgorithmStates(),
+		store.Audits(),
+	))
 
 	coord.Registry.Register("node_manager", nodeManager)
 
