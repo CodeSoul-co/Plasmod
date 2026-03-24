@@ -6,47 +6,16 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 
 ## What is implemented
 
-<<<<<<< HEAD
 - Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes
-=======
-## Project Status
-
-This repository is in the **runnable-prototype** stage.  The main ingest/query path is fully wired end-to-end.
-
-What is implemented today:
-
-- Runnable Go server in [`src/cmd/server/main.go`](src/cmd/server/main.go) with 11 HTTP routes (incl. `GET /v1/admin/storage`)
->>>>>>> a2c07755 (feat(storage): add memory and Badger backends with hybrid composition)
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
-<<<<<<< HEAD
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index) → **cold** (archived tier), behind a unified `DataPlane` interface
-=======
-- `MaterializeEvent` → `MaterializationResult` that produces a canonical `Memory`, `ObjectVersion`, typed `Edge` records, and optional `State` / `Artifact` (+ versions) at ingest time
-- Three-tier data plane: **hot** (in-memory LRU cache) → **warm** (full segment index) → **cold** (archived tier), all behind a unified `DataPlane` interface
->>>>>>> 0c64d888 (feat(worker): extract PipelineIngestWorker and wire ingest module registry)
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
-<<<<<<< HEAD
 - `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, and `AppliedFilters` on every query
 - Module-level test coverage: 12 packages each with a `*_test.go` file
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
-=======
-- `QueryResponse` returns `Objects`, `Edges`, `Provenance`, and `ProofTrace` in every response
-- Module-level test coverage: 12 packages each with their own `*_test.go` file
-- Python SDK bootstrap and demo scripts
-- Architecture, schema, and milestone documentation
-
-**Storage backends (design):** Memory vs Badger vs hybrid per sub-store — see [`STORAGE_BACKEND.md`](STORAGE_BACKEND.md) (implementation may be in progress).
-
-What is still intentionally lightweight in v1:
-
-- Distributed runtime and persistence
-- Full policy/governance execution
-- Deep proof construction beyond 1-hop
-- Production-grade indexing and optimization
->>>>>>> a2c07755 (feat(storage): add memory and Badger backends with hybrid composition)
 
 ## Why This Project Exists
 
@@ -83,37 +52,29 @@ The system is organized around three execution layers:
 ```
 HTTP API (access)
     └─ Runtime (worker)
-          ├─ PipelineIngestWorker.Accept  (ingest pipeline; see below)
-          │     └─ WAL + Bus  (eventbackbone)
-          │     └─ MaterializeEvent → Memory / ObjectVersion / Edges / optional State·Artifact  (materialization)
-          │     └─ PreComputeService → EvidenceFragment cache  (materialization)
-          │     └─ nodeManager.DispatchIngest → TieredDataPlane.Ingest  (dataplane + worker nodes)
-          └─ Assembler.Build → BulkEdges + EvidenceCache  (query path only)
+          ├─ WAL + Bus  (eventbackbone)
+          ├─ MaterializeEvent → Memory / ObjectVersion / Edges  (materialization)
+          ├─ PreComputeService → EvidenceFragment cache  (materialization)
+          ├─ HotCache → TieredDataPlane (hot→warm→cold)  (dataplane)
+          └─ Assembler.Build → BulkEdges + EvidenceCache  (evidence)
 ```
 
-**Ingest path (code):** `API → Runtime.SubmitIngest → PipelineIngestWorker.Accept` — internally:
-
-`validate(event_id) → WAL.Append → MaterializeEvent → PutMemory/PutState/PutArtifact + PutVersion + PutEdge → PreCompute → HotCache (if salient) → DispatchIngest(data/index nodes) → DataPlane.Ingest`
-
-The active pipeline is also registered on the coordinator **module registry** as `ingest_worker` (see `app.BuildServer`). When a `WorkerScheduler` is attached, each successful `Accept` records a `WorkerTypeIngest` dispatch/complete pair for metrics.
+**Ingest path:**
+`API → WAL.Append → MaterializeEvent → PutMemory + PutVersion + PutEdge → PreCompute → HotCache → TieredDataPlane.Ingest`
 
 **Query path:**
 `API → TieredDataPlane.Search → Assembler.Build → EvidenceCache.GetMany + BulkEdges(1-hop) → QueryResponse{Objects, Edges, ProofTrace}`
 
 Code layout:
 
-<<<<<<< HEAD
 - [`src/internal/access`](src/internal/access): HTTP gateway, 14 routes including ingest, query, and canonical CRUD
-=======
-- [`src/internal/access`](src/internal/access): HTTP gateway, 11 routes including ingest, query, canonical CRUD, and `GET /v1/admin/storage`
->>>>>>> a2c07755 (feat(storage): add memory and Badger backends with hybrid composition)
 - [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
 - [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
-- [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` (delegates to `IngestWorker.Accept`), `PipelineIngestWorker`, `Runtime.ExecuteQuery`, `Runtime.IngestWorker()` / registry key `ingest_worker`
+- [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
 - [`src/internal/worker/nodes`](src/internal/worker/nodes): 14 worker-node type contracts (data, index, query, memory extraction, graph, proof trace, etc.)
 - [`src/internal/dataplane`](src/internal/dataplane): `TieredDataPlane` (hot/warm/cold), `SegmentDataPlane`, and `DataPlane` interface
 - [`src/internal/dataplane/segmentstore`](src/internal/dataplane/segmentstore): `Index`, `Shard`, `Searcher`, `Planner` — the physical segment layer
-- [`src/internal/materialization`](src/internal/materialization): `Service.MaterializeEvent` → `MaterializationResult` (record, memory, version, edges, optional state/artifact); `PreComputeService`
+- [`src/internal/materialization`](src/internal/materialization): `Service.MaterializeEvent` → `MaterializationResult{Record, Memory, Version, Edges}`; `PreComputeService`
 - [`src/internal/evidence`](src/internal/evidence): `Assembler` (cache-aware, graph-expansion via `WithEdgeStore`), `EvidenceFragment`, `Cache`
 - [`src/internal/storage`](src/internal/storage): 7 stores + `HotObjectCache` + `TieredObjectStore`; `GraphEdgeStore` with `BulkEdges`/`DeleteEdge`
 - [`src/internal/semantic`](src/internal/semantic): `ObjectModelRegistry`, `PolicyEngine`, 5 query plan types
@@ -170,21 +131,96 @@ GraphRelationWorker    (derived_from edge)
 Response
 ```
 
-#### 🟡 Memory Pipeline Chain — cognitive upgrade ladder
+#### 🟡 Memory Pipeline Chain — six-layer cognitive management
+
+The memory pipeline implements the six-layer memory management architecture from the design specification.  Every path honours the core principle: **upper-layer agents may only consume `MemoryView`; they never access the raw object store or index directly.**
+
+The pipeline separates **fixed generic infrastructure** from **algorithm-owned pipeline workers**:
+
+- `AlgorithmDispatchWorker` and `GraphRelationWorker` are fixed nodes present in every deployment (`worker/cognitive/`).
+- Everything else — extraction, consolidation, summarization, governance — is owned by the algorithm and lives under `worker/cognitive/<algo>/`.  Different algorithms may implement these stages completely differently, or omit stages they do not need.
+
+**Materialization path — write-time (generic design):**
 
 ```
-Event
+Event / Interaction
   ↓
-MemoryExtractionWorker    (level-0 episodic memory)
+[algo pipeline: materialization workers]   ← algorithm-specific
+    e.g. raw event → level-0 memory → level-1 consolidation → level-2 summary
   ↓
-MemoryConsolidationWorker (level-0 → level-1 semantic / procedural)
+GraphRelationWorker                        ← fixed
+    relation binding: owned_by · derived_from · scoped_to · observed_by
   ↓
-SummarizationWorker       (level-1 / level-2 compression)
+AlgorithmDispatchWorker [ingest]           ← fixed
+    algo.Ingest() → MemoryAlgorithmState persisted
+    AlgorithmStateRef set on Memory
   ↓
-ReflectionPolicyWorker    (TTL decay · quarantine · confidence override)
-  ↓
-PolicyDecisionLog
+[algo pipeline: governance workers]        ← algorithm-specific
+    e.g. TTL / quarantine / confidence / salience rules
+    → PolicyDecisionLog + AuditStore
 ```
+
+**Materialization path — write-time (baseline algorithm concrete example):**
+
+```
+Event / Interaction
+  ↓
+baseline.MemoryExtractionWorker       level-0 episodic memory, LifecycleState=active
+  ↓
+baseline.MemoryConsolidationWorker    level-0 → level-1 semantic/procedural
+  ↓
+baseline.SummarizationWorker          level-1/level-2 compression
+  ↓
+GraphRelationWorker
+  ↓
+AlgorithmDispatchWorker [ingest]
+  ↓
+baseline.ReflectionPolicyWorker
+    TTL expiry    → LifecycleState = decayed
+    quarantine    → LifecycleState = quarantined
+    confidence override · salience decay
+    → PolicyDecisionLog + AuditStore
+```
+
+**Background maintenance path — async (generic, driven by AlgorithmDispatchWorker):**
+
+```
+Scheduler trigger
+  ↓
+AlgorithmDispatchWorker [decay | compress | summarize]
+    algo.Decay(nowTS)       → MemoryAlgorithmState · SuggestedLifecycleState honoured verbatim
+    algo.Compress(memories) → derived Memory objects stored verbatim
+    algo.Summarize(memories)→ summary Memory objects stored verbatim
+    AuditRecord emitted for each state update
+```
+
+**Retrieval path — read-time (generic):**
+
+```
+QueryRequest
+  ↓
+AlgorithmDispatchWorker [recall]
+    algo.Recall(query, candidates) → ScoredRefs in algorithm order
+  ↓
+MemoryViewBuilder
+    1. scope filter  — AccessGraphSnapshot.VisibleScopes
+    2. policy filter — quarantined / hidden / logically-deleted excluded
+    3. algorithm rerank — AlgorithmScorer func (pluggable)
+    4. MemoryView assembled
+  ↓
+MemoryView{RequestID, ResolvedScope, VisibleMemoryRefs, Payloads,
+           AlgorithmNotes, ConstructionTrace}
+  ↓
+Query Worker / Planner / Reasoner  (consumes MemoryView only)
+```
+
+**Algorithm plugin contract:**
+
+- The `MemoryManagementAlgorithm` interface (`schemas/memory_management.go`) defines: `Ingest · Update · Recall · Compress · Decay · Summarize · ExportState · LoadState`.
+- Lifecycle transitions are driven **exclusively** by `MemoryAlgorithmState.SuggestedLifecycleState` — the dispatcher applies no thresholds or heuristics of its own.
+- Algorithm state is persisted in `MemoryAlgorithmStateStore` keyed by `(memory_id, algorithm_id)`, leaving the canonical `Memory` schema unchanged.
+- Each algorithm is self-contained under `worker/cognitive/<algo>/` and registers its own pipeline workers; other algorithms (e.g. MemoryBank) plug in by implementing this interface without affecting existing deployments.
+
 #### 🔵 Query Chain — retrieval + reasoning
 
 ```
@@ -201,17 +237,43 @@ ProofTraceWorker       (explainable trace assembly)
 QueryResponse{Objects, Edges, Provenance, ProofTrace}
 ```
 
-#### 🟢 Collaboration Chain — multi-agent coordination
+#### 🟢 Collaboration Chain — multi-agent coordination with governed sharing
+
+Memory sharing in a multi-agent system is **not** copying a record to a shared namespace.  It is a **controlled projection** — the original Memory retains its provenance and owner; the target agent receives a scope-filtered, policy-conditioned view.
 
 ```
 Agent A writes Memory
   ↓
-ConflictMergeWorker    (last-writer-wins, conflict_resolved edge)
+ConflictMergeWorker          (last-writer-wins · causal merge · conflict_resolved edge)
   ↓
-CommunicationWorker    (copy winner → target agent memory space)
+ShareContract evaluation     (read_acl · write_acl · derive_acl
+                               ttl_policy · consistency_level · merge_policy
+                               quarantine_policy · audit_policy)
   ↓
-Shared Memory updated
+AccessGraphSnapshot resolved (user → agent call-graph · agent → resource access-graph
+                               → VisibleScopes for requesting agent at this moment)
+  ↓
+CommunicationWorker          (projection, not copy:
+                               raw Memory keeps original owner + provenance
+                               target agent receives scope-bound MemoryView)
+  ↓
+AuditRecord written          (record_id · target_memory_id · operation_type=share
+                               actor_id · policy_snapshot_id · decision · timestamp)
+  ↓
+Target agent reads via MemoryViewBuilder
+    scope filter  → AccessGraphSnapshot.VisibleScopes
+    policy filter → quarantine / hidden / logically-deleted excluded
+    algorithm rerank → pluggable AlgorithmScorer
+    → MemoryView delivered to target Query Worker
 ```
+
+**Key design principles:**
+
+- **Sharing is projection, not copy** — provenance, owner, and base payload remain with the original object; what the target sees is a governance-conditioned view.
+- **Access boundaries are dynamic** — `AccessGraphSnapshot` resolves visible scopes at request time, not as a static ACL field on the memory record.
+- **Every share and projection is audited** — `AuditStore` records each share, read, algorithm-update, and policy-change action.
+- **`ShareContract` is the protocol unit** — it encodes `read_acl`, `write_acl`, `derive_acl`, `ttl_policy`, `consistency_level`, `merge_policy`, `quarantine_policy`, and `audit_policy` as a first-class object rather than scattered metadata fields.
+
 ### ExecutionOrchestrator
 
 The `Orchestrator` provides a priority-aware worker pool over the four chains:
@@ -292,17 +354,6 @@ python scripts/seed_mock_data.py
 python scripts/run_demo.py
 ```
 
-### Validate ingest path locally (dev helper)
-
-Use the week2 mock batch to validate ingest materialization quickly:
-
-```bash
-powershell -ExecutionPolicy Bypass -File scripts/dev/run-mock-events-week2.ps1
-```
-
-This posts events from `scripts/dev/mock-events-week2.json` and prints ingest acknowledgements.
-For endpoint details, ACK fields (`memory_id`, optional `state_id` / `artifact_id`), runtime order, and implementation pointers (`PipelineIngestWorker`, `ingest_worker` registry), see [`docs/api/ingest.md`](docs/api/ingest.md).
-
 ### Run tests
 
 ```bash
@@ -358,33 +409,7 @@ cd integration_tests/python && python run_all.py
 
 ### Optional: S3/MinIO dataflow test
 
-This subsection covers (a) **local runtime storage: memory vs disk** (recent change) and (b) **optional S3/MinIO round-trip tests**. The S3/MinIO flow is separate from where ANDB keeps its canonical objects on the machine.
-
-#### The two storage interfaces — memory vs disk
-
-Here **「两个接口」** means **two implementations of the same `RuntimeStorage` contract**: one keeps data **in process memory**, one persists via **Badger on disk** (same public HTTP API either way).
-
-| 接口 / 实现 | 数据放哪 | 说明 |
-|-------------|----------|------|
-| **内存** | 进程内 map（`MemoryRuntimeStorage`） | 默认；快；**重启即丢** |
-| **磁盘** | Badger 目录 `ANDB_DATA_DIR`（默认 `.andb_data`） | `ANDB_STORAGE=disk` 或 hybrid 里把某个子 store 设为 `disk`；**可跨重启保留** |
-
-测试或磁盘空间紧张时可用 **`ANDB_BADGER_INMEMORY=true`**：仍走 Badger 代码路径，但 **不落本地文件**（数据只在内存里的 Badger 实例中）。
-
-**混合：** `ANDB_STORAGE=hybrid` + `ANDB_STORE_*` 可指定每个子 store（segments、objects 等）单独用内存或磁盘。详见 [`STORAGE_BACKEND.md`](STORAGE_BACKEND.md)。
-
-**查看当前解析结果：** `GET /v1/admin/storage`（v1 仍 **不** 持久化 WAL，`wal_persistence` 为 `false`）。
-
-#### S3/MinIO — dev-only admin routes (not the memory/disk split)
-
-Optional **object export to S3-compatible storage** uses **two `POST` admin handlers** (SigV4; MinIO is the usual local server). These are **only** for validating upload/read-back to **remote** object storage — they do **not** choose between “save in RAM” vs “save on local disk” (that is entirely `RuntimeStorage` + env vars above).
-
-| Endpoint | What it does |
-|----------|----------------|
-| **`POST /v1/admin/s3/export`** | Sample ingest + query in-process → one capture JSON **PUT** to bucket → **GET** back → `roundtrip_ok` |
-| **`POST /v1/admin/s3/snapshot-export`** | Writes snapshot-style keys under `S3_PREFIX` (metadata, Avro manifest, segment JSON) → read back each → per-artifact `roundtrip_ok` |
-
-The **Go integration test** `s3_dataflow_test.go` and the **Python** layer follow the same pattern as **`/v1/admin/s3/export`**: ingest → query → upload capture JSON → read back for byte-level verification. Enable them with `ANDB_RUN_S3_TESTS=true` after MinIO is up.
+The S3 test (available in both Go and Python layers) ingests an event, runs a query, serialises the full capture as JSON, writes it to a MinIO bucket, and reads it back to verify byte-exact round-trip integrity.
 
 **Start MinIO locally** (choose one):
 
@@ -419,10 +444,6 @@ make integration-test
 |---|---|---|
 | `ANDB_BASE_URL` | `http://127.0.0.1:8080` | Server address for all tests |
 | `ANDB_HTTP_TIMEOUT` | `10` | HTTP timeout in seconds (Python SDK) |
-| `ANDB_STORAGE` | `memory` | Runtime store mode: `memory`, `disk`, or `hybrid` (see [`STORAGE_BACKEND.md`](STORAGE_BACKEND.md)) |
-| `ANDB_DATA_DIR` | `.andb_data` | Badger on-disk directory when any sub-store uses `disk` |
-| `ANDB_STORE_*` | _(inherit mode)_ | Per-store override (`SEGMENTS`, `INDEXES`, `OBJECTS`, `EDGES`, `VERSIONS`, `POLICIES`, `CONTRACTS`) — each `memory` or `disk`; meaningful when `ANDB_STORAGE=hybrid` |
-| `ANDB_BADGER_INMEMORY` | _(empty)_ | Set `true` to use in-RAM Badger (no mmap files); useful when the temp disk is full |
 | `ANDB_RUN_S3_TESTS` | _(empty)_ | Set to `true` to enable S3 dataflow tests |
 | `S3_ENDPOINT` | — | MinIO/S3 host:port |
 | `S3_ACCESS_KEY` | — | Access key |
@@ -483,25 +504,8 @@ Additional supporting docs already in the repo:
 
 ### v1 — current
 
-<<<<<<< HEAD
 - End-to-end event ingest and structured-evidence query
 - Tiered hot → warm → cold retrieval over canonical-object projections
-=======
-1. freeze the main flow before scaling modules
-2. freeze shared schemas before parallel implementation
-3. validate the end-to-end path before optimizing internals
-4. keep v1 focused on proving the architectural thesis
-
-If you are starting implementation work, read [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md) first.
-
-## Near-Term Milestone
-
-The implemented v1 prototype can already demonstrate:
-
-- event ingest through the public API (`POST /v1/ingest/events`)
-- `MaterializeEvent` → canonical `Memory`, `ObjectVersion`, `Edge` records, and optional `State` / `Artifact` written to stores
-- tiered retrieval (hot → warm → cold) over canonical-object projections
->>>>>>> 0c64d888 (feat(worker): extract PipelineIngestWorker and wire ingest module registry)
 - 1-hop graph expansion in every `QueryResponse`
 - Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time
 - Go HTTP API with 14 routes, Python SDK, and integration test suite
@@ -532,22 +536,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 > **Status:** All 21 Go internal packages pass (`go test ./src/internal/... exit 0`; `go vet ./... exit 0`). Six worker sub-packages have `*_test.go` files. Pass 2: 5 pipeline correctness fixes. Pass 3: 3 graph/storage structural fixes (R2/R6/R7). Pass 4: cold tier bug fix (TieredDataPlane ↔ TieredObjectStore integration).
 > **Note:** This section exists only on `integration/all-features-test` and is intentionally not present on `main`.
 
-### Integration Lead — Summary of Changes (Pass 2)
-
-| Category | Change | File(s) |
-|---|---|---|
-| **Bug fix** | `QueryRequest.ObjectTypes` / `MemoryTypes` were never propagated — `DefaultQueryPlanner.Build` ignored them, `SearchInput` had no such fields, `Assembler.Build` never filtered. Fixed end-to-end: fields added to `QueryPlan` + `SearchInput`; `Assembler.filterByObjectTypes` uses ID-prefix heuristic + optional `ObjectStore` confirmation | `semantic/operators.go`, `dataplane/contracts.go`, `evidence/assembler.go`, `worker/runtime.go` |
-| **Bug fix** | `ExpandFromRequest` called `OneHopExpand` on only the **first** seed ID — all additional seeds silently dropped, multi-seed subgraph queries returned incomplete graphs | `schemas/graph_expand.go` |
-| **Bug fix** | `Runtime.SubmitIngest` bypassed `IngestWorker` validation — events written to WAL before workers could reject malformed payloads. `DispatchIngestValidation` now runs before `WAL.Append` | `worker/runtime.go` |
-| **Feature** | `QueryResponse.Versions` was always `[]` — `Assembler.resolveVersions` now looks up the latest `ObjectVersion` for every returned object ID; `SnapshotVersionStore` wired via `WithVersionStore` in bootstrap | `evidence/assembler.go`, `app/bootstrap.go` |
-| **Feature** | Governance annotations (quarantine flag, retracted state) now surface in `QueryResponse.ProofTrace` entries prefixed `governance:*`; `PolicyStore` wired via `WithPolicyStore` in bootstrap | `evidence/assembler.go`, `app/bootstrap.go` |
-| **Bug fix** | `CollaborationChain.Run` always returned `LeftMemID` as winner regardless of LWW result → replaced with `DispatchConflictMergeWithWinner` that calls `Run` on the merge worker and returns the actual high-version survivor | `worker/nodes/manager.go`, `worker/chain/chain.go` |
-| **Bug fix** | `S3ColdStore.PutMemory/PutAgent` called `EnsureBucket` via `PutBytes` on **every write** (one HTTP round-trip per cold write) → added `sync.Once` to `S3ColdStore`, removed eager bucket ensure from `PutBytes` | `storage/s3store.go`, `storage/s3util.go` |
-| **Bug fix** | `MicroBatchScheduler.Flush()` was never called anywhere in the codebase; payloads enqueued by `CollaborationChain` accumulated indefinitely → `EventSubscriber.drainWAL` now calls `FlushMicroBatch()` after each cycle that processed ≥1 WAL entry | `worker/subscriber.go` |
-| **Observability** | `S3ColdStore.GetMemory/GetAgent` silently returned `false` on 404; cold misses were invisible to operators → added `log.Printf("s3cold: miss key=…")` on nil response | `storage/s3store.go` |
-| **Doc fix** | README claimed "10 HTTP routes" in 3 places; actual gateway registers 14 routes | `README.md` |
-| **Doc fix** | README listed `SubgraphExecutorWorker` as "planned for v1.x/v2+" when it is fully implemented in `indexing/subgraph.go` | `README.md` |
-| **Tests** | Added `_test.go` for all 6 worker sub-packages that had none: `cognitive`, `coordination`, `indexing`, `ingestion`, `materialization`, `chain` | `worker/{cognitive,coordination,indexing,ingestion,materialization,chain}/*_test.go` |
 
 ### Remaining Open Items (blocking or near-term)
 
@@ -568,16 +556,10 @@ The following review checklist is intended for team members before merging `inte
 
 | Item | Status | Notes |
 |---|---|---|
-| `QueryRequest` filter fields wired through `PolicyEngine` | ✅ | See `semantic/policy_engine.go` and `access/gateway.go` `/v1/query` handler |
-| Tenant isolation: `workspace_id` and `tenant_id` filter at segment scan | ✅ | `coordinator/query_coordinator.go` applies filters before `DataPlane.Search` |
-| Object-type filter (`memory` / `state` / `artifact`) | ✅ **FIXED pass 2** | `ObjectTypes` now propagated through `QueryPlan` → `SearchInput` → `Assembler.filterByObjectTypes` (ID-prefix heuristic + `ObjectStore` confirmation) |
-| `StateMaterializationWorker` now also dispatched in `MainChain` | ✅ | Verify `State` objects honour `ObjectTypes` filter — `state` type must not leak into `memory`-only queries |
-| **Review focus ✅ FIXED pass 2** | ✅ | `filterByObjectTypes` returns all IDs unchanged when `ObjectTypes` is empty — verified by `TestAssembler_NoFilterPassthrough` |
-| **Review focus ✅ FIXED pass 3** | ✅ | `workspace_id` propagation: events without `WorkspaceID` now materialize to `default` namespace; covered by `TestRuntime_Query_DefaultNamespace_WhenWorkspaceMissing` |
-| **Review focus ✅ FIXED pass 3** | ✅ | `QueryRequest.edge_types` added and propagated into `GraphExpandRequest.EdgeTypes`; runtime also filters response edges by requested types |
-| **Review focus ✅ FIXED pass 3** | ✅ | Runtime pre-fetches `GraphEdges` (`store.Edges().BulkEdges`) and `GraphNodes` (`prefetchGraphNodes`) before `DispatchSubgraphExpand` |
-| Edge case: combined tenant + object-type + top_k filter | ✅ **FIXED pass 3** | Covered by `TestRuntime_Query_TenantObjectTypeTopK_AndToolCallState` (memory-only + `top_k=2`) |
-| Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | ✅ **FIXED pass 3** | Covered by `TestRuntime_Query_TenantObjectTypeTopK_AndToolCallState` (tool_call + state payload + state-only query) |
+| **Review focus** | ⚠️ | `QueryChainInput.EdgeTypeFilter` — verify edge-type filter from `QueryRequest` propagates to `SubgraphExecutorWorker` |
+| **Review focus** | ⚠️ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by caller before `QueryChain.Run` |
+| Edge case: combined tenant + object-type + top_k filter | 🔲 | Integration test covering the 3-way combination |
+| Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | 🔲 | `StateMaterializationWorker` writes `State` on `tool_call` — confirm retrievable with type filter |
 
 ---
 
@@ -735,7 +717,7 @@ S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
 S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 ```
 
-#### S3 Utility Layer (`src/internal/storage/s3util.go`)
+#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
 
 | Function | Purpose |
 |---|---|
@@ -800,96 +782,11 @@ S3_PREFIX      andb/integration_tests (default)
 
 | Item | Status | Notes |
 |---|---|---|
-| `LoadFromEnv()` → `S3ColdStore` auto-wired at bootstrap | ✅ | Logged at startup; fallback to `InMemoryColdStore` if env absent |
-| `PutBytes` (no-verify) for cold archival path | ✅ | Avoids double HTTP round-trip on every `ArchiveMemory` call |
-| `GetBytes` 404 → `nil, nil` (not error) for cold read miss | ✅ | Caller (`S3ColdStore.GetMemory`) silently returns `false` |
-| Admin export endpoints round-trip verified | ✅ | `PutBytesAndVerify` used for `/s3/export` and `/s3/snapshot-export` |
-| **Review focus** ✅ **FIXED** | ✅ | `S3ColdStore` now has `sync.Once` (`ensureOnce`) — `EnsureBucket` runs at most once per store lifetime; `PutBytes` no longer calls `EnsureBucket` (`storage/s3store.go`, `storage/s3util.go`) |
-| **Review focus** ✅ **FIXED** | ✅ | `GetMemory` / `GetAgent` now log `"s3cold: miss key=…"` on 404 (`storage/s3store.go`) |
-| **Review focus** | ⚠️ | `S3ColdStore` only implements `PutMemory / GetMemory / PutAgent / GetAgent`; `ColdObjectStore` interface may need `PutState / GetState` if `StateMaterializationWorker` output is ever promoted to cold tier |
-| Missing: S3 integration test in `integration_tests/` | 🔲 | Add `ANDB_RUN_S3_TESTS=true` test that ingests, archives via `ArchiveMemory`, then retrieves via cold path and verifies round-trip |
-| Missing: `S3_* → minio.*` unified config mapping | 🔲 | Other runtime modules use different config keys; standardise to `S3_*` prefix across all callers |
-| Missing: cold-tier edge archival | 🔲 | `S3ColdStore` has no edge store — `GraphEdgeStore` has no cold path; decide scope before v1.x |
+| **FIXED E1** | ✅ | `TieredDataPlane` now uses `TieredObjectStore` as cold backend; `NewTieredDataPlane(tieredObjs)` accepts it; cold queries call `tieredObjs.ColdSearch()` |
+| **FIXED E2** | ✅ | `SubmitIngest` now calls `tieredObjs.PutMemory()` + `tieredObjs.ArchiveColdRecord()`; `Runtime` holds `TieredObjectStore` reference |
+| `InMemoryColdStore.ColdSearch` | ✅ | Lexical substring search over cold memories, sorted by score+recency |
+| `S3ColdStore.ColdSearch` | ✅ | ListObjectsV2 + per-key GET + lexical scoring; `ListObjects` added to `s3util` |
+| Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
+| Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
 
 ---
-
-## Cross-Member Collaboration
-
-The table below lists every point where two members' work **must be confirmed together** before either side is considered done. Please tag the relevant member when you open a PR or reach this checkpoint.
-
-| # | Interface / Touch Point | Owner | Needs confirmation from | What to verify |
-|---|---|---|---|---|
-| 1 | `schemas.QueryRequest` JSON shape | **A** | **B** | B's Python SDK `query()` kwargs still map 1:1 after A added workspace/object-type filters |
-| 2 | `/v1/ingest` POST body | **A** | **B** | `workspace_id` field added by A — B must update `ingest_event()` in Python SDK |
-| 3 | gRPC proto field names | **B** | **D** | If D adds a Go gRPC client stub, B must freeze proto field numbers first |
-| 4 | `QueryResponse.edges` shape (`[]schemas.Edge`) | **C** | **B** | B's Python SDK parses `edges` — C changed edge structure; B must update response parsing |
-| 5 | `ProofTraceWorker` BFS depth in `QueryResponse.proof_trace` | **D** | **B** | B's integration tests assert on `proof_trace` length; default depth=8 may increase trace size |
-| 6 | `GraphEdgeStore.EdgesFrom` O(n) scan | **C** | **D** | D's BFS + D's `SubgraphExecutorWorker` both call `EdgesFrom`; if C replaces with indexed map, D's BFS must be retested |
-| 7 | `ToolTraceWorker` → `DerivationLog` → `ProofTrace` chain | **D** | **C** | C's graph edges and D's derivation entries both feed `ProofTrace`; run joint test before merging |
-| 8 | Worker `nodes/contracts.go` interface changes | **D** | **A, B, C** | Any interface signature change in `contracts.go` is a breaking change — announce in team chat first |
-| 9 | `QueryChainInput.GraphNodes/GraphEdges` pre-fetch | **D** | **C** | D owns the `QueryChain.Run` call site; C owns `BulkEdges`; agree on where in `Runtime.ExecuteQuery` the pre-fetch is inserted |
-| 10 | `SubgraphExecutorWorker` seed IDs ← C++ retrieval `is_seed` | **B** | **D** | B's C++ layer marks seeds; D's Go gateway must extract seed IDs and pass to `QueryChainInput.ObjectIDs` before `QueryChain.Run` |
-| 11 | `StateMaterializationWorker` output + A's `ObjectTypes` filter | **D** | **A** | D wired `StateMat` in `MainChain`; A must verify `ObjectTypes=["state"]` filter correctly surfaces `State` objects |
-| 12 | `MicroBatchScheduler.Flush()` drain trigger | **D** | **C** | D owns the scheduler; C's `ConflictMergeWorker` feeds it — agree on flush cadence (timer / WAL watermark / explicit call) before production |
-
-> 💬 **Suggested flow:** When you finish an item in the table above, post a short message in the team channel: _"#N ready for review by [member]"_. The receiving member should confirm within 24 h or flag a blocker.
-
----
-
-## Pre-merge Checklist (all members)
-
-> Run this checklist **together as a team** in a short sync call or shared doc before opening the merge PR to `main`.
-
-**Go layer (D runs)**
-- [x] `go test ./src/internal/... -count=1 -timeout 30s` — all 21 packages green (verified twice)
-- [x] `go vet ./...` — exit 0
-- [ ] `GET /v1/admin/topology` returns 18 nodes, including `subgraph_executor_worker` type
-- [x] `proof_trace` contains at least one `derivation:` step for `tool_call` events
-- [x] `MicroBatchScheduler.Flush()` called in `EventSubscriber.drainWAL`; integration test `TestMicroBatch_FlushIntegration` passes
-- [x] ~~R1 blocker~~ `Runtime.ExecuteQuery` now pre-fetches `BulkEdges`, calls `DispatchProofTrace` + `DispatchSubgraphExpand`
-
-**Filter & schema (A runs)**
-- [x] `go test ./integration_tests/... -v -timeout 120s` — all green
-- [x] `ObjectTypes` empty → returns all types — verified by `TestAssembler_NoFilterPassthrough`
-- [x] `ObjectTypes=["memory"]` excludes `state_*`/`art_*` — verified by `TestAssembler_ObjectTypesFilter`
-- [x] `ObjectTypes=["state"]` returns only `state_*` — verified by `TestAssembler_StateTypeFilter`
-- [x] 3-way filter (workspace + object-type + top_k) integration test passes (live server required)
-- [x] `workspace_id` omitted on ingest → queryable under default namespace
-
-**Python & retrieval (B runs)**
-
-_Go side (B owns the Go↔Python contract boundary):_
-- [ ] `go test ./src/internal/retrieval/... -count=1` — all green (or no test files yet — add at least one smoke test)
-- [ ] `go test ./src/internal/schemas/... -count=1` — `QueryRequest` / `QueryResponse` JSON tags match proto field names in `retrieval.proto`
-- [ ] `go vet ./src/internal/retrieval/...` — no errors
-- [ ] `GET /v1/query` returns `proof_trace`, `edges`, `applied_filters` keys in response JSON (verify with `curl` or `integration_tests/ingest_query_test.go`)
-- [ ] `/v1/ingest` accepts `workspace_id` field without error (Go gateway handler)
-- [ ] `GET /v1/admin/topology` — verify no retrieval-related worker is in error/degraded state
-
-_Python / C++ side:_
-- [ ] `cd integration_tests/python && python run_all.py` — all green
-- [ ] `proof_trace` assertion in Python tests uses `>= 1` not exact length
-- [ ] SDK `query()` kwargs verified against current `QueryRequest` JSON shape
-- [ ] `ingest_event()` includes `workspace_id` field
-- [ ] pybind11 C++ module (`cmake .. -DANDB_WITH_PYBIND=ON && make`) builds successfully on CI platform
-- [ ] `python -m src.internal.retrieval.main --test` exits 0
-
-**Graph & edges (C runs)**
-- [ ] `QueryResponse.edges` non-empty after ingest → query round-trip
-- [ ] `SubgraphExecutorWorker` subgraph non-empty when seeds have known edges (requires GraphEdges pre-fetch wired)
-- [x] `BulkEdges` and `EdgesFrom`/`EdgesTo` use indexed lookups — O(k) per node — verified by `TestMemoryGraphEdgeStore_EdgesFrom_Indexed` + `TestMemoryGraphEdgeStore_BulkEdges`
-- [ ] Cyclic graph BFS terminates at `maxDepth=8`
-- [x] Edge cold-tier: `TieredObjectStore.ArchiveEdge` moves edges warm→cold — verified by `TestTieredObjectStore_ArchiveEdge`
-- [x] Edge TTL: `PruneExpiredEdges` removes expired edges and cleans indices — verified by `TestMemoryGraphEdgeStore_PruneExpiredEdges`
-
-**S3 cold storage (D + any member with MinIO access)**
-- [ ] Server starts with S3 env vars → logs `cold store: S3 endpoint=...`
-- [ ] Server starts without S3 env vars → logs `cold store: in-memory simulation`
-- [ ] `ANDB_RUN_S3_TESTS=true go test ./integration_tests/... -run TestS3` passes with MinIO running
-- [x] `EnsureBucket` called only once per `S3ColdStore` lifetime (sync.Once fix applied in integration-lead pass)
-
-**Final gates (all members)**
-- [ ] No new `TODO`/`FIXME` markers in committed code
-- [ ] Cross-member table: all **12** items confirmed ✅
-- [ ] Squash-merge or fast-forward only — no merge bubbles on `main`
-- [ ] Tag release commit with `v1.0.0-integration-rc1` before merging
