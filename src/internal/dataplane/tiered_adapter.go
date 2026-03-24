@@ -5,11 +5,15 @@ import (
 	"andb/src/internal/storage"
 )
 
-// TieredDataPlane implements the three-tier search path:
+// TieredDataPlane implements the three-tier search path with optional hybrid vector search:
 //
-//	Hot  → HotSegmentIndex  (bounded in-memory, growing shards of current scope)
-//	Warm → SegmentDataPlane (full in-memory, all shards)
-//	Cold → ColdObjectStore  (S3 or in-memory simulation, via TieredObjectStore)
+//	Hot  → segmentstore.Index   (fast in-memory, lexical, bounded)
+//	Warm → SegmentDataPlane     (full in-memory, hybrid when embedder is set)
+//	Cold → ColdObjectStore      (S3 or in-memory, via TieredObjectStore)
+//
+// When an EmbeddingGenerator is provided, the warm tier performs hybrid search
+// (lexical + CGO Knowhere/HNSW via RRF).  The hot tier stays lexical-only since
+// its shard sealing is driven by row-count, not embedding cardinality.
 //
 // A query first hits the hot index.  If it returns enough results (>= TopK)
 // the result is returned immediately.  Otherwise the warm index is searched and
@@ -26,9 +30,8 @@ type TieredDataPlane struct {
 }
 
 // NewTieredDataPlane constructs a TieredDataPlane backed by the given TieredObjectStore.
-// The hot and warm tiers are identical to the previous implementation; the cold tier
-// now uses TieredObjectStore.ColdSearch for IncludeCold queries and receives ingest
-// records via TieredObjectStore's cold-write path.
+// The warm tier performs only lexical search.  To enable hybrid (lexical+vector) warm
+// search, use NewTieredDataPlaneWithEmbedder instead.
 func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane {
 	return &TieredDataPlane{
 		hot:  segmentstore.NewIndex(),
@@ -37,10 +40,33 @@ func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane 
 			return tieredObjs.ColdSearch(query, topK)
 		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
-			// TieredObjectStore.ArchiveColdRecord buffers the record in the cold store.
 			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
 	}
+}
+
+// NewTieredDataPlaneWithEmbedder constructs a TieredDataPlane with hybrid warm search.
+// The embedder generates float32 vectors (e.g. TF-IDF or LLM-based) that are indexed
+// in the CGO Knowhere/HNSW retriever for dense vector search.
+// The VectorStore gracefully degrades to lexical-only when CGO is unavailable.
+func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator) (*TieredDataPlane, error) {
+	if embedder == nil {
+		return NewTieredDataPlane(tieredObjs), nil
+	}
+	warm, err := NewSegmentDataPlaneWithEmbedder(embedder)
+	if err != nil {
+		return nil, err
+	}
+	return &TieredDataPlane{
+		hot:  segmentstore.NewIndex(),
+		warm: warm,
+		coldSearch: func(query string, topK int) []string {
+			return tieredObjs.ColdSearch(query, topK)
+		},
+		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
+			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
+		},
+	}, nil
 }
 
 // HotIndex exposes the raw hot-tier index so the node manager and bootstrap can
@@ -50,11 +76,10 @@ func (t *TieredDataPlane) HotIndex() *segmentstore.Index { return t.hot }
 // WarmPlane exposes the warm-tier plane for node registration.
 func (t *TieredDataPlane) WarmPlane() *SegmentDataPlane { return t.warm }
 
-// Flush syncs the hot-tier index state to the warm plane.
-// Cold writes are flushed asynchronously and do not require an explicit Flush call.
+// Flush flushes the hot-tier index state to the warm plane and builds the
+// vector index (when hybrid mode is enabled).
 func (t *TieredDataPlane) Flush() error {
-	_ = t.warm.Flush()
-	return nil
+	return t.warm.Flush()
 }
 
 // Ingest writes to the hot tier and warm tier immediately.
@@ -74,8 +99,8 @@ func (t *TieredDataPlane) Ingest(record IngestRecord) error {
 }
 
 // Search executes the tiered search:
-//  1. Hot index — fast, bounded
-//  2. Warm plane — full in-memory (only when hot is insufficient)
+//  1. Hot index — fast, bounded (lexical only)
+//  2. Warm plane — full in-memory (lexical, or hybrid if embedder is set)
 //  3. Cold tier — archived (only when IncludeCold flag set, via TieredObjectStore)
 func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	hotResult := t.hot.Search(segmentstore.SearchRequest{
@@ -93,10 +118,14 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		return out
 	}
 
-	// warm fallback — merge with hot results
+	// warm fallback — merge with hot results (warm may be hybrid)
 	warmOutput := t.warm.Search(input)
 	merged := mergeOutputs(t.hotToOutput(hotResult), warmOutput, input.TopK)
-	merged.Tier = "hot+warm"
+	if warmOutput.Tier == "lexical+vector" {
+		merged.Tier = "hot+warm"
+	} else {
+		merged.Tier = "hot+warm"
+	}
 
 	if !input.IncludeCold {
 		return merged
@@ -151,7 +180,6 @@ func mergeOutputs(a, b SearchOutput, topK int) SearchOutput {
 	if topK > 0 && len(ids) > topK {
 		ids = ids[:topK]
 	}
-
 	segs := append(a.ScannedSegments, b.ScannedSegments...)
 	planned := append(a.PlannedSegments, b.PlannedSegments...)
 	return SearchOutput{ObjectIDs: ids, ScannedSegments: segs, PlannedSegments: planned}

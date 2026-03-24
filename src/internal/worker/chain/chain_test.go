@@ -154,12 +154,14 @@ func TestMemoryPipelineChain_Run_ValidInput(t *testing.T) {
 // ─── QueryChain ───────────────────────────────────────────────────────────────
 
 func TestQueryChain_Run_EmptyObjectIDs(t *testing.T) {
-	mgr, _ := buildManager(t)
+	mgr, store := buildManager(t)
 	chain := CreateQueryChain(mgr)
 
 	out, result := chain.Run(QueryChainInput{
-		ObjectIDs: []string{},
-		MaxDepth:  2,
+		ObjectIDs:   []string{},
+		MaxDepth:    2,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
 	})
 	if !result.OK {
 		t.Fatalf("QueryChain.Run failed: %s", result.Error)
@@ -180,8 +182,10 @@ func TestQueryChain_Run_WithObjectIDs(t *testing.T) {
 	})
 
 	out, result := chain.Run(QueryChainInput{
-		ObjectIDs: []string{"mem_q1"},
-		MaxDepth:  3,
+		ObjectIDs:   []string{"mem_q1"},
+		MaxDepth:     3,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
 	})
 	if !result.OK {
 		t.Fatalf("QueryChain.Run failed: %s", result.Error)

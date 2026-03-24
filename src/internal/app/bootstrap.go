@@ -69,10 +69,17 @@ func BuildServer() (*http.Server, error) {
 		WithObjectStore(store.Objects()).
 		WithPolicyStore(store.Policies())
 
-	// ── Data Plane (Tiered: hot → warm → cold) ──────────────────────────────────
-	// TieredDataPlane now uses TieredObjectStore for cold queries and cold writes.
-	// This connects the cold tier (S3 or in-memory) into the active query path.
-	plane := dataplane.NewTieredDataPlane(tieredObjects)
+	// ── Data Plane (Tiered: hot → warm → cold, hybrid vector search) ──────────────
+	// TieredDataPlane uses TieredObjectStore for cold queries and cold writes.
+	// Warm tier performs hybrid search: lexical (segmentstore.Index) + vector (CGO Knowhere/HNSW)
+	// via TF-IDF embedder + RRF fusion.  Gracefully degrades to lexical-only when
+	// CGO library is unavailable (auto-detected in VectorStore).
+	embedder := dataplane.NewTfidfEmbedder(dataplane.DefaultEmbeddingDim)
+	plane, err := dataplane.NewTieredDataPlaneWithEmbedder(tieredObjects, embedder)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[bootstrap] data plane: hybrid search enabled (dim=%d, TF-IDF embedder)", dataplane.DefaultEmbeddingDim)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
@@ -158,8 +165,15 @@ func BuildServer() (*http.Server, error) {
 	coord.Registry.Register("pre_compute", preCompute)
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
-	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store, tieredObjects)
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
 	runtime.RegisterDefaults()
+
+	// ── QueryChain (post-retrieval reasoning: ProofTrace + SubgraphExpand) ───
+	// Created internally by Runtime; exposed here for discoverability.
+	// Internally calls ProofTraceWorker (BFS multi-hop) and SubgraphExecutorWorker
+	// (1-hop graph expansion), wiring in the CGO Knowhere/HNSW vector search
+	// results produced by the DataPlane via TieredDataPlane.Search.
+	coord.Registry.Register("query_chain", runtime.QueryChain())
 
 	// ── Async Worker Subscriber ───────────────────────────────────────────────
 	// The subscriber polls the WAL every 200 ms and drives governance workers
