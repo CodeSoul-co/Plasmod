@@ -217,6 +217,79 @@ func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, object
 	return data, nil
 }
 
+// ListObjects returns the object keys under the given prefix using S3 ListObjectsV2.
+// The prefix must not have a leading slash.  Returns nil on any error (caller
+// should treat a nil return as "no keys found").
+func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, prefix string) ([]string, error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	prefix = strings.TrimLeft(prefix, "/")
+
+	// S3 ListObjectsV2 with continuation token support.
+	var allKeys []string
+	continuationToken := ""
+
+	for {
+		listURL := fmt.Sprintf("%s/%s?list-type=2&prefix=%s",
+			cfg.baseURL(), cfg.Bucket, prefix)
+		if continuationToken != "" {
+			listURL += "&continuation-token=" + continuationToken
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("list objects new request: %w", err)
+		}
+		s3Sign(req, cfg, nil, "")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list objects do: %w", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("list objects read: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("list objects status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Parse the XML response manually (stdlib xml is heavy; simple text scan is enough).
+		bodyStr := string(body)
+
+		// Extract <Key>...</Key> entries.
+		for {
+			start := strings.Index(bodyStr, "<Key>")
+			if start == -1 {
+				break
+			}
+			start += len("<Key>")
+			end := strings.Index(bodyStr[start:], "</Key>")
+			if end == -1 {
+				break
+			}
+			allKeys = append(allKeys, bodyStr[start:start+end])
+			bodyStr = bodyStr[start+end+len("</Key>"):]
+		}
+
+		// Check for NextContinuationToken.
+		ctStart := strings.Index(string(body), "<NextContinuationToken>")
+		if ctStart == -1 {
+			break
+		}
+		ctStart += len("<NextContinuationToken>")
+		ctEnd := strings.Index(string(body)[ctStart:], "</NextContinuationToken>")
+		if ctEnd == -1 {
+			break
+		}
+		continuationToken = string(body)[ctStart : ctStart+ctEnd]
+	}
+
+	return allKeys, nil
+}
+
 // ─── AWS Signature V4 (stdlib only) ─────────────────────────────────────────
 
 func s3Sign(req *http.Request, cfg S3Config, body []byte, contentType string) {

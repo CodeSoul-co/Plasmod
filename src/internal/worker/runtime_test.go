@@ -26,6 +26,7 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	materializer := materialization.NewService()
 	assembler := evidence.NewAssembler()
 	store := storage.NewMemoryRuntimeStorage()
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
 	nodeManager := nodes.CreateManager()
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
@@ -44,7 +45,7 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	)
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
-	return CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store)
+	return CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store, tieredObjs)
 }
 
 func TestRuntime_IngestAndQuery(t *testing.T) {
@@ -75,7 +76,8 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
-	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store)
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store, tieredObjs)
 
 	_, err := r.SubmitIngest(schemas.Event{
 		EventID:     "evt_test_1",

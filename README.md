@@ -533,15 +533,18 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 > **Branch:** `integration/all-features-test`
 > **Last updated:** 2026-03-24
-> **Status:** All 21 Go internal packages pass (`go test ./src/internal/... exit 0`; `go vet ./... exit 0`). Six worker sub-packages have `*_test.go` files. Pass 2: 5 pipeline correctness fixes. Pass 3: 3 graph/storage structural fixes (R2/R6/R7) — see summaries below.
+> **Status:** All 21 Go internal packages pass (`go test ./src/internal/... exit 0`; `go vet ./... exit 0`). Six worker sub-packages have `*_test.go` files. Pass 2: 5 pipeline correctness fixes. Pass 3: 3 graph/storage structural fixes (R2/R6/R7). Pass 4: cold tier bug fix (TieredDataPlane ↔ TieredObjectStore integration).
 > **Note:** This section exists only on `integration/all-features-test` and is intentionally not present on `main`.
 
 
 ### Remaining Open Items (blocking or near-term)
 
-All previously tracked items (R1–R11, R8) are now resolved. No blocking items remain.
-
-**Status for main merge:** All known issues are resolved. The retrieval plane now wires real Knowhere HNSW via `cpp/CMakeLists.txt` (`ANDB_WITH_KNOWHERE=ON`); a brute-force fallback remains available via `-DANDB_WITH_KNOWHERE=OFF` for environments without Knowhere dependencies. The Go→C++ bridge (`retrievalplane/fixme_external_deps.go`) no longer requires Milvus Go internal packages — it calls the C API directly via CGO.
+| ID | Description | Owner | Status |
+|---|---|---|---|
+| **E1** | `TieredDataPlane.Ingest` never wrote to cold tier; `Flush()` never called | S3/Cold Module | ✅ Fixed |
+| **E2** | `TieredObjectStore` (with `S3ColdStore`) completely bypassed in `SubmitIngest` — cold tier orphaned | S3/Cold Module | ✅ Fixed |
+| **E3** | C++ Knowhere retrieval module (`retrievalplane`) never imported from query path — pure lexical search only | Member B | 🔲 Pending |
+| **D1** | `subscriber.go` panic handler uses `log.Printf` instead of structured dead-letter channel | Member D | 🔲 Pending |
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 
@@ -659,7 +662,8 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| Knowhere stub → real HNSW / SPARSE calls wired | ✅ | R8 — `ANDB_WITH_KNOWHERE=ON` enables FetchContent Knowhere v2.3.12; `#ifdef ANDB_USE_KNOWHERE` in `dense.cpp` calls real HNSW; CGO bridge in `fixme_external_deps.go` uses C API with no Milvus Go deps |
+| Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt` |
+| **FIXED E3** | 🔲 | C++ Knowhere retrieval (`retrievalplane`) is never imported from Go query path — active search uses `segmentstore` lexical only; `segment_adapter.go` must be updated to call `retrievalplane.NewRetriever()` when `CGO_ENABLED=1` |
 | SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
 | SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
 | Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
@@ -689,7 +693,7 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| **Review focus** | ⚠️ | `subscriber.go` no dead-letter channel — add structured error reporting before production |
+| **D1 — FIX** | 🔲 | `subscriber.go` panic handler uses `log.Printf` instead of structured dead-letter channel — replace with `sub.ErrorCh` dead-letter reporting before production |
 | **Review focus** | ⚠️ | `ReflectionPolicyWorker` eviction — confirm uses `tiered_objects.ArchiveMemory()` not direct `store.Objects()` |
 | Missing: `GraphEdges` pre-fetch in `QueryChain.Run` path | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated; C and D must agree on ownership |
 
@@ -778,6 +782,10 @@ S3_PREFIX      andb/integration_tests (default)
 
 | Item | Status | Notes |
 |---|---|---|
+| **FIXED E1** | ✅ | `TieredDataPlane` now uses `TieredObjectStore` as cold backend; `NewTieredDataPlane(tieredObjs)` accepts it; cold queries call `tieredObjs.ColdSearch()` |
+| **FIXED E2** | ✅ | `SubmitIngest` now calls `tieredObjs.PutMemory()` + `tieredObjs.ArchiveColdRecord()`; `Runtime` holds `TieredObjectStore` reference |
+| `InMemoryColdStore.ColdSearch` | ✅ | Lexical substring search over cold memories, sorted by score+recency |
+| `S3ColdStore.ColdSearch` | ✅ | ListObjectsV2 + per-key GET + lexical scoring; `ListObjects` added to `s3util` |
 | Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
 | Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
 

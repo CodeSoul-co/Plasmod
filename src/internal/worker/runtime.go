@@ -17,17 +17,18 @@ import (
 )
 
 type Runtime struct {
-	wal          eventbackbone.WAL
-	bus          eventbackbone.Bus
-	plane        dataplane.DataPlane
-	coord        *coordinator.Hub
-	policy       *semantic.PolicyEngine
-	planner      semantic.QueryPlanner
-	materializer *materialization.Service
-	preCompute   *materialization.PreComputeService
-	assembler    *evidence.Assembler
-	nodeManager  *nodes.Manager
-	storage      storage.RuntimeStorage
+	wal           eventbackbone.WAL
+	bus           eventbackbone.Bus
+	plane         dataplane.DataPlane
+	coord         *coordinator.Hub
+	policy        *semantic.PolicyEngine
+	planner       semantic.QueryPlanner
+	materializer  *materialization.Service
+	preCompute    *materialization.PreComputeService
+	assembler     *evidence.Assembler
+	nodeManager   *nodes.Manager
+	storage       storage.RuntimeStorage
+	tieredObjects *storage.TieredObjectStore
 }
 
 func CreateRuntime(
@@ -42,19 +43,21 @@ func CreateRuntime(
 	assembler *evidence.Assembler,
 	nodeManager *nodes.Manager,
 	store storage.RuntimeStorage,
+	tieredObjs *storage.TieredObjectStore,
 ) *Runtime {
 	return &Runtime{
-		wal:          wal,
-		bus:          bus,
-		plane:        plane,
-		coord:        coord,
-		policy:       policy,
-		planner:      planner,
-		materializer: materializer,
-		preCompute:   preCompute,
-		assembler:    assembler,
-		nodeManager:  nodeManager,
-		storage:      store,
+		wal:           wal,
+		bus:           bus,
+		plane:         plane,
+		coord:         coord,
+		policy:        policy,
+		planner:       planner,
+		materializer:  materializer,
+		preCompute:    preCompute,
+		assembler:     assembler,
+		nodeManager:   nodeManager,
+		storage:       store,
+		tieredObjects: tieredObjs,
 	}
 }
 
@@ -88,7 +91,26 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	record := mat.Record
 
 	// ── Persist canonical objects ─────────────────────────────────────────
-	r.storage.Objects().PutMemory(mat.Memory)
+	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
+	// are kept in sync and cold queries (IncludeCold=true) can find results.
+	if r.tieredObjects != nil {
+		// Compute salience from the event importance if available, default 0.5.
+		salience := mat.Memory.Importance
+		if salience <= 0 {
+			salience = 0.5
+		}
+		r.tieredObjects.PutMemory(mat.Memory, salience)
+		r.tieredObjects.ArchiveColdRecord(
+			mat.Memory.MemoryID,
+			record.Text,
+			record.Attributes,
+			record.Namespace,
+			record.EventUnixTS,
+		)
+	} else {
+		// Fallback for tests or code paths that don't initialise TieredObjectStore.
+		r.storage.Objects().PutMemory(mat.Memory)
+	}
 	r.storage.Versions().PutVersion(mat.Version)
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)

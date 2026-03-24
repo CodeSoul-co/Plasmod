@@ -2,29 +2,44 @@ package dataplane
 
 import (
 	"andb/src/internal/dataplane/segmentstore"
+	"andb/src/internal/storage"
 )
 
 // TieredDataPlane implements the three-tier search path:
 //
 //	Hot  → HotSegmentIndex  (bounded in-memory, growing shards of current scope)
 //	Warm → SegmentDataPlane (full in-memory, all shards)
-//	Cold → ColdSegmentIndex (archived sealed shards, simulated disk latency)
+//	Cold → ColdObjectStore  (S3 or in-memory simulation, via TieredObjectStore)
 //
 // A query first hits the hot index.  If it returns enough results (>= TopK)
 // the result is returned immediately.  Otherwise the warm index is searched and
 // the merged result set is returned.  The cold tier is consulted only when the
 // caller sets IncludeCold = true (time-travel or historical evidence queries).
+//
+// The cold tier is backed by TieredObjectStore, which routes reads/writes through
+// the storage.ColdObjectStore interface (S3ColdStore or InMemoryColdStore).
 type TieredDataPlane struct {
-	hot  *segmentstore.Index
-	warm *SegmentDataPlane
-	cold *SegmentDataPlane
+	hot        *segmentstore.Index
+	warm       *SegmentDataPlane
+	coldSearch func(query string, topK int) []string // delegates to TieredObjectStore.ColdSearch
+	coldWrite  func(memoryID, text string, attrs map[string]string, ns string, ts int64)
 }
 
-func NewTieredDataPlane() *TieredDataPlane {
+// NewTieredDataPlane constructs a TieredDataPlane backed by the given TieredObjectStore.
+// The hot and warm tiers are identical to the previous implementation; the cold tier
+// now uses TieredObjectStore.ColdSearch for IncludeCold queries and receives ingest
+// records via TieredObjectStore's cold-write path.
+func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane {
 	return &TieredDataPlane{
 		hot:  segmentstore.NewIndex(),
 		warm: NewSegmentDataPlane(),
-		cold: NewSegmentDataPlane(),
+		coldSearch: func(query string, topK int) []string {
+			return tieredObjs.ColdSearch(query, topK)
+		},
+		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
+			// TieredObjectStore.ArchiveColdRecord buffers the record in the cold store.
+			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
+		},
 	}
 }
 
@@ -35,18 +50,17 @@ func (t *TieredDataPlane) HotIndex() *segmentstore.Index { return t.hot }
 // WarmPlane exposes the warm-tier plane for node registration.
 func (t *TieredDataPlane) WarmPlane() *SegmentDataPlane { return t.warm }
 
-// ColdPlane exposes the cold-tier plane.
-func (t *TieredDataPlane) ColdPlane() *SegmentDataPlane { return t.cold }
-
 // Flush syncs the hot-tier index state to the warm plane.
+// Cold writes are flushed asynchronously and do not require an explicit Flush call.
 func (t *TieredDataPlane) Flush() error {
 	_ = t.warm.Flush()
-	_ = t.cold.Flush()
 	return nil
 }
 
-// Ingest writes to the hot tier first; the object is promoted to warm on the
-// next background compaction cycle (modelled by always writing to both here).
+// Ingest writes to the hot tier and warm tier immediately.
+// Cold-tier persistence is deferred to ArchiveColdRecord, which the caller
+// (typically Runtime.SubmitIngest via TieredObjectStore) should invoke when
+// an object transitions from hot or warm to cold (e.g. on TTL expiry).
 func (t *TieredDataPlane) Ingest(record IngestRecord) error {
 	_ = t.warm.Ingest(record)
 	t.hot.InsertObject(
@@ -62,7 +76,7 @@ func (t *TieredDataPlane) Ingest(record IngestRecord) error {
 // Search executes the tiered search:
 //  1. Hot index — fast, bounded
 //  2. Warm plane — full in-memory (only when hot is insufficient)
-//  3. Cold plane — archived (only when IncludeCold flag set)
+//  3. Cold tier — archived (only when IncludeCold flag set, via TieredObjectStore)
 func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	hotResult := t.hot.Search(segmentstore.SearchRequest{
 		Query:          input.QueryText,
@@ -88,8 +102,9 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		return merged
 	}
 
-	// cold fallback
-	coldOutput := t.cold.Search(input)
+	// cold fallback — delegate to TieredObjectStore.ColdSearch
+	coldIDs := t.coldSearch(input.QueryText, input.TopK)
+	coldOutput := SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
 	out := mergeOutputs(merged, coldOutput, input.TopK)
 	out.Tier = "hot+warm+cold"
 	return out

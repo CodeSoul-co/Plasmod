@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"sync"
 
 	"andb/src/internal/s3util"
@@ -182,4 +184,79 @@ func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
 // Callers should use GetEdge for point lookups.  Returns empty slice always.
 func (s *S3ColdStore) ListEdges() []schemas.Edge {
 	return []schemas.Edge{}
+}
+
+// ColdSearch searches cold-tier memories stored in S3 using prefix-based listing.
+// Since S3 does not support arbitrary query predicates, it lists all cold memory
+// keys under the prefix, fetches each JSON object, and scores them lexically.
+// For production with large cold archives, this should be replaced with a
+// metadata index (e.g. DynamoDB or SQLite) keyed by text tokens.
+func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
+	ctx := context.Background()
+	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
+
+	keys, err := s3util.ListObjects(ctx, nil, s.cfg, prefix)
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+
+	type scored struct {
+		key  string
+		id   string
+		ts   int64
+		score float64
+	}
+	var results []scored
+	lq := strings.ToLower(query)
+
+	for _, key := range keys {
+		data, err := s3util.GetBytes(ctx, nil, s.cfg, key)
+		if err != nil || data == nil {
+			continue
+		}
+		var m schemas.Memory
+		if err := json.Unmarshal(data, &m); err != nil {
+			continue
+		}
+		text := strings.ToLower(m.Content)
+		summary := strings.ToLower(m.Summary)
+		var score float64
+		if strings.Contains(text, lq) || strings.Contains(summary, lq) {
+			score = 1.0
+		} else {
+			qTokens := strings.Fields(lq)
+			textTokens := strings.Fields(text)
+			match := 0
+			for _, qt := range qTokens {
+				for _, tt := range textTokens {
+					if tt == qt {
+						match++
+						break
+					}
+				}
+			}
+			if len(qTokens) > 0 {
+				score = float64(match) / float64(len(qTokens))
+			}
+		}
+		if score > 0 {
+			results = append(results, scored{key: key, id: m.MemoryID, ts: m.Version, score: score})
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		return results[i].ts > results[j].ts
+	})
+
+	out := make([]string, 0, min(topK, len(results)))
+	for i := range results {
+		if i >= topK {
+			break
+		}
+		out = append(out, results[i].id)
+	}
+	return out
 }
