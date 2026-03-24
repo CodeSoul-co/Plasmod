@@ -140,9 +140,10 @@ func TestRuntime_SubgraphExpand_NodesPopulated(t *testing.T) {
 	}
 
 	resp := r.ExecuteQuery(schemas.QueryRequest{
-		QueryText: "subgraph node test",
-		SessionID: "session_sg",
-		TopK:      5,
+		QueryText:   "subgraph node test",
+		WorkspaceID: "default",
+		SessionID:   "session_sg",
+		TopK:        5,
 	})
 
 	if len(resp.Objects) == 0 {
