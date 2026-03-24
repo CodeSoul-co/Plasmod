@@ -45,7 +45,7 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	)
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
-	return CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store, tieredObjs)
+	return CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
 }
 
 func TestRuntime_IngestAndQuery(t *testing.T) {
@@ -77,7 +77,7 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
 	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
-	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, nodeManager, store, tieredObjs)
+	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
 
 	_, err := r.SubmitIngest(schemas.Event{
 		EventID:     "evt_test_1",

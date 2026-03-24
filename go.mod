@@ -2,7 +2,10 @@ module andb
 
 go 1.24.0
 
-require github.com/hamba/avro/v2 v2.31.0
+require (
+	github.com/hamba/avro/v2 v2.31.0
+	andb/retrievalplane v0.0.0
+)
 
 require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
@@ -26,3 +29,5 @@ require (
 	golang.org/x/sys v0.5.0 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
 )
+
+replace andb/retrievalplane => ./src/internal/dataplane/retrievalplane

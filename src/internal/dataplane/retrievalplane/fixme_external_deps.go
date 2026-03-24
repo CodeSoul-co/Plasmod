@@ -1,5 +1,5 @@
-//go:build cgo
-// +build cgo
+//go:build retrieval
+// +build retrieval
 
 // Package retrievalplane wires the compiled andb_retrieval C++ library into
 // Go via CGO.  No Milvus Go internal packages are required; the bridge calls

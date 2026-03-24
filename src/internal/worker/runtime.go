@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 	"andb/src/internal/coordinator"
@@ -12,21 +13,28 @@ import (
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
+	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/nodes"
 )
 
 type Runtime struct {
-	wal           eventbackbone.WAL
-	bus           eventbackbone.Bus
-	plane         dataplane.DataPlane
-	coord         *coordinator.Hub
-	policy        *semantic.PolicyEngine
-	planner       semantic.QueryPlanner
-	assembler     *evidence.Assembler
-	nodeManager   *nodes.Manager
-	storage       storage.RuntimeStorage
-	tieredObjects *storage.TieredObjectStore
-	ingest        IngestWorker
+	wal               eventbackbone.WAL
+	bus               eventbackbone.Bus
+	plane             dataplane.DataPlane
+	coord             *coordinator.Hub
+	policy            *semantic.PolicyEngine
+	planner           semantic.QueryPlanner
+	materializer      *materialization.Service
+	preCompute        *materialization.PreComputeService
+	assembler         *evidence.Assembler
+	evCache           *evidence.Cache
+	derivationLog     *eventbackbone.DerivationLog
+	policyDecisionLog *eventbackbone.PolicyDecisionLog
+	nodeManager       *nodes.Manager
+	storage           storage.RuntimeStorage
+	tieredObjects     *storage.TieredObjectStore
+	queryChain        *chain.QueryChain
+	ingest            IngestWorker
 }
 
 func CreateRuntime(
@@ -39,6 +47,9 @@ func CreateRuntime(
 	materializer *materialization.Service,
 	preCompute *materialization.PreComputeService,
 	assembler *evidence.Assembler,
+	evCache *evidence.Cache,
+	derivationLog *eventbackbone.DerivationLog,
+	policyDecisionLog *eventbackbone.PolicyDecisionLog,
 	nodeManager *nodes.Manager,
 	store storage.RuntimeStorage,
 	tieredObjs *storage.TieredObjectStore,
@@ -48,22 +59,34 @@ func CreateRuntime(
 		sched = coord.Schedule
 	}
 	return &Runtime{
-		wal:           wal,
-		bus:           bus,
-		plane:         plane,
-		coord:         coord,
-		policy:        policy,
-		planner:       planner,
-		assembler:     assembler,
-		nodeManager:   nodeManager,
-		storage:       store,
-		tieredObjects: tieredObjs,
-		ingest:        NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
+		wal:               wal,
+		bus:               bus,
+		plane:             plane,
+		coord:             coord,
+		policy:            policy,
+		planner:           planner,
+		materializer:      materializer,
+		preCompute:        preCompute,
+		assembler:         assembler,
+		evCache:           evCache,
+		derivationLog:     derivationLog,
+		policyDecisionLog: policyDecisionLog,
+		nodeManager:       nodeManager,
+		storage:           store,
+		tieredObjects:     tieredObjs,
+		queryChain:        chain.CreateQueryChain(nodeManager),
+		ingest:            NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
 	}
 }
 
 func (r *Runtime) RegisterDefaults() {
 	_ = r.bus.Subscribe("wal.events")
+}
+
+// QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
+// It is nil if the Runtime was constructed without a nodeManager.
+func (r *Runtime) QueryChain() *chain.QueryChain {
+	return r.queryChain
 }
 
 // StartSubscriber launches the EventSubscriber's poll loop as a background
@@ -100,40 +123,33 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
-	// Wire QueryChain workers with pre-fetched edges and nodes.
-	// The assembler already does 1-hop BulkEdges expansion internally; here we
-	// additionally run the multi-hop BFS ProofTraceWorker and pass pre-fetched
-	// edges + nodes to SubgraphExecutorWorker (which does NOT fetch them itself).
+	// ── Post-retrieval reasoning via QueryChain ───────────────────────────────
+	// QueryChain handles:
+	//   1. Pre-fetching Memory objects as GraphNodes for node population.
+	//   2. Pre-fetching BulkEdges for edge pre-population.
+	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
+	//   4. Subgraph expansion via SubgraphExecutorWorker.
+	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	if len(result.ObjectIDs) > 0 {
-		preEdges := r.storage.Edges().BulkEdges(result.ObjectIDs)
+		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
+			ObjectIDs:    result.ObjectIDs,
+			MaxDepth:     0, // default cap of 8
+			ObjectStore:  r.storage.Objects(),
+			EdgeStore:    r.storage.Edges(),
+		})
+		_ = chainResult // chainResult.OK is advisory; non-fatal
 
-		// Pre-fetch Memory objects as GraphNodes so OneHopExpand can populate
-		// EvidenceSubgraph.Nodes (passing nil left Nodes always empty).
-		preNodes := make([]schemas.GraphNode, 0, len(result.ObjectIDs))
-		for _, id := range result.ObjectIDs {
-			if m, ok := r.storage.Objects().GetMemory(id); ok {
-				preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
-			}
+		if len(chainOut.ProofTrace) > 0 {
+			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
 		}
 
-		// 1. Multi-hop BFS proof trace via ProofTraceWorker (maxDepth 0 = default 8).
-		if bfsTrace := r.nodeManager.DispatchProofTrace(result.ObjectIDs, 0); len(bfsTrace) > 0 {
-			resp.ProofTrace = append(resp.ProofTrace, bfsTrace...)
-		}
-
-		// 2. Subgraph expansion — pass both pre-fetched nodes and edges so
-		// EvidenceSubgraph.Nodes and .Edges are both populated.
-		if len(preEdges) > 0 {
-			expResp := r.nodeManager.DispatchSubgraphExpand(
-				schemas.GraphExpandRequest{SeedObjectIDs: result.ObjectIDs},
-				preNodes,
-				preEdges,
-			)
+		// Merge subgraph-expanded edges into resp.Edges, deduplicating by EdgeID.
+		if len(chainOut.MergedEdges) > 0 {
 			seen := make(map[string]bool, len(resp.Edges))
 			for _, e := range resp.Edges {
 				seen[e.EdgeID] = true
 			}
-			for _, e := range expResp.Subgraph.Edges {
+			for _, e := range chainOut.MergedEdges {
 				if !seen[e.EdgeID] {
 					resp.Edges = append(resp.Edges, e)
 					seen[e.EdgeID] = true
@@ -255,4 +271,52 @@ func (r *Runtime) Topology() map[string]any {
 		"segments": r.storage.Segments().List(""),
 		"indexes":  r.storage.Indexes().List(),
 	}
+}
+
+// GetEvidenceFragment returns the pre-computed EvidenceFragment for an object ID
+// from the hot cache. Returns nil if not cached.
+func (r *Runtime) GetEvidenceFragment(objectID string) any {
+	if r.evCache == nil {
+		return nil
+	}
+	if frag, ok := r.evCache.Get(objectID); ok {
+		return frag
+	}
+	return nil
+}
+
+// GetDerivationLog returns derivation chain entries for the given object ID
+// from the append-only DerivationLog.
+func (r *Runtime) GetDerivationLog(objectID string) []string {
+	if r.derivationLog == nil {
+		return nil
+	}
+	entries := r.derivationLog.ForDerived(objectID)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = fmt.Sprintf("lsn=%d op=%s src=%s(%s) → %s(%s)",
+			e.LSN, e.Operation, e.SourceID, e.SourceType, e.DerivedID, e.DerivedType)
+	}
+	return out
+}
+
+// GetPolicyDecisions returns governance decision entries for the given object ID
+// from the append-only PolicyDecisionLog.
+func (r *Runtime) GetPolicyDecisions(objectID string) []string {
+	if r.policyDecisionLog == nil {
+		return nil
+	}
+	entries := r.policyDecisionLog.ForObject(objectID)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = fmt.Sprintf("lsn=%d decision=%s policy=%s reason=%s",
+			e.LSN, e.Decision, e.PolicyID, e.Reason)
+	}
+	return out
 }

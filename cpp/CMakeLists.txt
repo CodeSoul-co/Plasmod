@@ -46,15 +46,14 @@ else()
     set(KNOWHERE_WITH_RAFT OFF CACHE BOOL "" FORCE)
 endif()
 
-# Fetch Knowhere from zilliztech (active repo)
-FetchContent_Declare(
-    knowhere
-    GIT_REPOSITORY https://github.com/zilliztech/knowhere.git
-    GIT_TAG        v2.3.12
-    GIT_SHALLOW    TRUE
-)
-
 if(ANDB_WITH_KNOWHERE)
+    # Fetch Knowhere from zilliztech (active repo)
+    FetchContent_Declare(
+        knowhere
+        GIT_REPOSITORY https://github.com/zilliztech/knowhere.git
+        GIT_TAG        v2.3.12
+        GIT_SHALLOW    TRUE
+    )
     FetchContent_MakeAvailable(knowhere)
     message(STATUS "Knowhere integration: ENABLED (zilliztech/knowhere v2.3.12)")
 else()

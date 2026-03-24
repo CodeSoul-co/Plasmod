@@ -47,7 +47,7 @@ func buildTestGateway() *Gateway {
 		coordinator.NewQueryCoordinator(planner, policy),
 	)
 
-	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, nodeManager, store, tieredObjs)
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
 	runtime.RegisterDefaults()
 
 	return NewGateway(coord, runtime, store, nil)
