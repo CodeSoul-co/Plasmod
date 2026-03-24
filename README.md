@@ -684,6 +684,8 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | 2026-03-24 | **SDK Updated**: `andb_sdk/client.py` query() kwargs now match QueryRequest JSON shape; ingest_event() supports workspace_id/tenant_id. |
 | 2026-03-24 | **Vendoring**: Knowhere v2.3.12 + pybind11 v2.11.1 cloned to `cpp/third_party/`; Milvus SDK vendored to `src/internal/dataplane/milvus/`. |
 | 2026-03-24 | **Tests**: All `go test ./src/internal/...` pass; `go vet` clean. |
+| 2026-03-24 | **Bug Fix**: `query_scope='session'` was returning empty objects. Root cause: `query_scope` literal was used as namespace instead of mapping to `session_id` value. Fixed in `semantic/operators.go` with `resolveQueryNamespace()` function. |
+| 2026-03-24 | **Integration Tests**: Added `integration_tests/retrieval_b/` with 8 test cases for hybrid retrieval validation. |
 
 ---
 
