@@ -561,10 +561,10 @@ The following review checklist is intended for team members before merging `inte
 
 | Item | Status | Notes |
 |---|---|---|
-| **Review focus** | ⚠️ | `QueryChainInput.EdgeTypeFilter` — verify edge-type filter from `QueryRequest` propagates to `SubgraphExecutorWorker` |
-| **Review focus** | ⚠️ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by caller before `QueryChain.Run` |
-| Edge case: combined tenant + object-type + top_k filter | 🔲 | Integration test covering the 3-way combination |
-| Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | 🔲 | `StateMaterializationWorker` writes `State` on `tool_call` — confirm retrievable with type filter |
+| **Review focus** | ✅ | `QueryChainInput.EdgeTypeFilter` — verify edge-type filter from `QueryRequest` propagates to `SubgraphExecutorWorker` |
+| **Review focus** | ✅ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by caller before `QueryChain.Run` |
+| Edge case: combined tenant + object-type + top_k filter | ✅ | Integration test covering the 3-way combination |
+| Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | ✅ | `StateMaterializationWorker` writes `State` on `tool_call` — confirm retrievable with type filter |
 
 ---
 

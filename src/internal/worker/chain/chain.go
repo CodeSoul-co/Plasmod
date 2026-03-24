@@ -187,6 +187,12 @@ type QueryChainInput struct {
 	ObjectIDs []string
 	// MaxDepth controls BFS hops in proof trace (0 or negative = default 8).
 	MaxDepth int
+	// GraphNodes are caller-prefetched nodes for subgraph expansion.
+	// When empty, QueryChain will fall back to ObjectStore.GetMemory prefetch.
+	GraphNodes []schemas.GraphNode
+	// GraphEdges are caller-prefetched edges for subgraph expansion.
+	// When empty, QueryChain will fall back to EdgeStore.BulkEdges prefetch.
+	GraphEdges []schemas.Edge
 	// ObjectStore provides Memory objects for node pre-fetching.
 	ObjectStore interface {
 		GetMemory(id string) (schemas.Memory, bool)
@@ -230,16 +236,20 @@ func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
 		})
 	}
 
-	// ── Pre-fetch Memory objects as GraphNodes ──────────────────────────────
-	preNodes := make([]schemas.GraphNode, 0, len(in.ObjectIDs))
-	for _, id := range in.ObjectIDs {
-		if m, ok := in.ObjectStore.GetMemory(id); ok {
-			preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+	preNodes := in.GraphNodes
+	if len(preNodes) == 0 && in.ObjectStore != nil {
+		preNodes = make([]schemas.GraphNode, 0, len(in.ObjectIDs))
+		for _, id := range in.ObjectIDs {
+			if m, ok := in.ObjectStore.GetMemory(id); ok {
+				preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+			}
 		}
 	}
 
-	// ── Pre-fetch 1-hop edges ───────────────────────────────────────────────
-	preEdges := in.EdgeStore.BulkEdges(in.ObjectIDs)
+	preEdges := in.GraphEdges
+	if len(preEdges) == 0 && in.EdgeStore != nil {
+		preEdges = in.EdgeStore.BulkEdges(in.ObjectIDs)
+	}
 
 	// ── Step 1: Multi-hop BFS proof trace via ProofTraceWorker ─────────────
 	maxDepth := in.MaxDepth

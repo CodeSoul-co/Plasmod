@@ -132,11 +132,21 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	if len(result.ObjectIDs) > 0 {
+		preNodes := make([]schemas.GraphNode, 0, len(result.ObjectIDs))
+		for _, id := range result.ObjectIDs {
+			if m, ok := r.storage.Objects().GetMemory(id); ok {
+				preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+			}
+		}
+		preEdges := r.storage.Edges().BulkEdges(result.ObjectIDs)
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:    result.ObjectIDs,
-			MaxDepth:     0, // default cap of 8
-			ObjectStore:  r.storage.Objects(),
-			EdgeStore:    r.storage.Edges(),
+			ObjectIDs:      result.ObjectIDs,
+			MaxDepth:       0, // default cap of 8
+			GraphNodes:     preNodes,
+			GraphEdges:     preEdges,
+			EdgeTypeFilter: req.EdgeTypes,
+			ObjectStore:    r.storage.Objects(),
+			EdgeStore:      r.storage.Edges(),
 		})
 		_ = chainResult // chainResult.OK is advisory; non-fatal
 

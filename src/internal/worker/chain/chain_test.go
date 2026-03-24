@@ -193,6 +193,39 @@ func TestQueryChain_Run_WithObjectIDs(t *testing.T) {
 	_ = out
 }
 
+func TestQueryChain_Run_UsesPrefetchedGraphData(t *testing.T) {
+	mgr, _ := buildManager(t)
+	chain := CreateQueryChain(mgr)
+
+	prefetchedNodes := []schemas.GraphNode{
+		{ObjectID: "mem_pref_1", ObjectType: string(schemas.ObjectTypeMemory)},
+	}
+	prefetchedEdges := []schemas.Edge{
+		{
+			EdgeID:      "edge_pref_1",
+			SrcObjectID: "mem_pref_1",
+			SrcType:     string(schemas.ObjectTypeMemory),
+			EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+			DstObjectID: "evt_pref_1",
+			DstType:     string(schemas.ObjectTypeEvent),
+			Weight:      1.0,
+		},
+	}
+
+	out, result := chain.Run(QueryChainInput{
+		ObjectIDs:  []string{"mem_pref_1"},
+		MaxDepth:   1,
+		GraphNodes: prefetchedNodes,
+		GraphEdges: prefetchedEdges,
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+	if len(out.MergedEdges) == 0 {
+		t.Fatalf("expected merged edges from prefetched graph data")
+	}
+}
+
 // ─── CollaborationChain ───────────────────────────────────────────────────────
 
 func TestCollaborationChain_Run_SameAgentLWW(t *testing.T) {
