@@ -400,3 +400,92 @@ func (a *MilvusAdapter) CollectionStats() (map[string]string, error) {
 	}
 	return stats, nil
 }
+
+// VectorSearcher interface implementation for HybridDataPlane integration.
+
+// SearchWithEmbeddingVS implements VectorSearcher.SearchWithEmbedding.
+// Returns object IDs and similarity scores.
+func (a *MilvusAdapter) SearchWithEmbeddingVS(embedding []float32, topK int, filter string) ([]string, []float32, error) {
+	if len(embedding) != a.dim {
+		return nil, nil, fmt.Errorf("embedding dimension mismatch: got %d, expected %d", len(embedding), a.dim)
+	}
+
+	if topK <= 0 {
+		topK = 10
+	}
+
+	sp, err := entity.NewIndexHNSWSearchParam(64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create search param: %w", err)
+	}
+
+	vectors := []entity.Vector{entity.FloatVector(embedding)}
+	results, err := a.client.Search(
+		a.ctx,
+		a.collectionName,
+		nil,
+		filter,
+		[]string{"object_id"},
+		vectors,
+		"embedding",
+		entity.IP,
+		topK,
+		sp,
+	)
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("milvus search failed: %w", err)
+	}
+
+	objectIDs := make([]string, 0)
+	scores := make([]float32, 0)
+	for _, result := range results {
+		for i := 0; i < result.ResultCount; i++ {
+			if idCol, ok := result.Fields.GetColumn("object_id").(*entity.ColumnVarChar); ok {
+				id, err := idCol.ValueByIdx(i)
+				if err == nil {
+					objectIDs = append(objectIDs, id)
+					if i < len(result.Scores) {
+						scores = append(scores, result.Scores[i])
+					} else {
+						scores = append(scores, 0)
+					}
+				}
+			}
+		}
+	}
+
+	return objectIDs, scores, nil
+}
+
+// IngestWithEmbeddingVS implements VectorSearcher.IngestWithEmbedding.
+func (a *MilvusAdapter) IngestWithEmbeddingVS(objectID string, embedding []float32, text string, attributes map[string]string) error {
+	if len(embedding) != a.dim {
+		return fmt.Errorf("embedding dimension mismatch: got %d, expected %d", len(embedding), a.dim)
+	}
+
+	namespace := ""
+	if attributes != nil {
+		namespace = attributes["namespace"]
+	}
+
+	objectIDs := []string{objectID}
+	texts := []string{text}
+	namespaces := []string{namespace}
+	eventTSs := []int64{0}
+	embeddings := [][]float32{embedding}
+
+	_, err := a.client.Insert(a.ctx, a.collectionName, "",
+		entity.NewColumnVarChar("object_id", objectIDs),
+		entity.NewColumnVarChar("text", texts),
+		entity.NewColumnVarChar("namespace", namespaces),
+		entity.NewColumnInt64("event_ts", eventTSs),
+		entity.NewColumnFloatVector("embedding", a.dim, embeddings),
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to insert into Milvus: %w", err)
+	}
+
+	return nil
+}

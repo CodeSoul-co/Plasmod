@@ -14,7 +14,8 @@ import (
 // without requiring CGO or Milvus dependencies.
 //
 // The Python service must be running at the configured endpoint with:
-//   python -m src.internal.retrieval.main --serve --port 8081
+//
+//	python -m src.internal.retrieval.main --serve --port 8081
 type HTTPRetrievalAdapter struct {
 	endpoint   string
 	httpClient *http.Client
@@ -33,14 +34,14 @@ func NewHTTPRetrievalAdapter(endpoint string) *HTTPRetrievalAdapter {
 
 // retrievalRequest is the JSON payload sent to the Python service.
 type retrievalRequest struct {
-	QueryText   string   `json:"query_text"`
-	TopK        int      `json:"top_k"`
-	Namespace   string   `json:"namespace,omitempty"`
-	ObjectTypes []string `json:"object_types,omitempty"`
-	MemoryTypes []string `json:"memory_types,omitempty"`
-	EnableDense bool     `json:"enable_dense"`
-	EnableSparse bool    `json:"enable_sparse"`
-	ForGraph    bool     `json:"for_graph"`
+	QueryText    string   `json:"query_text"`
+	TopK         int      `json:"top_k"`
+	Namespace    string   `json:"namespace,omitempty"`
+	ObjectTypes  []string `json:"object_types,omitempty"`
+	MemoryTypes  []string `json:"memory_types,omitempty"`
+	EnableDense  bool     `json:"enable_dense"`
+	EnableSparse bool     `json:"enable_sparse"`
+	ForGraph     bool     `json:"for_graph"`
 }
 
 // retrievalResponse is the JSON payload returned by the Python service.
@@ -172,6 +173,102 @@ func (a *HTTPRetrievalAdapter) Healthz() error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("healthz returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// VectorSearcher interface implementation for HybridDataPlane integration.
+
+// vectorSearchRequest is the JSON payload for vector search with embedding.
+type vectorSearchRequest struct {
+	Embedding []float32 `json:"embedding"`
+	TopK      int       `json:"top_k"`
+	Filter    string    `json:"filter,omitempty"`
+}
+
+// vectorIngestRequest is the JSON payload for ingesting with embedding.
+type vectorIngestRequest struct {
+	ObjectID   string            `json:"object_id"`
+	Embedding  []float32         `json:"embedding"`
+	Text       string            `json:"text"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// SearchWithEmbeddingVS implements VectorSearcher.SearchWithEmbeddingVS.
+func (a *HTTPRetrievalAdapter) SearchWithEmbeddingVS(embedding []float32, topK int, filter string) ([]string, []float32, error) {
+	if topK <= 0 {
+		topK = 10
+	}
+
+	req := vectorSearchRequest{
+		Embedding: embedding,
+		TopK:      topK,
+		Filter:    filter,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal vector search request: %w", err)
+	}
+
+	resp, err := a.httpClient.Post(
+		a.endpoint+"/vector_search",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("http post vector_search: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, nil, fmt.Errorf("vector_search failed: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	var result retrievalResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil, fmt.Errorf("decode vector_search response: %w", err)
+	}
+
+	objectIDs := make([]string, 0, len(result.Candidates))
+	scores := make([]float32, 0, len(result.Candidates))
+	for _, c := range result.Candidates {
+		objectIDs = append(objectIDs, c.ObjectID)
+		scores = append(scores, float32(c.FinalScore))
+	}
+
+	return objectIDs, scores, nil
+}
+
+// IngestWithEmbeddingVS implements VectorSearcher.IngestWithEmbeddingVS.
+func (a *HTTPRetrievalAdapter) IngestWithEmbeddingVS(objectID string, embedding []float32, text string, attributes map[string]string) error {
+	req := vectorIngestRequest{
+		ObjectID:   objectID,
+		Embedding:  embedding,
+		Text:       text,
+		Attributes: attributes,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal vector ingest request: %w", err)
+	}
+
+	resp, err := a.httpClient.Post(
+		a.endpoint+"/vector_ingest",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("http post vector_ingest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("vector_ingest failed: status=%d body=%s", resp.StatusCode, string(respBody))
 	}
 
 	return nil

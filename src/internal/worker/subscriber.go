@@ -16,6 +16,17 @@ import (
 // Implementations may filter by EventType or any other field.
 type DispatchHandler func(entry eventbackbone.WALEntry)
 
+// DeadLetterEntry represents a failed dispatch that should be retried or
+// investigated. Production systems should consume from ErrorCh and persist
+// these entries for later analysis or retry.
+type DeadLetterEntry struct {
+	LSN       int64
+	EventID   string
+	Handler   int // index of the handler that panicked
+	Error     interface{}
+	Timestamp time.Time
+}
+
 // EventSubscriber polls the WAL for new entries and dispatches them to the
 // registered worker pipeline in the background.
 //
@@ -26,6 +37,7 @@ type DispatchHandler func(entry eventbackbone.WALEntry)
 //   - Async workers driven here: ReflectionPolicy, ConflictMerge,
 //     MemoryConsolidation, and any custom DispatchHandlers.
 //   - Safe for concurrent use: lastLSN is atomic; agentState is mutex-guarded.
+//   - Dead-letter channel: panics are reported to ErrorCh for structured handling.
 type EventSubscriber struct {
 	wal          eventbackbone.WAL
 	manager      *nodes.Manager
@@ -37,6 +49,11 @@ type EventSubscriber struct {
 	// MemoryConsolidation pass.  0 disables automatic consolidation.
 	consolidateEvery int
 
+	// ErrorCh receives DeadLetterEntry for any handler that panics.
+	// Consumers should drain this channel to avoid blocking dispatch.
+	// Buffer size is 256; excess entries are dropped with a log warning.
+	ErrorCh chan DeadLetterEntry
+
 	mu              sync.Mutex
 	agentEventCount map[string]int    // "agentID:sessionID" → event count
 	agentLastMem    map[string]string // "agentID:sessionID" → most-recent memory ID
@@ -45,6 +62,10 @@ type EventSubscriber struct {
 // CreateEventSubscriber constructs a subscriber wired to the given WAL and worker
 // Manager.  Built-in dispatch handlers for ReflectionPolicy, ConflictMerge,
 // and MemoryConsolidation are registered automatically.
+//
+// The returned subscriber has a buffered ErrorCh (capacity 256) for dead-letter
+// entries. Callers should start a goroutine to consume from ErrorCh to avoid
+// blocking dispatch when the buffer fills.
 func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *EventSubscriber {
 	s := &EventSubscriber{
 		wal:              wal,
@@ -53,6 +74,7 @@ func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *Event
 		consolidateEvery: 10,
 		agentEventCount:  make(map[string]int),
 		agentLastMem:     make(map[string]string),
+		ErrorCh:          make(chan DeadLetterEntry, 256),
 	}
 	s.addBuiltinHandlers()
 	return s
@@ -95,8 +117,8 @@ func (s *EventSubscriber) drainWAL() {
 	fromLSN := s.lastLSN.Load() + 1
 	entries := s.wal.Scan(fromLSN)
 	for _, entry := range entries {
-		for _, h := range s.handlers {
-			safeDispatch(h, entry)
+		for i, h := range s.handlers {
+			s.safeDispatch(h, i, entry)
 		}
 		s.lastLSN.Store(entry.LSN)
 	}
@@ -105,16 +127,29 @@ func (s *EventSubscriber) drainWAL() {
 	}
 }
 
-// safeDispatch calls h(entry) and recovers from any panic, logging the
-// incident so the poll goroutine keeps running.
+// safeDispatch calls h(entry) and recovers from any panic, reporting the
+// incident to ErrorCh so the poll goroutine keeps running.
 //
-// TODO(member-D): replace log.Printf with structured error reporting
-// (e.g. dead-letter channel) before deploying to production.
-func safeDispatch(h DispatchHandler, entry eventbackbone.WALEntry) {
+// Panics are sent to ErrorCh as DeadLetterEntry for structured error handling.
+// If ErrorCh is full, the entry is dropped with a log warning.
+func (s *EventSubscriber) safeDispatch(h DispatchHandler, handlerIdx int, entry eventbackbone.WALEntry) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("subscriber: handler panic (lsn=%d event=%s): %v",
-				entry.LSN, entry.Event.EventID, r)
+			dle := DeadLetterEntry{
+				LSN:       entry.LSN,
+				EventID:   entry.Event.EventID,
+				Handler:   handlerIdx,
+				Error:     r,
+				Timestamp: time.Now(),
+			}
+			select {
+			case s.ErrorCh <- dle:
+				// successfully sent to dead-letter channel
+			default:
+				// channel full, log and drop
+				log.Printf("subscriber: ErrorCh full, dropping dead-letter (lsn=%d event=%s handler=%d): %v",
+					entry.LSN, entry.Event.EventID, handlerIdx, r)
+			}
 		}
 	}()
 	h(entry)
