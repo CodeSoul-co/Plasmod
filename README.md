@@ -532,26 +532,10 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 ## Integration Branch — Team Review Notes
 
 > **Branch:** `integration/all-features-test`
-> **Last updated:** 2026-03-23 (integration-lead pass 3)
+> **Last updated:** 2026-03-24
 > **Status:** All 21 Go internal packages pass (`go test ./src/internal/... exit 0`; `go vet ./... exit 0`). Six worker sub-packages have `*_test.go` files. Pass 2: 5 pipeline correctness fixes. Pass 3: 3 graph/storage structural fixes (R2/R6/R7) — see summaries below.
 > **Note:** This section exists only on `integration/all-features-test` and is intentionally not present on `main`.
 
-### Integration Lead — Summary of Changes (Pass 2)
-
-| Category | Change | File(s) |
-|---|---|---|
-| **Bug fix** | `QueryRequest.ObjectTypes` / `MemoryTypes` were never propagated — `DefaultQueryPlanner.Build` ignored them, `SearchInput` had no such fields, `Assembler.Build` never filtered. Fixed end-to-end: fields added to `QueryPlan` + `SearchInput`; `Assembler.filterByObjectTypes` uses ID-prefix heuristic + optional `ObjectStore` confirmation | `semantic/operators.go`, `dataplane/contracts.go`, `evidence/assembler.go`, `worker/runtime.go` |
-| **Bug fix** | `ExpandFromRequest` called `OneHopExpand` on only the **first** seed ID — all additional seeds silently dropped, multi-seed subgraph queries returned incomplete graphs | `schemas/graph_expand.go` |
-| **Bug fix** | `Runtime.SubmitIngest` bypassed `IngestWorker` validation — events written to WAL before workers could reject malformed payloads. `DispatchIngestValidation` now runs before `WAL.Append` | `worker/runtime.go` |
-| **Feature** | `QueryResponse.Versions` was always `[]` — `Assembler.resolveVersions` now looks up the latest `ObjectVersion` for every returned object ID; `SnapshotVersionStore` wired via `WithVersionStore` in bootstrap | `evidence/assembler.go`, `app/bootstrap.go` |
-| **Feature** | Governance annotations (quarantine flag, retracted state) now surface in `QueryResponse.ProofTrace` entries prefixed `governance:*`; `PolicyStore` wired via `WithPolicyStore` in bootstrap | `evidence/assembler.go`, `app/bootstrap.go` |
-| **Bug fix** | `CollaborationChain.Run` always returned `LeftMemID` as winner regardless of LWW result → replaced with `DispatchConflictMergeWithWinner` that calls `Run` on the merge worker and returns the actual high-version survivor | `worker/nodes/manager.go`, `worker/chain/chain.go` |
-| **Bug fix** | `S3ColdStore.PutMemory/PutAgent` called `EnsureBucket` via `s3util.PutBytes` on **every write** (one HTTP round-trip per cold write) → added `sync.Once` to `S3ColdStore`, removed `EnsureBucket` from `PutBytes` | `storage/s3store.go`, `s3util/s3util.go` |
-| **Bug fix** | `MicroBatchScheduler.Flush()` was never called anywhere in the codebase; payloads enqueued by `CollaborationChain` accumulated indefinitely → `EventSubscriber.drainWAL` now calls `FlushMicroBatch()` after each cycle that processed ≥1 WAL entry | `worker/subscriber.go` |
-| **Observability** | `S3ColdStore.GetMemory/GetAgent` silently returned `false` on 404; cold misses were invisible to operators → added `log.Printf("s3cold: miss key=…")` on nil response | `storage/s3store.go` |
-| **Doc fix** | README claimed "10 HTTP routes" in 3 places; actual gateway registers 14 routes | `README.md` |
-| **Doc fix** | README listed `SubgraphExecutorWorker` as "planned for v1.x/v2+" when it is fully implemented in `indexing/subgraph.go` | `README.md` |
-| **Tests** | Added `_test.go` for all 6 worker sub-packages that had none: `cognitive`, `coordination`, `indexing`, `ingestion`, `materialization`, `chain` | `worker/{cognitive,coordination,indexing,ingestion,materialization,chain}/*_test.go` |
 
 ### Remaining Open Items (blocking or near-term)
 
@@ -560,8 +544,6 @@ All previously tracked items (R1–R11, R8) are now resolved. No blocking items 
 **Status for main merge:** All known issues are resolved. The retrieval plane now wires real Knowhere HNSW via `cpp/CMakeLists.txt` (`ANDB_WITH_KNOWHERE=ON`); a brute-force fallback remains available via `-DANDB_WITH_KNOWHERE=OFF` for environments without Knowhere dependencies. The Go→C++ bridge (`retrievalplane/fixme_external_deps.go`) no longer requires Milvus Go internal packages — it calls the C API directly via CGO.
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
-
-> 👋 **To all members:** Please leave a comment or Slack thread when you complete your section checklist. Cross-dependency items are called out in the [Cross-Member Collaboration](#cross-member-collaboration) section below — check that table first if your work touches a shared interface.
 
 ---
 
@@ -800,82 +782,3 @@ S3_PREFIX      andb/integration_tests (default)
 | Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
 
 ---
-
-## Cross-Member Collaboration
-
-The table below lists every point where two members' work **must be confirmed together** before either side is considered done. Please tag the relevant member when you open a PR or reach this checkpoint.
-
-| # | Interface / Touch Point | Owner | Needs confirmation from | What to verify |
-|---|---|---|---|---|
-| 1 | `schemas.QueryRequest` JSON shape | **A** | **B** | B's Python SDK `query()` kwargs still map 1:1 after A added workspace/object-type filters |
-| 2 | `/v1/ingest` POST body | **A** | **B** | `workspace_id` field added by A — B must update `ingest_event()` in Python SDK |
-| 3 | gRPC proto field names | **B** | **D** | If D adds a Go gRPC client stub, B must freeze proto field numbers first |
-| 4 | `QueryResponse.edges` shape (`[]schemas.Edge`) | **C** | **B** | B's Python SDK parses `edges` — C changed edge structure; B must update response parsing |
-| 5 | `ProofTraceWorker` BFS depth in `QueryResponse.proof_trace` | **D** | **B** | B's integration tests assert on `proof_trace` length; default depth=8 may increase trace size |
-| 6 | `GraphEdgeStore.EdgesFrom` O(n) scan | **C** | **D** | D's BFS + D's `SubgraphExecutorWorker` both call `EdgesFrom`; if C replaces with indexed map, D's BFS must be retested |
-| 7 | `ToolTraceWorker` → `DerivationLog` → `ProofTrace` chain | **D** | **C** | C's graph edges and D's derivation entries both feed `ProofTrace`; run joint test before merging |
-| 8 | Worker `nodes/contracts.go` interface changes | **D** | **A, B, C** | Any interface signature change in `contracts.go` is a breaking change — announce in team chat first |
-| 9 | `QueryChainInput.GraphNodes/GraphEdges` pre-fetch | **D** | **C** | D owns the `QueryChain.Run` call site; C owns `BulkEdges`; agree on where in `Runtime.ExecuteQuery` the pre-fetch is inserted |
-| 10 | `SubgraphExecutorWorker` seed IDs ← C++ retrieval `is_seed` | **B** | **D** | B's C++ layer marks seeds; D's Go gateway must extract seed IDs and pass to `QueryChainInput.ObjectIDs` before `QueryChain.Run` |
-| 11 | `StateMaterializationWorker` output + A's `ObjectTypes` filter | **D** | **A** | D wired `StateMat` in `MainChain`; A must verify `ObjectTypes=["state"]` filter correctly surfaces `State` objects |
-| 12 | `MicroBatchScheduler.Flush()` drain trigger | **D** | **C** | D owns the scheduler; C's `ConflictMergeWorker` feeds it — agree on flush cadence (timer / WAL watermark / explicit call) before production |
-
----
-
-## Pre-merge Checklist (all members)
-
-> Run this checklist **together as a team** in a short sync call or shared doc before opening the merge PR to `main`.
-
-**Go layer (D runs)**
-- [x] `go test ./src/internal/... -count=1 -timeout 30s` — all 21 packages green (verified twice)
-- [x] `go vet ./...` — exit 0
-- [x] `GET /v1/admin/topology` returns 18 nodes, including `subgraph_executor_worker` type — `TestTopologyConnectivity` updated with type set assertion and exact count check
-- [x] `proof_trace` contains at least one `derivation:` step for `tool_call` events
-- [x] `MicroBatchScheduler.Flush()` called in `EventSubscriber.drainWAL`; integration test `TestMicroBatch_FlushIntegration` passes
-- [x] `Runtime.ExecuteQuery` pre-fetches `BulkEdges`, calls `DispatchProofTrace` + `DispatchSubgraphExpand`
-
-**Filter & schema (A runs)**
-- [ ] `go test ./integration_tests/... -v -timeout 120s` — all green
-- [x] `ObjectTypes` empty → returns all types — verified by `TestAssembler_NoFilterPassthrough`
-- [x] `ObjectTypes=["memory"]` excludes `state_*`/`art_*` — verified by `TestAssembler_ObjectTypesFilter`
-- [x] `ObjectTypes=["state"]` returns only `state_*` — verified by `TestAssembler_StateTypeFilter`
-- [ ] 3-way filter (workspace + object-type + top_k) integration test passes (live server required)
-- [x] `workspace_id` omitted on ingest → queryable under default namespace — `TestIngestWithoutWorkspaceID_Queryable` added; `DefaultQueryPlanner.Build` namespace fix applied
-
-**Python & retrieval (B runs)**
-
-_Go side (B owns the Go↔Python contract boundary):_
-- [ ] `go test ./src/internal/retrieval/... -count=1` — all green (or no test files yet — add at least one smoke test)
-- [ ] `go test ./src/internal/schemas/... -count=1` — `QueryRequest` / `QueryResponse` JSON tags match proto field names in `retrieval.proto`
-- [ ] `go vet ./src/internal/retrieval/...` — no errors
-- [ ] `GET /v1/query` returns `proof_trace`, `edges`, `applied_filters` keys in response JSON (verify with `curl` or `integration_tests/ingest_query_test.go`)
-- [ ] `/v1/ingest` accepts `workspace_id` field without error (Go gateway handler)
-- [ ] `GET /v1/admin/topology` — verify no retrieval-related worker is in error/degraded state
-
-_Python / C++ side:_
-- [ ] `cd integration_tests/python && python run_all.py` — all green
-- [ ] `proof_trace` assertion in Python tests uses `>= 1` not exact length
-- [ ] SDK `query()` kwargs verified against current `QueryRequest` JSON shape
-- [ ] `ingest_event()` includes `workspace_id` field
-- [ ] pybind11 C++ module (`cmake .. -DANDB_WITH_PYBIND=ON && make`) builds successfully on CI platform
-- [ ] `python -m src.internal.retrieval.main --test` exits 0
-
-**Graph & edges (C runs)**
-- [x] `QueryResponse.edges` non-empty after ingest → query round-trip — `TestDataflowTrace` now asserts non-empty edges and versions after R11 namespace fix
-- [x] `SubgraphExecutorWorker` subgraph non-empty when seeds have known edges — `runtime.ExecuteQuery` now pre-fetches `[]GraphNode` via `r.storage.Objects().GetMemory` before `DispatchSubgraphExpand`; `OneHopExpand` populates `EvidenceSubgraph.Nodes`. Regression: `TestRuntime_SubgraphExpand_NodesPopulated`
-- [x] `BulkEdges` and `EdgesFrom`/`EdgesTo` use indexed lookups — O(k) per node — verified by `TestMemoryGraphEdgeStore_EdgesFrom_Indexed` + `TestMemoryGraphEdgeStore_BulkEdges`
-- [x] Cyclic graph BFS terminates at `maxDepth=8` — verified by `TestProofTraceWorker_AssembleTrace_CyclicGraph_Terminates`
-- [x] Edge cold-tier: `TieredObjectStore.ArchiveEdge` moves edges warm→cold — verified by `TestTieredObjectStore_ArchiveEdge`
-- [x] Edge TTL: `PruneExpiredEdges` removes expired edges and cleans indices — verified by `TestMemoryGraphEdgeStore_PruneExpiredEdges`
-
-**S3 cold storage (D + any member with MinIO access)**
-- [ ] Server starts with S3 env vars → logs `cold store: S3 endpoint=...`
-- [ ] Server starts without S3 env vars → logs `cold store: in-memory simulation`
-- [ ] `ANDB_RUN_S3_TESTS=true go test ./integration_tests/... -run TestS3` passes with MinIO running
-- [x] `EnsureBucket` called only once per `S3ColdStore` lifetime (sync.Once fix applied in integration-lead pass)
-
-**Final gates (all members)**
-- [ ] No new `TODO`/`FIXME` markers in committed code
-- [ ] Cross-member table: all **12** items confirmed ✅
-- [ ] Squash-merge or fast-forward only — no merge bubbles on `main`
-- [ ] Tag release commit with `v1.0.0-integration-rc1` before merging
