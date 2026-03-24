@@ -194,7 +194,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 
-	keys, err := s3util.ListObjects(ctx, nil, s.cfg, prefix)
+	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
@@ -209,7 +209,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	lq := strings.ToLower(query)
 
 	for _, key := range keys {
-		data, err := s3util.GetBytes(ctx, nil, s.cfg, key)
+		data, err := GetBytes(ctx, nil, s.cfg, key)
 		if err != nil || data == nil {
 			continue
 		}
