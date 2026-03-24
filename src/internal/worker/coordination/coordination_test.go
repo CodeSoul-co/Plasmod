@@ -7,6 +7,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
+	"andb/src/internal/worker/nodes"
 )
 
 // ─── ConflictMergeWorker ─────────────────────────────────────────────────────
@@ -291,6 +292,40 @@ func TestProofTraceWorker_AssembleTrace_CyclicGraph_Terminates(t *testing.T) {
 		// If we get here synchronously, all is fine.
 	}
 	<-done
+}
+
+func TestCommunicationWorker_Broadcast_EndToEnd(t *testing.T) {
+	store := storage.NewMemoryRuntimeStorage()
+	mgr := nodes.CreateManager()
+	mgr.RegisterCommunication(CreateInMemoryCommunicationWorker("comm-e2e", store.Objects()))
+
+	// Pre-store a memory in agentA's space.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_src_e2e",
+		AgentID:  "agentA",
+		SessionID: "s1",
+		Content:  "shared content",
+		IsActive: true,
+		Version:  1,
+	})
+
+	// Dispatch via Manager (full pipeline path, not direct Broadcast call).
+	mgr.DispatchCommunication("agentA", "agentB", "mem_src_e2e")
+
+	// Verify a shared copy exists in agentB's space.
+	sharedMems := store.Objects().ListMemories("agentB", "")
+	if len(sharedMems) == 0 {
+		t.Fatal("expected at least one shared memory in agentB's space after broadcast")
+	}
+	found := false
+	for _, m := range sharedMems {
+		if m.ProvenanceRef != "" && strings.Contains(m.ProvenanceRef, "agentA") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a shared memory with ProvenanceRef referencing agentA")
+	}
 }
 
 func TestProofTraceWorker_Run_TypedDispatch(t *testing.T) {

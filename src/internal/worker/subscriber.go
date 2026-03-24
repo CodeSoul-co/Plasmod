@@ -12,6 +12,21 @@ import (
 	"andb/src/internal/worker/nodes"
 )
 
+// DeadLetterEntry describes a WAL entry that could not be processed because the
+// handler panicked.  Downstream consumers (e.g. a DLQ consumer goroutine or an
+// ops dashboard) can drain deadLetter to replay, alert, or archive these events.
+type DeadLetterEntry struct {
+	Entry      eventbackbone.WALEntry `json:"entry"`
+	PanicValue any                    `json:"panic_value"`
+	Timestamp  time.Time              `json:"timestamp"`
+}
+
+// DLQStats returns statistics about the dead-letter queue.
+type DLQStats struct {
+	PanicCount     int   `json:"panic_count"`
+	TotalProcessed int64 `json:"total_processed"`
+}
+
 // DispatchHandler is a pluggable function called for every new WAL entry.
 // Implementations may filter by EventType or any other field.
 type DispatchHandler func(entry eventbackbone.WALEntry)
@@ -37,6 +52,11 @@ type EventSubscriber struct {
 	// MemoryConsolidation pass.  0 disables automatic consolidation.
 	consolidateEvery int
 
+	// dead-letter queue fields
+	deadLetter     chan DeadLetterEntry
+	panicCount     atomic.Int64
+	processedCount atomic.Int64
+
 	mu              sync.Mutex
 	agentEventCount map[string]int    // "agentID:sessionID" → event count
 	agentLastMem    map[string]string // "agentID:sessionID" → most-recent memory ID
@@ -53,6 +73,7 @@ func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *Event
 		consolidateEvery: 10,
 		agentEventCount:  make(map[string]int),
 		agentLastMem:     make(map[string]string),
+		deadLetter:       make(chan DeadLetterEntry, 64),
 	}
 	s.addBuiltinHandlers()
 	return s
@@ -64,6 +85,22 @@ func (s *EventSubscriber) SetPollInterval(d time.Duration) { s.pollInterval = d 
 // SetConsolidateEvery sets how many events per agent+session trigger a
 // MemoryConsolidation pass.  Pass 0 to disable automatic consolidation.
 func (s *EventSubscriber) SetConsolidateEvery(n int) { s.consolidateEvery = n }
+
+// DeadLetterChannel returns the dead-letter channel.  Entries sent here
+// originated from handler panics.  The channel has capacity 64; if the
+// consumer cannot keep up the subscriber will drop further panics rather
+// than blocking the poll loop.
+func (s *EventSubscriber) DeadLetterChannel() <-chan DeadLetterEntry {
+	return s.deadLetter
+}
+
+// DLQStats returns statistics about the dead-letter queue.
+func (s *EventSubscriber) DLQStats() DLQStats {
+	return DLQStats{
+		PanicCount:     int(s.panicCount.Load()),
+		TotalProcessed: s.processedCount.Load(),
+	}
+}
 
 // AddHandler appends a custom DispatchHandler.  Handlers are invoked in
 // registration order for every new WAL entry during the drain cycle.
@@ -96,7 +133,7 @@ func (s *EventSubscriber) drainWAL() {
 	entries := s.wal.Scan(fromLSN)
 	for _, entry := range entries {
 		for _, h := range s.handlers {
-			safeDispatch(h, entry)
+			s.safeDispatch(h, entry)
 		}
 		s.lastLSN.Store(entry.LSN)
 	}
@@ -105,18 +142,28 @@ func (s *EventSubscriber) drainWAL() {
 	}
 }
 
-// safeDispatch calls h(entry) and recovers from any panic, logging the
-// incident so the poll goroutine keeps running.
-//
-// TODO(member-D): replace log.Printf with structured error reporting
-// (e.g. dead-letter channel) before deploying to production.
-func safeDispatch(h DispatchHandler, entry eventbackbone.WALEntry) {
+// safeDispatch calls h(entry), recovers from any panic, and sends the entry
+// to the dead-letter channel.  The poll goroutine is never blocked by a slow
+// DLQ consumer.
+func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WALEntry) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("subscriber: handler panic (lsn=%d event=%s): %v",
-				entry.LSN, entry.Event.EventID, r)
+			s.panicCount.Add(1)
+			select {
+			case s.deadLetter <- DeadLetterEntry{
+				Entry:      entry,
+				PanicValue: r,
+				Timestamp:  time.Now(),
+			}:
+			default:
+				// Channel full — DLQ is overwhelmed.  Log and continue so the
+				// poll loop remains healthy.
+				log.Printf("subscriber: DLQ full, dropped panic (lsn=%d event=%s): %v",
+					entry.LSN, entry.Event.EventID, r)
+			}
 		}
 	}()
+	s.processedCount.Add(1)
 	h(entry)
 }
 
