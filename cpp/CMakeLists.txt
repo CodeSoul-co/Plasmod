@@ -32,7 +32,7 @@ elseif(UNIX)
 endif()
 
 # =============================================================================
-# Knowhere Integration via FetchContent
+# Knowhere Integration (vendored in third_party/knowhere)
 # =============================================================================
 include(FetchContent)
 
@@ -45,44 +45,43 @@ else()
     set(KNOWHERE_WITH_RAFT OFF CACHE BOOL "" FORCE)
 endif()
 
-# Fetch Knowhere from zilliztech (active repo)
-FetchContent_Declare(
-    knowhere
-    GIT_REPOSITORY https://github.com/zilliztech/knowhere.git
-    GIT_TAG        v2.3.12
-    GIT_SHALLOW    TRUE
-)
+# Use local vendored Knowhere (v2.3.12) instead of FetchContent from GitHub
+# This makes CogDB self-contained and allows us to modify Knowhere as needed
+set(KNOWHERE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/knowhere")
 
-# Knowhere has complex dependencies (OpenBLAS, FAISS, etc.)
-# Try to fetch and build Knowhere; fall back to stub if dependencies missing
 option(ANDB_USE_KNOWHERE "Use real Knowhere instead of stub" ON)
 
-if(ANDB_USE_KNOWHERE)
-    message(STATUS "Attempting to fetch Knowhere...")
-    FetchContent_MakeAvailable(knowhere)
+if(ANDB_USE_KNOWHERE AND EXISTS "${KNOWHERE_SOURCE_DIR}/CMakeLists.txt")
+    message(STATUS "Using vendored Knowhere from: ${KNOWHERE_SOURCE_DIR}")
+    add_subdirectory(${KNOWHERE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/knowhere)
     if(TARGET knowhere)
-        message(STATUS "Knowhere integration: ENABLED")
+        message(STATUS "Knowhere integration: ENABLED (vendored)")
         set(KNOWHERE_AVAILABLE TRUE)
     else()
-        message(WARNING "Knowhere fetch failed, using stub implementation")
+        message(WARNING "Knowhere build failed, using stub implementation")
         set(KNOWHERE_AVAILABLE FALSE)
     endif()
 else()
-    message(STATUS "Knowhere integration: DISABLED (using stub)")
+    if(ANDB_USE_KNOWHERE)
+        message(WARNING "Knowhere source not found at ${KNOWHERE_SOURCE_DIR}, using stub")
+    else()
+        message(STATUS "Knowhere integration: DISABLED (using stub)")
+    endif()
     set(KNOWHERE_AVAILABLE FALSE)
 endif()
 
 # =============================================================================
-# pybind11 for Python bindings
+# pybind11 for Python bindings (vendored in third_party/pybind11)
 # =============================================================================
+set(PYBIND11_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pybind11")
+
 if(ANDB_WITH_PYBIND)
-    FetchContent_Declare(
-        pybind11
-        GIT_REPOSITORY https://github.com/pybind/pybind11.git
-        GIT_TAG        v2.11.1
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(pybind11)
+    if(EXISTS "${PYBIND11_SOURCE_DIR}/CMakeLists.txt")
+        message(STATUS "Using vendored pybind11 from: ${PYBIND11_SOURCE_DIR}")
+        add_subdirectory(${PYBIND11_SOURCE_DIR} ${CMAKE_BINARY_DIR}/pybind11)
+    else()
+        message(FATAL_ERROR "pybind11 not found at ${PYBIND11_SOURCE_DIR}")
+    endif()
 endif()
 
 # =============================================================================

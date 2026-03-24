@@ -1,0 +1,141 @@
+// Copyright (C) 2019-2023 Zilliz. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed under the License
+// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+// or implied. See the License for the specific language governing permissions and limitations under the License.
+
+#ifndef KNOWHERE_LOG_H
+#define KNOWHERE_LOG_H
+
+#if defined(__APPLE__)
+#include <pthread.h>
+#else
+#include <sys/prctl.h>
+#endif
+
+#include <cstdarg>
+#include <memory>
+
+#include "glog/logging.h"
+#define KNOWHERE_MODULE_NAME "KNOWHERE"
+#define KNOWHERE_MODULE_CLASS_FUNCTION                                                                \
+    knowhere::LogOut("[%s][%s::%s][%s] ", KNOWHERE_MODULE_NAME, (typeid(*this).name()), __FUNCTION__, \
+                     knowhere::GetThreadName().c_str())
+#define KNOWHERE_MODULE_FUNCTION \
+    knowhere::LogOut("[%s][%s][%s] ", KNOWHERE_MODULE_NAME, __FUNCTION__, knowhere::GetThreadName().c_str())
+
+#define LOG_KNOWHERE_TRACE_ DLOG(INFO) << KNOWHERE_MODULE_FUNCTION
+#define LOG_KNOWHERE_DEBUG_ DLOG(INFO) << KNOWHERE_MODULE_FUNCTION
+#define LOG_KNOWHERE_INFO_ LOG(INFO) << KNOWHERE_MODULE_FUNCTION
+#define LOG_KNOWHERE_WARNING_ LOG(WARNING) << KNOWHERE_MODULE_FUNCTION
+#define LOG_KNOWHERE_ERROR_ LOG(ERROR) << KNOWHERE_MODULE_FUNCTION
+#define LOG_KNOWHERE_FATAL_ LOG(FATAL) << KNOWHERE_MODULE_FUNCTION
+
+namespace knowhere {
+class KnowhereException : public std::exception {
+ public:
+    explicit KnowhereException(std::string msg);
+
+    KnowhereException(const std::string& msg, const char* funName, const char* file, int line);
+
+    const char*
+    what() const noexcept override;
+
+    std::string msg_;
+};
+
+inline std::string
+LogOut(const char* pattern, ...) {
+    size_t len = strnlen(pattern, 1024) + 256;
+    auto str_p = std::make_unique<char[]>(len);
+    memset(str_p.get(), 0, len);
+
+    va_list vl;
+    va_start(vl, pattern);
+    vsnprintf(str_p.get(), len - 1, pattern, vl);  // NOLINT
+    va_end(vl);
+
+    return std::string(str_p.get());
+}
+
+inline void
+SetThreadName(const std::string& name) {
+#ifdef __APPLE__
+    pthread_setname_np(name.c_str());
+#elif defined(__linux__)
+    pthread_setname_np(pthread_self(), name.c_str());
+#endif
+}
+
+inline std::string
+GetThreadName() {
+    std::string thread_name = "unamed";
+    const size_t len = 16;
+    char name[len];
+
+#if defined(__APPLE__)
+    auto err = pthread_getname_np(pthread_self(), name, len);
+#else
+    auto err = prctl(PR_GET_NAME, name, 0, 0, 0);
+#endif
+    if (not err) {
+        thread_name = name;
+    }
+
+    return thread_name;
+}
+
+/*
+ * Please use LOG_MODULE_LEVEL_C macro in member function of class
+ * and LOG_MODULE_LEVEL_ macro in other functions.
+ */
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+#define KNOWHERE_CHECK(x) \
+    if (!(x))             \
+        KNOWHERE_ERROR("check failed, " #x);
+
+#define KNOWHERE_THROW_MSG(MSG)                                                \
+    do {                                                                       \
+        throw KnowhereException(MSG, __PRETTY_FUNCTION__, __FILE__, __LINE__); \
+    } while (false)
+
+#define KNOWHERE_THROW_FORMAT(FMT, ...)                                        \
+    do {                                                                       \
+        std::string __s;                                                       \
+        int __size = snprintf(nullptr, 0, FMT, __VA_ARGS__);                   \
+        __s.resize(__size + 1);                                                \
+        snprintf(&__s[0], __s.size(), FMT, __VA_ARGS__);                       \
+        throw KnowhereException(__s, __PRETTY_FUNCTION__, __FILE__, __LINE__); \
+    } while (false)
+
+#define KNOWHERE_THROW_FMT KNOWHERE_THROW_FORMAT
+
+#define KNOWHERE_THROW_IF_NOT(X)                          \
+    do {                                                  \
+        if (!(X)) {                                       \
+            KNOWHERE_THROW_FMT("Error: '%s' failed", #X); \
+        }                                                 \
+    } while (false)
+
+#define KNOWHERE_THROW_IF_NOT_MSG(X, MSG)                       \
+    do {                                                        \
+        if (!(X)) {                                             \
+            KNOWHERE_THROW_FMT("Error: '%s' failed: " MSG, #X); \
+        }                                                       \
+    } while (false)
+
+#define KNOWHERE_THROW_IF_NOT_FMT(X, FMT, ...)                               \
+    do {                                                                     \
+        if (!(X)) {                                                          \
+            KNOWHERE_THROW_FMT("Error: '%s' failed: " FMT, #X, __VA_ARGS__); \
+        }                                                                    \
+    } while (false)
+
+}  // namespace knowhere
+#endif /* KNOWHERE_LOG_H */

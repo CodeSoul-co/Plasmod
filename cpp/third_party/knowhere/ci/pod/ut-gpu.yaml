@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: knowhere-e2e
+  namespace: knowhere-ci
+spec:
+  enableServiceLinks: false
+  nodeSelector:
+    app: knowhere
+  tolerations:
+    - key: node-role.kubernetes.io/knowhere
+      operator: Equal
+      effect: NoSchedule
+  containers:
+  - name: build
+    image: milvusdb/knowhere-gpu-build:amd64-ubuntu22.04-20240914-814ecaa4
+    env:
+      - name: ASAN_OPTIONS
+        value: protect_shadow_gap=0
+    tty: true
+    args: ["cat"]

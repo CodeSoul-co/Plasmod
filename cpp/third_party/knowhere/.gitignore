@@ -1,0 +1,71 @@
+
+# CLion generated files
+**/cmake-build-debug/*
+**/cmake-build-release/*
+**/cmake_build_release/*
+**/cmake_build/*
+
+**/.idea/*
+**/build/*
+
+# vscode generated files
+.vscode
+docker-compose-devcontainer.yml
+docker-compose-devcontainer.yml.tmp
+
+*.code-workspace
+
+# Docker generated cache file
+.docker/
+
+**/_artifacts/**
+
+# Compiled source
+bin/
+lib/
+output/
+*.a
+*.so
+*.so.*
+*.o
+*.lo
+*.tar.gz
+*.log
+.coverage
+*.pyc
+
+# macOS generated files & other irrelevant files
+.DS_Store
+*.sw[po]
+cwrapper_build
+**/compile_commands.json
+**/.lint
+typescript
+**/.pytest_cache/
+.root
+gtags.conf
+
+# Delve generated file
+**/__debug_bin
+
+# codecov-cpp generated files
+lcov_*.info
+coverage/
+
+# virtualenv
+venv/
+**/dist/
+**/knowhere.egg-info/
+**/knowhere/knowhere_wrap.cpp
+**/knowhere/swigknowhere.py
+wheelhouse/*
+
+**/thirdparty/cardinal
+
+*.bin
+
+CMakeUserPresets.json
+
+# python
+.eggs
+*.egg-info
