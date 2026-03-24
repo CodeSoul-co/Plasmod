@@ -15,16 +15,17 @@ import (
 )
 
 type Runtime struct {
-	wal         eventbackbone.WAL
-	bus         eventbackbone.Bus
-	plane       dataplane.DataPlane
-	coord       *coordinator.Hub
-	policy      *semantic.PolicyEngine
-	planner     semantic.QueryPlanner
-	assembler   *evidence.Assembler
-	nodeManager *nodes.Manager
-	storage     storage.RuntimeStorage
-	ingest      IngestWorker
+	wal           eventbackbone.WAL
+	bus           eventbackbone.Bus
+	plane         dataplane.DataPlane
+	coord         *coordinator.Hub
+	policy        *semantic.PolicyEngine
+	planner       semantic.QueryPlanner
+	assembler     *evidence.Assembler
+	nodeManager   *nodes.Manager
+	storage       storage.RuntimeStorage
+	tieredObjects *storage.TieredObjectStore
+	ingest        IngestWorker
 }
 
 func CreateRuntime(
@@ -39,22 +40,24 @@ func CreateRuntime(
 	assembler *evidence.Assembler,
 	nodeManager *nodes.Manager,
 	store storage.RuntimeStorage,
+	tieredObjs *storage.TieredObjectStore,
 ) *Runtime {
 	var sched *coordinator.WorkerScheduler
 	if coord != nil {
 		sched = coord.Schedule
 	}
 	return &Runtime{
-		wal:         wal,
-		bus:         bus,
-		plane:       plane,
-		coord:       coord,
-		policy:      policy,
-		planner:     planner,
-		assembler:   assembler,
-		nodeManager: nodeManager,
-		storage:     store,
-		ingest:      NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
+		wal:           wal,
+		bus:           bus,
+		plane:         plane,
+		coord:         coord,
+		policy:        policy,
+		planner:       planner,
+		assembler:     assembler,
+		nodeManager:   nodeManager,
+		storage:       store,
+		tieredObjects: tieredObjs,
+		ingest:        NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
 	}
 }
 
@@ -95,26 +98,33 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
-	// R1 fix: wire QueryChain workers with pre-fetched edges.
+	// Wire QueryChain workers with pre-fetched edges and nodes.
 	// The assembler already does 1-hop BulkEdges expansion internally; here we
 	// additionally run the multi-hop BFS ProofTraceWorker and pass pre-fetched
-	// edges to SubgraphExecutorWorker (which does NOT fetch edges itself).
-	//
-	// TODO(member-D+C): review maxDepth default (0→8) and edge dedup strategy
-	// before merging to main.
+	// edges + nodes to SubgraphExecutorWorker (which does NOT fetch them itself).
 	if len(result.ObjectIDs) > 0 {
 		preEdges := r.storage.Edges().BulkEdges(result.ObjectIDs)
+
+		// Pre-fetch Memory objects as GraphNodes so OneHopExpand can populate
+		// EvidenceSubgraph.Nodes (passing nil left Nodes always empty).
+		preNodes := make([]schemas.GraphNode, 0, len(result.ObjectIDs))
+		for _, id := range result.ObjectIDs {
+			if m, ok := r.storage.Objects().GetMemory(id); ok {
+				preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+			}
+		}
 
 		// 1. Multi-hop BFS proof trace via ProofTraceWorker (maxDepth 0 = default 8).
 		if bfsTrace := r.nodeManager.DispatchProofTrace(result.ObjectIDs, 0); len(bfsTrace) > 0 {
 			resp.ProofTrace = append(resp.ProofTrace, bfsTrace...)
 		}
 
-		// 2. Subgraph expansion — SubgraphExecutorWorker needs pre-fetched edges.
+		// 2. Subgraph expansion — pass both pre-fetched nodes and edges so
+		// EvidenceSubgraph.Nodes and .Edges are both populated.
 		if len(preEdges) > 0 {
 			expResp := r.nodeManager.DispatchSubgraphExpand(
-				schemas.GraphExpandRequest{SeedObjectIDs: result.ObjectIDs, Hops: 1},
-				nil,
+				schemas.GraphExpandRequest{SeedObjectIDs: result.ObjectIDs},
+				preNodes,
 				preEdges,
 			)
 			seen := make(map[string]bool, len(resp.Edges))

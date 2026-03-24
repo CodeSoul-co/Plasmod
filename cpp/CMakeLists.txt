@@ -11,6 +11,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(ANDB_WITH_GPU "Enable GPU support via Knowhere RAFT" OFF)
 option(ANDB_WITH_TESTS "Build unit tests" OFF)
 option(ANDB_WITH_PYBIND "Build Python bindings" ON)
+option(ANDB_WITH_KNOWHERE "Enable real Knowhere HNSW/SPARSE index (requires internet + OpenBLAS at build time)" ON)
 
 # =============================================================================
 # Platform Detection
@@ -53,13 +54,12 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-# Note: Knowhere has complex dependencies (OpenBLAS, etc.)
-# For now, we provide a stub implementation that can be replaced
-# with actual Knowhere integration when dependencies are available.
-# FetchContent_MakeAvailable(knowhere)
-
-message(STATUS "Knowhere integration: Using stub implementation")
-message(STATUS "  To enable full Knowhere, install dependencies and uncomment FetchContent_MakeAvailable")
+if(ANDB_WITH_KNOWHERE)
+    FetchContent_MakeAvailable(knowhere)
+    message(STATUS "Knowhere integration: ENABLED (zilliztech/knowhere v2.3.12)")
+else()
+    message(STATUS "Knowhere integration: DISABLED (brute-force fallback; use -DANDB_WITH_KNOWHERE=ON to enable)")
+endif()
 
 # =============================================================================
 # pybind11 for Python bindings
@@ -89,8 +89,11 @@ target_include_directories(andb_retrieval PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Link Knowhere when available
-# target_link_libraries(andb_retrieval PUBLIC knowhere)
+# Link Knowhere when enabled
+if(ANDB_WITH_KNOWHERE)
+    target_compile_definitions(andb_retrieval PRIVATE ANDB_USE_KNOWHERE)
+    target_link_libraries(andb_retrieval PUBLIC knowhere)
+endif()
 
 # =============================================================================
 # Python Bindings

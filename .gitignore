@@ -84,3 +84,7 @@ docs/worker-types-overview.md
 src/retrieval/test_*.py
 方案.md
 分工情况.md
+arch-design.zh-CN.md
+
+# Dev docs directory (local design notes, not for push)
+devdocs/

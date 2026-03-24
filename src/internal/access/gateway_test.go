@@ -21,7 +21,8 @@ func buildTestGateway() *Gateway {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
-	plane := dataplane.NewTieredDataPlane()
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	plane := dataplane.NewTieredDataPlane(tieredObjs)
 	policy := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
 	model := semantic.NewObjectModelRegistry()
@@ -46,7 +47,7 @@ func buildTestGateway() *Gateway {
 		coordinator.NewQueryCoordinator(planner, policy),
 	)
 
-	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, nodeManager, store)
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, nodeManager, store, tieredObjs)
 	runtime.RegisterDefaults()
 
 	return NewGateway(coord, runtime, store, nil)

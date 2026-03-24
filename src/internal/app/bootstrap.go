@@ -77,7 +77,9 @@ func BuildServer() (*http.Server, func() error, error) {
 		WithPolicyStore(store.Policies())
 
 	// ── Data Plane (Tiered: hot → warm → cold) ──────────────────────────────────
-	plane := dataplane.NewTieredDataPlane()
+	// TieredDataPlane now uses TieredObjectStore for cold queries and cold writes.
+	// This connects the cold tier (S3 or in-memory) into the active query path.
+	plane := dataplane.NewTieredDataPlane(tieredObjects)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
@@ -164,7 +166,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	coord.Registry.Register("pre_compute", preCompute)
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
-	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store)
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, nodeManager, store, tieredObjects)
 	coord.Registry.Register("ingest_worker", runtime.IngestWorker())
 	runtime.RegisterDefaults()
 
