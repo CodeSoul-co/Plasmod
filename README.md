@@ -555,11 +555,9 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ### Remaining Open Items (blocking or near-term)
 
-| # | Item | Severity | Owner |
-|---|---|---|---|
-| R8 | **Knowhere C++ stub — two-layer gap (owner B):** **(1) C++ layer** — `KnowhereIndexWrapper` in `cpp/retrieval/dense.cpp` is a brute-force inner-product fallback, NOT real Knowhere HNSW/IVF/SPARSE calls; all `Search`/`Serialize`/`Deserialize` paths are stubs. **(2) Go→C++ bridge** — `src/internal/dataplane/retrievalplane/fixme_external_deps.go` is disabled via `//go:build extended`; the CGO wiring depends on `github.com/milvus-io/milvus/internal/...` packages not present in this repo. **Resolution options:** (a) vendor required Milvus packages and rename import paths, or (b) implement CogDB-native equivalents. Until resolved, `go build` without `-tags extended` succeeds but the retrieval plane runs brute-force only. | Medium | B |
+All previously tracked items (R1–R11, R8) are now resolved. No blocking items remain.
 
-**Remaining blockers for main merge:** Only R8 (Knowhere C++ wiring, owner B) remains open. All other known issues are resolved. R8 does not block the Go service from running — the brute-force stub is functional but not production-grade for large vector sets.
+**Status for main merge:** All known issues are resolved. The retrieval plane now wires real Knowhere HNSW via `cpp/CMakeLists.txt` (`ANDB_WITH_KNOWHERE=ON`); a brute-force fallback remains available via `-DANDB_WITH_KNOWHERE=OFF` for environments without Knowhere dependencies. The Go→C++ bridge (`retrievalplane/fixme_external_deps.go`) no longer requires Milvus Go internal packages — it calls the C API directly via CGO.
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 
@@ -649,6 +647,7 @@ make -j$(nproc)
 
 | CMake Option | Default | Description |
 |---|---|---|
+| `ANDB_WITH_KNOWHERE` | ON | Real Knowhere HNSW/SPARSE index (downloads zilliztech/knowhere v2.3.12; requires OpenBLAS) |
 | `ANDB_WITH_PYBIND` | ON | Build pybind11 Python bindings |
 | `ANDB_WITH_GPU` | OFF | GPU support via Knowhere RAFT |
 
@@ -678,7 +677,7 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| Knowhere stub → real HNSW / SPARSE calls wired | 🔲 | R8 — replace stub with actual Knowhere index calls |
+| Knowhere stub → real HNSW / SPARSE calls wired | ✅ | R8 — `ANDB_WITH_KNOWHERE=ON` enables FetchContent Knowhere v2.3.12; `#ifdef ANDB_USE_KNOWHERE` in `dense.cpp` calls real HNSW; CGO bridge in `fixme_external_deps.go` uses C API with no Milvus Go deps |
 | SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
 | SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
 | Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
@@ -821,8 +820,6 @@ The table below lists every point where two members' work **must be confirmed to
 | 11 | `StateMaterializationWorker` output + A's `ObjectTypes` filter | **D** | **A** | D wired `StateMat` in `MainChain`; A must verify `ObjectTypes=["state"]` filter correctly surfaces `State` objects |
 | 12 | `MicroBatchScheduler.Flush()` drain trigger | **D** | **C** | D owns the scheduler; C's `ConflictMergeWorker` feeds it — agree on flush cadence (timer / WAL watermark / explicit call) before production |
 
-> 💬 **Suggested flow:** When you finish an item in the table above, post a short message in the team channel: _"#N ready for review by [member]"_. The receiving member should confirm within 24 h or flag a blocker.
-
 ---
 
 ## Pre-merge Checklist (all members)
@@ -865,7 +862,7 @@ _Python / C++ side:_
 
 **Graph & edges (C runs)**
 - [x] `QueryResponse.edges` non-empty after ingest → query round-trip — `TestDataflowTrace` now asserts non-empty edges and versions after R11 namespace fix
-- [ ] `SubgraphExecutorWorker` subgraph non-empty when seeds have known edges (requires GraphEdges pre-fetch wired)
+- [x] `SubgraphExecutorWorker` subgraph non-empty when seeds have known edges — `runtime.ExecuteQuery` now pre-fetches `[]GraphNode` via `r.storage.Objects().GetMemory` before `DispatchSubgraphExpand`; `OneHopExpand` populates `EvidenceSubgraph.Nodes`. Regression: `TestRuntime_SubgraphExpand_NodesPopulated`
 - [x] `BulkEdges` and `EdgesFrom`/`EdgesTo` use indexed lookups — O(k) per node — verified by `TestMemoryGraphEdgeStore_EdgesFrom_Indexed` + `TestMemoryGraphEdgeStore_BulkEdges`
 - [x] Cyclic graph BFS terminates at `maxDepth=8` — verified by `TestProofTraceWorker_AssembleTrace_CyclicGraph_Terminates`
 - [x] Edge cold-tier: `TieredObjectStore.ArchiveEdge` moves edges warm→cold — verified by `TestTieredObjectStore_ArchiveEdge`
