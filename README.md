@@ -160,6 +160,11 @@ AlgorithmDispatchWorker [ingest]           ← fixed
     → PolicyDecisionLog + AuditStore
 ```
 
+Current wiring status in code:
+
+- `PipelineIngestWorker.Accept` invokes `DispatchAlgorithm("ingest", ...)` after canonical persistence and data-plane ingest, so each newly materialized Memory is processed by the registered algorithm dispatcher at write time.
+- `Runtime.ExecuteQuery` invokes `DispatchAlgorithm("recall", ...)` through `MemoryViewBuilder` scoring.
+
 **Materialization path — write-time (baseline algorithm concrete example):**
 
 ```
