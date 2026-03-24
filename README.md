@@ -573,11 +573,6 @@ The following review checklist is intended for team members before merging `inte
 
 | Item | Status | Notes |
 |---|---|---|
-| `QueryRequest` filter fields wired through `PolicyEngine` | ✅ | See `semantic/policy_engine.go` and `access/gateway.go` `/v1/query` handler |
-| Tenant isolation: `workspace_id` and `tenant_id` filter at segment scan | ✅ | `coordinator/query_coordinator.go` applies filters before `DataPlane.Search` |
-| Object-type filter (`memory` / `state` / `artifact`) | ✅ | `ObjectTypes` propagated through `QueryPlan` → `SearchInput` → `Assembler.filterByObjectTypes`; verified by `TestAssembler_*` |
-| `StateMaterializationWorker` dispatched in `MainChain` | ✅ | `State` objects honour `ObjectTypes` filter |
-| Namespace resolution: `WorkspaceID → SessionID → ""` | ✅ | `DefaultQueryPlanner.Build` fixed; `TestIngestWithoutWorkspaceID_Queryable` added |
 | **Review focus** | ⚠️ | `QueryChainInput.EdgeTypeFilter` — verify edge-type filter from `QueryRequest` propagates to `SubgraphExecutorWorker` |
 | **Review focus** | ⚠️ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by caller before `QueryChain.Run` |
 | Edge case: combined tenant + object-type + top_k filter | 🔲 | Integration test covering the 3-way combination |
@@ -683,11 +678,6 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| Python service files in `src/internal/retrieval/` | ✅ | |
-| C++ core in `cpp/` with pybind11 bindings | ✅ | 2026-03-20 migration complete |
-| gRPC proto field names align with Go `schemas.QueryRequest` | ✅ | |
-| `PolicyFilter` runs before `VersionFilter` in `retriever.py` | ✅ | |
-| Python service `/healthz` endpoint | ✅ | `run_server()` + `--serve`/`--port` flags; `GET /healthz` returns `{"status":"ok","ready":bool}` |
 | Knowhere stub → real HNSW / SPARSE calls wired | 🔲 | R8 — replace stub with actual Knowhere index calls |
 | SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
 | SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
@@ -706,13 +696,6 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| `GraphRelationWorker.IndexEdge` wired in `MainChain` | ✅ | `chain.go` step 4: `derived_from` edge written per ingest |
-| `BulkEdges(objectIDs)` 1-hop expansion in `Assembler.Build` | ✅ | Returns typed `[]schemas.Edge` in every `QueryResponse` |
-| `GraphEdgeStore.DeleteEdge` contract defined | ✅ | Available but not yet called in any worker path |
-| `SubgraphExecutorWorker` uses `schemas.ExpandFromRequest` → `OneHopExpand` | ✅ | Internally calls `EdgesFrom` + `EdgesTo` per seed node |
-| `EdgesFrom`/`EdgesTo` O(k) indexed lookup | ✅ | `srcIdx`/`dstIdx` secondary maps — verified by `TestMemoryGraphEdgeStore_EdgesFrom_Indexed` |
-| Edge TTL: `schemas.Edge.ExpiresAt` + `PruneExpiredEdges` | ✅ | Verified by `TestMemoryGraphEdgeStore_PruneExpiredEdges` |
-| Cold-tier edge store: `PutEdge`/`GetEdge`/`ListEdges` | ✅ | `TieredObjectStore.ArchiveEdge` moves warm→cold; verified by `TestTieredObjectStore_ArchiveEdge` |
 | **Review focus** | ⚠️ | `OneHopExpand` iterates passed-in edges slice — verify `BulkEdges` and `OneHopExpand` return consistent results for the same seed set |
 | **Review focus** | ⚠️ | `conflict_resolved` edges from `ConflictMergeWorker` not surfaced in `QueryResponse.Edges` — confirm whether intentional |
 | Missing: `GraphEdges` pre-fetch caller responsibility | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated before `QueryChain.Run`; C and D must agree on ownership |
@@ -725,17 +708,6 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| Worker subpackages: `ingestion` / `materialization` / `cognitive` / `indexing` / `coordination` | ✅ | Each worker in its own file |
-| `nodes/` retains only contracts + Manager + DataNode/IndexNode/QueryNode | ✅ | |
-| All constructors renamed `Create*` | ✅ | `eventbackbone` retains `New*` (out of scope) |
-| `ProofTraceWorker.AssembleTrace` BFS with configurable `maxDepth` | ✅ | Default cap = 8; cycle detection verified by `TestProofTraceWorker_AssembleTrace_CyclicGraph_Terminates` |
-| `ToolTraceWorker` appends to `DerivationLog` on `tool_call`/`tool_result` | ✅ | |
-| `SubgraphExecutorWorker` registered as `subgraph-1`; topology count = 18 | ✅ | Verified by `TestTopologyConnectivity` |
-| `StateMaterializationWorker` dispatched in `MainChain` | ✅ | |
-| `EnqueueMicroBatch` in `CollaborationChain`; `Flush()` in `drainWAL` | ✅ | Verified by `TestMicroBatch_FlushIntegration` |
-| `TieredObjectStore` registered as `"tiered_objects"` | ✅ | Hot+warm+cold wired |
-| Per-subpackage unit tests | ✅ | All 6 worker sub-packages have `_test.go` |
-| `subscriber.go` `safeDispatch` panic recovery | ✅ | `recover()` + `log.Printf` in each handler |
 | **Review focus** | ⚠️ | `subscriber.go` no dead-letter channel — add structured error reporting before production |
 | **Review focus** | ⚠️ | `ReflectionPolicyWorker` eviction — confirm uses `tiered_objects.ArchiveMemory()` not direct `store.Objects()` |
 | Missing: `GraphEdges` pre-fetch in `QueryChain.Run` path | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated; C and D must agree on ownership |
@@ -825,14 +797,6 @@ S3_PREFIX      andb/integration_tests (default)
 
 | Item | Status | Notes |
 |---|---|---|
-| `LoadFromEnv()` → `S3ColdStore` auto-wired at bootstrap | ✅ | Logged at startup; fallback to `InMemoryColdStore` if env absent |
-| `PutBytes` (no-verify) for cold archival path | ✅ | Avoids double HTTP round-trip on every `ArchiveMemory` call |
-| `GetBytes` 404 → `nil, nil` (not error) for cold read miss | ✅ | Caller (`S3ColdStore.GetMemory`) silently returns `false` |
-| Admin export endpoints round-trip verified | ✅ | `PutBytesAndVerify` used for `/s3/export` and `/s3/snapshot-export` |
-| `S3ColdStore` `sync.Once` for `EnsureBucket` | ✅ | Runs at most once per store lifetime (`storage/s3store.go`) |
-| Cold miss logging: `"s3cold: miss key=…"` on 404 | ✅ | `storage/s3store.go` |
-| `PutState`/`GetState` in `ColdObjectStore` | ✅ | Implemented in `InMemoryColdStore` + `S3ColdStore` |
-| Cold-tier edge archival: `PutEdge`/`GetEdge`/`ListEdges` | ✅ | `TieredObjectStore.ArchiveEdge` warm→cold — verified by `TestTieredObjectStore_ArchiveEdge` |
 | Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
 | Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
 
