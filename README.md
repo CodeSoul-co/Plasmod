@@ -791,7 +791,7 @@ S3_PREFIX      andb/integration_tests (default)
 | **FIXED E2** | ✅ | `SubmitIngest` now calls `tieredObjs.PutMemory()` + `tieredObjs.ArchiveColdRecord()`; `Runtime` holds `TieredObjectStore` reference |
 | `InMemoryColdStore.ColdSearch` | ✅ | Lexical substring search over cold memories, sorted by score+recency |
 | `S3ColdStore.ColdSearch` | ✅ | ListObjectsV2 + per-key GET + lexical scoring; `ListObjects` added to `s3util` |
-| Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
-| Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
+| Missing: S3 integration test in `integration_tests/` | ✅ | `integration_tests/s3_dataflow_test.go` added; run with `ANDB_RUN_S3_TESTS=true` |
+| Missing: `S3_*` config key standardisation | ✅ | `storage.LoadFromEnv()` now standardizes on `S3_*` and supports `MINIO_*` aliases for compatibility |
 
 ---

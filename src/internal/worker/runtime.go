@@ -121,6 +121,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	result.ObjectIDs = r.includeStateCandidates(req, result.ObjectIDs, plan.ObjectTypes)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	result.ObjectIDs = r.rebuildWithMemoryView(req, result.ObjectIDs)
+	result.ObjectIDs = capObjectIDs(result.ObjectIDs, plan.TopK)
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
@@ -260,6 +261,9 @@ func (r *Runtime) rebuildWithMemoryView(req schemas.QueryRequest, ids []string) 
 }
 
 func (r *Runtime) includeStateCandidates(req schemas.QueryRequest, ids []string, objectTypes []string) []string {
+	if !isStateOnlyObjectTypeFilter(objectTypes) {
+		return ids
+	}
 	needState := false
 	for _, ot := range objectTypes {
 		if strings.TrimSpace(ot) == string(schemas.ObjectTypeState) {
@@ -288,6 +292,32 @@ func (r *Runtime) includeStateCandidates(req schemas.QueryRequest, ids []string,
 		seen[st.StateID] = true
 	}
 	return out
+}
+
+func isStateOnlyObjectTypeFilter(objectTypes []string) bool {
+	if len(objectTypes) == 0 {
+		return false
+	}
+	hasState := false
+	for _, ot := range objectTypes {
+		v := strings.TrimSpace(ot)
+		if v == "" {
+			continue
+		}
+		if v == string(schemas.ObjectTypeState) {
+			hasState = true
+			continue
+		}
+		return false
+	}
+	return hasState
+}
+
+func capObjectIDs(ids []string, topK int) []string {
+	if topK <= 0 || len(ids) <= topK {
+		return ids
+	}
+	return ids[:topK]
 }
 
 func filterEdgesByType(edges []schemas.Edge, allowed []string) []schemas.Edge {
