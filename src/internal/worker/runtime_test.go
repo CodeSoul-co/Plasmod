@@ -57,10 +57,11 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 	}
 
 	resp := r.ExecuteQuery(schemas.QueryRequest{
-		QueryText:  "hello",
-		QueryScope: "w1",
-		TopK:       5,
-		SessionID:  "s1",
+		QueryText:   "hello",
+		QueryScope:  "workspace",
+		WorkspaceID: "w1",
+		TopK:        5,
+		SessionID:   "s1",
 	})
 
 	if len(resp.Objects) == 0 {

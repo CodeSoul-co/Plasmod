@@ -63,6 +63,32 @@ func TestTopologyConnectivity(t *testing.T) {
 		}
 	})
 
+	t.Run("topology includes required worker types", func(t *testing.T) {
+		nodes, _ := topo["nodes"].([]any)
+		required := []string{"subgraph_executor_worker"}
+		typeSet := make(map[string]bool)
+		for _, n := range nodes {
+			if m, ok := n.(map[string]any); ok {
+				if typ, ok := m["type"].(string); ok {
+					typeSet[typ] = true
+				}
+			}
+		}
+		for _, want := range required {
+			if !typeSet[want] {
+				t.Errorf("topology missing required worker type %q", want)
+			}
+		}
+	})
+
+	t.Run("topology has expected node count", func(t *testing.T) {
+		nodes, _ := topo["nodes"].([]any)
+		const wantNodes = 18
+		if len(nodes) != wantNodes {
+			t.Errorf("node count: got %d, want %d", len(nodes), wantNodes)
+		}
+	})
+
 	t.Run("GET /v1/admin/topology rejects non-GET methods", func(t *testing.T) {
 		resp := doRaw(t, http.MethodPost, "/v1/admin/topology", "", nil)
 		resp.Body.Close()
