@@ -663,15 +663,27 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | Item | Status | Notes |
 |---|---|---|
 | Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt` |
-| **FIXED E3** | 🔲 | C++ Knowhere retrieval (`retrievalplane`) is never imported from Go query path — active search uses `segmentstore` lexical only; `segment_adapter.go` must be updated to call `retrievalplane.NewRetriever()` when `CGO_ENABLED=1` |
-| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
-| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
-| Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
+| **FIXED E3** | ✅ | Created `HybridDataPlane` combining lexical + vector search; added `VectorSearcher` interface implemented by `MilvusAdapter` and `HTTPRetrievalAdapter`; RRF fusion for result merging |
+| SDK `query()` kwargs match current `QueryRequest` JSON shape | ✅ | Updated `andb_sdk/client.py` with all QueryRequest fields as kwargs |
+| SDK `ingest_event()` matches current `/v1/ingest` body | ✅ | Added `workspace_id`, `tenant_id` parameters; supports `ANDB_HTTP_TIMEOUT` env var |
+| Retry back-off in `retriever.py` on upstream timeout | ✅ | `retry_with_backoff()` function with exponential back-off, max 3 retries |
+| Knowhere vendored locally | ✅ | Cloned knowhere v2.3.12 + pybind11 v2.11.1 into `cpp/third_party/`; CMakeLists.txt uses local paths instead of FetchContent |
+| Milvus SDK vendored locally | ✅ | Copied milvus-proto + milvus-sdk-go core into `src/internal/dataplane/milvus/`; removed external dependencies |
 | GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
 | No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
 | **Review focus** | ⚠️ | C++ `is_seed=true` candidates → their IDs should map to `QueryChainInput.ObjectIDs` passed to `SubgraphExecutorWorker`; verify the Go gateway correctly extracts seed IDs from retrieval results before calling `QueryChain.Run` |
-| **Review focus** | ⚠️ | `proof_trace` field in `QueryResponse` may now contain up to depth=8 BFS steps (previously 1-hop); B's Python integration tests that assert `len(proof_trace) == N` must be updated to use `>= 1` instead of exact count |
+| **Review focus** | ✅ | `proof_trace` assertion in integration tests now uses `>= 1` instead of exact count |
 | **Review focus** | ⚠️ | When `S3ColdStore` is active, cold-path `GetMemory` adds HTTP round-trip latency; B's timeout settings in `retriever.py` may need to be increased from default if cold reads are expected during integration tests |
+
+#### Daily Progress Log (Member B)
+
+| Date | Updates |
+|---|---|
+| 2026-03-24 | **E3 Fixed**: Created `HybridDataPlane` (`src/internal/dataplane/hybrid_adapter.go`) combining lexical (TieredDataPlane) + vector search (MilvusAdapter/HTTPRetrievalAdapter) with RRF fusion. Added `VectorSearcher` interface. |
+| 2026-03-24 | **D1 Fixed**: Updated `subscriber.go` panic handler to use `DeadLetterEntry` struct and `ErrorCh` channel instead of `log.Printf`. |
+| 2026-03-24 | **SDK Updated**: `andb_sdk/client.py` query() kwargs now match QueryRequest JSON shape; ingest_event() supports workspace_id/tenant_id. |
+| 2026-03-24 | **Vendoring**: Knowhere v2.3.12 + pybind11 v2.11.1 cloned to `cpp/third_party/`; Milvus SDK vendored to `src/internal/dataplane/milvus/`. |
+| 2026-03-24 | **Tests**: All `go test ./src/internal/...` pass; `go vet` clean. |
 
 ---
 
