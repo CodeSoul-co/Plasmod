@@ -118,6 +118,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		MemoryTypes:    plan.MemoryTypes,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
+	result.ObjectIDs = r.includeStateCandidates(req, result.ObjectIDs, plan.ObjectTypes)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	result.ObjectIDs = r.rebuildWithMemoryView(req, result.ObjectIDs)
 	filters := r.policy.ApplyQueryFilters(req)
@@ -244,6 +245,37 @@ func (r *Runtime) rebuildWithMemoryView(req schemas.QueryRequest, ids []string) 
 	out = append(out, otherIDs...)
 	if len(out) == 0 {
 		return ids
+	}
+	return out
+}
+
+func (r *Runtime) includeStateCandidates(req schemas.QueryRequest, ids []string, objectTypes []string) []string {
+	needState := false
+	for _, ot := range objectTypes {
+		if strings.TrimSpace(ot) == string(schemas.ObjectTypeState) {
+			needState = true
+			break
+		}
+	}
+	if !needState {
+		return ids
+	}
+	states := r.storage.Objects().ListStates(req.AgentID, req.SessionID)
+	if len(states) == 0 {
+		return ids
+	}
+	seen := make(map[string]bool, len(ids)+len(states))
+	out := make([]string, 0, len(ids)+len(states))
+	for _, id := range ids {
+		out = append(out, id)
+		seen[id] = true
+	}
+	for _, st := range states {
+		if st.StateID == "" || seen[st.StateID] {
+			continue
+		}
+		out = append(out, st.StateID)
+		seen[st.StateID] = true
 	}
 	return out
 }

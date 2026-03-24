@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"strings"
 	"testing"
 
 	"andb/src/internal/coordinator"
@@ -144,6 +145,7 @@ func TestRuntime_SubgraphExpand_NodesPopulated(t *testing.T) {
 		WorkspaceID: "default",
 		SessionID:   "session_sg",
 		TopK:        5,
+		ObjectTypes: []string{string(schemas.ObjectTypeMemory)},
 	})
 
 	if len(resp.Objects) == 0 {
@@ -152,5 +154,105 @@ func TestRuntime_SubgraphExpand_NodesPopulated(t *testing.T) {
 	if len(resp.Edges) == 0 {
 		t.Fatalf("expected non-empty resp.Edges: materialization derives session/agent edges, " +
 			"SubgraphExecutorWorker should surface them via preNodes+preEdges")
+	}
+}
+
+func TestRuntime_Query_TenantObjectTypeTopK_Combination(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	events := []schemas.Event{
+		{
+			EventID:     "evt_combo_t1_a",
+			TenantID:    "tenant_a",
+			WorkspaceID: "w_combo",
+			AgentID:     "agent_combo",
+			SessionID:   "s_combo",
+			Payload:     map[string]any{"text": "combo query alpha"},
+		},
+		{
+			EventID:     "evt_combo_t1_b",
+			TenantID:    "tenant_a",
+			WorkspaceID: "w_combo",
+			AgentID:     "agent_combo",
+			SessionID:   "s_combo",
+			Payload:     map[string]any{"text": "combo query beta"},
+		},
+		{
+			EventID:     "evt_combo_t2_x",
+			TenantID:    "tenant_b",
+			WorkspaceID: "w_combo",
+			AgentID:     "agent_combo",
+			SessionID:   "s_combo",
+			Payload:     map[string]any{"text": "combo query gamma"},
+		},
+	}
+	for _, ev := range events {
+		if _, err := r.SubmitIngest(ev); err != nil {
+			t.Fatalf("ingest failed for %s: %v", ev.EventID, err)
+		}
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "combo query",
+		TenantID:    "tenant_a",
+		WorkspaceID: "w_combo",
+		SessionID:   "s_combo",
+		TopK:        2,
+		ObjectTypes: []string{string(schemas.ObjectTypeMemory)},
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatalf("expected non-empty query results")
+	}
+	if len(resp.Objects) > 2 {
+		t.Fatalf("expected top_k cap 2, got %d objects: %v", len(resp.Objects), resp.Objects)
+	}
+	for _, id := range resp.Objects {
+		if !strings.HasPrefix(id, schemas.IDPrefixMemory) {
+			t.Fatalf("expected memory-only results, got object id %q", id)
+		}
+		if strings.Contains(id, "evt_combo_t2_x") {
+			t.Fatalf("expected tenant filter to exclude tenant_b object %q", id)
+		}
+	}
+}
+
+func TestRuntime_Query_StateOnly_AfterToolCallIngest(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:     "evt_state_toolcall_1",
+		EventType:   "tool_call",
+		TenantID:    "tenant_state",
+		WorkspaceID: "w_state",
+		AgentID:     "agent_state",
+		SessionID:   "s_state",
+		Payload: map[string]any{
+			"text":      "tool call state query",
+			"state_key": "k1",
+			"state_val": "v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "tool call state query",
+		TenantID:    "tenant_state",
+		WorkspaceID: "w_state",
+		AgentID:     "agent_state",
+		SessionID:   "s_state",
+		TopK:        5,
+		ObjectTypes: []string{string(schemas.ObjectTypeState)},
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatalf("expected state-only query to return at least one object")
+	}
+	for _, id := range resp.Objects {
+		if !strings.HasPrefix(id, schemas.IDPrefixState) {
+			t.Fatalf("expected only state_* objects, got %q", id)
+		}
 	}
 }
