@@ -1,8 +1,9 @@
-//go:build !cgo
-// +build !cgo
+//go:build !retrieval
+// +build !retrieval
 
-// Stub implementation used when CGO is disabled (CGO_ENABLED=0).
-// All Search calls return an error explaining that the C library is unavailable.
+// Stub implementation used when the C++ retrieval library is not compiled.
+// This is the default; use `-tags retrieval` (after running `make cpp`) to enable
+// the CGO Knowhere/HNSW retriever.
 package retrievalplane
 
 import "fmt"

@@ -55,7 +55,11 @@ func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 	if topK <= 0 {
 		topK = 10
 	}
-	ns := req.QueryScope
+	// Resolve namespace to match materialization.resolveNamespace:
+	// WorkspaceID → SessionID → "" (all-shard search).
+	// QueryScope is a scope-type hint ("workspace", "session", "global"), not a
+	// literal namespace value; the actual IDs are in WorkspaceID / SessionID.
+	ns := req.WorkspaceID
 	if ns == "" {
 		ns = req.SessionID
 	}
@@ -130,7 +134,7 @@ const (
 	SliceTypeVisibility SliceType = "visibility"
 )
 
-// ─── Aggregate / Contrast / Consensus Operators (section 11.5) ───────────────
+// ─── Aggregate / Contrast / Consensus Operators ───────────────
 
 // AggregateOperatorType enumerates MAS-native aggregation modes.
 type AggregateOperatorType string

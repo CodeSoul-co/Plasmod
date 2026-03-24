@@ -10,14 +10,39 @@ S3_SECURE ?= false
 S3_REGION ?= us-east-1
 S3_PREFIX ?= andb/integration_tests
 
+# RETRIEVAL_TAG enables the CGO Knowhere/HNSW retriever.
+# It is only safe to set when cpp/build/libandb_retrieval.so/dylib exists.
+# Use `make cpp` to build the C++ library and set this automatically.
+RETRIEVAL_TAG :=
+CPP_LIB := cpp/build/libandb_retrieval.dylib
+CPP_LIB_SO := cpp/build/libandb_retrieval.so
+ifeq ($(shell [ -f $(CPP_LIB) ] && echo yes),yes)
+  RETRIEVAL_TAG := -tags retrieval
+  CGO_LDFLAGS := -L$(shell pwd)/cpp/build -landb_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
+else ifeq ($(shell [ -f $(CPP_LIB_SO) ] && echo yes),yes)
+  RETRIEVAL_TAG := -tags retrieval
+  CGO_LDFLAGS := -L$(shell pwd)/cpp/build -landb_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
+endif
+
 dev:
-	go run ./src/cmd/server
+	go run $(RETRIEVAL_TAG) ./src/cmd/server
 
 build:
-	go build ./src/cmd/server
+	go build $(RETRIEVAL_TAG) ./src/cmd/server
 
 cpp:
-	cmake -S cpp -B build && cmake --build build
+	cmake -S cpp -B cpp/build && cmake --build cpp/build
+
+# cpp-with-knowhere builds the full C++ stack including Knowhere HNSW.
+# Requires: libomp, folly, prometheus-cpp, opentelemetry-cpp installed via Homebrew.
+# Set CMAKE_PREFIX_PATH=/opt/homebrew when using Homebrew-installed deps.
+# Run `make cpp` (without knowhere) first to build the stub, then upgrade.
+cpp-with-knowhere:
+	cmake -S cpp -B cpp/build \
+	  -DANDB_WITH_KNOWHERE=ON \
+	  -DOpenMP_C_FLAGS="-Xclang -fopenmp -I/opt/homebrew/Cellar/libomp/22.1.1/include" \
+	  -DOpenMP_omp_LIBRARY="/opt/homebrew/Cellar/libomp/22.1.1/lib/libomp.dylib" \
+	  -DCMAKE_PREFIX_PATH="/opt/homebrew" && cmake --build cpp/build
 
 sdk-python:
 	pip install -e ./sdk/python

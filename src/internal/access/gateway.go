@@ -2,6 +2,7 @@ package access
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -47,6 +48,9 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/edges", g.handleEdges)
 	mux.HandleFunc("/v1/policies", g.handlePolicies)
 	mux.HandleFunc("/v1/share-contracts", g.handleShareContracts)
+
+	// Proof trace queries
+	mux.HandleFunc("/v1/traces/", g.handleTraces)
 }
 
 func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -372,6 +376,265 @@ func (g *Gateway) handlePolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── /v1/share-contracts ──────────────────────────────────────────────────────
+
+// ─── /v1/traces/{object_id} ─────────────────────────────────────────────────
+//
+// Returns the full proof trace for a given object ID, including:
+//   - object metadata (type, namespace, timestamps)
+//   - pre-computed evidence fragment (salience, level, related IDs)
+//   - typed edges incident to this object (1-hop adjacency)
+//   - version chain (all ObjectVersions)
+//   - policy annotations (TTL, quarantine, visibility)
+//   - governance decisions (DerivationLog, PolicyDecisionLog)
+//
+// This endpoint is stateless: it assembles the trace on-the-fly from the
+// RuntimeStorage layer without re-executing a retrieval search.
+//
+// Future extension: multi-hop graph traversal via depth parameter.
+func (g *Gateway) handleTraces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Strip "/v1/traces/" prefix to get the object ID.
+	id := strings.TrimPrefix(r.URL.Path, "/v1/traces/")
+	id = strings.TrimPrefix(id, "/")
+	if id == "" {
+		http.Error(w, "object_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// ── 1. Object type inference ───────────────────────────────────────────
+	objType := inferObjectType(id)
+
+	// ── 2. Evidence fragment from hot cache ────────────────────────────────
+	var frag any
+	if g.runtime != nil {
+		frag = g.runtime.GetEvidenceFragment(id)
+	}
+
+	// ── 3. 1-hop edges (in + out) ───────────────────────────────────────
+	var edges []schemas.Edge
+	if g.store.Edges() != nil {
+		edges = g.store.Edges().BulkEdges([]string{id})
+	}
+
+	// ── 4. Version chain ──────────────────────────────────────────────────
+	var versions []schemas.ObjectVersion
+	if g.store.Versions() != nil {
+		if v, ok := g.store.Versions().LatestVersion(id); ok {
+			versions = append(versions, v)
+		}
+	}
+
+	// ── 5. Policy annotations ─────────────────────────────────────────────
+	var policies []schemas.PolicyRecord
+	if g.store.Policies() != nil {
+		policies = g.store.Policies().GetPolicies(id)
+	}
+
+	// ── 6. Canonical object ───────────────────────────────────────────────
+	var canonical any
+	if g.store.Objects() != nil {
+		switch objType {
+		case "memory":
+			if m, ok := g.store.Objects().GetMemory(id); ok {
+				canonical = m
+			}
+		case "state":
+			if s, ok := g.store.Objects().GetState(id); ok {
+				canonical = s
+			}
+		case "artifact":
+			if a, ok := g.store.Objects().GetArtifact(id); ok {
+				canonical = a
+			}
+		}
+	}
+
+	// ── 7. Governance logs (DerivationLog + PolicyDecisionLog) ───────────
+	var derivLog, policyDecisions []string
+	if g.runtime != nil {
+		if dl := g.runtime.GetDerivationLog(id); dl != nil {
+			derivLog = dl
+		}
+		if pd := g.runtime.GetPolicyDecisions(id); pd != nil {
+			policyDecisions = pd
+		}
+	}
+
+	// ── 8. Assembled trace steps (human-readable) ─────────────────────────
+	steps := assembleTraceSteps(id, objType, frag, edges, versions, policies, derivLog, policyDecisions)
+
+	resp := TraceResponse{
+		ObjectID:         id,
+		ObjectType:       objType,
+		CanonicalObject:  canonical,
+		EvidenceFragment: frag,
+		Edges:            edges,
+		Versions:         versions,
+		Policies:        policies,
+		DerivationLog:    derivLog,
+		PolicyDecisions:  policyDecisions,
+		ProofSteps:       steps,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// TraceResponse is the structured proof-trace response returned by /v1/traces/{object_id}.
+type TraceResponse struct {
+	ObjectID         string               `json:"object_id"`
+	ObjectType       string               `json:"object_type"`
+	CanonicalObject  any                  `json:"canonical_object,omitempty"`
+	EvidenceFragment any                  `json:"evidence_fragment,omitempty"`
+	Edges            []schemas.Edge       `json:"edges"`
+	Versions         []schemas.ObjectVersion `json:"versions"`
+	Policies         []schemas.PolicyRecord `json:"policies"`
+	DerivationLog    []string             `json:"derivation_log,omitempty"`
+	PolicyDecisions  []string             `json:"policy_decisions,omitempty"`
+	ProofSteps       []TraceStep          `json:"proof_steps"`
+}
+
+// TraceStep is a human-readable step in the assembled proof trace.
+type TraceStep struct {
+	Phase    string `json:"phase"`    // e.g. "canonical", "fragment", "edges", "versions", "policy"
+	Label    string `json:"label"`    // e.g. "salience", "belongs_to_session", "ttl_active"
+	Detail   string `json:"detail"`   // human-readable description
+	Value    string `json:"value,omitempty"` // key value if applicable
+}
+
+// assembleTraceSteps builds a flat list of human-readable proof steps.
+func assembleTraceSteps(id, objType string, frag any, edges []schemas.Edge, versions []schemas.ObjectVersion, policies []schemas.PolicyRecord, derivLog, policyDecisions []string) []TraceStep {
+	var steps []TraceStep
+
+	// Phase 1: Canonical object
+	steps = append(steps, TraceStep{
+		Phase:  "canonical",
+		Label:  "object_id",
+		Detail: "canonical object registered in the store",
+		Value:  id,
+	})
+	steps = append(steps, TraceStep{
+		Phase:  "canonical",
+		Label:  "object_type",
+		Detail: "inferred from ID prefix",
+		Value:  objType,
+	})
+
+	// Phase 2: Evidence fragment
+	if frag != nil {
+		steps = append(steps, TraceStep{
+			Phase:  "fragment",
+			Label:  "precomputed",
+			Detail: "evidence fragment built at ingest time, stored in hot cache",
+		})
+	} else {
+		steps = append(steps, TraceStep{
+			Phase:  "fragment",
+			Label:  "not_cached",
+			Detail: "no evidence fragment found in hot cache",
+		})
+	}
+
+	// Phase 3: Edges
+	if len(edges) > 0 {
+		steps = append(steps, TraceStep{
+			Phase:  "edges",
+			Label:  "edge_count",
+			Detail: "1-hop graph expansion from object",
+			Value:  fmt.Sprintf("%d", len(edges)),
+		})
+		for _, e := range edges {
+			steps = append(steps, TraceStep{
+				Phase:  "edges",
+				Label:  "edge:" + e.EdgeType,
+				Detail: fmt.Sprintf("%s --[%s]--> %s", e.SrcObjectID, e.EdgeType, e.DstObjectID),
+				Value:  fmt.Sprintf("weight=%.2f", e.Weight),
+			})
+		}
+	} else {
+		steps = append(steps, TraceStep{
+			Phase:  "edges",
+			Label:  "no_edges",
+			Detail: "no incident edges found",
+		})
+	}
+
+	// Phase 4: Versions
+	if len(versions) > 0 {
+		steps = append(steps, TraceStep{
+			Phase:  "versions",
+			Label:  "version_count",
+			Detail: "version chain from VersionStore",
+			Value:  fmt.Sprintf("%d", len(versions)),
+		})
+		for _, v := range versions {
+			steps = append(steps, TraceStep{
+				Phase:  "versions",
+				Label:  "version",
+				Detail: fmt.Sprintf("version=%d event=%s snapshot=%s", v.Version, v.MutationEventID, v.SnapshotTag),
+				Value:  v.ValidFrom,
+			})
+		}
+	}
+
+	// Phase 5: Policies
+	if len(policies) > 0 {
+		for _, pol := range policies {
+			if pol.QuarantineFlag {
+				steps = append(steps, TraceStep{
+					Phase:  "policy",
+					Label:  "quarantine",
+					Detail: "object is quarantined",
+				})
+			}
+			if pol.VerifiedState == "retracted" {
+				steps = append(steps, TraceStep{
+					Phase:  "policy",
+					Label:  "retracted",
+					Detail: "object version is retracted",
+				})
+			}
+		}
+	}
+
+	// Phase 6: Governance logs
+	if len(derivLog) > 0 {
+		steps = append(steps, TraceStep{
+			Phase:  "governance",
+			Label:  "derivation_log",
+			Detail: fmt.Sprintf("%d derivation decisions recorded", len(derivLog)),
+		})
+	}
+	if len(policyDecisions) > 0 {
+		steps = append(steps, TraceStep{
+			Phase:  "governance",
+			Label:  "policy_decisions",
+			Detail: fmt.Sprintf("%d policy decisions recorded", len(policyDecisions)),
+		})
+	}
+
+	return steps
+}
+
+// inferObjectType infers the canonical object type from the well-known ID prefix scheme.
+func inferObjectType(id string) string {
+	switch {
+	case strings.HasPrefix(id, "mem_") || strings.HasPrefix(id, "summary_") || strings.HasPrefix(id, "shared_"):
+		return "memory"
+	case strings.HasPrefix(id, "state_"):
+		return "state"
+	case strings.HasPrefix(id, "art_") || strings.HasPrefix(id, "tool_trace_"):
+		return "artifact"
+	default:
+		return "unknown"
+	}
+}
+
+// ─── /v1/share-contracts ─────────────────────────────────────────────────────
 
 func (g *Gateway) handleShareContracts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {

@@ -166,70 +166,127 @@ func (c *MemoryPipelineChain) Run(in MemoryPipelineInput) ChainResult {
 
 // ─── 3. QueryChain ────────────────────────────────────────────────────────────
 
-// QueryChain executes the retrieval + reasoning pipeline:
+// QueryChain executes the post-retrieval reasoning pipeline:
 //
-//	QueryNode (multi-index search via DataPlane)
+//	ProofTraceWorker     (multi-hop BFS explainable trace)
 //	  ↓
-//	ProofTraceWorker (explainable trace assembly)
+//	SubgraphExecutorWorker (graph expansion: seed → 1-hop neighbours)
 //
-// Graph expansion (BulkEdges 1-hop) is handled inside the Evidence Assembler
-// and therefore sits outside this chain.
+// Retrieval (DataPlane / CGO vector search) is handled by the caller
+// (Runtime.ExecuteQuery) before this chain is invoked.  The DataPlane
+// internally routes through InMemoryQueryNode → TieredDataPlane.Search,
+// which uses TfidfEmbedder + VectorStore → retrievalplane.Retriever (CGO
+// Knowhere/HNSW) when the library is available.
 type QueryChain struct {
-	mgr       *nodes.Manager
-	dataPlane interface {
-		Search(input interface{}) interface{}
-	}
+	mgr *nodes.Manager
 }
 
+// QueryChainInput carries the search results and context needed for reasoning.
 type QueryChainInput struct {
-	Request   schemas.QueryRequest
+	// ObjectIDs are the top-K canonical IDs returned by the retrieval layer.
 	ObjectIDs []string
-	// MaxDepth controls BFS hops in proof trace (0 = default 8).
+	// MaxDepth controls BFS hops in proof trace (0 or negative = default 8).
 	MaxDepth int
-	// GraphNodes / GraphEdges are pre-fetched canonical objects for subgraph
-	// expansion; supplied by the runtime after the evidence assembler runs.
-	GraphNodes []schemas.GraphNode
-	GraphEdges []schemas.Edge
+	// ObjectStore provides Memory objects for node pre-fetching.
+	ObjectStore interface {
+		GetMemory(id string) (schemas.Memory, bool)
+	}
+	// EdgeStore provides BulkEdges for edge pre-fetching.
+	EdgeStore interface {
+		BulkEdges(ids []string) []schemas.Edge
+	}
 	// EdgeTypeFilter restricts subgraph expansion to specific edge types.
 	// Empty = include all edge types.
 	EdgeTypeFilter []string
 }
 
+// QueryChainOutput carries the enriched reasoning results.
 type QueryChainOutput struct {
+	// ProofTrace contains multi-hop derivation chain explanations.
 	ProofTrace []string
-	Subgraph   schemas.EvidenceSubgraph
+	// Subgraph contains the expanded 1-hop graph neighbourhood.
+	Subgraph schemas.EvidenceSubgraph
+	// MergedEdges contains all unique edges from both the assembler and the
+	// SubgraphExecutor, deduplicated by EdgeID.
+	MergedEdges []schemas.Edge
 }
 
 func CreateQueryChain(mgr *nodes.Manager) *QueryChain {
 	return &QueryChain{mgr: mgr}
 }
 
-// Run assembles a proof trace and a one-hop subgraph for the supplied object
-// IDs. GraphNodes and GraphEdges must be pre-fetched by the caller (typically
-// the runtime / evidence assembler) and passed through QueryChainInput.
+// Run executes the post-retrieval reasoning pipeline:
+//
+//   - Fetches Memory objects for ObjectIDs and converts them to GraphNodes.
+//   - Fetches BulkEdges for the seed ObjectIDs.
+//   - Calls ProofTraceWorker (BFS, multi-hop) → ProofTrace.
+//   - Calls SubgraphExecutorWorker (1-hop graph expansion) → Subgraph.
+//   - Merges Subgraph.Edges into MergedEdges, deduplicating by EdgeID.
 func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
-	// 1 – Multi-hop BFS proof trace
-	trace := c.mgr.DispatchProofTrace(in.ObjectIDs, in.MaxDepth)
+	// Guard: no object IDs means nothing to reason about.
+	if len(in.ObjectIDs) == 0 {
+		return QueryChainOutput{}, ok("query_chain", map[string]any{
+			"object_count": 0,
+		})
+	}
 
-	// 2 – One-hop subgraph expansion via SubgraphExecutorWorker
+	// ── Pre-fetch Memory objects as GraphNodes ──────────────────────────────
+	preNodes := make([]schemas.GraphNode, 0, len(in.ObjectIDs))
+	for _, id := range in.ObjectIDs {
+		if m, ok := in.ObjectStore.GetMemory(id); ok {
+			preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+		}
+	}
+
+	// ── Pre-fetch 1-hop edges ───────────────────────────────────────────────
+	preEdges := in.EdgeStore.BulkEdges(in.ObjectIDs)
+
+	// ── Step 1: Multi-hop BFS proof trace via ProofTraceWorker ─────────────
+	maxDepth := in.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 0 // default cap of 8 inside the worker
+	}
+	trace := c.mgr.DispatchProofTrace(in.ObjectIDs, maxDepth)
+
+	// ── Step 2: Subgraph expansion via SubgraphExecutorWorker ─────────────
 	subgraph := schemas.EvidenceSubgraph{}
-	if len(in.ObjectIDs) > 0 && (len(in.GraphNodes) > 0 || len(in.GraphEdges) > 0) {
+	if len(preEdges) > 0 {
 		expResp := c.mgr.DispatchSubgraphExpand(
 			schemas.GraphExpandRequest{
 				SeedObjectIDs: in.ObjectIDs,
 				EdgeTypes:     in.EdgeTypeFilter,
 			},
-			in.GraphNodes,
-			in.GraphEdges,
+			preNodes,
+			preEdges,
 		)
 		subgraph = expResp.Subgraph
 	}
 
-	return QueryChainOutput{ProofTrace: trace, Subgraph: subgraph},
+	// ── Step 3: Merge subgraph edges with preEdges (deduplicate by EdgeID) ─
+	seen := make(map[string]bool, len(preEdges))
+	for _, e := range preEdges {
+		seen[e.EdgeID] = true
+	}
+	mergedEdges := make([]schemas.Edge, len(preEdges), len(preEdges)+len(subgraph.Edges))
+	copy(mergedEdges, preEdges)
+	for _, e := range subgraph.Edges {
+		if !seen[e.EdgeID] {
+			mergedEdges = append(mergedEdges, e)
+			seen[e.EdgeID] = true
+		}
+	}
+
+	return QueryChainOutput{
+			ProofTrace:   trace,
+			Subgraph:     subgraph,
+			MergedEdges: mergedEdges,
+		},
 		ok("query_chain", map[string]any{
 			"object_count":   len(in.ObjectIDs),
 			"trace_steps":    len(trace),
+			"subgraph_nodes": len(subgraph.Nodes),
 			"subgraph_edges": len(subgraph.Edges),
+			"merged_edges":   len(mergedEdges),
 		})
 }
 

@@ -162,6 +162,44 @@ func TestQuery(t *testing.T) {
 	})
 }
 
+func TestIngestWithoutWorkspaceID_Queryable(t *testing.T) {
+	now := nowISO()
+	id := uniqID()
+	ev := map[string]any{
+		"event_id":    fmt.Sprintf("evt_nowspc_%s", id),
+		"agent_id":    "agent_nowspc",
+		"session_id":  fmt.Sprintf("sess_nowspc_%s", id),
+		"event_type":  "user_message",
+		"event_time":  now,
+		"ingest_time": now,
+		"payload":     map[string]any{"text": fmt.Sprintf("no workspace event %s", id)},
+		"importance":  0.5,
+		"visibility":  "private",
+		"version":     1,
+	}
+	status, ack := doJSON(t, http.MethodPost, "/v1/ingest/events", ev)
+	if status != http.StatusOK {
+		t.Fatalf("ingest status: got %d, want 200", status)
+	}
+	assertKeys(t, ack, "status", "lsn", "event_id")
+
+	q := map[string]any{
+		"query_text":           fmt.Sprintf("no workspace event %s", id),
+		"session_id":           ev["session_id"],
+		"top_k":                5,
+		"time_window":          map[string]any{"from": "2026-01-01T00:00:00Z", "to": "2027-01-01T00:00:00Z"},
+		"object_types":         []string{"memory"},
+		"relation_constraints": []string{},
+		"response_mode":        "structured_evidence",
+	}
+	status, resp := doJSON(t, http.MethodPost, "/v1/query", q)
+	if status != http.StatusOK {
+		t.Fatalf("query status: got %d, want 200", status)
+	}
+	assertKeys(t, resp, "objects", "provenance", "proof_trace")
+	t.Logf("no-workspace query: objects=%v proof_trace=%v", resp["objects"], resp["proof_trace"])
+}
+
 func TestIngestThenQuery_E2E(t *testing.T) {
 	id := uniqID()
 	ev := sampleEvent(id)
