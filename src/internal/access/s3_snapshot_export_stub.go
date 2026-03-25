@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"andb/src/internal/s3util"
+	"andb/src/internal/storage"
 	"github.com/hamba/avro/v2"
 )
 
@@ -20,7 +20,7 @@ func (g *Gateway) handleS3SnapshotExport(w http.ResponseWriter, r *http.Request)
 
 	ctx := r.Context()
 
-	s3Cfg, err := s3util.LoadFromEnv()
+	s3Cfg, err := storage.LoadFromEnv()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -87,13 +87,13 @@ func (g *Gateway) handleS3SnapshotExport(w http.ResponseWriter, r *http.Request)
 	}
 
 	// PUT metadata + manifest + segment data and verify round-trip via GET.
-	_, metadataRT, err := s3util.PutBytesAndVerify(ctx, http.DefaultClient, s3Cfg, metadataPath, mustJSONBytes(metadata), "application/json")
+	_, metadataRT, err := storage.PutBytesAndVerify(ctx, http.DefaultClient, s3Cfg, metadataPath, mustJSONBytes(metadata), "application/json")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	_, manifestRT, err := s3util.PutBytesAndVerify(ctx, http.DefaultClient, s3Cfg, manifestPath, manifestBytes, "application/octet-stream")
+	_, manifestRT, err := storage.PutBytesAndVerify(ctx, http.DefaultClient, s3Cfg, manifestPath, manifestBytes, "application/octet-stream")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -105,7 +105,7 @@ func (g *Gateway) handleS3SnapshotExport(w http.ResponseWriter, r *http.Request)
 		"payload":       "placeholder",
 		"generated_at":  time.Now().UTC().Format(time.RFC3339),
 	}
-	_, segmentRT, err := s3util.PutBytesAndVerify(ctx, http.DefaultClient, s3Cfg, segmentDataPath, mustJSONBytes(segmentData), "application/json")
+	_, segmentRT, err := storage.PutBytesAndVerify(ctx, http.DefaultClient, s3Cfg, segmentDataPath, mustJSONBytes(segmentData), "application/json")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -37,6 +37,9 @@ type Manager struct {
 
 	// Structure Layer — subgraph execution
 	subgraphWorkers []SubgraphExecutorWorker
+
+	// Algorithm dispatch — bridges MemoryManagementAlgorithm plugins into the pipeline
+	algorithmDispatchWorkers []AlgorithmDispatchWorker
 }
 
 func CreateManager() *Manager {
@@ -58,7 +61,8 @@ func CreateManager() *Manager {
 		commWorkers:          []CommunicationWorker{},
 		microBatchWorkers:    []MicroBatchScheduler{},
 		summarizationWorkers: []SummarizationWorker{},
-		subgraphWorkers:      []SubgraphExecutorWorker{},
+		subgraphWorkers:           []SubgraphExecutorWorker{},
+		algorithmDispatchWorkers: []AlgorithmDispatchWorker{},
 	}
 }
 
@@ -298,6 +302,35 @@ func (m *Manager) DispatchSubgraphExpand(
 	return m.subgraphWorkers[0].Expand(req, nodes, edges)
 }
 
+// ─── Algorithm Dispatch registration ───────────────────────────────────────────
+
+// RegisterAlgorithmDispatch registers an AlgorithmDispatchWorker.
+func (m *Manager) RegisterAlgorithmDispatch(w AlgorithmDispatchWorker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.algorithmDispatchWorkers = append(m.algorithmDispatchWorkers, w)
+}
+
+// DispatchAlgorithmDispatch forwards an operation to all registered
+// AlgorithmDispatchWorkers and returns the first non-empty result.
+// Falls back to an empty output when none are registered.
+func (m *Manager) DispatchAlgorithmDispatch(
+	operation string,
+	memoryIDs []string,
+	query, nowTS, agentID, sessionID string,
+	signals map[string]float64,
+) schemas.AlgorithmDispatchOutput {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, w := range m.algorithmDispatchWorkers {
+		out, err := w.Dispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
+		if err == nil && !out.IsEmpty() {
+			return out
+		}
+	}
+	return schemas.AlgorithmDispatchOutput{}
+}
+
 // ─── Cognitive Compression registration ─────────────────────────────────────────
 
 func (m *Manager) RegisterSummarization(w SummarizationWorker) {
@@ -469,6 +502,9 @@ func (m *Manager) Topology() []NodeInfo {
 		out = append(out, n.Info())
 	}
 	for _, n := range m.subgraphWorkers {
+		out = append(out, n.Info())
+	}
+	for _, n := range m.algorithmDispatchWorkers {
 		out = append(out, n.Info())
 	}
 	return out

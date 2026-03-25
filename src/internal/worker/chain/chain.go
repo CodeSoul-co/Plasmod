@@ -15,6 +15,7 @@ package chain
 import (
 	"andb/src/internal/schemas"
 	"andb/src/internal/worker/nodes"
+	"strings"
 )
 
 // ─── Shared result types ──────────────────────────────────────────────────────
@@ -190,6 +191,8 @@ type QueryChainInput struct {
 	// ObjectStore provides Memory objects for node pre-fetching.
 	ObjectStore interface {
 		GetMemory(id string) (schemas.Memory, bool)
+		GetEvent(id string) (schemas.Event, bool)
+		GetArtifact(id string) (schemas.Artifact, bool)
 	}
 	// EdgeStore provides BulkEdges for edge pre-fetching.
 	EdgeStore interface {
@@ -233,8 +236,19 @@ func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
 	// ── Pre-fetch Memory objects as GraphNodes ──────────────────────────────
 	preNodes := make([]schemas.GraphNode, 0, len(in.ObjectIDs))
 	for _, id := range in.ObjectIDs {
-		if m, ok := in.ObjectStore.GetMemory(id); ok {
-			preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+		switch {
+		case strings.HasPrefix(id, schemas.IDPrefixMemory):
+			if m, ok := in.ObjectStore.GetMemory(id); ok {
+				preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+			}
+		case strings.HasPrefix(id, "evt_"):
+			if e, ok := in.ObjectStore.GetEvent(id); ok {
+				preNodes = append(preNodes, schemas.EventToGraphNode(e))
+			}
+		case strings.HasPrefix(id, "art_"):
+			if a, ok := in.ObjectStore.GetArtifact(id); ok {
+				preNodes = append(preNodes, schemas.ArtifactToGraphNode(a))
+			}
 		}
 	}
 
@@ -277,8 +291,8 @@ func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
 	}
 
 	return QueryChainOutput{
-			ProofTrace:   trace,
-			Subgraph:     subgraph,
+			ProofTrace:  trace,
+			Subgraph:    subgraph,
 			MergedEdges: mergedEdges,
 		},
 		ok("query_chain", map[string]any{

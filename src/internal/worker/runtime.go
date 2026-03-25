@@ -35,6 +35,9 @@ type Runtime struct {
 	storage           storage.RuntimeStorage
 	tieredObjects     *storage.TieredObjectStore
 	queryChain        *chain.QueryChain
+	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
+	// can fire synchronously in SubmitIngest (not only async via subscriber).
+	lastMem map[string]string
 }
 
 func CreateRuntime(
@@ -71,6 +74,7 @@ func CreateRuntime(
 		storage:           store,
 		tieredObjects:     tieredObjs,
 		queryChain:        chain.CreateQueryChain(nodeManager),
+		lastMem:           make(map[string]string),
 	}
 }
 
@@ -109,6 +113,21 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 
+	// ── Synchronous object materialization ─────────────────────────────────
+	// State and Artifact objects are needed immediately for query correctness.
+	// Call the materialization workers here (not only in the async subscriber)
+	// so tests and synchronous query paths can read them without waiting for
+	// the next WAL poll cycle.
+	r.nodeManager.DispatchObjectMaterialization(ev)
+	r.nodeManager.DispatchToolTrace(ev)
+
+	// checkpoint events: synchronously snapshot all current states so the
+	// version entries are available for immediate queries without waiting for
+	// the async subscriber's 200ms poll cycle.
+	if ev.EventType == string(schemas.EventTypeCheckpoint) && ev.AgentID != "" && ev.SessionID != "" {
+		r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+	}
+
 	// ── Persist canonical objects ─────────────────────────────────────────
 	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
 	// are kept in sync and cold queries (IncludeCold=true) can find results.
@@ -133,6 +152,20 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	r.storage.Versions().PutVersion(mat.Version)
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)
+	}
+
+	// ── Synchronous ConflictMerge ──────────────────────────────────────────
+	// Detect and resolve same-session memory conflicts immediately after the new
+	// memory is stored.  The async subscriber also fires ConflictMerge (for
+	// cross-event races); this synchronous pass ensures the conflict_resolved
+	// edge is present before SubmitIngest returns — critical for test queries
+	// and any caller that reads edges immediately after ingest.
+	if mat.Memory.AgentID != "" && mat.Memory.SessionID != "" && mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) {
+		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
+		if prevID, hasPrev := r.lastMem[key]; hasPrev {
+			r.nodeManager.DispatchConflictMerge(mat.Memory.MemoryID, prevID, string(schemas.ObjectTypeMemory))
+		}
+		r.lastMem[key] = mat.Memory.MemoryID
 	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
@@ -172,6 +205,14 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+
+	// ── Canonical-object supplemental retrieval ──────────────────────────────
+	// State and Artifact objects are stored directly in ObjectStore, not in the
+	// retrieval plane.  When query requests these types, fetch them from the
+	// canonical store so they appear in the response alongside memory results.
+	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
+	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
@@ -211,6 +252,31 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	return resp
+}
+
+// fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical
+// ObjectStore for the given agent/session/namespace.  These types bypass the
+// retrieval plane and are stored directly in ObjectStore by the materialization
+// workers, so they must be fetched explicitly to appear in query responses.
+func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID, namespace string) []string {
+	var ids []string
+	for _, t := range objectTypes {
+		switch t {
+		case "state":
+			if r.storage != nil {
+				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {
+					ids = append(ids, s.StateID)
+				}
+			}
+		case "artifact":
+			if r.storage != nil {
+				for _, a := range r.storage.Objects().ListArtifacts(sessionID) {
+					ids = append(ids, a.ArtifactID)
+				}
+			}
+		}
+	}
+	return ids
 }
 
 func (r *Runtime) Topology() map[string]any {

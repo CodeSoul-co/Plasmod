@@ -184,7 +184,7 @@ func TestQueryChain_Run_WithObjectIDs(t *testing.T) {
 
 	out, result := chain.Run(QueryChainInput{
 		ObjectIDs:   []string{"mem_q1"},
-		MaxDepth:     3,
+		MaxDepth:    3,
 		ObjectStore: store.Objects(),
 		EdgeStore:   store.Edges(),
 	})
@@ -381,12 +381,12 @@ func TestMemoryPipelineChain_Run_ConsolidationFires_Level1Produced(t *testing.T)
 	})
 
 	result := chain.Run(MemoryPipelineInput{
-		EventID:           "evt_consol",
-		AgentID:           "a1",
-		SessionID:         "s1",
-		Content:           "new content",
-		RunConsolidation:  true,
-		MaxSummaryLevel:   1,
+		EventID:          "evt_consol",
+		AgentID:          "a1",
+		SessionID:        "s1",
+		Content:          "new content",
+		RunConsolidation: true,
+		MaxSummaryLevel:  1,
 	})
 	if !result.OK {
 		t.Fatalf("MemoryPipelineChain.Run failed: %s", result.Error)
@@ -485,8 +485,8 @@ func TestMemoryPipelineChain_Run_EmptyContent_NoOpNoPanic(t *testing.T) {
 	chain := CreateMemoryPipelineChain(mgr)
 
 	result := chain.Run(MemoryPipelineInput{
-		EventID: "evt_empty",
-		AgentID: "a1",
+		EventID:   "evt_empty",
+		AgentID:   "a1",
 		SessionID: "s1",
 		Content:   "", // empty content — should not panic
 	})
@@ -562,10 +562,10 @@ func TestQueryChain_Run_EdgeTypeFilter_Respected(t *testing.T) {
 	})
 
 	out, _ := chain.Run(QueryChainInput{
-		ObjectIDs:     []string{"mem_filter"},
-		MaxDepth:      2,
-		ObjectStore:   store.Objects(),
-		EdgeStore:     store.Edges(),
+		ObjectIDs:      []string{"mem_filter"},
+		MaxDepth:       2,
+		ObjectStore:    store.Objects(),
+		EdgeStore:      store.Edges(),
 		EdgeTypeFilter: []string{string(schemas.EdgeTypeDerivedFrom)},
 	})
 
@@ -811,5 +811,219 @@ func TestCollaborationChain_Run_CommunicationWorker_BroadcastWinner(t *testing.T
 	sharedMems := store.Objects().ListMemories("agentB", "")
 	if len(sharedMems) == 0 {
 		t.Error("expected a shared memory in agentB's space after broadcast")
+	}
+}
+
+func TestQueryChain_Run_SurfacesConflictResolvedEdge_FromCollaborationChain(t *testing.T) {
+	mgr, store := buildManager(t)
+
+	collab := CreateCollaborationChain(mgr)
+	query := CreateQueryChain(mgr)
+
+	// Seed two same-agent memories so LWW picks the higher-version one.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_left_qc",
+		AgentID:   "agent_1",
+		SessionID: "sess_1",
+		Version:   1,
+		IsActive:  true,
+		Content:   "older memory",
+	})
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_right_qc",
+		AgentID:   "agent_1",
+		SessionID: "sess_1",
+		Version:   3,
+		IsActive:  true,
+		Content:   "newer memory",
+	})
+
+	// 1) CollaborationChain creates conflict_resolved edge.
+	collabOut, collabResult := collab.Run(CollaborationChainInput{
+		LeftMemID:     "mem_left_qc",
+		RightMemID:    "mem_right_qc",
+		ObjectType:    "memory",
+		SourceAgentID: "agent_1",
+		TargetAgentID: "agent_2",
+	})
+	if !collabResult.OK {
+		t.Fatalf("CollaborationChain.Run failed: %s", collabResult.Error)
+	}
+	if collabOut.WinnerMemID == "" {
+		t.Fatal("expected non-empty WinnerMemID from CollaborationChain")
+	}
+
+	// Sanity check: edge really exists in edge store first.
+	incident := store.Edges().BulkEdges([]string{collabOut.WinnerMemID})
+	foundInStore := false
+	for _, e := range incident {
+		if e.EdgeType == string(schemas.EdgeTypeConflictResolved) {
+			foundInStore = true
+			break
+		}
+	}
+	if !foundInStore {
+		t.Fatalf("expected conflict_resolved edge in store for winner %q", collabOut.WinnerMemID)
+	}
+
+	// 2) QueryChain should surface that edge through prefetch + merged edges.
+	queryOut, queryResult := query.Run(QueryChainInput{
+		ObjectIDs:   []string{collabOut.WinnerMemID},
+		MaxDepth:    3,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !queryResult.OK {
+		t.Fatalf("QueryChain.Run failed: %s", queryResult.Error)
+	}
+
+	if len(queryOut.MergedEdges) == 0 {
+		t.Fatal("expected non-empty MergedEdges from QueryChain")
+	}
+
+	foundConflictResolved := false
+	for _, e := range queryOut.MergedEdges {
+		if e.EdgeType == string(schemas.EdgeTypeConflictResolved) {
+			foundConflictResolved = true
+			if e.SrcObjectID != collabOut.WinnerMemID {
+				t.Fatalf("expected conflict_resolved edge src to be winner %q, got %q", collabOut.WinnerMemID, e.SrcObjectID)
+			}
+			break
+		}
+	}
+
+	if !foundConflictResolved {
+		t.Fatalf("expected QueryChainOutput.MergedEdges to surface conflict_resolved edge for winner %q", collabOut.WinnerMemID)
+	}
+}
+
+func TestQueryChain_Run_PrefetchEventNodeProperties(t *testing.T) {
+	mgr, store := buildManager(t)
+	query := CreateQueryChain(mgr)
+
+	// Seed one event object and one related edge so subgraph has content.
+	store.Objects().PutEvent(schemas.Event{
+		EventID:    "evt_prefetch_1",
+		AgentID:    "agent_1",
+		SessionID:  "sess_1",
+		EventType:  "tool_call",
+		Source:     "planner",
+		Importance: 0.9,
+		Payload: map[string]any{
+			"tool": "search",
+		},
+	})
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "evt_edge_1",
+		SrcObjectID: "evt_prefetch_1",
+		SrcType:     "event",
+		DstObjectID: "mem_prefetch_1",
+		DstType:     "memory",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+
+	out, result := query.Run(QueryChainInput{
+		ObjectIDs:   []string{"evt_prefetch_1"},
+		MaxDepth:    2,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+
+	if len(out.Subgraph.Nodes) == 0 {
+		t.Fatal("expected non-empty subgraph nodes")
+	}
+
+	var found bool
+	for _, n := range out.Subgraph.Nodes {
+		if n.ObjectID == "evt_prefetch_1" {
+			found = true
+			if n.Properties == nil {
+				t.Fatal("expected event node properties to be populated")
+			}
+			if got, ok := n.Properties["event_type"]; !ok || got != "tool_call" {
+				t.Fatalf("expected event_type=tool_call, got %v", n.Properties["event_type"])
+			}
+			if got, ok := n.Properties["source"]; !ok || got != "planner" {
+				t.Fatalf("expected source=planner, got %v", n.Properties["source"])
+			}
+			if _, ok := n.Properties["payload"]; !ok {
+				t.Fatal("expected payload to exist in event node properties")
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected evt_prefetch_1 to appear in subgraph nodes")
+	}
+}
+
+func TestQueryChain_Run_PrefetchArtifactNodeProperties(t *testing.T) {
+	mgr, store := buildManager(t)
+	query := CreateQueryChain(mgr)
+
+	store.Objects().PutArtifact(schemas.Artifact{
+		ArtifactID:   "art_prefetch_1",
+		SessionID:    "sess_1",
+		OwnerAgentID: "agent_1",
+		ArtifactType: "document",
+		URI:          "file://doc/1",
+		MimeType:     "text/plain",
+		Metadata: map[string]any{
+			"title": "notes",
+		},
+		Hash: "abc123",
+	})
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "art_edge_1",
+		SrcObjectID: "art_prefetch_1",
+		SrcType:     "artifact",
+		DstObjectID: "mem_prefetch_2",
+		DstType:     "memory",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+
+	out, result := query.Run(QueryChainInput{
+		ObjectIDs:   []string{"art_prefetch_1"},
+		MaxDepth:    2,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+
+	if len(out.Subgraph.Nodes) == 0 {
+		t.Fatal("expected non-empty subgraph nodes")
+	}
+
+	var found bool
+	for _, n := range out.Subgraph.Nodes {
+		if n.ObjectID == "art_prefetch_1" {
+			found = true
+			if n.Properties == nil {
+				t.Fatal("expected artifact node properties to be populated")
+			}
+			if got, ok := n.Properties["artifact_type"]; !ok || got != "document" {
+				t.Fatalf("expected artifact_type=document, got %v", n.Properties["artifact_type"])
+			}
+			if got, ok := n.Properties["uri"]; !ok || got != "file://doc/1" {
+				t.Fatalf("expected uri=file://doc/1, got %v", n.Properties["uri"])
+			}
+			if got, ok := n.Properties["mime_type"]; !ok || got != "text/plain" {
+				t.Fatalf("expected mime_type=text/plain, got %v", n.Properties["mime_type"])
+			}
+			if _, ok := n.Properties["metadata"]; !ok {
+				t.Fatal("expected metadata to exist in artifact node properties")
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected art_prefetch_1 to appear in subgraph nodes")
 	}
 }

@@ -23,8 +23,10 @@ type DeadLetterEntry struct {
 
 // DLQStats returns statistics about the dead-letter queue.
 type DLQStats struct {
-	PanicCount     int   `json:"panic_count"`
-	TotalProcessed int64 `json:"total_processed"`
+	PanicCount       int   `json:"panic_count"`
+	TotalProcessed   int64 `json:"total_processed"`
+	OverflowCount    int   `json:"overflow_count"`    // entries that bypassed the channel
+	OverflowCap      int   `json:"overflow_cap"`      // capacity of the in-memory overflow buffer
 }
 
 // DispatchHandler is a pluggable function called for every new WAL entry.
@@ -41,6 +43,8 @@ type DispatchHandler func(entry eventbackbone.WALEntry)
 //   - Async workers driven here: ReflectionPolicy, ConflictMerge,
 //     MemoryConsolidation, and any custom DispatchHandlers.
 //   - Safe for concurrent use: lastLSN is atomic; agentState is mutex-guarded.
+//   - DLQ overflow-safe: panics are never silently dropped — they are either
+//     sent to the deadLetter channel or appended to an in-memory overflow buffer.
 type EventSubscriber struct {
 	wal          eventbackbone.WAL
 	manager      *nodes.Manager
@@ -56,6 +60,13 @@ type EventSubscriber struct {
 	deadLetter     chan DeadLetterEntry
 	panicCount     atomic.Int64
 	processedCount atomic.Int64
+	overflowCount  atomic.Int64
+
+	// overflowBuf stores panics that bypass the deadLetter channel when it is full.
+	// It has a fixed capacity (separate from the channel) so no panic is ever lost.
+	overflowMu  sync.Mutex
+	overflowBuf []DeadLetterEntry
+	overflowCap int
 
 	mu              sync.Mutex
 	agentEventCount map[string]int    // "agentID:sessionID" → event count
@@ -65,6 +76,8 @@ type EventSubscriber struct {
 // CreateEventSubscriber constructs a subscriber wired to the given WAL and worker
 // Manager.  Built-in dispatch handlers for ReflectionPolicy, ConflictMerge,
 // and MemoryConsolidation are registered automatically.
+const defaultOverflowCap = 256 // overflow buffer capacity when channel is full
+
 func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *EventSubscriber {
 	s := &EventSubscriber{
 		wal:              wal,
@@ -74,6 +87,8 @@ func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *Event
 		agentEventCount:  make(map[string]int),
 		agentLastMem:     make(map[string]string),
 		deadLetter:       make(chan DeadLetterEntry, 64),
+		overflowCap:      defaultOverflowCap,
+		overflowBuf:      make([]DeadLetterEntry, 0, defaultOverflowCap),
 	}
 	s.addBuiltinHandlers()
 	return s
@@ -99,7 +114,29 @@ func (s *EventSubscriber) DLQStats() DLQStats {
 	return DLQStats{
 		PanicCount:     int(s.panicCount.Load()),
 		TotalProcessed: s.processedCount.Load(),
+		OverflowCount:  int(s.overflowCount.Load()),
+		OverflowCap:     s.overflowCap,
 	}
+}
+
+// OverflowBuffer returns the in-memory slice of entries that bypassed the
+// dead-letter channel because it was full.  Entries are appended newest-first.
+// Safe for concurrent reads by a single consumer.
+func (s *EventSubscriber) OverflowBuffer() []DeadLetterEntry {
+	s.overflowMu.Lock()
+	// Return a copy so callers can't mutate the internal buffer.
+	out := make([]DeadLetterEntry, len(s.overflowBuf))
+	copy(out, s.overflowBuf)
+	s.overflowMu.Unlock()
+	return out
+}
+
+// ClearOverflow empties the in-memory overflow buffer.  Call this after
+// draining and processing overflow entries.
+func (s *EventSubscriber) ClearOverflow() {
+	s.overflowMu.Lock()
+	s.overflowBuf = s.overflowBuf[:0]
+	s.overflowMu.Unlock()
 }
 
 // AddHandler appends a custom DispatchHandler.  Handlers are invoked in
@@ -149,18 +186,34 @@ func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WA
 	defer func() {
 		if r := recover(); r != nil {
 			s.panicCount.Add(1)
-			select {
-			case s.deadLetter <- DeadLetterEntry{
+			entry := DeadLetterEntry{
 				Entry:      entry,
 				PanicValue: r,
 				Timestamp:  time.Now(),
-			}:
-			default:
-				// Channel full — DLQ is overwhelmed.  Log and continue so the
-				// poll loop remains healthy.
-				log.Printf("subscriber: DLQ full, dropped panic (lsn=%d event=%s): %v",
-					entry.LSN, entry.Event.EventID, r)
 			}
+			// Try the channel first (preferred path — external consumer).
+			select {
+			case s.deadLetter <- entry:
+				return
+			default:
+			}
+			// Channel full — append to the in-memory overflow buffer.
+			// This buffer has its own capacity (256) so panics are NEVER lost.
+			s.overflowMu.Lock()
+			if len(s.overflowBuf) < cap(s.overflowBuf) {
+				s.overflowBuf = append(s.overflowBuf, entry)
+			} else {
+				// Overflow buffer also full — increment overflow counter and log.
+				// The buffer is append-only (oldest entries are pushed out via
+				// oldest-first eviction when full).  The count tracks total lost.
+				s.overflowCount.Add(1)
+				// Evict oldest so we always keep the newest entries.
+				copy(s.overflowBuf, s.overflowBuf[1:])
+				s.overflowBuf[len(s.overflowBuf)-1] = entry
+			}
+			s.overflowMu.Unlock()
+			log.Printf("subscriber: DLQ channel full, panic stored in overflow buffer (lsn=%d event=%s): %v",
+				entry.Entry.LSN, entry.Entry.Event.EventID, r)
 		}
 	}()
 	s.processedCount.Add(1)

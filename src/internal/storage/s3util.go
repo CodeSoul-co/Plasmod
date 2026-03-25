@@ -1,4 +1,4 @@
-package s3util
+package storage
 
 import (
 	"bytes"

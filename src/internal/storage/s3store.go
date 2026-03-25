@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"andb/src/internal/s3util"
 	"andb/src/internal/schemas"
 )
 
@@ -20,16 +19,16 @@ import (
 //	{prefix}/cold/memories/{memory_id}.json
 //	{prefix}/cold/agents/{agent_id}.json
 //
-// Writes use s3util.PutBytes (no round-trip verify) for low-latency archival.
-// Reads use s3util.GetBytes; a 404 is treated as "not found" (returns false).
+// Writes use PutBytes (no round-trip verify) for low-latency archival.
+// Reads use GetBytes; a 404 is treated as "not found" (returns false).
 // EnsureBucket is called at most once per store lifetime via ensureOnce.
 type S3ColdStore struct {
-	cfg        s3util.S3Config
+	cfg        S3Config
 	ensureOnce sync.Once
 }
 
 // NewS3ColdStore returns an S3-backed ColdObjectStore using the supplied config.
-func NewS3ColdStore(cfg s3util.S3Config) *S3ColdStore {
+func NewS3ColdStore(cfg S3Config) *S3ColdStore {
 	return &S3ColdStore{cfg: cfg}
 }
 
@@ -37,7 +36,7 @@ func NewS3ColdStore(cfg s3util.S3Config) *S3ColdStore {
 // automatically before the first write and runs at most once per store lifetime.
 func (s *S3ColdStore) doEnsureBucket() {
 	s.ensureOnce.Do(func() {
-		if err := s3util.EnsureBucket(context.Background(), nil, s.cfg); err != nil {
+		if err := EnsureBucket(context.Background(), nil, s.cfg); err != nil {
 			log.Printf("s3cold: ensure bucket: %v", err)
 		}
 	})
@@ -66,13 +65,13 @@ func (s *S3ColdStore) PutMemory(m schemas.Memory) {
 		log.Printf("s3cold: marshal memory %s: %v", m.MemoryID, err)
 		return
 	}
-	if err := s3util.PutBytes(context.Background(), nil, s.cfg, s.memoryKey(m.MemoryID), data, "application/json"); err != nil {
+	if err := PutBytes(context.Background(), nil, s.cfg, s.memoryKey(m.MemoryID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put memory %s: %v", m.MemoryID, err)
 	}
 }
 
 func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
-	data, err := s3util.GetBytes(context.Background(), nil, s.cfg, s.memoryKey(id))
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.memoryKey(id))
 	if err != nil {
 		log.Printf("s3cold: get memory %s: %v", id, err)
 		return schemas.Memory{}, false
@@ -96,13 +95,13 @@ func (s *S3ColdStore) PutAgent(a schemas.Agent) {
 		log.Printf("s3cold: marshal agent %s: %v", a.AgentID, err)
 		return
 	}
-	if err := s3util.PutBytes(context.Background(), nil, s.cfg, s.agentKey(a.AgentID), data, "application/json"); err != nil {
+	if err := PutBytes(context.Background(), nil, s.cfg, s.agentKey(a.AgentID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put agent %s: %v", a.AgentID, err)
 	}
 }
 
 func (s *S3ColdStore) GetAgent(id string) (schemas.Agent, bool) {
-	data, err := s3util.GetBytes(context.Background(), nil, s.cfg, s.agentKey(id))
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.agentKey(id))
 	if err != nil {
 		log.Printf("s3cold: get agent %s: %v", id, err)
 		return schemas.Agent{}, false
@@ -126,13 +125,13 @@ func (s *S3ColdStore) PutState(st schemas.State) {
 		log.Printf("s3cold: marshal state %s: %v", st.StateID, err)
 		return
 	}
-	if err := s3util.PutBytes(context.Background(), nil, s.cfg, s.stateKey(st.StateID), data, "application/json"); err != nil {
+	if err := PutBytes(context.Background(), nil, s.cfg, s.stateKey(st.StateID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put state %s: %v", st.StateID, err)
 	}
 }
 
 func (s *S3ColdStore) GetState(id string) (schemas.State, bool) {
-	data, err := s3util.GetBytes(context.Background(), nil, s.cfg, s.stateKey(id))
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.stateKey(id))
 	if err != nil {
 		log.Printf("s3cold: get state %s: %v", id, err)
 		return schemas.State{}, false
@@ -156,13 +155,13 @@ func (s *S3ColdStore) PutEdge(e schemas.Edge) {
 		log.Printf("s3cold: marshal edge %s: %v", e.EdgeID, err)
 		return
 	}
-	if err := s3util.PutBytes(context.Background(), nil, s.cfg, s.edgeKey(e.EdgeID), data, "application/json"); err != nil {
+	if err := PutBytes(context.Background(), nil, s.cfg, s.edgeKey(e.EdgeID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put edge %s: %v", e.EdgeID, err)
 	}
 }
 
 func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
-	data, err := s3util.GetBytes(context.Background(), nil, s.cfg, s.edgeKey(id))
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.edgeKey(id))
 	if err != nil {
 		log.Printf("s3cold: get edge %s: %v", id, err)
 		return schemas.Edge{}, false
@@ -195,7 +194,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 
-	keys, err := s3util.ListObjects(ctx, nil, s.cfg, prefix)
+	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
@@ -210,7 +209,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	lq := strings.ToLower(query)
 
 	for _, key := range keys {
-		data, err := s3util.GetBytes(ctx, nil, s.cfg, key)
+		data, err := GetBytes(ctx, nil, s.cfg, key)
 		if err != nil || data == nil {
 			continue
 		}
