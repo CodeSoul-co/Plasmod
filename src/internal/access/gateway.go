@@ -9,20 +9,22 @@ import (
 	"time"
 
 	"andb/src/internal/coordinator"
-	"andb/src/internal/s3util"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
 )
 
 type Gateway struct {
-	coord   *coordinator.Hub
-	runtime *worker.Runtime
-	store   storage.RuntimeStorage
+	coord      *coordinator.Hub
+	runtime    *worker.Runtime
+	store      storage.RuntimeStorage
+	storageCfg *storage.ConfigSnapshot
 }
 
-func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage) *Gateway {
-	return &Gateway{coord: coord, runtime: runtime, store: store}
+// NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
+// GET /v1/admin/storage returns the resolved backend configuration.
+func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot) *Gateway {
+	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg}
 }
 
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
@@ -32,6 +34,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("/v1/admin/topology", g.handleTopology)
+	mux.HandleFunc("/v1/admin/storage", g.handleStorage)
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 
@@ -96,6 +99,26 @@ func (g *Gateway) handleTopology(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(g.runtime.Topology())
 }
 
+func (g *Gateway) handleStorage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if g.storageCfg == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mode":             "memory",
+			"data_dir":         "",
+			"badger_enabled":   false,
+			"stores":           map[string]string{},
+			"wal_persistence":  false,
+			"note":             "storage config not wired (nil ConfigSnapshot)",
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(g.storageCfg)
+}
+
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────
 //
 // Dev-only helper:
@@ -122,7 +145,7 @@ func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cfg, err := s3util.LoadFromEnv()
+	cfg, err := storage.LoadFromEnv()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -196,7 +219,7 @@ func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
 		"response":    qResp,
 	}
 
-	bytesWritten, roundTripOK, err := s3util.PutBytesAndVerify(r.Context(), nil, cfg, objectKey, mustJSONBytes(capture), "application/json")
+	bytesWritten, roundTripOK, err := storage.PutBytesAndVerify(r.Context(), nil, cfg, objectKey, mustJSONBytes(capture), "application/json")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -591,7 +614,7 @@ func assembleTraceSteps(id, objType string, frag any, edges []schemas.Edge, vers
 					Detail: "object is quarantined",
 				})
 			}
-			if pol.VerifiedState == "retracted" {
+			if pol.VerifiedState == string(schemas.VerifiedStateRetracted) {
 				steps = append(steps, TraceStep{
 					Phase:  "policy",
 					Label:  "retracted",

@@ -73,3 +73,9 @@ arch-design.zh-CN.md
 
 # Dev docs directory (local design notes, not for push)
 devdocs/
+
+# Badger persistent storage data (ANDB_DATA_DIR, default .andb_data)
+.andb_data/
+
+# C++ build artifacts (vendored Knowhere / pybind11 build output)
+cpp/build/

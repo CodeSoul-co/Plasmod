@@ -261,14 +261,14 @@ func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[s
 	// Reconstruct a minimal Memory from the ingest record fields so the cold
 	// store holds canonical objects and ColdSearch can score them lexically.
 	m := schemas.Memory{
-		MemoryID:   memoryID,
-		Content:    text,
-		Scope:      attrs["scope"],
-		OwnerType:  attrs["owner_type"],
-		AgentID:    attrs["agent_id"],
-		SessionID:  attrs["session_id"],
-		Version:    ts,
-		IsActive:   false,
+		MemoryID:  memoryID,
+		Content:   text,
+		Scope:     attrs["visibility"],   // visibility maps to Memory.Scope (access boundary)
+		OwnerType: attrs["event_type"],   // event_type is the best proxy for owner_type in cold archival
+		AgentID:   attrs["agent_id"],
+		SessionID: attrs["session_id"],
+		Version:   ts,
+		IsActive:  false,
 	}
 	t.cold.PutMemory(m)
 }

@@ -182,7 +182,7 @@ func (a *Assembler) governanceAnnotations(objectIDs []string) []string {
 			if pol.QuarantineFlag {
 				steps = append(steps, fmt.Sprintf("governance:quarantined:%s", id))
 			}
-			if pol.VerifiedState == "retracted" {
+			if pol.VerifiedState == string(schemas.VerifiedStateRetracted) {
 				steps = append(steps, fmt.Sprintf("governance:retracted:%s", id))
 			}
 		}

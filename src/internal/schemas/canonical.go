@@ -47,9 +47,6 @@ type Event struct {
 	Version       int64          `json:"version"`
 }
 
-// EventEnvelope keeps backward compatibility for legacy ingest package wiring.
-type EventEnvelope = Event
-
 type Memory struct {
 	MemoryID       string   `json:"memory_id"`
 	MemoryType     string   `json:"memory_type"`

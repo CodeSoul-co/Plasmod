@@ -49,6 +49,10 @@ type ObjectStore interface {
 	GetSession(id string) (schemas.Session, bool)
 	ListSessions(agentID string) []schemas.Session
 
+	PutEvent(obj schemas.Event)
+	GetEvent(id string) (schemas.Event, bool)
+	ListEvents(agentID, sessionID string) []schemas.Event
+
 	PutMemory(obj schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
 	ListMemories(agentID, sessionID string) []schemas.Memory
