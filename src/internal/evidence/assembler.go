@@ -162,6 +162,8 @@ func inferObjectTypeFromID(id string) string {
 	switch {
 	case strings.HasPrefix(id, "mem_") || strings.HasPrefix(id, "summary_") || strings.HasPrefix(id, "shared_"):
 		return "memory"
+	case strings.HasPrefix(id, "evt_"):
+		return "event"
 	case strings.HasPrefix(id, "state_"):
 		return "state"
 	case strings.HasPrefix(id, "art_") || strings.HasPrefix(id, "tool_trace_"):

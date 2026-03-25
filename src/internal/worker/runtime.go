@@ -225,15 +225,19 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	if len(result.ObjectIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:    result.ObjectIDs,
-			MaxDepth:     0, // default cap of 8
-			ObjectStore:  r.storage.Objects(),
-			EdgeStore:    r.storage.Edges(),
+			ObjectIDs:   result.ObjectIDs,
+			MaxDepth:    0, // default cap of 8
+			ObjectStore: r.storage.Objects(),
+			EdgeStore:   r.storage.Edges(),
 		})
 		_ = chainResult // chainResult.OK is advisory; non-fatal
 
 		if len(chainOut.ProofTrace) > 0 {
 			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
+		}
+
+		if len(chainOut.Subgraph.Nodes) > 0 {
+			resp.Nodes = chainOut.Subgraph.Nodes
 		}
 
 		// Merge subgraph-expanded edges into resp.Edges, deduplicating by EdgeID.
@@ -262,6 +266,13 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 	var ids []string
 	for _, t := range objectTypes {
 		switch t {
+		case "event":
+			if r.storage != nil {
+				for _, e := range r.storage.Objects().ListEvents(agentID, sessionID) {
+					ids = append(ids, e.EventID)
+				}
+			}
+
 		case "state":
 			if r.storage != nil {
 				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {

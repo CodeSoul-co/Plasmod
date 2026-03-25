@@ -27,6 +27,7 @@ type QueryRequest struct {
 
 type QueryResponse struct {
 	Objects        []string        `json:"objects"`
+	Nodes          []GraphNode     `json:"nodes,omitempty"`
 	Edges          []Edge          `json:"edges"`
 	Provenance     []string        `json:"provenance"`
 	Versions       []ObjectVersion `json:"versions"`
