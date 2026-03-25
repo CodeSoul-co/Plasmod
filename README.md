@@ -1,5 +1,5 @@
 # CogDB — Agent-Native Database for Multi-Agent Systems
-> **Branch:** `dev` (integration) · **Pass 6** (2026-03-25)
+> **Branch:** `dev` (integration) · **Pass 7** (2026-03-25)
 
 CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combines a tiered segment-oriented retrieval plane, an event backbone with an append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
 
@@ -12,6 +12,7 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
 - Supplemental canonical retrieval in `ExecuteQuery`: State/Artifact IDs fetched from ObjectStore alongside retrieval-plane results
+- Event store: `ObjectStore` supports Event CRUD; `QueryChain.Run` routes `evt_`/`art_` IDs to load Event/Artifact GraphNodes
 - Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index) → **cold** (archived tier), behind a unified `DataPlane` interface
 - Dual storage backends: in-memory (default) and Badger-backed persistent storage (`ANDB_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
@@ -710,9 +711,10 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| **Review focus** | ⚠️ | `OneHopExpand` iterates passed-in edges slice — verify `BulkEdges` and `OneHopExpand` return consistent results for the same seed set |
+| **Review focus** | ✅ | `OneHopExpand` iterates passed-in edges slice — verified consistent with `BulkEdges` |
 | **Review focus** | ✅ | `conflict_resolved` edges from `ConflictMergeWorker` now surfaced in `QueryResponse.Edges` via `BulkEdges` pre-fetch → `QueryChain.MergedEdges` merge path; stored synchronously in `SubmitIngest` |
 | Missing: `GraphEdges` pre-fetch caller responsibility | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated before `QueryChain.Run`; C and D must agree on ownership |
+| **graph-c cherry-pick merged** | ✅ | `evt_`/`art_` ID routing in `QueryChain.Run`; Event CRUD in `ObjectStore`; F14/F15 |
 
 ---
 
@@ -823,7 +825,7 @@ S3_PREFIX      andb/integration_tests (default)
 
 ---
 
-## Integration Delivery Summary (Pass 6 — 2026-03-25)
+## Integration Delivery Summary (Pass 7 — 2026-03-25)
 
 This section records every structural fix, semantic correction, and design decision made during the Pass 5 integration pass on `dev`. It supplements the per-member checklists above.
 
@@ -844,6 +846,8 @@ This section records every structural fix, semantic correction, and design decis
 | **F11** | `src/internal/worker/runtime.go` | `ConflictMerge` fired only via async WAL subscriber (200ms poll) — `conflict_resolved` edge absent when tests/callers query immediately after ingest | Added `lastMem map[string]string` field tracking most-recent MemoryID per agent+session; sync `DispatchConflictMerge` in `SubmitIngest` immediately after storage; test flakiness eliminated (3/3 consecutive clean runs) |
 | **F12** | `src/internal/storage/s3util.go` (new), `src/internal/s3util/` (deleted) | S3 utility (`LoadFromEnv`, `PutBytesAndVerify`, `GetBytes`, `ListObjects`, SigV4 signing) was in a separate `s3util` package — inconsistent with storage module cohesion and caused a stale import after s3store.go moved to `storage` package | Moved `s3util.go` into `src/internal/storage/`; deleted `src/internal/s3util/` directory; updated imports in `gateway.go`, `s3_snapshot_export_stub.go`, and `bootstrap.go` |
 | **F13** | `src/internal/storage/factory.go`, `badger_stores.go`, `badger_helpers.go`, `composite.go`, `config_snapshot.go` (new) | No persistent storage option: all stores were in-memory only, lost on restart | Added `BuildRuntimeFromEnv` factory selecting memory vs Badger per `ANDB_STORAGE` env; Badger-backed `SegmentStore`, `IndexStore`, `ObjectStore`, `GraphEdgeStore`, `SnapshotVersionStore`, `PolicyStore`, `ShareContractStore`; `RuntimeBundle` carries `RuntimeStorage` + `ConfigSnapshot` + optional `Close`; `GET /v1/admin/storage` endpoint added; bootstrap now returns `func() error` shutdown including Badger close |
+| **F14** | `src/internal/storage/contracts.go`, `memory.go`, `badger_stores.go` | `ObjectStore` interface had no Event CRUD methods — events not storable in canonical store | Added `PutEvent/GetEvent/ListEvents` to `ObjectStore` interface and both `memoryObjectStore` and `badgerObjectStore` implementations |
+| **F15** | `src/internal/worker/chain/chain.go` | `QueryChain.Run` only pre-fetched `Memory` objects — `Event` and `Artifact` IDs returned from query were not loaded as GraphNodes | Extended `QueryChainInput.ObjectStore` interface with `GetEvent/GetArtifact`; switch on ID prefix (`mem_`→Memory, `evt_`→Event, `art_`→Artifact) to load correct GraphNode type; cherry-picked from `origin/feature/graph-c` |
 
 ### New Files Created
 
@@ -922,6 +926,8 @@ curl -s http://127.0.0.1:8080/v1/admin/topology | python3 -c "import sys,json; d
 | Badger persistent storage: BuildRuntimeFromEnv wired | ✅ | `factory.go` + `RuntimeBundle` + `ConfigSnapshot`; bootstrap uses it; `cleanup()` includes `db.Close()` |
 | `GET /v1/admin/storage` endpoint | ✅ | `handleStorage` in gateway; returns `ConfigSnapshot` JSON |
 | `src/internal/s3util/` removed (consolidated into storage) | ✅ | All imports updated; old package dir deleted |
+| `ObjectStore`: Event CRUD methods | ✅ | `PutEvent/GetEvent/ListEvents` in interface, memory, and Badger impls |
+| `QueryChain.Run`: evt_/art_ prefix routing for GraphNode pre-fetch | ✅ | Cherry-picked from `origin/feature/graph-c` |
 
 ### Merge Readiness
 
