@@ -722,7 +722,7 @@ S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
 S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 ```
 
-#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
+#### S3 Utility Layer (`src/internal/storage/s3util.go`)
 
 | Function | Purpose |
 |---|---|
@@ -738,13 +738,13 @@ S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 At startup, `bootstrap.go` selects the cold tier automatically:
 
 ```
-S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET 已设置
+When `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, and `S3_BUCKET` are set:
   → S3ColdStore  (MinIO / AWS S3 backed)
-  → 日志: [bootstrap] cold store: S3 endpoint=... bucket=...
+  → Log: [bootstrap] cold store: S3 endpoint=... bucket=...
 
-未设置
+Otherwise:
   → InMemoryColdStore  (in-process simulation, default)
-  → 日志: [bootstrap] cold store: in-memory simulation
+  → Log: [bootstrap] cold store: in-memory simulation
 ```
 
 `S3ColdStore` objects stored as:
