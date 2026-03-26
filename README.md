@@ -593,41 +593,51 @@ The following review checklist is intended for team members before merging `inte
 
 ---
 
-### Member B — Python Retrieval Service (`feature/retrieval-b`)
+### Member B — Go Retrieval Engine (`feature/retrieval-b`)
 
-**Scope merged:** Dense/sparse retrieval Python service (C++ core + Python thin wrapper), policy filter, version filter, RRF merger, gRPC proto.
+**Scope:** Dense/sparse/filter retrieval, RRF merger, safety filter (7 governance rules), seed marking, QueryChain integration. Originally a Python + pybind11 service; **migrated to native Go** (2026-03-26) — no separate process, no Python, no pybind11.
 
-#### Architecture: Python Thin Wrapper + C++ Core
+#### Architecture: Go Engine + CGO C++ Core
 
 ```
-┌──────────────────────────────────────────────────┐
-│                  Python Layer                     │
-│  src/internal/retrieval/                          │
-│  - main.py (entry point, --dev flag)              │
-│  - service/retriever.py (thin wrapper, calls C++) │
-│  - service/types.py (type definitions)            │
-└──────────────────────────────────────────────────┘
-                         │ pybind11
+┌─────────────────────────────────────────────────────────┐
+│                Go Retrieval Engine                       │
+│  src/internal/retrieval/                                 │
+│  ├── candidate.go   RetrievalRequest / Candidate /       │
+│  │                  CandidateList types                  │
+│  ├── filter.go      SafetyFilter — 7 governance rules    │
+│  │                  (quarantine / TTL / visible_time /   │
+│  │                   is_active / as_of_ts / min_version  │
+│  │                   / unverified)                       │
+│  └── retriever.go   Retriever.Retrieve()                 │
+│                     Retriever.EnrichAndRank()            │
+│                     RRF reranking + seed marking         │
+└─────────────────────────────────────────────────────────┘
+                         │ CGO (build tag: retrieval)
                          ▼
-┌──────────────────────────────────────────────────┐
-│                   C++ Layer                       │
-│  cpp/                                             │
-│  ├── include/andb/                                │
-│  │   ├── types.h    (Candidate, SearchResult)     │
-│  │   ├── dense.h    (DenseRetriever — HNSW)       │
-│  │   ├── sparse.h   (SparseRetriever)             │
-│  │   ├── filter.h   (FilterBitset — BitsetView)   │
-│  │   ├── merger.h   (RRF merge + reranking)       │
-│  │   └── retrieval.h (Unified Retriever + C API)  │
-│  ├── retrieval/                                   │
-│  │   ├── dense.cpp  (Knowhere HNSW)               │
-│  │   ├── sparse.cpp (Knowhere SPARSE_INDEX)       │
-│  │   ├── filter.cpp (BitsetView mechanism)        │
-│  │   ├── merger.cpp (RRF k=60, reranking)         │
-│  │   └── retrieval.cpp (Unified)                  │
-│  ├── python/bindings.cpp (pybind11)               │
-│  └── CMakeLists.txt                               │
-└──────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│              C++ Retrieval Library                       │
+│  cpp/                                                    │
+│  ├── include/andb/                                       │
+│  │   ├── types.h    (Candidate, SearchResult)            │
+│  │   ├── dense.h    (DenseRetriever — HNSW)              │
+│  │   ├── sparse.h   (SparseRetriever)                    │
+│  │   ├── filter.h   (FilterBitset — BitsetView)          │
+│  │   ├── merger.h   (RRF merge + reranking)              │
+│  │   └── retrieval.h (Unified Retriever + C API)         │
+│  ├── retrieval/                                          │
+│  │   ├── dense.cpp  (Knowhere HNSW)                      │
+│  │   ├── sparse.cpp (Knowhere SPARSE_INDEX)              │
+│  │   ├── filter.cpp (BitsetView mechanism)               │
+│  │   ├── merger.cpp (RRF k=60, reranking)                │
+│  │   └── retrieval.cpp (Unified)                         │
+│  └── CMakeLists.txt  (FetchContent for Knowhere v2.3.12) │
+└─────────────────────────────────────────────────────────┘
+                         │ (no-op stub when CGO disabled)
+                         ▼
+         src/internal/dataplane/retrievalplane/
+         ├── bridge_stub.go  (!retrieval build tag — default)
+         └── contracts.go    (Retriever interface)
 ```
 
 #### Three-Path Parallel Retrieval (C++)
@@ -650,58 +660,83 @@ final_score = rrf_score * max(importance, 0.01f)
                         * max(confidence, 0.01f)
 ```
 
-**Seed marking**: candidates with `final_score >= seed_threshold` (default 0.7) set `is_seed=true` — used by `SubgraphExecutorWorker` for graph expansion.
+**Seed marking** uses **relative normalisation** (not a fixed absolute threshold):
+```
+normalised = final_score / max(final_scores in result set)
+is_seed    = normalised >= SeedThreshold (default 0.5)
+           AND raw final_score >= SeedAbsoluteFloor (default 1e-4)
+```
+`SeedThreshold=0.5` means "top half of this result set seeds the graph expansion". Both fields are exported on `Retriever` for per-request tuning.
+
+#### Query Execution Flow
+
+```
+runtime.ExecuteQuery(QueryRequest)
+  │
+  ├─ nodeManager.DispatchQuery()     → SearchOutput{ObjectIDs} (lexical + CGO vector)
+  │
+  ├─ fetchCanonicalObjects()         → State/Artifact IDs (bypass retrieval plane)
+  │
+  ├─ goRetriever.EnrichAndRank()     → CandidateList
+  │     ├── ObjectStore.GetMemory()  → fetch metadata per ID
+  │     ├── SafetyFilter.Apply()     → 7 governance rules
+  │     ├── markFinalScores()        → final_score = rrf × imp × fresh × conf
+  │     ├── markSeeds()              → normalised ≥ 0.5 → IsSeed=true
+  │     └── sort descending          → ranked CandidateList
+  │
+  ├─ assembler.Build()               → QueryResponse (objects, edges, proof_trace)
+  │
+  └─ queryChain.Run(SeedIDs)         → ProofTrace + subgraph expansion
+        (only high-confidence seeds drive graph expansion)
+```
 
 #### Building the C++ Module
 
 ```bash
 cd cpp && mkdir build && cd build
-cmake .. -DANDB_WITH_PYBIND=ON
+cmake .. -DANDB_WITH_KNOWHERE=ON
 make -j$(nproc)
 ```
 
 | CMake Option | Default | Description |
 |---|---|---|
-| `ANDB_WITH_KNOWHERE` | ON | Real Knowhere HNSW/SPARSE index (downloads zilliztech/knowhere v2.3.12; requires OpenBLAS) |
-| `ANDB_WITH_PYBIND` | ON | Build pybind11 Python bindings |
+| `ANDB_WITH_KNOWHERE` | ON | Real Knowhere HNSW/SPARSE index (FetchContent: zilliztech/knowhere v2.3.12; requires OpenBLAS) |
 | `ANDB_WITH_GPU` | OFF | GPU support via Knowhere RAFT |
+
+> pybind11 / `ANDB_WITH_PYBIND` removed — Python bindings are no longer needed; Go accesses C++ via CGO directly.
 
 Platforms: Ubuntu 20.04 x86_64/aarch64, macOS x86_64, macOS Apple Silicon.
 
-#### ⚡ Dual-Interface Ownership (Python ↔ Go) — B's Primary Responsibility
+#### ⚡ Interface Ownership — B's Responsibility
 
-Member B is the **sole owner** of the contract boundary between the Python retrieval service and the Go HTTP layer. Any change to either side must be confirmed with the other side before merging.
+Member B owns the contract boundary between the Go retrieval engine and the rest of the Go server. Any change to schemas or response shape must be coordinated with D (gateway) and C (graph).
 
-**Go-side interface (owned by B, implemented in Go):**
-
-| Go location | Python counterpart | What must stay in sync |
+| Go location | Counterpart | What must stay in sync |
 |---|---|---|
-| `schemas.QueryRequest` (field names + JSON tags) | `andb_sdk/client.py` → `query()` kwargs | Field names, types, and omitempty rules |
-| `schemas.QueryResponse` (JSON shape) | `andb_sdk/retrieval.py` → response parsing | `objects`, `edges`, `proof_trace`, `applied_filters` keys |
-| `access/gateway.go` `/v1/query` POST body | `retrieval/service/retriever.py` request builder | HTTP method, path, Content-Type |
-| `access/gateway.go` `/v1/ingest` POST body | `andb_sdk/client.py` → `ingest_event()` | `event_id`, `agent_id`, `session_id`, `payload` field presence |
+| `schemas.QueryRequest` (JSON tags) | `andb_sdk/client.py` → `query()` kwargs | Field names, types, `omitempty` rules |
+| `schemas.QueryResponse` (JSON shape) | `andb_sdk/client.py` response parsing | `objects`, `edges`, `proof_trace`, `applied_filters` keys |
+| `retrieval.RetrievalRequest` | `runtime.ExecuteQuery` caller | All filter fields passed correctly from QueryRequest |
+| `CandidateList.SeedIDs` | `chain.QueryChainInput.ObjectIDs` | Seed IDs must be valid ObjectStore keys |
 
-**Proto contract (B must keep aligned):**
-
-| File | Rule |
-|---|---|
-| `src/internal/retrieval/proto/retrieval.proto` | Proto field numbers must NOT change once merged — add new fields only, never renumber |
-| gRPC service name | Must match the Go client stub if one is ever generated; agree with D before adding Go gRPC client |
+**Proto contract** (`src/internal/retrieval/proto/retrieval.proto`): field numbers must NOT change once merged — add new fields only, never renumber. Agree with D before generating a Go gRPC client stub.
 
 **Checklist before B marks their section done:**
 
 | Item | Status | Notes |
 |---|---|---|
-| Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt` |
-| **FIXED E3** | ✅ | `SegmentDataPlane.Search()` → `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO); `bridge_stub.go` provides safe fallback when CGO unavailable; see `devdocs/index-build-worker-status.md` |
-| SDK `query()` kwargs match current `QueryRequest` JSON shape | ✅ | `sdk/python/andb_sdk/client.py` updated: `query()` exposes `query_text`, `query_scope`, `session_id`, `agent_id`, `tenant_id`, `workspace_id`, `top_k`, `object_types`, `memory_types`, `relation_constraints`, `time_window` |
-| SDK `ingest_event()` matches current `/v1/ingest` body | ✅ | `ingest_event()` now takes explicit kwargs: `event_id`, `agent_id`, `session_id`, `event_type`, `payload`, `tenant_id`, `workspace_id` |
-| Retry back-off in `retriever.py` on upstream timeout | ✅ | `_retry_with_backoff()` added to `src/internal/retrieval/service/retriever.py`; `retrieve()` uses it with max 3 retries, base_delay=0.1s, max_delay=2.0s |
+| Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt`; FetchContent pulls zilliztech/knowhere v2.3.12 |
+| **FIXED E3** | ✅ | `SegmentDataPlane.Search()` → `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO); `bridge_stub.go` safe fallback when CGO unavailable |
+| Python service → Go migration | ✅ | `src/internal/retrieval/` — pure Go engine; Python service (`main.py`, `service/`) deleted; pybind11 removed |
+| SafetyFilter — 7 governance rules | ✅ | `filter.go`: quarantine / TTL / visible_time / is_active / as_of_ts / min_version / unverified |
+| RRF reranking formula | ✅ | `final_score = rrf × max(importance,0.01) × max(freshness,0.01) × max(confidence,0.01)` |
+| Seed marking — relative normalisation | ✅ | `normalised = final_score / max_score; is_seed = normalised ≥ 0.5 AND raw ≥ 1e-4` |
+| QueryChain integration — SeedIDs | ✅ | `CandidateList.SeedIDs` → `QueryChainInput.ObjectIDs`; only high-confidence seeds drive subgraph expansion |
+| SDK `query()` kwargs match `QueryRequest` | ✅ | `sdk/python/andb_sdk/client.py`: all fields exposed as explicit kwargs |
+| SDK `ingest_event()` matches `/v1/ingest` | ✅ | explicit kwargs: `event_id`, `agent_id`, `session_id`, `event_type`, `payload`, `tenant_id`, `workspace_id` |
+| Unit tests — 9/9 pass | ✅ | `go test ./src/internal/retrieval/...` covers SafetyFilter, reranking, seed marking, for_graph, filter_only, QueryChain alignment |
 | GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
-| No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
-| **Review focus** | ✅ | Seed IDs (`final_score ≥ 0.7`) now extracted by `goRetriever.EnrichAndRank()` and passed as `QueryChainInput.ObjectIDs` in `runtime.ExecuteQuery`; only high-confidence candidates seed the subgraph expansion. |
-| **Review focus** | ⚠️ | `proof_trace` field in `QueryResponse` may now contain up to depth=8 BFS steps (previously 1-hop); B's Python integration tests that assert `len(proof_trace) == N` must be updated to use `>= 1` instead of exact count |
-| **Review focus** | ⚠️ | When `S3ColdStore` is active, cold-path `GetMemory` adds HTTP round-trip latency; B's timeout settings in `retriever.py` may need to be increased from default if cold reads are expected during integration tests |
+| **Review focus** | ⚠️ | `proof_trace` in `QueryResponse` may contain up to depth=8 BFS steps; integration tests asserting `len(proof_trace)==N` must use `>= 1` |
+| **Review focus** | ⚠️ | `S3ColdStore` active: cold-path `GetMemory` adds latency; consider increasing timeout in callers if cold reads expected during load tests |
 
 #### Daily Progress Log (Member B)
 
@@ -715,6 +750,8 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | 2026-03-26 | **Task1 — Remove third-party libs**: Deleted `cpp/third_party/knowhere` + `cpp/third_party/pybind11` (redundant; `CMakeLists.txt` already uses `FetchContent`). Deleted `cpp/python/bindings.cpp` (pybind11 Python bindings). Removed `ANDB_WITH_PYBIND` option and pybind11 `FetchContent` block from `cpp/CMakeLists.txt`. |
 | 2026-03-26 | **Task2 — Python → Go retrieval**: Created `src/internal/retrieval/` package (pure Go): `candidate.go` (`RetrievalRequest` / `Candidate` / `CandidateList` types); `filter.go` (`SafetyFilter` — 7 governance rules: quarantine, TTL expiry, visible_time, is_active, as_of_ts, min_version, unverified); `retriever.go` (RRF reranking `final_score = rrf × importance × freshness × confidence`, seed marking `≥ 0.7 → IsSeed=true`, for_graph mode returns `TopK×2`, filter_only mode, `EnrichAndRank()` accepts pre-searched IDs). `go build ./...` exit 0. |
 | 2026-03-26 | **Task3 — QueryChain integration**: `src/internal/worker/runtime.go` — `ExecuteQuery` calls `goRetriever.EnrichAndRank()` after `nodeManager.DispatchQuery()`, applying safety filter + RRF reranking + seed marking. `CandidateList.SeedIDs` (candidates with `final_score ≥ 0.7`) passed to `QueryChain.Run(ObjectIDs)` for targeted subgraph expansion, replacing the previous full result-set pass-through. |
+| 2026-03-26 | **Seed threshold fix**: switched from fixed absolute threshold (0.7, unreachable since rrf_max≈0.016) to relative normalisation (`normalised = final_score / max_score; is_seed = normalised ≥ 0.5`). `SeedAbsoluteFloor=1e-4` guards against seeding uniformly low-quality results. 9/9 unit tests pass. |
+| 2026-03-26 | **Python dead code removed**: deleted `src/internal/retrieval/service/` (retriever.py, types.py, errors.py), `main.py`, `requirements.txt` — pybind11 is gone, Go engine fully replaces the Python service. README updated to reflect current Go-native architecture. |
 
 ---
 
