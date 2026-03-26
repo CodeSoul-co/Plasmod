@@ -7,9 +7,37 @@ Python layer only does parameter conversion.
 """
 
 import logging
-from typing import Optional, List
+import time
+from typing import Optional, List, Callable, TypeVar
 from datetime import datetime
 import numpy as np
+
+T = TypeVar("T")
+
+
+def _retry_with_backoff(
+    fn: Callable[[], T],
+    max_retries: int = 3,
+    base_delay: float = 0.1,
+    max_delay: float = 2.0,
+    exceptions: tuple = (TimeoutError, RuntimeError),
+) -> T:
+    """Exponential back-off retry wrapper (max 3 retries by default)."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except exceptions as e:
+            last_exc = e
+            if attempt < max_retries:
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                logger.warning(
+                    "retrieve retry %d/%d after %.2fs: %s", attempt + 1, max_retries, delay, e
+                )
+                time.sleep(delay)
+            else:
+                logger.error("retrieve failed after %d retries: %s", max_retries, e)
+    raise last_exc
 
 from .types import (
     RetrievalRequest, CandidateList, Candidate, QueryMeta,
@@ -192,17 +220,28 @@ class Retriever:
         elif isinstance(query_vector, list):
             query_vector = np.array(query_vector, dtype=np.float32)
         
-        # Call C++ retriever
-        cpp_result = self._cpp_retriever.retrieve(
-            query_vector=query_vector,
-            query_text=request.query_text or "",
-            top_k=request.top_k,
-            enable_dense=request.enable_dense,
-            enable_sparse=request.enable_sparse,
-            for_graph=request.for_graph,
-            filter_bitset=None,  # TODO: build from request filters
-        )
-        
+        def _do_retrieve():
+            return self._cpp_retriever.retrieve(
+                query_vector=query_vector,
+                query_text=request.query_text or "",
+                top_k=request.top_k,
+                enable_dense=request.enable_dense,
+                enable_sparse=request.enable_sparse,
+                for_graph=request.for_graph,
+                filter_bitset=None,
+            )
+
+        try:
+            cpp_result = _retry_with_backoff(_do_retrieve)
+        except Exception as e:
+            logger.error("retrieve failed after retries: %s", e)
+            return CandidateList(
+                candidates=[],
+                total_found=0,
+                retrieved_at=datetime.now(),
+                query_meta=QueryMeta(channels_used=[]),
+            )
+
         return _result_from_cpp(cpp_result)
     
     def benchmark_retrieve(self, request: RetrievalRequest) -> CandidateList:

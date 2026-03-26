@@ -693,15 +693,25 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | Item | Status | Notes |
 |---|---|---|
 | Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt` |
-| **FIXED E3** | 🔲 | C++ Knowhere retrieval (`retrievalplane`) is never imported from Go query path — active search uses `segmentstore` lexical only; `segment_adapter.go` must be updated to call `retrievalplane.NewRetriever()` when `CGO_ENABLED=1` |
-| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
-| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
-| Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
+| **FIXED E3** | ✅ | `SegmentDataPlane.Search()` → `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO); `bridge_stub.go` provides safe fallback when CGO unavailable; see `devdocs/index-build-worker-status.md` |
+| SDK `query()` kwargs match current `QueryRequest` JSON shape | ✅ | `sdk/python/andb_sdk/client.py` updated: `query()` exposes `query_text`, `query_scope`, `session_id`, `agent_id`, `tenant_id`, `workspace_id`, `top_k`, `object_types`, `memory_types`, `relation_constraints`, `time_window` |
+| SDK `ingest_event()` matches current `/v1/ingest` body | ✅ | `ingest_event()` now takes explicit kwargs: `event_id`, `agent_id`, `session_id`, `event_type`, `payload`, `tenant_id`, `workspace_id` |
+| Retry back-off in `retriever.py` on upstream timeout | ✅ | `_retry_with_backoff()` added to `src/internal/retrieval/service/retriever.py`; `retrieve()` uses it with max 3 retries, base_delay=0.1s, max_delay=2.0s |
 | GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
 | No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
 | **Review focus** | ⚠️ | C++ `is_seed=true` candidates → their IDs should map to `QueryChainInput.ObjectIDs` passed to `SubgraphExecutorWorker`; verify the Go gateway correctly extracts seed IDs from retrieval results before calling `QueryChain.Run` |
 | **Review focus** | ⚠️ | `proof_trace` field in `QueryResponse` may now contain up to depth=8 BFS steps (previously 1-hop); B's Python integration tests that assert `len(proof_trace) == N` must be updated to use `>= 1` instead of exact count |
 | **Review focus** | ⚠️ | When `S3ColdStore` is active, cold-path `GetMemory` adds HTTP round-trip latency; B's timeout settings in `retriever.py` may need to be increased from default if cold reads are expected during integration tests |
+
+#### Daily Progress Log (Member B)
+
+| Date | Updates |
+|---|---|
+| 2026-03-26 | **Dev sync**: Merged `dev` (Pass 7) into `feature/retrieval-b`; replaced `HybridDataPlane`+Milvus with `TfidfEmbedder`+`VectorStore`+CGO Knowhere; removed `milvus/` directory and all Milvus adapters; added `bridge_stub.go` for non-CGO builds; all 152 file changes compile cleanly (`go build ./...` exit 0). |
+| 2026-03-26 | **E3 Resolved**: `SegmentDataPlane.Search()` now routes through `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO HNSW); graceful fallback to lexical when CGO unavailable. See `devdocs/index-build-worker-status.md`. |
+| 2026-03-26 | **SDK Updated**: `sdk/python/andb_sdk/client.py` — `query()` now exposes all `QueryRequest` fields as explicit kwargs (`query_text`, `query_scope`, `session_id`, `agent_id`, `tenant_id`, `workspace_id`, `top_k`, `object_types`, `memory_types`, `relation_constraints`, `time_window`); `ingest_event()` now takes explicit kwargs with `workspace_id` support. |
+| 2026-03-26 | **Retry Added**: `src/internal/retrieval/service/retriever.py` — `_retry_with_backoff()` with exponential back-off (base=0.1s, max=2.0s, max_retries=3) added; `retrieve()` uses it on `TimeoutError`/`RuntimeError`. |
+| 2026-03-26 | **Docs**: Created `devdocs/index-build-worker-status.md` — clarifies `IndexBuildWorker` role (segment metadata tracker, not retrieval index), explains why it does not need to feed `ExecuteQuery`, documents E3 resolution. |
 
 ---
 
