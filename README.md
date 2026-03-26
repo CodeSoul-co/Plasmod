@@ -90,7 +90,7 @@ Code layout:
 - [`src/internal/schemas`](src/internal/schemas): 13 canonical Go types + query/response contracts
 - [`sdk/python`](sdk/python): Python SDK and bootstrap scripts
 - [`cpp`](cpp): C++ retrieval stub for future high-performance execution
-- [`src/internal/dataplane/retrievalplane`](src/internal/dataplane/retrievalplane): imported retrieval-plane source subtree (behind build tag)
+- [`src/internal/dataplane/retrievalplane`](src/internal/dataplane/retrievalplane): CGO bridge boundary — `bridge_stub.go` (default, no CGO) + `contracts.go` (Retriever/SearchService interfaces)
 - [`src/internal/coordinator/controlplane`](src/internal/coordinator/controlplane): imported control-plane source subtree (behind build tag)
 - [`src/internal/eventbackbone/streamplane`](src/internal/eventbackbone/streamplane): imported stream/event source subtree (behind build tag)
 - [`src/internal/platformpkg`](src/internal/platformpkg): imported shared platform package subtree
@@ -626,12 +626,12 @@ The following review checklist is intended for team members before merging `inte
 │  │   ├── merger.h   (RRF merge + reranking)              │
 │  │   └── retrieval.h (Unified Retriever + C API)         │
 │  ├── retrieval/                                          │
-│  │   ├── dense.cpp  (Knowhere HNSW)                      │
-│  │   ├── sparse.cpp (Knowhere SPARSE_INDEX)              │
-│  │   ├── filter.cpp (BitsetView mechanism)               │
+│  │   ├── dense.cpp  (hnswlib HNSW — vendored)             │
+│  │   ├── sparse.cpp (pure C++ inverted index)            │
+│  │   ├── filter.cpp (BitsetView / allow-list functor)    │
 │  │   ├── merger.cpp (RRF k=60, reranking)                │
-│  │   └── retrieval.cpp (Unified)                         │
-│  └── CMakeLists.txt  (FetchContent for Knowhere v2.3.12) │
+│  │   └── retrieval.cpp (Unified C API)                   │
+│  └── CMakeLists.txt  (fully offline — no FetchContent)   │
 └─────────────────────────────────────────────────────────┘
                          │ (no-op stub when CGO disabled)
                          ▼
@@ -644,9 +644,9 @@ The following review checklist is intended for team members before merging `inte
 
 | Path | Implementation | Description |
 |---|---|---|
-| **Dense** | `cpp/retrieval/dense.cpp` | Knowhere HNSW, Search with BitsetView |
-| **Sparse** | `cpp/retrieval/sparse.cpp` | Knowhere SPARSE_INVERTED_INDEX |
-| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView passed to Search call |
+| **Dense** | `cpp/retrieval/dense.cpp` | hnswlib HNSW (vendored `cpp/include/hnswlib/`), allow-list functor |
+| **Sparse** | `cpp/retrieval/sparse.cpp` | Pure C++ inverted index, IP scoring |
+| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView / allow-list passed to search call |
 
 **RRF Fusion** (`cpp/retrieval/merger.cpp`):
 ```
@@ -727,7 +727,7 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 
 | Item | Status | Notes |
 |---|---|---|
-| Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt`; FetchContent pulls zilliztech/knowhere v2.3.12 |
+| hnswlib vendored (C++ HNSW) | ✅ | `cpp/include/hnswlib/` — 6 header files (2615 lines), MIT, zero external downloads; no FetchContent |
 | **FIXED E3** | ✅ | `SegmentDataPlane.Search()` → `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO); `bridge_stub.go` safe fallback when CGO unavailable |
 | Python service → Go migration | ✅ | `src/internal/retrieval/` — pure Go engine; Python service (`main.py`, `service/`) deleted; pybind11 removed |
 | SafetyFilter — 7 governance rules | ✅ | `filter.go`: quarantine / TTL / visible_time / is_active / as_of_ts / min_version / unverified |
@@ -755,6 +755,7 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 | 2026-03-26 | **Task3 — QueryChain integration**: `src/internal/worker/runtime.go` — `ExecuteQuery` calls `goRetriever.EnrichAndRank()` after `nodeManager.DispatchQuery()`, applying safety filter + RRF reranking + seed marking. `CandidateList.SeedIDs` (candidates with `final_score ≥ 0.7`) passed to `QueryChain.Run(ObjectIDs)` for targeted subgraph expansion, replacing the previous full result-set pass-through. |
 | 2026-03-26 | **Seed threshold fix**: switched from fixed absolute threshold (0.7, unreachable since rrf_max≈0.016) to relative normalisation (`normalised = final_score / max_score; is_seed = normalised ≥ 0.5`). `SeedAbsoluteFloor=1e-4` guards against seeding uniformly low-quality results. 9/9 unit tests pass. |
 | 2026-03-26 | **Python dead code removed**: deleted `src/internal/retrieval/service/` (retriever.py, types.py, errors.py), `main.py`, `requirements.txt` — pybind11 is gone, Go engine fully replaces the Python service. README updated to reflect current Go-native architecture. |
+| 2026-03-26 | **Milvus dead code purged**: deleted `retrievalplane/core/` (Milvus querynode C++ — 19 MB, never compiled, had its own FetchContent for Knowhere/rocksdb/tantivy/rdkafka etc.) and all Milvus Go subdirs (`compaction/`, `storage/`, `storageshared/`, `objectstore/`, `queryruntime/` — all behind `//go:build extended`, zero compile impact). `retrievalplane/` is now 3 files only (`bridge_stub.go`, `contracts.go`, `go.mod`). `go build ./...` clean. Repo is now fully self-contained — no GitHub clone or FetchContent of any third-party lib at build time. |
 
 ---
 

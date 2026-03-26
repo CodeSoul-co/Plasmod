@@ -1,2 +1,0 @@
-distance, range, span, length
-interval => gap
