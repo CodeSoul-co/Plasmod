@@ -173,100 +173,34 @@ class RetrievalService:
 
 
 def run_server(service: "RetrievalService", host: str = "0.0.0.0", port: int = 8080):
-    """Start HTTP server exposing retrieval endpoints for Go bridge.
+    """Start a minimal HTTP server exposing /healthz for K8s readiness probes.
 
-    GET  /healthz  → 200 {"status":"ok","ready":true|false}
-    POST /ingest   → 200 {"status":"ok"} (index a document)
-    POST /retrieve → 200 {...candidates...} (search)
+    GET /healthz → 200 {"status":"ok","ready":true|false}
+    Any other path → 404
+
+    TODO(member-B): extend with /metrics and /v1/retrieve HTTP endpoints
+    once the gRPC proto contract is frozen.
     """
+    ready = service.is_ready()
 
-    class RetrievalHandler(BaseHTTPRequestHandler):
+    class HealthzHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/healthz":
-                body = json.dumps({
-                    "status": "ok",
-                    "ready": service.is_ready()
-                }).encode()
-                self._send_json(200, body)
+                body = json.dumps({"status": "ok", "ready": ready}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             else:
-                self._send_json(404, b'{"error":"not found"}')
-
-        def do_POST(self):
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length) if content_length > 0 else b"{}"
-            
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError as e:
-                self._send_json(400, json.dumps({"error": f"invalid json: {e}"}).encode())
-                return
-
-            if self.path == "/ingest":
-                self._handle_ingest(data)
-            elif self.path == "/retrieve":
-                self._handle_retrieve(data)
-            else:
-                self._send_json(404, b'{"error":"not found"}')
-
-        def _handle_ingest(self, data: dict):
-            # For now, just acknowledge - actual indexing requires vector embedding
-            # which should be done by the caller or a separate embedding service
-            object_id = data.get("object_id", "")
-            text = data.get("text", "")
-            logger.debug(f"ingest: object_id={object_id} text_len={len(text)}")
-            self._send_json(200, json.dumps({"status": "ok", "object_id": object_id}).encode())
-
-        def _handle_retrieve(self, data: dict):
-            query_text = data.get("query_text", "")
-            top_k = data.get("top_k", 10)
-            enable_dense = data.get("enable_dense", True)
-            enable_sparse = data.get("enable_sparse", True)
-            for_graph = data.get("for_graph", False)
-
-            # Create a dummy query vector (in production, use embedding service)
-            # For now, use random vector for testing
-            query_vector = list(np.random.randn(service._dim).astype(np.float32))
-
-            request = RetrievalRequest(
-                query_vector=query_vector,
-                query_text=query_text,
-                top_k=top_k,
-                enable_dense=enable_dense,
-                enable_sparse=enable_sparse,
-                for_graph=for_graph,
-            )
-
-            result = service.retrieve(request)
-
-            response = {
-                "candidates": [
-                    {
-                        "object_id": c.object_id,
-                        "final_score": c.final_score,
-                        "rrf_score": c.rrf_score,
-                        "is_seed": c.is_seed,
-                    }
-                    for c in (result.candidates or [])
-                ],
-                "total_found": result.total_found,
-                "dense_hits": result.query_meta.dense_hits if result.query_meta else 0,
-                "sparse_hits": result.query_meta.sparse_hits if result.query_meta else 0,
-                "latency_ms": result.query_meta.latency_ms if result.query_meta else 0,
-            }
-            self._send_json(200, json.dumps(response).encode())
-
-        def _send_json(self, status: int, body: bytes):
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                self.send_response(404)
+                self.end_headers()
 
         def log_message(self, fmt, *args):
-            logger.debug("http: " + fmt, *args)
+            logger.debug("healthz: " + fmt, *args)
 
-    server = HTTPServer((host, port), RetrievalHandler)
-    logger.info("retrieval service listening on %s:%d (endpoints: /healthz, /ingest, /retrieve)", host, port)
+    server = HTTPServer((host, port), HealthzHandler)
+    logger.info("retrieval service listening on %s:%d", host, port)
     server.serve_forever()
 
 

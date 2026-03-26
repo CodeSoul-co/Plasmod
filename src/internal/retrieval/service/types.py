@@ -74,9 +74,6 @@ class RetrievalRequest:
     
     # Graph expansion mode (for member C)
     for_graph: bool = False                        # When true: return top_k*2, must include source_event_ids
-    
-    # Timeout settings (increased for S3ColdStore latency)
-    timeout_ms: int = 5000                         # Default 5s, increase for cold reads
 
 
 @dataclass

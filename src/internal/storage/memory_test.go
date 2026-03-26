@@ -30,6 +30,12 @@ func TestMemoryRuntimeStorage_Stores(t *testing.T) {
 	if store.HotCache() == nil {
 		t.Fatal("HotCache() should not be nil")
 	}
+	if store.Audits() == nil {
+		t.Fatal("Audits() should not be nil")
+	}
+	if store.AlgorithmStates() == nil {
+		t.Fatal("AlgorithmStates() should not be nil")
+	}
 }
 
 func TestMemoryObjectStore_PutAndGet(t *testing.T) {
@@ -177,6 +183,78 @@ func TestInMemoryColdStore_EdgeRoundtrip(t *testing.T) {
 	list := cold.ListEdges()
 	if len(list) != 1 {
 		t.Errorf("ListEdges: want 1, got %d", len(list))
+	}
+}
+
+// PC: AuditStore
+func TestInMemoryAuditStore_AppendAndGet(t *testing.T) {
+	store := NewMemoryRuntimeStorage()
+
+	r1 := schemas.AuditRecord{
+		RecordID:       "audit_1",
+		TargetMemoryID: "mem_audit_1",
+		OperationType:  string(schemas.AuditOpRead),
+		ActorType:      "agent",
+		ActorID:        "agent_1",
+		Decision:       "allow",
+		Timestamp:      "2026-01-01T00:00:00Z",
+	}
+	r2 := schemas.AuditRecord{
+		RecordID:       "audit_2",
+		TargetMemoryID: "mem_audit_1",
+		OperationType:  string(schemas.AuditOpShare),
+		ActorType:      "agent",
+		ActorID:        "agent_2",
+		Decision:       "deny",
+		Timestamp:      "2026-01-02T00:00:00Z",
+	}
+	store.Audits().AppendAudit(r1)
+	store.Audits().AppendAudit(r2)
+
+	got := store.Audits().GetAudits("mem_audit_1")
+	if len(got) != 2 {
+		t.Errorf("GetAudits: want 2 records, got %d", len(got))
+	}
+	all := store.Audits().ListAudits()
+	if len(all) != 2 {
+		t.Errorf("ListAudits: want 2 total, got %d", len(all))
+	}
+	// unrelated memory should return empty
+	none := store.Audits().GetAudits("mem_nonexistent")
+	if len(none) != 0 {
+		t.Errorf("GetAudits nonexistent: want 0, got %d", len(none))
+	}
+}
+
+// PC: MemoryAlgorithmStateStore
+func TestInMemoryAlgorithmStateStore_PutAndGet(t *testing.T) {
+	store := NewMemoryRuntimeStorage()
+
+	st := schemas.MemoryAlgorithmState{
+		MemoryID:       "mem_1",
+		AlgorithmID:    "memorybank_v1",
+		Strength:       0.85,
+		RetentionScore: 0.72,
+		RecallCount:    3,
+		UpdatedAt:      "2026-01-01T00:00:00Z",
+	}
+	store.AlgorithmStates().PutAlgorithmState(st)
+
+	got, ok := store.AlgorithmStates().GetAlgorithmState("mem_1", "memorybank_v1")
+	if !ok {
+		t.Fatal("GetAlgorithmState: expected to find mem_1/memorybank_v1")
+	}
+	if got.Strength != 0.85 {
+		t.Errorf("Strength: want 0.85, got %f", got.Strength)
+	}
+
+	list := store.AlgorithmStates().ListAlgorithmStates("mem_1")
+	if len(list) != 1 {
+		t.Errorf("ListAlgorithmStates: want 1, got %d", len(list))
+	}
+	_, miss := store.AlgorithmStates().GetAlgorithmState("mem_1", "other_algo")
+	if miss {
+		t.Error("GetAlgorithmState: should not find state for unknown algorithmID")
 	}
 }
 

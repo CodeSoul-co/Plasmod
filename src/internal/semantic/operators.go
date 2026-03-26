@@ -50,49 +50,19 @@ func NewDefaultQueryPlanner() *DefaultQueryPlanner {
 	return &DefaultQueryPlanner{}
 }
 
-// resolveQueryNamespace maps query_scope to the actual namespace value.
-// This aligns with materialization.resolveNamespace which sets:
-//   - WorkspaceID if present
-//   - SessionID if present
-//   - "default" otherwise
-//
-// query_scope semantics:
-//   - "session" → use SessionID as namespace
-//   - "agent" → use AgentID as namespace (cross-session)
-//   - "workspace" → use WorkspaceID as namespace
-//   - "global" or "" → no namespace filter (empty string)
-//   - other values → use as literal namespace
-func resolveQueryNamespace(req schemas.QueryRequest) string {
-	switch req.QueryScope {
-	case "session":
-		if req.SessionID != "" {
-			return req.SessionID
-		}
-		return ""
-	case "agent":
-		if req.AgentID != "" {
-			return req.AgentID
-		}
-		return ""
-	case "workspace":
-		if req.WorkspaceID != "" {
-			return req.WorkspaceID
-		}
-		return ""
-	case "global", "":
-		return ""
-	default:
-		// Treat as literal namespace for backward compatibility
-		return req.QueryScope
-	}
-}
-
 func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 	topK := req.TopK
 	if topK <= 0 {
 		topK = 10
 	}
-	ns := resolveQueryNamespace(req)
+	// Resolve namespace to match materialization.resolveNamespace:
+	// WorkspaceID → SessionID → "" (all-shard search).
+	// QueryScope is a scope-type hint ("workspace", "session", "global"), not a
+	// literal namespace value; the actual IDs are in WorkspaceID / SessionID.
+	ns := req.WorkspaceID
+	if ns == "" {
+		ns = req.SessionID
+	}
 	fromTS, _ := parseRFC3339ToUnix(req.TimeWindow.From)
 	toTS, _ := parseRFC3339ToUnix(req.TimeWindow.To)
 	mode := ResponseMode(req.ResponseMode)
@@ -164,7 +134,7 @@ const (
 	SliceTypeVisibility SliceType = "visibility"
 )
 
-// ─── Aggregate / Contrast / Consensus Operators (section 11.5) ───────────────
+// ─── Aggregate / Contrast / Consensus Operators ───────────────
 
 // AggregateOperatorType enumerates MAS-native aggregation modes.
 type AggregateOperatorType string

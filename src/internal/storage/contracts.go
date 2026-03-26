@@ -49,6 +49,10 @@ type ObjectStore interface {
 	GetSession(id string) (schemas.Session, bool)
 	ListSessions(agentID string) []schemas.Session
 
+	PutEvent(obj schemas.Event)
+	GetEvent(id string) (schemas.Event, bool)
+	ListEvents(agentID, sessionID string) []schemas.Event
+
 	PutMemory(obj schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
 	ListMemories(agentID, sessionID string) []schemas.Memory
@@ -107,6 +111,23 @@ type ShareContractStore interface {
 	ListContracts() []schemas.ShareContract
 }
 
+// AuditStore is an append-only log of memory governance actions.
+// All operations that change memory visibility, sharing, or lifecycle
+// should emit an AuditRecord here.
+type AuditStore interface {
+	AppendAudit(r schemas.AuditRecord)
+	GetAudits(targetMemoryID string) []schemas.AuditRecord
+	ListAudits() []schemas.AuditRecord
+}
+
+// MemoryAlgorithmStateStore persists per-memory, per-algorithm state records.
+// Keyed by (memoryID, algorithmID) so multiple algorithms can coexist.
+type MemoryAlgorithmStateStore interface {
+	PutAlgorithmState(s schemas.MemoryAlgorithmState)
+	GetAlgorithmState(memoryID, algorithmID string) (schemas.MemoryAlgorithmState, bool)
+	ListAlgorithmStates(memoryID string) []schemas.MemoryAlgorithmState
+}
+
 // RuntimeStorage is the unified accessor for all in-process stores.
 type RuntimeStorage interface {
 	Segments() SegmentStore
@@ -116,6 +137,10 @@ type RuntimeStorage interface {
 	Versions() SnapshotVersionStore
 	Policies() PolicyStore
 	Contracts() ShareContractStore
+	// Audits returns the append-only memory governance audit log.
+	Audits() AuditStore
+	// AlgorithmStates returns the per-memory, per-algorithm state store.
+	AlgorithmStates() MemoryAlgorithmStateStore
 	// HotCache exposes the in-memory hot-object cache so the ingest path can
 	// immediately promote high-salience objects for instant activation.
 	HotCache() *HotObjectCache

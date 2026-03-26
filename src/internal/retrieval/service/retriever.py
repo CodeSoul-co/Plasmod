@@ -7,8 +7,7 @@ Python layer only does parameter conversion.
 """
 
 import logging
-import time
-from typing import Optional, List, Callable, TypeVar
+from typing import Optional, List
 from datetime import datetime
 import numpy as np
 
@@ -18,50 +17,6 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
-
-
-def retry_with_backoff(
-    fn: Callable[[], T],
-    max_retries: int = 3,
-    base_delay: float = 0.1,
-    max_delay: float = 2.0,
-    exceptions: tuple = (Exception,),
-) -> T:
-    """
-    Execute function with exponential backoff retry.
-    
-    Args:
-        fn: Function to execute
-        max_retries: Maximum number of retries (default 3)
-        base_delay: Initial delay in seconds (default 0.1)
-        max_delay: Maximum delay in seconds (default 2.0)
-        exceptions: Tuple of exceptions to catch and retry
-    
-    Returns:
-        Result of fn()
-    
-    Raises:
-        Last exception if all retries fail
-    """
-    last_exception = None
-    
-    for attempt in range(max_retries + 1):
-        try:
-            return fn()
-        except exceptions as e:
-            last_exception = e
-            if attempt < max_retries:
-                delay = min(base_delay * (2 ** attempt), max_delay)
-                logger.warning(
-                    f"Retry {attempt + 1}/{max_retries} after {delay:.2f}s: {e}"
-                )
-                time.sleep(delay)
-            else:
-                logger.error(f"All {max_retries} retries failed: {e}")
-    
-    raise last_exception
 
 
 def _candidate_from_cpp(cpp_c) -> Candidate:
@@ -220,7 +175,6 @@ class Retriever:
         Execute retrieval request.
         
         This is a THIN WRAPPER - all logic is in C++.
-        Uses exponential backoff retry on timeout (max 3 retries).
         """
         if not _CPP_AVAILABLE or not self._ready:
             logger.warning("Retriever not ready, returning empty result")
@@ -238,34 +192,16 @@ class Retriever:
         elif isinstance(query_vector, list):
             query_vector = np.array(query_vector, dtype=np.float32)
         
-        def _do_retrieve():
-            return self._cpp_retriever.retrieve(
-                query_vector=query_vector,
-                query_text=request.query_text or "",
-                top_k=request.top_k,
-                enable_dense=request.enable_dense,
-                enable_sparse=request.enable_sparse,
-                for_graph=request.for_graph,
-                filter_bitset=None,  # TODO: build from request filters
-            )
-        
-        # Call C++ retriever with retry on timeout
-        try:
-            cpp_result = retry_with_backoff(
-                _do_retrieve,
-                max_retries=3,
-                base_delay=0.1,
-                max_delay=2.0,
-                exceptions=(TimeoutError, RuntimeError),
-            )
-        except Exception as e:
-            logger.error(f"Retrieve failed after retries: {e}")
-            return CandidateList(
-                candidates=[],
-                total_found=0,
-                retrieved_at=datetime.now(),
-                query_meta=QueryMeta(channels_used=[]),
-            )
+        # Call C++ retriever
+        cpp_result = self._cpp_retriever.retrieve(
+            query_vector=query_vector,
+            query_text=request.query_text or "",
+            top_k=request.top_k,
+            enable_dense=request.enable_dense,
+            enable_sparse=request.enable_sparse,
+            for_graph=request.for_graph,
+            filter_bitset=None,  # TODO: build from request filters
+        )
         
         return _result_from_cpp(cpp_result)
     

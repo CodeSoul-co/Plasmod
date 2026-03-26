@@ -94,11 +94,10 @@ def test_sdk_query_proof_trace_non_empty() -> None:
     client.ingest_event(_sample_event(str(int(time.time() * 1000))))
     result = client.query(_sample_query())
     trace = result.get("proof_trace", [])
-    # Use >= 1 instead of exact count since ProofTraceWorker BFS depth may vary (up to 8)
-    assert isinstance(trace, list) and len(trace) >= 1, (
-        f"expected proof_trace with at least 1 entry, got: {trace}"
+    assert isinstance(trace, list) and len(trace) > 0, (
+        f"expected non-empty proof_trace, got: {trace}"
     )
-    print(f"  [PASS] sdk query proof_trace non-empty (len={len(trace)}): {trace[:3]}...")
+    print(f"  [PASS] sdk query proof_trace non-empty: {trace}")
 
 
 def test_sdk_query_top_k_limits_results() -> None:

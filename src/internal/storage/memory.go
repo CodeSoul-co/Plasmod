@@ -68,6 +68,7 @@ type memoryObjectStore struct {
 	mu        sync.RWMutex
 	agents    map[string]schemas.Agent
 	sessions  map[string]schemas.Session
+	events    map[string]schemas.Event
 	memories  map[string]schemas.Memory
 	states    map[string]schemas.State
 	artifacts map[string]schemas.Artifact
@@ -78,6 +79,7 @@ func newMemoryObjectStore() *memoryObjectStore {
 	return &memoryObjectStore{
 		agents:    map[string]schemas.Agent{},
 		sessions:  map[string]schemas.Session{},
+		events:    map[string]schemas.Event{},
 		memories:  map[string]schemas.Memory{},
 		states:    map[string]schemas.State{},
 		artifacts: map[string]schemas.Artifact{},
@@ -123,6 +125,32 @@ func (s *memoryObjectStore) ListSessions(agentID string) []schemas.Session {
 	out := []schemas.Session{}
 	for _, v := range s.sessions {
 		if agentID == "" || v.AgentID == agentID {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *memoryObjectStore) PutEvent(obj schemas.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events[obj.EventID] = obj
+}
+
+func (s *memoryObjectStore) GetEvent(id string) (schemas.Event, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.events[id]
+	return v, ok
+}
+
+func (s *memoryObjectStore) ListEvents(agentID, sessionID string) []schemas.Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []schemas.Event{}
+	for _, v := range s.events {
+		if (agentID == "" || v.AgentID == agentID) &&
+			(sessionID == "" || v.SessionID == sessionID) {
 			out = append(out, v)
 		}
 	}
@@ -487,6 +515,78 @@ func (s *memoryShareContractStore) ListContracts() []schemas.ShareContract {
 	return out
 }
 
+// ─── AuditStore ───────────────────────────────────────────────────────────────
+
+type inMemoryAuditStore struct {
+	mu      sync.RWMutex
+	records map[string][]schemas.AuditRecord // keyed by TargetMemoryID
+}
+
+func newInMemoryAuditStore() *inMemoryAuditStore {
+	return &inMemoryAuditStore{records: map[string][]schemas.AuditRecord{}}
+}
+
+func (s *inMemoryAuditStore) AppendAudit(r schemas.AuditRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[r.TargetMemoryID] = append(s.records[r.TargetMemoryID], r)
+}
+
+func (s *inMemoryAuditStore) GetAudits(targetMemoryID string) []schemas.AuditRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]schemas.AuditRecord{}, s.records[targetMemoryID]...)
+}
+
+func (s *inMemoryAuditStore) ListAudits() []schemas.AuditRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []schemas.AuditRecord{}
+	for _, rs := range s.records {
+		out = append(out, rs...)
+	}
+	return out
+}
+
+// ─── MemoryAlgorithmStateStore ────────────────────────────────────────────────
+
+type inMemoryAlgorithmStateStore struct {
+	mu     sync.RWMutex
+	states map[string]schemas.MemoryAlgorithmState // keyed by memoryID+":"+algorithmID
+}
+
+func newInMemoryAlgorithmStateStore() *inMemoryAlgorithmStateStore {
+	return &inMemoryAlgorithmStateStore{states: map[string]schemas.MemoryAlgorithmState{}}
+}
+
+func algoStateKey(memoryID, algorithmID string) string { return memoryID + ":" + algorithmID }
+
+func (s *inMemoryAlgorithmStateStore) PutAlgorithmState(st schemas.MemoryAlgorithmState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states[algoStateKey(st.MemoryID, st.AlgorithmID)] = st
+}
+
+func (s *inMemoryAlgorithmStateStore) GetAlgorithmState(memoryID, algorithmID string) (schemas.MemoryAlgorithmState, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.states[algoStateKey(memoryID, algorithmID)]
+	return v, ok
+}
+
+func (s *inMemoryAlgorithmStateStore) ListAlgorithmStates(memoryID string) []schemas.MemoryAlgorithmState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []schemas.MemoryAlgorithmState{}
+	prefix := memoryID + ":"
+	for k, v := range s.states {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // ─── MemoryRuntimeStorage ─────────────────────────────────────────────────────
 
 type MemoryRuntimeStorage struct {
@@ -497,6 +597,8 @@ type MemoryRuntimeStorage struct {
 	versionStore  *memorySnapshotVersionStore
 	policyStore   *memoryPolicyStore
 	contractStore *memoryShareContractStore
+	auditStore    *inMemoryAuditStore
+	algoStore     *inMemoryAlgorithmStateStore
 	hotCache      *HotObjectCache
 }
 
@@ -509,15 +611,30 @@ func NewMemoryRuntimeStorage() *MemoryRuntimeStorage {
 		versionStore:  newMemorySnapshotVersionStore(),
 		policyStore:   newMemoryPolicyStore(),
 		contractStore: newMemoryShareContractStore(),
+		auditStore:    newInMemoryAuditStore(),
+		algoStore:     newInMemoryAlgorithmStateStore(),
 		hotCache:      NewHotObjectCache(2000),
 	}
 }
 
-func (s *MemoryRuntimeStorage) Segments() SegmentStore         { return s.segmentStore }
-func (s *MemoryRuntimeStorage) Indexes() IndexStore            { return s.indexStore }
-func (s *MemoryRuntimeStorage) Objects() ObjectStore           { return s.objectStore }
-func (s *MemoryRuntimeStorage) Edges() GraphEdgeStore          { return s.edgeStore }
-func (s *MemoryRuntimeStorage) Versions() SnapshotVersionStore { return s.versionStore }
-func (s *MemoryRuntimeStorage) Policies() PolicyStore          { return s.policyStore }
-func (s *MemoryRuntimeStorage) Contracts() ShareContractStore  { return s.contractStore }
-func (s *MemoryRuntimeStorage) HotCache() *HotObjectCache      { return s.hotCache }
+func (s *MemoryRuntimeStorage) Segments() SegmentStore                     { return s.segmentStore }
+func (s *MemoryRuntimeStorage) Indexes() IndexStore                        { return s.indexStore }
+func (s *MemoryRuntimeStorage) Objects() ObjectStore                       { return s.objectStore }
+func (s *MemoryRuntimeStorage) Edges() GraphEdgeStore                      { return s.edgeStore }
+func (s *MemoryRuntimeStorage) Versions() SnapshotVersionStore             { return s.versionStore }
+func (s *MemoryRuntimeStorage) Policies() PolicyStore                      { return s.policyStore }
+func (s *MemoryRuntimeStorage) Contracts() ShareContractStore              { return s.contractStore }
+func (s *MemoryRuntimeStorage) Audits() AuditStore                         { return s.auditStore }
+func (s *MemoryRuntimeStorage) AlgorithmStates() MemoryAlgorithmStateStore { return s.algoStore }
+func (s *MemoryRuntimeStorage) HotCache() *HotObjectCache                  { return s.hotCache }
+
+// ─── Exported constructors for hybrid / composite runtimes ───────────────────
+// Used by BuildRuntimeFromEnv when selecting per-store backends (memory vs Badger).
+
+func NewMemorySegmentStore() SegmentStore        { return newMemorySegmentStore() }
+func NewMemoryIndexStore() IndexStore           { return newMemoryIndexStore() }
+func NewMemoryObjectStore() ObjectStore         { return newMemoryObjectStore() }
+func NewMemoryGraphEdgeStore() GraphEdgeStore   { return newMemoryGraphEdgeStore() }
+func NewMemorySnapshotVersionStore() SnapshotVersionStore { return newMemorySnapshotVersionStore() }
+func NewMemoryPolicyStore() PolicyStore         { return newMemoryPolicyStore() }
+func NewMemoryShareContractStore() ShareContractStore { return newMemoryShareContractStore() }

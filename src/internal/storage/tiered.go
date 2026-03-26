@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -244,6 +246,33 @@ func (t *TieredObjectStore) ArchiveEdge(warmEdges GraphEdgeStore, edgeID string)
 	}
 }
 
+// ColdSearch delegates to the cold store's ColdSearch implementation, returning
+// the topK memory IDs most relevant to the query text from the cold tier.
+func (t *TieredObjectStore) ColdSearch(query string, topK int) []string {
+	return t.cold.ColdSearch(query, topK)
+}
+
+// ArchiveColdRecord persists an ingest record directly to the cold tier.
+// This is called by TieredDataPlane when an object is explicitly archived
+// (e.g. on TTL expiry or manual tier migration) rather than through the
+// normal hot→warm→cold lifecycle.  The cold store writes the record as a
+// Memory object so it is queryable via ColdSearch.
+func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[string]string, ns string, ts int64) {
+	// Reconstruct a minimal Memory from the ingest record fields so the cold
+	// store holds canonical objects and ColdSearch can score them lexically.
+	m := schemas.Memory{
+		MemoryID:  memoryID,
+		Content:   text,
+		Scope:     attrs["visibility"],   // visibility maps to Memory.Scope (access boundary)
+		OwnerType: attrs["event_type"],   // event_type is the best proxy for owner_type in cold archival
+		AgentID:   attrs["agent_id"],
+		SessionID: attrs["session_id"],
+		Version:   ts,
+		IsActive:  false,
+	}
+	t.cold.PutMemory(m)
+}
+
 // ─── ColdObjectStore ─────────────────────────────────────────────────────────
 
 // ColdObjectStore is the interface for the cold/disk tier.
@@ -262,6 +291,10 @@ type ColdObjectStore interface {
 	PutEdge(e schemas.Edge)
 	GetEdge(id string) (schemas.Edge, bool)
 	ListEdges() []schemas.Edge
+	// ColdSearch performs a lexical substring search over all cold-tier memories.
+	// This is used by TieredDataPlane when IncludeCold=true in SearchInput.
+	// Returns memory IDs matching the query text, sorted by recency (newest first).
+	ColdSearch(query string, topK int) []string
 }
 
 // InMemoryColdStore is the in-process simulation of the cold tier.
@@ -342,6 +375,68 @@ func (s *InMemoryColdStore) ListEdges() []schemas.Edge {
 	out := make([]schemas.Edge, 0, len(s.edges))
 	for _, e := range s.edges {
 		out = append(out, e)
+	}
+	return out
+}
+
+// ColdSearch performs a lexical substring search over all cold-tier memories,
+// returning the most recent topK matching memory IDs.  This models the
+// cold-path search boundary: cold data is queried only by need, not on every
+// request.
+func (s *InMemoryColdStore) ColdSearch(query string, topK int) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type scored struct {
+		id    string
+		score float64
+		ts    int64
+	}
+	var results []scored
+	lq := strings.ToLower(query)
+
+	for id, m := range s.memories {
+		text := strings.ToLower(m.Content)
+		summary := strings.ToLower(m.Summary)
+		var score float64
+		if strings.Contains(text, lq) || strings.Contains(summary, lq) {
+			score = 1.0
+		} else {
+			// token-level fallback
+			qTokens := strings.Fields(lq)
+			textTokens := strings.Fields(text)
+			match := 0
+			for _, qt := range qTokens {
+				for _, tt := range textTokens {
+					if tt == qt {
+						match++
+						break
+					}
+				}
+			}
+			if len(qTokens) > 0 {
+				score = float64(match) / float64(len(qTokens))
+			}
+		}
+		if score > 0 {
+			results = append(results, scored{id: id, score: score, ts: m.Version})
+		}
+	}
+
+	// sort by score desc, then by ts desc (newest first)
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		return results[i].ts > results[j].ts
+	})
+
+	out := make([]string, 0, min(topK, len(results)))
+	for i := range results {
+		if i >= topK {
+			break
+		}
+		out = append(out, results[i].id)
 	}
 	return out
 }

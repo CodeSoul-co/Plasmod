@@ -50,11 +50,8 @@ bool Retriever::Build(
     if (!dense_->Build(dense_vectors, num_vectors)) {
         return false;
     }
-    // Sparse build is optional - skip if no sparse vectors provided
-    if (sparse_vectors && num_vectors > 0) {
-        if (!sparse_->Build(sparse_vectors, num_vectors)) {
-            return false;
-        }
+    if (!sparse_->Build(sparse_vectors, num_vectors)) {
+        return false;
     }
     ready_ = true;
     return true;

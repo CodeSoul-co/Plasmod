@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"andb/src/internal/coordinator"
@@ -13,21 +14,30 @@ import (
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
+	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/nodes"
 )
 
 type Runtime struct {
-	wal          eventbackbone.WAL
-	bus          eventbackbone.Bus
-	plane        dataplane.DataPlane
-	coord        *coordinator.Hub
-	policy       *semantic.PolicyEngine
-	planner      semantic.QueryPlanner
-	materializer *materialization.Service
-	preCompute   *materialization.PreComputeService
-	assembler    *evidence.Assembler
-	nodeManager  *nodes.Manager
-	storage      storage.RuntimeStorage
+	wal               eventbackbone.WAL
+	bus               eventbackbone.Bus
+	plane             dataplane.DataPlane
+	coord             *coordinator.Hub
+	policy            *semantic.PolicyEngine
+	planner           semantic.QueryPlanner
+	materializer      *materialization.Service
+	preCompute        *materialization.PreComputeService
+	assembler         *evidence.Assembler
+	evCache           *evidence.Cache
+	derivationLog     *eventbackbone.DerivationLog
+	policyDecisionLog *eventbackbone.PolicyDecisionLog
+	nodeManager       *nodes.Manager
+	storage           storage.RuntimeStorage
+	tieredObjects     *storage.TieredObjectStore
+	queryChain        *chain.QueryChain
+	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
+	// can fire synchronously in SubmitIngest (not only async via subscriber).
+	lastMem map[string]string
 }
 
 func CreateRuntime(
@@ -40,26 +50,42 @@ func CreateRuntime(
 	materializer *materialization.Service,
 	preCompute *materialization.PreComputeService,
 	assembler *evidence.Assembler,
+	evCache *evidence.Cache,
+	derivationLog *eventbackbone.DerivationLog,
+	policyDecisionLog *eventbackbone.PolicyDecisionLog,
 	nodeManager *nodes.Manager,
 	store storage.RuntimeStorage,
+	tieredObjs *storage.TieredObjectStore,
 ) *Runtime {
 	return &Runtime{
-		wal:          wal,
-		bus:          bus,
-		plane:        plane,
-		coord:        coord,
-		policy:       policy,
-		planner:      planner,
-		materializer: materializer,
-		preCompute:   preCompute,
-		assembler:    assembler,
-		nodeManager:  nodeManager,
-		storage:      store,
+		wal:               wal,
+		bus:               bus,
+		plane:             plane,
+		coord:             coord,
+		policy:            policy,
+		planner:           planner,
+		materializer:      materializer,
+		preCompute:        preCompute,
+		assembler:         assembler,
+		evCache:           evCache,
+		derivationLog:     derivationLog,
+		policyDecisionLog: policyDecisionLog,
+		nodeManager:       nodeManager,
+		storage:           store,
+		tieredObjects:     tieredObjs,
+		queryChain:        chain.CreateQueryChain(nodeManager),
+		lastMem:           make(map[string]string),
 	}
 }
 
 func (r *Runtime) RegisterDefaults() {
 	_ = r.bus.Subscribe("wal.events")
+}
+
+// QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
+// It is nil if the Runtime was constructed without a nodeManager.
+func (r *Runtime) QueryChain() *chain.QueryChain {
+	return r.queryChain
 }
 
 // StartSubscriber launches the EventSubscriber's poll loop as a background
@@ -87,11 +113,59 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 
+	// ── Synchronous object materialization ─────────────────────────────────
+	// State and Artifact objects are needed immediately for query correctness.
+	// Call the materialization workers here (not only in the async subscriber)
+	// so tests and synchronous query paths can read them without waiting for
+	// the next WAL poll cycle.
+	r.nodeManager.DispatchObjectMaterialization(ev)
+	r.nodeManager.DispatchToolTrace(ev)
+
+	// checkpoint events: synchronously snapshot all current states so the
+	// version entries are available for immediate queries without waiting for
+	// the async subscriber's 200ms poll cycle.
+	if ev.EventType == string(schemas.EventTypeCheckpoint) && ev.AgentID != "" && ev.SessionID != "" {
+		r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+	}
+
 	// ── Persist canonical objects ─────────────────────────────────────────
-	r.storage.Objects().PutMemory(mat.Memory)
+	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
+	// are kept in sync and cold queries (IncludeCold=true) can find results.
+	if r.tieredObjects != nil {
+		// Compute salience from the event importance if available, default 0.5.
+		salience := mat.Memory.Importance
+		if salience <= 0 {
+			salience = 0.5
+		}
+		r.tieredObjects.PutMemory(mat.Memory, salience)
+		r.tieredObjects.ArchiveColdRecord(
+			mat.Memory.MemoryID,
+			record.Text,
+			record.Attributes,
+			record.Namespace,
+			record.EventUnixTS,
+		)
+	} else {
+		// Fallback for tests or code paths that don't initialise TieredObjectStore.
+		r.storage.Objects().PutMemory(mat.Memory)
+	}
 	r.storage.Versions().PutVersion(mat.Version)
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)
+	}
+
+	// ── Synchronous ConflictMerge ──────────────────────────────────────────
+	// Detect and resolve same-session memory conflicts immediately after the new
+	// memory is stored.  The async subscriber also fires ConflictMerge (for
+	// cross-event races); this synchronous pass ensures the conflict_resolved
+	// edge is present before SubmitIngest returns — critical for test queries
+	// and any caller that reads edges immediately after ingest.
+	if mat.Memory.AgentID != "" && mat.Memory.SessionID != "" && mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) {
+		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
+		if prevID, hasPrev := r.lastMem[key]; hasPrev {
+			r.nodeManager.DispatchConflictMerge(mat.Memory.MemoryID, prevID, string(schemas.ObjectTypeMemory))
+		}
+		r.lastMem[key] = mat.Memory.MemoryID
 	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
@@ -131,36 +205,44 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+
+	// ── Canonical-object supplemental retrieval ──────────────────────────────
+	// State and Artifact objects are stored directly in ObjectStore, not in the
+	// retrieval plane.  When query requests these types, fetch them from the
+	// canonical store so they appear in the response alongside memory results.
+	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
+	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
-	// R1 fix: wire QueryChain workers with pre-fetched edges.
-	// The assembler already does 1-hop BulkEdges expansion internally; here we
-	// additionally run the multi-hop BFS ProofTraceWorker and pass pre-fetched
-	// edges to SubgraphExecutorWorker (which does NOT fetch edges itself).
-	//
-	// TODO(member-D+C): review maxDepth default (0→8) and edge dedup strategy
-	// before merging to main.
+	// ── Post-retrieval reasoning via QueryChain ───────────────────────────────
+	// QueryChain handles:
+	//   1. Pre-fetching Memory objects as GraphNodes for node population.
+	//   2. Pre-fetching BulkEdges for edge pre-population.
+	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
+	//   4. Subgraph expansion via SubgraphExecutorWorker.
+	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	if len(result.ObjectIDs) > 0 {
-		preEdges := r.storage.Edges().BulkEdges(result.ObjectIDs)
+		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
+			ObjectIDs:    result.ObjectIDs,
+			MaxDepth:     0, // default cap of 8
+			ObjectStore:  r.storage.Objects(),
+			EdgeStore:    r.storage.Edges(),
+		})
+		_ = chainResult // chainResult.OK is advisory; non-fatal
 
-		// 1. Multi-hop BFS proof trace via ProofTraceWorker (maxDepth 0 = default 8).
-		if bfsTrace := r.nodeManager.DispatchProofTrace(result.ObjectIDs, 0); len(bfsTrace) > 0 {
-			resp.ProofTrace = append(resp.ProofTrace, bfsTrace...)
+		if len(chainOut.ProofTrace) > 0 {
+			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
 		}
 
-		// 2. Subgraph expansion — SubgraphExecutorWorker needs pre-fetched edges.
-		if len(preEdges) > 0 {
-			expResp := r.nodeManager.DispatchSubgraphExpand(
-				schemas.GraphExpandRequest{SeedObjectIDs: result.ObjectIDs, Hops: 1},
-				nil,
-				preEdges,
-			)
+		// Merge subgraph-expanded edges into resp.Edges, deduplicating by EdgeID.
+		if len(chainOut.MergedEdges) > 0 {
 			seen := make(map[string]bool, len(resp.Edges))
 			for _, e := range resp.Edges {
 				seen[e.EdgeID] = true
 			}
-			for _, e := range expResp.Subgraph.Edges {
+			for _, e := range chainOut.MergedEdges {
 				if !seen[e.EdgeID] {
 					resp.Edges = append(resp.Edges, e)
 					seen[e.EdgeID] = true
@@ -172,10 +254,83 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	return resp
 }
 
+// fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical
+// ObjectStore for the given agent/session/namespace.  These types bypass the
+// retrieval plane and are stored directly in ObjectStore by the materialization
+// workers, so they must be fetched explicitly to appear in query responses.
+func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID, namespace string) []string {
+	var ids []string
+	for _, t := range objectTypes {
+		switch t {
+		case "state":
+			if r.storage != nil {
+				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {
+					ids = append(ids, s.StateID)
+				}
+			}
+		case "artifact":
+			if r.storage != nil {
+				for _, a := range r.storage.Objects().ListArtifacts(sessionID) {
+					ids = append(ids, a.ArtifactID)
+				}
+			}
+		}
+	}
+	return ids
+}
+
 func (r *Runtime) Topology() map[string]any {
 	return map[string]any{
 		"nodes":    r.nodeManager.Topology(),
 		"segments": r.storage.Segments().List(""),
 		"indexes":  r.storage.Indexes().List(),
 	}
+}
+
+// GetEvidenceFragment returns the pre-computed EvidenceFragment for an object ID
+// from the hot cache. Returns nil if not cached.
+func (r *Runtime) GetEvidenceFragment(objectID string) any {
+	if r.evCache == nil {
+		return nil
+	}
+	if frag, ok := r.evCache.Get(objectID); ok {
+		return frag
+	}
+	return nil
+}
+
+// GetDerivationLog returns derivation chain entries for the given object ID
+// from the append-only DerivationLog.
+func (r *Runtime) GetDerivationLog(objectID string) []string {
+	if r.derivationLog == nil {
+		return nil
+	}
+	entries := r.derivationLog.ForDerived(objectID)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = fmt.Sprintf("lsn=%d op=%s src=%s(%s) → %s(%s)",
+			e.LSN, e.Operation, e.SourceID, e.SourceType, e.DerivedID, e.DerivedType)
+	}
+	return out
+}
+
+// GetPolicyDecisions returns governance decision entries for the given object ID
+// from the append-only PolicyDecisionLog.
+func (r *Runtime) GetPolicyDecisions(objectID string) []string {
+	if r.policyDecisionLog == nil {
+		return nil
+	}
+	entries := r.policyDecisionLog.ForObject(objectID)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = fmt.Sprintf("lsn=%d decision=%s policy=%s reason=%s",
+			e.LSN, e.Decision, e.PolicyID, e.Reason)
+	}
+	return out
 }

@@ -132,6 +132,7 @@ const (
 	WorkerKindCommunication         WorkerKind = "communication_worker"
 	WorkerKindMicroBatch            WorkerKind = "micro_batch_scheduler"
 	WorkerKindProofTrace            WorkerKind = "proof_trace_worker"
+	WorkerKindAlgorithmDispatch     WorkerKind = "algorithm_dispatch_worker"
 )
 
 // Additional EventType constants used for routing in the worker and subscriber layers.
@@ -164,6 +165,47 @@ const (
 	EdgeTypeToolProduces     EdgeType = "tool_produces"
 	EdgeTypeBelongsToSession EdgeType = "belongs_to_session"
 	EdgeTypeOwnedByAgent     EdgeType = "owned_by_agent"
+)
+
+// MemoryRelation EdgeType constants (section 4.3 of memory management design).
+// These extend the existing EdgeType set with MAS-specific relation semantics.
+const (
+	EdgeTypeOwnedBy            EdgeType = "owned_by"
+	EdgeTypeCreatedBy          EdgeType = "created_by"
+	EdgeTypeObservedBy         EdgeType = "observed_by"
+	EdgeTypeAccessibleBy       EdgeType = "accessible_by"
+	EdgeTypeGroundedOnResource EdgeType = "grounded_on_resource"
+	EdgeTypeProjectedFrom      EdgeType = "projected_from"
+	EdgeTypeUsedInResponse     EdgeType = "used_in_response"
+	EdgeTypeUpdatedByAlgorithm EdgeType = "updated_by_algorithm"
+)
+
+// MemoryLifecycle enumerates the management lifecycle states of a Memory object.
+// Provides finer-grained control than the binary IsActive field.
+type MemoryLifecycle string
+
+const (
+	MemoryLifecycleActive           MemoryLifecycle = "active"
+	MemoryLifecycleCompressed       MemoryLifecycle = "compressed"
+	MemoryLifecycleDecayed          MemoryLifecycle = "decayed"
+	MemoryLifecycleArchived         MemoryLifecycle = "archived"
+	MemoryLifecycleQuarantined      MemoryLifecycle = "quarantined"
+	MemoryLifecycleHidden           MemoryLifecycle = "hidden"
+	MemoryLifecycleDeletedLogically MemoryLifecycle = "deleted_logically"
+)
+
+// MemoryScope defines the circulation boundary of a memory object.
+// Scope determines flow boundaries, not final visibility (which also depends on policy).
+type MemoryScope string
+
+const (
+	MemoryScopePrivateUser      MemoryScope = "private_user"
+	MemoryScopePrivateAgent     MemoryScope = "private_agent"
+	MemoryScopeSessionLocal     MemoryScope = "session_local"
+	MemoryScopeWorkspaceShared  MemoryScope = "workspace_shared"
+	MemoryScopeTeamShared       MemoryScope = "team_shared"
+	MemoryScopeGlobalShared     MemoryScope = "global_shared"
+	MemoryScopeRestrictedShared MemoryScope = "restricted_shared"
 )
 
 // IDPrefix constants for deterministic canonical object ID generation.

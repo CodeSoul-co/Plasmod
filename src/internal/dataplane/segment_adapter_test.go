@@ -1,6 +1,10 @@
 package dataplane
 
-import "testing"
+import (
+	"testing"
+
+	"andb/src/internal/storage"
+)
 
 func TestSegmentDataPlane_IngestAndSearch(t *testing.T) {
 	plane := NewSegmentDataPlane()
@@ -36,7 +40,9 @@ func TestSegmentDataPlane_Flush(t *testing.T) {
 }
 
 func TestTieredDataPlane_IngestAndSearch(t *testing.T) {
-	plane := NewTieredDataPlane()
+	store := storage.NewMemoryRuntimeStorage()
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	plane := NewTieredDataPlane(tieredObjs)
 
 	rec := IngestRecord{
 		ObjectID:  "mem_tiered_1",

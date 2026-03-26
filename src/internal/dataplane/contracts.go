@@ -8,9 +8,6 @@ type IngestRecord struct {
 	Namespace   string
 	Attributes  map[string]string
 	EventUnixTS int64
-	// Embedding is the pre-computed dense vector for this record.
-	// If nil, the data plane may compute it on-the-fly or skip vector indexing.
-	Embedding []float32
 }
 
 // SearchInput is the query descriptor passed from the semantic layer to the
@@ -34,12 +31,6 @@ type SearchInput struct {
 	// MemoryTypes restricts Memory results to specific sub-types.
 	// Empty means no restriction.
 	MemoryTypes []string
-	// QueryEmbedding is the pre-computed dense vector for the query.
-	// If nil, the data plane may compute it on-the-fly or use lexical search only.
-	QueryEmbedding []float32
-	// UseVectorSearch enables vector similarity search when true.
-	// When false, only lexical search is performed.
-	UseVectorSearch bool
 }
 
 // SegmentTrace describes one physical shard that was evaluated during search.

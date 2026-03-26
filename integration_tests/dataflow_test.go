@@ -51,16 +51,26 @@ func TestDataflowTrace(t *testing.T) {
 		t.Logf("applied_filters: %v", filters)
 	})
 
-	t.Run("edges field is present (may be empty in v1)", func(t *testing.T) {
-		if _, ok := resp["edges"]; !ok {
-			t.Error("edges field is missing from QueryResponse")
+	t.Run("edges field is non-empty after ingest", func(t *testing.T) {
+		edges, ok := resp["edges"].([]any)
+		if !ok {
+			t.Fatalf("edges: expected []any, got %T", resp["edges"])
 		}
+		if len(edges) == 0 {
+			t.Error("edges list is empty — expected at least one edge (session+agent) after ingest")
+		}
+		t.Logf("edge count: %d", len(edges))
 	})
 
-	t.Run("versions field is present (may be empty in v1)", func(t *testing.T) {
-		if _, ok := resp["versions"]; !ok {
-			t.Error("versions field is missing from QueryResponse")
+	t.Run("versions field is non-empty after ingest", func(t *testing.T) {
+		versions, ok := resp["versions"].([]any)
+		if !ok {
+			t.Fatalf("versions: expected []any, got %T", resp["versions"])
 		}
+		if len(versions) == 0 {
+			t.Error("versions list is empty — expected ObjectVersion for ingested memory")
+		}
+		t.Logf("version count: %d", len(versions))
 	})
 
 	t.Run("ingest ack lsn is positive integer", func(t *testing.T) {
