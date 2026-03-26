@@ -87,48 +87,92 @@ const char* Version();
 
 }  // namespace andb
 
-// C API for FFI compatibility
+// C API for FFI compatibility (CGO bridge)
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 const char* andb_version();
 
-// Create/destroy retriever
+// ── Per-process flat retriever (legacy, single-segment usage) ────────────────
 void* andb_retriever_create();
-void andb_retriever_destroy(void* retriever);
+void  andb_retriever_destroy(void* retriever);
 
-// Initialize retriever
 int andb_retriever_init(
-    void* retriever,
+    void*       retriever,
     const char* dense_index_type,
     const char* metric_type,
-    int dim,
+    int         dim,
     const char* sparse_index_type,
-    int rrf_k
+    int         rrf_k
 );
 
-// Build indexes
 int andb_retriever_build(
-    void* retriever,
+    void*        retriever,
     const float* dense_vectors,
-    int64_t num_vectors,
-    int dim
+    int64_t      num_vectors,
+    int          dim
 );
 
-// Search
 int andb_retriever_search(
-    void* retriever,
-    const float* query_vector,
-    int dim,
-    int top_k,
-    int for_graph,
+    void*          retriever,
+    const float*   query_vector,
+    int            dim,
+    int            top_k,
+    int            for_graph,
     const uint8_t* filter_bitset,
-    size_t filter_size,
-    int64_t* out_ids,
-    float* out_scores,
-    int max_results
+    size_t         filter_size,
+    int64_t*       out_ids,
+    float*         out_scores,
+    int            max_results
 );
+
+// ── SegmentIndexManager API ───────────────────────────────────────────────────
+// segment_id format: "object_type.memory_type.time_bucket.agent"
+// Matches the retrieval_segments table primary key.
+
+// Build (or rebuild) a segment HNSW index.
+// Returns 0 on success, negative on error.
+int andb_segment_build(
+    const char*  segment_id,
+    const float* vectors,
+    int64_t      n,
+    int          dim
+);
+
+// ANN search within a segment — no filter.
+// out_ids and out_dists must be caller-allocated with at least nq*topk elements.
+int andb_segment_search(
+    const char*  segment_id,
+    const float* query,
+    int64_t      nq,
+    int          topk,
+    int64_t*     out_ids,
+    float*       out_dists
+);
+
+// ANN search within a segment — with allow-list bitmask filter.
+// allow_bits  : bitmask where bit i=1 means vector i is a valid candidate
+// allow_count : total number of vectors the bitmask covers (in bits, not bytes)
+int andb_segment_search_filter(
+    const char*    segment_id,
+    const float*   query,
+    int64_t        nq,
+    int            topk,
+    const uint8_t* allow_bits,
+    int64_t        allow_count,
+    int64_t*       out_ids,
+    float*         out_dists
+);
+
+// Remove a segment from memory.  Returns 0 or -1 (not found).
+int andb_segment_unload(const char* segment_id);
+
+// Check if a segment is loaded.  Returns 1=yes, 0=no.
+int andb_segment_exists(const char* segment_id);
+
+// Returns number of vectors in segment, or -1 if not found.
+int64_t andb_segment_size(const char* segment_id);
 
 #ifdef __cplusplus
 }

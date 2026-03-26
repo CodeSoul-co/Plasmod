@@ -4,6 +4,7 @@
 // Unified retrieval implementation combining dense, sparse, and filter paths.
 
 #include "andb/retrieval.h"
+#include "andb/segment_index.h"
 #include <chrono>
 #include <cstring>
 
@@ -44,14 +45,17 @@ bool Retriever::Init(
 
 bool Retriever::Build(
     const float* dense_vectors,
-    const SparseVector* sparse_vectors,
+    const SparseVector* sparse_vectors,  // nullptr = skip sparse indexing
     int64_t num_vectors
 ) {
     if (!dense_->Build(dense_vectors, num_vectors)) {
         return false;
     }
-    if (!sparse_->Build(sparse_vectors, num_vectors)) {
-        return false;
+    // Sparse is optional — skip if no sparse vectors provided
+    if (sparse_vectors != nullptr) {
+        if (!sparse_->Build(sparse_vectors, num_vectors)) {
+            return false;
+        }
     }
     ready_ = true;
     return true;
@@ -157,9 +161,10 @@ RetrievalResult Retriever::BenchmarkRetrieve(const RetrievalRequest& request) co
                 if (dense_results.ids[i] < 0) break;
                 ++dense_results.count;
             }
-            dense_results.ids.resize(dense_results.count);
-            dense_results.distances.resize(dense_results.count);
         }
+        // Always trim to count so Merger never sees -1 sentinel IDs
+        dense_results.ids.resize(static_cast<size_t>(dense_results.count));
+        dense_results.distances.resize(static_cast<size_t>(dense_results.count));
         result.dense_hits = dense_results.count;
     }
     
@@ -266,10 +271,10 @@ int andb_retriever_build(
     int dim
 ) {
     if (!retriever || !dense_vectors || num_vectors <= 0 || dim <= 0) return 0;
-    
-    // For now, build without sparse vectors (can be extended)
     auto* r = static_cast<andb::Retriever*>(retriever);
-    return r->GetDenseRetriever().Build(dense_vectors, num_vectors) ? 1 : 0;
+    // Call Build with nullptr sparse_vectors to skip sparse indexing.
+    // This also sets ready_=true so Retrieve() is allowed.
+    return r->Build(dense_vectors, nullptr, num_vectors) ? 1 : 0;
 }
 
 int andb_retriever_search(
@@ -308,4 +313,44 @@ int andb_retriever_search(
     }
     
     return count;
+}
+
+// ── SegmentIndexManager C API ────────────────────────────────────────────────
+
+int andb_segment_build(const char* segment_id, const float* vectors,
+                       int64_t n, int dim) {
+    if (!segment_id || !vectors || n <= 0 || dim <= 0) return -2;
+    return andb::SegmentIndexManager::Instance().BuildSegment(segment_id, vectors, n, dim);
+}
+
+int andb_segment_search(const char* segment_id, const float* query,
+                        int64_t nq, int topk,
+                        int64_t* out_ids, float* out_dists) {
+    if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
+    return andb::SegmentIndexManager::Instance().Search(
+        segment_id, query, nq, topk, out_ids, out_dists);
+}
+
+int andb_segment_search_filter(const char* segment_id, const float* query,
+                               int64_t nq, int topk,
+                               const uint8_t* allow_bits, int64_t allow_count,
+                               int64_t* out_ids, float* out_dists) {
+    if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
+    return andb::SegmentIndexManager::Instance().SearchWithFilter(
+        segment_id, query, nq, topk, allow_bits, allow_count, out_ids, out_dists);
+}
+
+int andb_segment_unload(const char* segment_id) {
+    if (!segment_id) return -2;
+    return andb::SegmentIndexManager::Instance().UnloadSegment(segment_id);
+}
+
+int andb_segment_exists(const char* segment_id) {
+    if (!segment_id) return 0;
+    return andb::SegmentIndexManager::Instance().HasSegment(segment_id) ? 1 : 0;
+}
+
+int64_t andb_segment_size(const char* segment_id) {
+    if (!segment_id) return -1;
+    return andb::SegmentIndexManager::Instance().SegmentSize(segment_id);
 }

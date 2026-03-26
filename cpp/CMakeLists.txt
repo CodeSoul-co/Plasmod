@@ -53,6 +53,7 @@ message(STATUS "  diskann engine  : cpp/knowhere/engines/diskann_engine/ [opt ${
 # =============================================================================
 add_library(andb_retrieval SHARED
     retrieval/retrieval.cpp
+    retrieval/segment_index.cpp   # SegmentIndexManager — per-segment HNSW
     retrieval/dense.cpp
     retrieval/sparse.cpp
     retrieval/filter.cpp
