@@ -700,10 +700,13 @@ make -j$(nproc)
 
 | CMake Option | Default | Description |
 |---|---|---|
-| `ANDB_WITH_KNOWHERE` | ON | Real Knowhere HNSW/SPARSE index (FetchContent: zilliztech/knowhere v2.3.12; requires OpenBLAS) |
-| `ANDB_WITH_GPU` | OFF | GPU support via Knowhere RAFT |
+| `ANDB_WITH_GPU` | OFF | GPU support (future, requires CUDA) |
+| `ANDB_WITH_TESTS` | OFF | Build C++ unit tests |
 
-> pybind11 / `ANDB_WITH_PYBIND` removed — Python bindings are no longer needed; Go accesses C++ via CGO directly.
+> **Fully self-contained — zero external downloads.**
+> - Dense HNSW: **vendored hnswlib** (`cpp/include/hnswlib/`, MIT, nmslib/hnswlib v0.8.0) — 6 header files, 2615 lines, Inner Product space, filter functor support.
+> - Sparse search: pure C++ inverted index in `cpp/retrieval/sparse.cpp`.
+> - pybind11, Knowhere, FetchContent: all removed.
 
 Platforms: Ubuntu 20.04 x86_64/aarch64, macOS x86_64, macOS Apple Silicon.
 

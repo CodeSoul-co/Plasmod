@@ -8,12 +8,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 # Build Options
 # =============================================================================
-option(ANDB_WITH_GPU "Enable GPU support via Knowhere RAFT" OFF)
+option(ANDB_WITH_GPU  "Enable GPU support (future, requires CUDA)"  OFF)
 option(ANDB_WITH_TESTS "Build unit tests" OFF)
-option(ANDB_WITH_KNOWHERE "Enable real Knowhere HNSW/SPARSE index (requires internet + OpenBLAS at build time)" ON)
-# ANDB_WITH_PYBIND has been removed: Python retrieval service is replaced by
-# the native Go retrieval package (src/internal/retrieval/).  pybind11 is no
-# longer a build dependency.
+
+# Knowhere / pybind11 / FetchContent removed.
+# Dense HNSW is provided by vendored hnswlib (cpp/include/hnswlib/, MIT).
+# Sparse search is self-contained in cpp/retrieval/sparse.cpp.
+# No internet access or third-party downloads required at build time.
 
 # =============================================================================
 # Platform Detection
@@ -24,42 +25,12 @@ if(APPLE)
     else()
         message(STATUS "Platform: macOS x86_64")
     endif()
-    # Disable GPU on macOS
-    set(ANDB_WITH_GPU OFF)
 elseif(UNIX)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-        message(STATUS "Platform: Linux Aarch64")
+        message(STATUS "Platform: Linux aarch64")
     else()
         message(STATUS "Platform: Linux x86_64")
     endif()
-endif()
-
-# =============================================================================
-# Knowhere Integration via FetchContent
-# =============================================================================
-include(FetchContent)
-
-# Knowhere build options
-set(KNOWHERE_WITH_UT OFF CACHE BOOL "" FORCE)
-set(KNOWHERE_WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
-if(ANDB_WITH_GPU)
-    set(KNOWHERE_WITH_RAFT ON CACHE BOOL "" FORCE)
-else()
-    set(KNOWHERE_WITH_RAFT OFF CACHE BOOL "" FORCE)
-endif()
-
-if(ANDB_WITH_KNOWHERE)
-    # Fetch Knowhere from zilliztech (active repo)
-    FetchContent_Declare(
-        knowhere
-        GIT_REPOSITORY https://github.com/zilliztech/knowhere.git
-        GIT_TAG        v2.3.12
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(knowhere)
-    message(STATUS "Knowhere integration: ENABLED (zilliztech/knowhere v2.3.12)")
-else()
-    message(STATUS "Knowhere integration: DISABLED (brute-force fallback; use -DANDB_WITH_KNOWHERE=ON to enable)")
 endif()
 
 # =============================================================================
@@ -73,25 +44,24 @@ add_library(andb_retrieval SHARED
     retrieval/merger.cpp
 )
 
-target_include_directories(andb_retrieval PUBLIC 
+# Our own headers + vendored hnswlib (header-only, MIT, nmslib/hnswlib v0.8.0)
+target_include_directories(andb_retrieval PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/hnswlib
 )
 
-# Link Knowhere when enabled
-if(ANDB_WITH_KNOWHERE)
-    target_compile_definitions(andb_retrieval PRIVATE ANDB_USE_KNOWHERE)
-    target_link_libraries(andb_retrieval PUBLIC knowhere)
-endif()
+# hnswlib requires threading
+find_package(Threads REQUIRED)
+target_link_libraries(andb_retrieval PUBLIC Threads::Threads)
 
-# Python bindings (andb_retrieval_py / pybind11) removed.
-# The retrieval engine is now accessed from Go via CGO (src/internal/retrieval/).
+message(STATUS "Dense index: hnswlib HNSW (vendored, cpp/include/hnswlib/)")
+message(STATUS "Sparse index: self-contained TF sparse IP (cpp/retrieval/sparse.cpp)")
 
 # =============================================================================
 # Unit Tests
 # =============================================================================
 if(ANDB_WITH_TESTS)
     enable_testing()
-    # Add test targets here
 endif()
 
 # =============================================================================
