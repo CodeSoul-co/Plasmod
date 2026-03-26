@@ -14,9 +14,24 @@ const (
 	// rrfK is the Reciprocal Rank Fusion constant (k=60 matches Python / C++).
 	rrfK = 60.0
 
-	// DefaultSeedThreshold: candidates whose final_score ≥ threshold are
-	// marked is_seed=true and passed as ObjectIDs to QueryChain graph expansion.
-	DefaultSeedThreshold = 0.7
+	// DefaultSeedThreshold is the normalised score threshold for seed marking.
+	// Seeding uses relative normalisation: each candidate's final_score is
+	// divided by the max final_score in the result set, producing a value in
+	// [0, 1].  Candidates whose normalised score >= threshold become seeds.
+	//
+	// 0.5 means "top half of this result set"; 0.7 means "top 30%".
+	// A raw absolute floor (SeedAbsoluteFloor) guards against seeding when
+	// all results have negligible scores (e.g. all metadata near zero).
+	DefaultSeedThreshold = 0.5
+
+	// DefaultSeedAbsoluteFloor is the minimum raw final_score a candidate must
+	// reach before it is even eligible for seed normalisation.  This prevents
+	// low-quality results from becoming seeds just because they beat other
+	// equally-poor candidates.
+	//
+	// Given rrf_score_max ≈ 1/(60+1) ≈ 0.0164, a floor of 1e-4 means the
+	// candidate needs at least importance * freshness * confidence > 0.006.
+	DefaultSeedAbsoluteFloor = 1e-4
 
 	// DefaultMaxRetries controls retry attempts when Search panics or returns
 	// an empty result unexpectedly.
@@ -30,23 +45,34 @@ const (
 //   - ObjectStore.GetMemory   (metadata fetch for scoring / filtering)
 //   - SafetyFilter            (7 governance rules)
 //   - RRF reranking           (final_score = rrf × importance × freshness × confidence)
-//   - Seed marking            (final_score ≥ SeedThreshold → IsSeed=true)
+//   - Seed marking            (relative normalisation: normalised_score ≥ SeedThreshold)
 //   - for_graph mode          (returns TopK×2 candidates)
 //   - filter_only mode        (skips dense+sparse, ranks by importance)
+//
+// Seed threshold semantics:
+//
+//	Each candidate's final_score is divided by the max final_score in the
+//	result set, yielding a normalised score in [0, 1].  Candidates whose
+//	normalised score >= SeedThreshold (default 0.5) are marked as seeds.
+//	SeedAbsoluteFloor is an additional guard: a candidate whose raw
+//	final_score is below the floor is never seeded, even if it wins the
+//	relative comparison.  This avoids seeding in uniformly low-quality results.
 type Retriever struct {
-	plane         dataplane.DataPlane
-	objects       storage.ObjectStore
-	filter        SafetyFilter
-	SeedThreshold float64
+	plane              dataplane.DataPlane
+	objects            storage.ObjectStore
+	filter             SafetyFilter
+	SeedThreshold      float64
+	SeedAbsoluteFloor  float64
 }
 
 // New returns a Retriever wired to the given DataPlane and ObjectStore.
 func New(plane dataplane.DataPlane, objects storage.ObjectStore) *Retriever {
 	return &Retriever{
-		plane:         plane,
-		objects:       objects,
-		filter:        SafetyFilter{},
-		SeedThreshold: DefaultSeedThreshold,
+		plane:             plane,
+		objects:           objects,
+		filter:            SafetyFilter{},
+		SeedThreshold:     DefaultSeedThreshold,
+		SeedAbsoluteFloor: DefaultSeedAbsoluteFloor,
 	}
 }
 
@@ -89,7 +115,7 @@ func (r *Retriever) Retrieve(req RetrievalRequest) CandidateList {
 
 	// Rerank and mark seeds
 	markFinalScores(passed)
-	seedIDs := markSeeds(passed, r.SeedThreshold)
+	seedIDs := markSeeds(passed, r.SeedThreshold, r.SeedAbsoluteFloor)
 
 	// Sort by final_score descending
 	sort.Slice(passed, func(i, j int) bool {
@@ -157,7 +183,7 @@ func (r *Retriever) EnrichAndRank(objectIDs []string, req RetrievalRequest) Cand
 	}
 
 	markFinalScores(passed)
-	seedIDs := markSeeds(passed, r.SeedThreshold)
+	seedIDs := markSeeds(passed, r.SeedThreshold, r.SeedAbsoluteFloor)
 
 	sort.Slice(passed, func(i, j int) bool {
 		return passed[i].FinalScore > passed[j].FinalScore
@@ -278,14 +304,41 @@ func markFinalScores(cs []Candidate) {
 	}
 }
 
-// markSeeds marks candidates whose FinalScore ≥ threshold as seeds and
-// returns their ObjectIDs for QueryChain graph expansion.
-func markSeeds(cs []Candidate, threshold float64) []string {
+// markSeeds uses relative normalisation to mark seeds:
+//
+//  1. Find the max raw final_score across all candidates.
+//  2. Divide each candidate's final_score by that max → normalised in [0,1].
+//  3. Mark as seed when normalised >= threshold AND raw >= absoluteFloor.
+//
+// This makes the threshold intuitive (0.5 = top half of result set) and
+// independent of the RRF constant or metadata score distribution.
+func markSeeds(cs []Candidate, threshold, absoluteFloor float64) []string {
+	if len(cs) == 0 {
+		return nil
+	}
+
+	// Step 1: find max raw final_score
+	maxScore := 0.0
+	for _, c := range cs {
+		if c.FinalScore > maxScore {
+			maxScore = c.FinalScore
+		}
+	}
+
+	// If max is effectively zero, nothing qualifies.
+	if maxScore < absoluteFloor {
+		return nil
+	}
+
 	var ids []string
 	for i := range cs {
-		if cs[i].FinalScore >= threshold {
+		if cs[i].FinalScore < absoluteFloor {
+			continue
+		}
+		normalised := cs[i].FinalScore / maxScore
+		cs[i].SeedScore = normalised
+		if normalised >= threshold {
 			cs[i].IsSeed = true
-			cs[i].SeedScore = cs[i].FinalScore
 			ids = append(ids, cs[i].ObjectID)
 		}
 	}
