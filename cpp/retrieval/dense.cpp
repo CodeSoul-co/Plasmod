@@ -1,28 +1,36 @@
 // Copyright 2024 CogDB Authors
 // SPDX-License-Identifier: Apache-2.0
 //
-// Dense retrieval — HNSW index backed by vendored hnswlib.
-//
-// hnswlib (nmslib/hnswlib v0.8.0, MIT) is vendored at cpp/include/hnswlib/.
-// No external downloads or network access required at build time.
-//
-// Search uses Inner Product (IP) distance, consistent with the original
-// Knowhere HNSW configuration (metric_type="IP").
+// Dense retrieval — backed by CogDB-internal Knowhere (cpp/knowhere/).
+// Knowhere is source-level integrated: no external git clone or FetchContent.
+// Internal engines:
+//   cpp/knowhere/engines/hnsw_engine/   ← hnswlib HNSW algorithm
+//   cpp/knowhere/engines/faiss_engine/  ← Meta faiss (slim build, no GPU)
+//   cpp/knowhere/engines/diskann_engine/← Microsoft DiskANN (opt-in)
 
 #include "andb/dense.h"
-#include "hnswlib/hnswlib.h"
+
+// Knowhere public API
+#include "knowhere/index/index_factory.h"
+#include "knowhere/dataset.h"
+#include "knowhere/config.h"
+#include "knowhere/comp/thread_pool.h"
 
 #include <algorithm>
-#include <cstring>
+#include <cassert>
 #include <mutex>
 #include <stdexcept>
 #include <vector>
 
 namespace andb {
 
-// ---------------------------------------------------------------------------
-// HNSWIndexWrapper — thin RAII wrapper around hnswlib::HierarchicalNSW<float>
-// ---------------------------------------------------------------------------
+// ── Default index config ─────────────────────────────────────────────────────
+static constexpr int kDefaultM              = 16;
+static constexpr int kDefaultEfConstruction = 256;
+static constexpr int kDefaultEfSearch       = 64;
+
+// ── HNSWIndexWrapper ─────────────────────────────────────────────────────────
+// Wraps a single Knowhere HNSW index.
 class HNSWIndexWrapper {
 public:
     HNSWIndexWrapper() = default;
@@ -31,225 +39,132 @@ public:
     bool Init(const IndexConfig& cfg) {
         cfg_ = cfg;
         if (cfg_.dim <= 0) return false;
-        space_ = std::make_unique<hnswlib::InnerProductSpace>(
-            static_cast<size_t>(cfg_.dim));
+
+        int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : kDefaultM;
+        int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
+
+        build_cfg_[knowhere::meta::METRIC_TYPE]         = "IP";
+        build_cfg_[knowhere::indexparam::M]             = M;
+        build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
+        build_cfg_[knowhere::meta::DIM]                 = cfg_.dim;
+        build_cfg_[knowhere::meta::TOPK]                = kDefaultEfSearch;
+
+        auto result = knowhere::IndexFactory::Instance().Create<float>(
+            "HNSW", knowhere::Version::GetCurrentVersion().VersionNumber());
+        if (!result.has_value()) return false;
+        index_ = std::make_unique<knowhere::Index<knowhere::IndexNode>>(
+            std::move(result.value()));
+        dim_ = cfg_.dim;
         return true;
     }
 
-    // Build: create the HNSW graph from a batch of dense vectors.
-    bool Build(const float* vectors, int64_t num_vectors) {
-        if (!space_ || !vectors || num_vectors <= 0) return false;
-        std::lock_guard<std::mutex> lock(mu_);
-
-        int M              = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : 16;
-        int ef_construction= cfg_.hnsw_ef_construction > 0? cfg_.hnsw_ef_construction: 256;
-
-        index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-            space_.get(),
-            static_cast<size_t>(num_vectors), // max_elements
-            static_cast<size_t>(M),
-            static_cast<size_t>(ef_construction));
-
-        for (int64_t i = 0; i < num_vectors; ++i) {
-            index_->addPoint(
-                vectors + i * cfg_.dim,
-                static_cast<hnswlib::labeltype>(i));
-        }
-        num_vectors_ = num_vectors;
+    bool Build(const float* vectors, int64_t n) {
+        if (!index_ || !vectors || n <= 0) return false;
+        std::lock_guard<std::mutex> lk(mu_);
+        // GenDataSet returns DataSetPtr (shared_ptr<DataSet>); pass directly.
+        auto ds     = knowhere::GenDataSet(n, dim_, vectors);
+        auto status = index_->Build(ds, build_cfg_);
+        if (status != knowhere::Status::success) return false;
+        num_vectors_ = n;
         return true;
     }
 
-    // Add: incrementally insert vectors (resizes capacity as needed).
-    bool Add(const float* vectors, int64_t num_vectors) {
-        if (!space_ || !vectors || num_vectors <= 0) return false;
-        std::lock_guard<std::mutex> lock(mu_);
+    bool Add(const float* vectors, int64_t n) {
+        if (!index_ || !vectors || n <= 0) return false;
+        std::lock_guard<std::mutex> lk(mu_);
+        auto ds     = knowhere::GenDataSet(n, dim_, vectors);
+        auto status = index_->Add(ds, build_cfg_);
+        if (status != knowhere::Status::success) return false;
+        num_vectors_ += n;
+        return true;
+    }
 
-        if (!index_) {
-            // First call: treat like Build
-            int M = cfg_.hnsw_m > 0 ? cfg_.hnsw_m : 16;
-            int ef = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : 256;
-            index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-                space_.get(),
-                static_cast<size_t>(num_vectors),
-                static_cast<size_t>(M),
-                static_cast<size_t>(ef));
+    bool Search(const float* query, int64_t nq, int topk,
+                const uint8_t* allow_bits, int64_t allow_count,
+                int64_t* out_ids, float* out_dists) {
+        if (!index_ || !query) return false;
+        std::lock_guard<std::mutex> lk(mu_);
+
+        knowhere::Json search_cfg = build_cfg_;
+        search_cfg[knowhere::meta::TOPK]        = topk;
+        search_cfg[knowhere::indexparam::EF]    = std::max(topk * 2, kDefaultEfSearch);
+
+        auto qds = knowhere::GenDataSet(nq, dim_, query);
+
+        knowhere::expected<knowhere::DataSetPtr> res;
+        if (allow_bits && allow_count > 0) {
+            knowhere::BitsetView bitset(allow_bits, allow_count);
+            res = index_->Search(qds, search_cfg, bitset);
         } else {
-            index_->resizeIndex(
-                static_cast<size_t>(num_vectors_ + num_vectors));
+            res = index_->Search(qds, search_cfg, knowhere::BitsetView());
         }
 
-        for (int64_t i = 0; i < num_vectors; ++i) {
-            index_->addPoint(
-                vectors + i * cfg_.dim,
-                static_cast<hnswlib::labeltype>(num_vectors_ + i));
-        }
-        num_vectors_ += num_vectors;
+        if (!res.has_value()) return false;
+        const int64_t total = nq * topk;
+        std::copy_n(res.value()->GetIds(),      total, out_ids);
+        std::copy_n(res.value()->GetDistance(), total, out_dists);
         return true;
     }
 
-    SearchResult Search(
-        const float* query_vectors,
-        int64_t       num_queries,
-        int32_t       top_k,
-        const uint8_t* filter_bitset,
-        size_t         filter_size
-    ) const {
-        SearchResult result;
-        if (!index_ || !query_vectors || num_queries <= 0 ||
-                top_k <= 0 || num_vectors_ == 0) {
-            return result;
-        }
-
-        int ef_search = cfg_.hnsw_ef_search > 0 ? cfg_.hnsw_ef_search : 64;
-        // ef must be >= k
-        index_->setEf(static_cast<size_t>(std::max(ef_search, top_k)));
-
-        for (int64_t q = 0; q < num_queries; ++q) {
-            const float* qvec = query_vectors + q * cfg_.dim;
-
-            // hnswlib filter: return true to *exclude* an element
-            hnswlib::BaseFilterFunctor* filter_fn = nullptr;
-            struct BitsetFilter : hnswlib::BaseFilterFunctor {
-                const uint8_t* bits;
-                size_t         size;
-                BitsetFilter(const uint8_t* b, size_t s) : bits(b), size(s) {}
-                bool operator()(hnswlib::labeltype id) override {
-                    size_t byte_idx = static_cast<size_t>(id) / 8;
-                    size_t bit_idx  = static_cast<size_t>(id) % 8;
-                    return byte_idx < size &&
-                           (bits[byte_idx] & (1u << bit_idx)) != 0;
-                }
-            };
-            BitsetFilter bf(filter_bitset,
-                            filter_bitset ? filter_size : 0);
-            if (filter_bitset && filter_size > 0) {
-                filter_fn = &bf;
-            }
-
-            auto pq = index_->searchKnn(
-                qvec,
-                static_cast<size_t>(top_k),
-                filter_fn);
-
-            // searchKnn returns a max-heap (largest distance first for IP →
-            // largest inner-product first).  Drain it in descending order.
-            std::vector<std::pair<float, hnswlib::labeltype>> hits;
-            hits.reserve(pq.size());
-            while (!pq.empty()) {
-                hits.push_back(pq.top());
-                pq.pop();
-            }
-            // Reverse so best (highest IP) comes first
-            std::reverse(hits.begin(), hits.end());
-            for (auto& [dist, label] : hits) {
-                result.ids.push_back(static_cast<int64_t>(label));
-                result.distances.push_back(dist);
-            }
-        }
-        result.count = static_cast<int64_t>(result.ids.size());
-        return result;
-    }
-
-    // Serialize / Deserialize — hnswlib supports saveIndex / loadIndex.
-    bool Serialize(std::vector<uint8_t>& output) const {
-        if (!index_) return false;
-        // Save to a temp path and read back; hnswlib has no in-memory stream API.
-        const std::string tmp = "/tmp/_andb_hnsw_ser.bin";
-        index_->saveIndex(tmp);
-        FILE* f = std::fopen(tmp.c_str(), "rb");
-        if (!f) return false;
-        std::fseek(f, 0, SEEK_END);
-        size_t sz = static_cast<size_t>(std::ftell(f));
-        std::rewind(f);
-        output.resize(sz);
-        std::fread(output.data(), 1, sz, f);
-        std::fclose(f);
-        std::remove(tmp.c_str());
-        return true;
-    }
-
-    bool Deserialize(const std::vector<uint8_t>& input) {
-        if (!space_ || input.empty()) return false;
-        const std::string tmp = "/tmp/_andb_hnsw_deser.bin";
-        FILE* f = std::fopen(tmp.c_str(), "wb");
-        if (!f) return false;
-        std::fwrite(input.data(), 1, input.size(), f);
-        std::fclose(f);
-        index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(
-            space_.get(), tmp);
-        num_vectors_ = static_cast<int64_t>(index_->getCurrentElementCount());
-        std::remove(tmp.c_str());
-        return true;
-    }
-
-    int64_t     Count() const { return num_vectors_; }
-    int32_t     Dim()   const { return cfg_.dim; }
-    std::string Type()  const {
-        return cfg_.index_type.empty() ? "HNSW" : cfg_.index_type;
-    }
+    int64_t num_vectors() const { return num_vectors_; }
+    int     dim()         const { return dim_; }
 
 private:
     IndexConfig cfg_;
-    std::unique_ptr<hnswlib::InnerProductSpace>      space_;
-    std::unique_ptr<hnswlib::HierarchicalNSW<float>> index_;
-    int64_t num_vectors_ = 0;
+    int         dim_         = 0;
+    int64_t     num_vectors_ = 0;
+    knowhere::Json  build_cfg_;
+    std::unique_ptr<knowhere::Index<knowhere::IndexNode>> index_;
     mutable std::mutex mu_;
 };
 
-// ---------------------------------------------------------------------------
-// DenseRetriever — public interface (delegates to HNSWIndexWrapper)
-// ---------------------------------------------------------------------------
+// ── DenseRetrieverImpl ───────────────────────────────────────────────────────
+class DenseRetrieverImpl {
+public:
+    bool Init(const IndexConfig& cfg) {
+        wrapper_ = std::make_unique<HNSWIndexWrapper>();
+        return wrapper_->Init(cfg);
+    }
+    bool Build(const float* vecs, int64_t n) {
+        return wrapper_ && wrapper_->Build(vecs, n);
+    }
+    bool Add(const float* vecs, int64_t n) {
+        return wrapper_ && wrapper_->Add(vecs, n);
+    }
+    bool Search(const float* query, int64_t nq, int topk,
+                const uint8_t* allow_bits, int64_t allow_count,
+                int64_t* ids, float* dists) {
+        return wrapper_ && wrapper_->Search(
+            query, nq, topk, allow_bits, allow_count, ids, dists);
+    }
+    int64_t Count() const { return wrapper_ ? wrapper_->num_vectors() : 0; }
+    int     Dim()   const { return wrapper_ ? wrapper_->dim()         : 0; }
 
-DenseRetriever::DenseRetriever()
-    : impl_(std::make_unique<HNSWIndexWrapper>()) {}
+private:
+    std::unique_ptr<HNSWIndexWrapper> wrapper_;
+};
 
+// ── DenseRetriever public API ────────────────────────────────────────────────
+DenseRetriever::DenseRetriever()  = default;
 DenseRetriever::~DenseRetriever() = default;
-DenseRetriever::DenseRetriever(DenseRetriever&&) noexcept = default;
-DenseRetriever& DenseRetriever::operator=(DenseRetriever&&) noexcept = default;
 
-bool DenseRetriever::Init(const IndexConfig& config) {
-    config_ = config;
-    ready_  = impl_->Init(config);
-    return ready_;
+bool DenseRetriever::Init(const IndexConfig& cfg) {
+    impl_ = std::make_unique<DenseRetrieverImpl>();
+    return impl_->Init(cfg);
 }
-
-bool DenseRetriever::Build(const float* vectors, int64_t num_vectors) {
-    if (!impl_->Build(vectors, num_vectors)) return false;
-    ready_ = true;
-    return true;
+bool DenseRetriever::Build(const float* v, int64_t n) {
+    return impl_ && impl_->Build(v, n);
 }
-
-bool DenseRetriever::Add(const float* vectors, int64_t num_vectors) {
-    return impl_->Add(vectors, num_vectors);
+bool DenseRetriever::Add(const float* v, int64_t n) {
+    return impl_ && impl_->Add(v, n);
 }
-
-SearchResult DenseRetriever::Search(
-    const float*  query_vectors,
-    int64_t       num_queries,
-    int32_t       top_k,
-    const uint8_t* filter_bitset,
-    size_t         filter_size
-) const {
-    if (!ready_) return SearchResult{};
-    return impl_->Search(query_vectors, num_queries, top_k,
-                         filter_bitset, filter_size);
+bool DenseRetriever::Search(const float* q, int64_t nq, int topk,
+                             const uint8_t* allow_bits, int64_t allow_count,
+                             int64_t* out_ids, float* out_dists) {
+    return impl_ && impl_->Search(q, nq, topk, allow_bits, allow_count,
+                                   out_ids, out_dists);
 }
-
-bool DenseRetriever::Serialize(std::vector<uint8_t>& output) const {
-    return impl_->Serialize(output);
-}
-
-bool DenseRetriever::Deserialize(const std::vector<uint8_t>& input) {
-    ready_ = impl_->Deserialize(input);
-    return ready_;
-}
-
-bool DenseRetriever::Load(const std::string&) { return false; }
-bool DenseRetriever::Save(const std::string&) const { return false; }
-
-int64_t     DenseRetriever::Count() const { return impl_->Count(); }
-int32_t     DenseRetriever::Dim()   const { return impl_->Dim();   }
-std::string DenseRetriever::Type()  const { return impl_->Type();  }
-bool        DenseRetriever::IsReady() const { return ready_; }
+int64_t DenseRetriever::Count() const { return impl_ ? impl_->Count() : 0; }
+int     DenseRetriever::Dim()   const { return impl_ ? impl_->Dim()   : 0; }
 
 }  // namespace andb

@@ -8,13 +8,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 # Build Options
 # =============================================================================
-option(ANDB_WITH_GPU  "Enable GPU support (future, requires CUDA)"  OFF)
-option(ANDB_WITH_TESTS "Build unit tests" OFF)
-
-# Knowhere / pybind11 / FetchContent removed.
-# Dense HNSW is provided by vendored hnswlib (cpp/include/hnswlib/, MIT).
-# Sparse search is self-contained in cpp/retrieval/sparse.cpp.
-# No internet access or third-party downloads required at build time.
+option(ANDB_WITH_GPU          "Enable GPU support (future, requires CUDA)"           OFF)
+option(ANDB_WITH_TESTS        "Build unit tests"                                     OFF)
+option(ANDB_KNOWHERE_FAISS    "Build Knowhere with faiss IVF indexes (needs OpenBLAS)" OFF)
+option(ANDB_KNOWHERE_DISKANN  "Build Knowhere with DiskANN"                           OFF)
 
 # =============================================================================
 # Platform Detection
@@ -34,7 +31,25 @@ elseif(UNIX)
 endif()
 
 # =============================================================================
-# Core Library
+# Knowhere — CogDB-internal vector index library
+# Source: cpp/knowhere/  (include/ src/ engines/ compat/)
+# No folly / glog / prometheus / opentelemetry required.
+# HNSW is always on; IVF/DiskANN/GPU are opt-in.
+# =============================================================================
+set(KNOWHERE_WITH_FAISS   ${ANDB_KNOWHERE_FAISS}   CACHE BOOL "" FORCE)
+set(KNOWHERE_WITH_DISKANN ${ANDB_KNOWHERE_DISKANN} CACHE BOOL "" FORCE)
+set(KNOWHERE_WITH_GPU     ${ANDB_WITH_GPU}         CACHE BOOL "" FORCE)
+
+add_subdirectory(knowhere)   # → builds target: knowhere
+
+message(STATUS "Knowhere integration: source-level (cpp/knowhere/)")
+message(STATUS "  HNSW engine     : cpp/knowhere/engines/hnsw_engine/")
+message(STATUS "  faiss engine    : cpp/knowhere/engines/faiss_engine/  [opt ${ANDB_KNOWHERE_FAISS}]")
+message(STATUS "  diskann engine  : cpp/knowhere/engines/diskann_engine/ [opt ${ANDB_KNOWHERE_DISKANN}]")
+
+# =============================================================================
+# andb_retrieval — B-module retrieval library
+# Uses Knowhere's C++ API (knowhere::IndexFactory, knowhere::DataSet, etc.)
 # =============================================================================
 add_library(andb_retrieval SHARED
     retrieval/retrieval.cpp
@@ -44,18 +59,28 @@ add_library(andb_retrieval SHARED
     retrieval/merger.cpp
 )
 
-# Our own headers + vendored hnswlib (header-only, MIT, nmslib/hnswlib v0.8.0)
 target_include_directories(andb_retrieval PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/hnswlib
+    ${CMAKE_CURRENT_SOURCE_DIR}/include          # andb/ public headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/knowhere/include # knowhere/ public API
+    ${CMAKE_CURRENT_SOURCE_DIR}/knowhere/compat  # glog+nlohmann+omp shims
+    ${CMAKE_CURRENT_SOURCE_DIR}/knowhere/engines/hnsw_engine
 )
 
-# hnswlib requires threading
-find_package(Threads REQUIRED)
-target_link_libraries(andb_retrieval PUBLIC Threads::Threads)
+# On macOS with Homebrew libomp, add its include dir so our compat/omp.h
+# can resolve "include_next <omp.h>" properly when _OPENMP is defined.
+if(APPLE)
+    set(LIBOMP_INC "/opt/homebrew/opt/libomp/include")
+    if(EXISTS "${LIBOMP_INC}/omp.h")
+        target_include_directories(andb_retrieval PRIVATE "${LIBOMP_INC}")
+        target_compile_options(andb_retrieval PRIVATE -Xpreprocessor -fopenmp)
+        target_link_libraries(andb_retrieval PRIVATE "-L/opt/homebrew/opt/libomp/lib" omp)
+    endif()
+endif()
 
-message(STATUS "Dense index: hnswlib HNSW (vendored, cpp/include/hnswlib/)")
-message(STATUS "Sparse index: self-contained TF sparse IP (cpp/retrieval/sparse.cpp)")
+find_package(Threads REQUIRED)
+target_link_libraries(andb_retrieval PUBLIC knowhere Threads::Threads)
+
+message(STATUS "andb_retrieval: links against internal knowhere target")
 
 # =============================================================================
 # Unit Tests
@@ -67,12 +92,11 @@ endif()
 # =============================================================================
 # Installation
 # =============================================================================
-install(TARGETS andb_retrieval
+install(TARGETS andb_retrieval knowhere
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY include/andb
-    DESTINATION include
-)
+install(DIRECTORY include/andb DESTINATION include)
+install(DIRECTORY knowhere/include/knowhere DESTINATION include)

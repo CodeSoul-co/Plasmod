@@ -73,13 +73,27 @@ RetrievalResult Retriever::Retrieve(const RetrievalRequest& request) const {
     
     // Execute dense search if enabled
     if (request.enable_dense && request.query_vector && request.vector_dim > 0) {
-        dense_results = dense_->Search(
+        dense_results.ids.resize(search_k, -1);
+        dense_results.distances.resize(search_k, 0.0f);
+        bool ok = dense_->Search(
             request.query_vector,
-            1,  // Single query
+            1,
             search_k,
             request.filter_bitset,
-            request.filter_bitset_size
+            static_cast<int64_t>(request.filter_bitset_size * 8),
+            dense_results.ids.data(),
+            dense_results.distances.data()
         );
+        if (ok) {
+            // Trim trailing -1 sentinels
+            dense_results.count = 0;
+            for (int64_t i = 0; i < search_k; ++i) {
+                if (dense_results.ids[i] < 0) break;
+                ++dense_results.count;
+            }
+            dense_results.ids.resize(dense_results.count);
+            dense_results.distances.resize(dense_results.count);
+        }
         result.dense_hits = dense_results.count;
     }
     
@@ -126,13 +140,26 @@ RetrievalResult Retriever::BenchmarkRetrieve(const RetrievalRequest& request) co
     int32_t search_k = 10000;  // Large number to get all
     
     if (request.enable_dense && request.query_vector && request.vector_dim > 0) {
-        dense_results = dense_->Search(
+        dense_results.ids.resize(search_k, -1);
+        dense_results.distances.resize(search_k, 0.0f);
+        bool ok = dense_->Search(
             request.query_vector,
             1,
             search_k,
             request.filter_bitset,
-            request.filter_bitset_size
+            static_cast<int64_t>(request.filter_bitset_size * 8),
+            dense_results.ids.data(),
+            dense_results.distances.data()
         );
+        if (ok) {
+            dense_results.count = 0;
+            for (int64_t i = 0; i < search_k; ++i) {
+                if (dense_results.ids[i] < 0) break;
+                ++dense_results.count;
+            }
+            dense_results.ids.resize(dense_results.count);
+            dense_results.distances.resize(dense_results.count);
+        }
         result.dense_hits = dense_results.count;
     }
     
