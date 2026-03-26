@@ -10,8 +10,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 option(ANDB_WITH_GPU "Enable GPU support via Knowhere RAFT" OFF)
 option(ANDB_WITH_TESTS "Build unit tests" OFF)
-option(ANDB_WITH_PYBIND "Build Python bindings" ON)
 option(ANDB_WITH_KNOWHERE "Enable real Knowhere HNSW/SPARSE index (requires internet + OpenBLAS at build time)" ON)
+# ANDB_WITH_PYBIND has been removed: Python retrieval service is replaced by
+# the native Go retrieval package (src/internal/retrieval/).  pybind11 is no
+# longer a build dependency.
 
 # =============================================================================
 # Platform Detection
@@ -61,19 +63,6 @@ else()
 endif()
 
 # =============================================================================
-# pybind11 for Python bindings
-# =============================================================================
-if(ANDB_WITH_PYBIND)
-    FetchContent_Declare(
-        pybind11
-        GIT_REPOSITORY https://github.com/pybind/pybind11.git
-        GIT_TAG        v2.11.1
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(pybind11)
-endif()
-
-# =============================================================================
 # Core Library
 # =============================================================================
 add_library(andb_retrieval SHARED
@@ -94,23 +83,8 @@ if(ANDB_WITH_KNOWHERE)
     target_link_libraries(andb_retrieval PUBLIC knowhere)
 endif()
 
-# =============================================================================
-# Python Bindings
-# =============================================================================
-if(ANDB_WITH_PYBIND)
-    pybind11_add_module(andb_retrieval_py
-        python/bindings.cpp
-    )
-    target_link_libraries(andb_retrieval_py PRIVATE andb_retrieval)
-    target_include_directories(andb_retrieval_py PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    
-    # Set output name without lib prefix
-    set_target_properties(andb_retrieval_py PROPERTIES
-        OUTPUT_NAME "andb_retrieval"
-    )
-endif()
+# Python bindings (andb_retrieval_py / pybind11) removed.
+# The retrieval engine is now accessed from Go via CGO (src/internal/retrieval/).
 
 # =============================================================================
 # Unit Tests

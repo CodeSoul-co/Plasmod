@@ -1,0 +1,333 @@
+package retrieval
+
+import (
+	"math"
+	"sort"
+	"time"
+
+	"andb/src/internal/dataplane"
+	"andb/src/internal/schemas"
+	"andb/src/internal/storage"
+)
+
+const (
+	// rrfK is the Reciprocal Rank Fusion constant (k=60 matches Python / C++).
+	rrfK = 60.0
+
+	// DefaultSeedThreshold: candidates whose final_score ≥ threshold are
+	// marked is_seed=true and passed as ObjectIDs to QueryChain graph expansion.
+	DefaultSeedThreshold = 0.7
+
+	// DefaultMaxRetries controls retry attempts when Search panics or returns
+	// an empty result unexpectedly.
+	DefaultMaxRetries = 3
+)
+
+// Retriever is the Go replacement for the Python retrieval service.
+//
+// It orchestrates:
+//   - TieredDataPlane.Search (lexical + CGO Knowhere vector)
+//   - ObjectStore.GetMemory   (metadata fetch for scoring / filtering)
+//   - SafetyFilter            (7 governance rules)
+//   - RRF reranking           (final_score = rrf × importance × freshness × confidence)
+//   - Seed marking            (final_score ≥ SeedThreshold → IsSeed=true)
+//   - for_graph mode          (returns TopK×2 candidates)
+//   - filter_only mode        (skips dense+sparse, ranks by importance)
+type Retriever struct {
+	plane         dataplane.DataPlane
+	objects       storage.ObjectStore
+	filter        SafetyFilter
+	SeedThreshold float64
+}
+
+// New returns a Retriever wired to the given DataPlane and ObjectStore.
+func New(plane dataplane.DataPlane, objects storage.ObjectStore) *Retriever {
+	return &Retriever{
+		plane:         plane,
+		objects:       objects,
+		filter:        SafetyFilter{},
+		SeedThreshold: DefaultSeedThreshold,
+	}
+}
+
+// Retrieve executes the full retrieval pipeline for the given request and
+// returns a CandidateList ready for consumption by QueryChain.
+//
+// When the caller already holds ranked ObjectIDs from a separate search (e.g.
+// nodeManager.DispatchQuery), prefer EnrichAndRank to avoid a duplicate search.
+func (r *Retriever) Retrieve(req RetrievalRequest) CandidateList {
+	start := time.Now()
+
+	effectiveTopK := req.TopK
+	if req.ForGraph {
+		effectiveTopK = req.TopK * 2
+	}
+	if effectiveTopK <= 0 {
+		effectiveTopK = 10
+	}
+
+	var candidates []Candidate
+	if req.EnableFilterOnly {
+		candidates = r.filterOnlySearch(req, effectiveTopK)
+	} else {
+		candidates = r.hybridSearch(req, effectiveTopK)
+	}
+
+	// Safety filter
+	passed := candidates[:0]
+	for _, c := range candidates {
+		mem, ok := r.objects.GetMemory(c.ObjectID)
+		if !ok {
+			continue
+		}
+		if !r.filter.Apply(mem, req) {
+			continue
+		}
+		c = enrichFromMemory(c, mem)
+		passed = append(passed, c)
+	}
+
+	// Rerank and mark seeds
+	markFinalScores(passed)
+	seedIDs := markSeeds(passed, r.SeedThreshold)
+
+	// Sort by final_score descending
+	sort.Slice(passed, func(i, j int) bool {
+		return passed[i].FinalScore > passed[j].FinalScore
+	})
+
+	// Truncate to effective top-K
+	if len(passed) > effectiveTopK {
+		passed = passed[:effectiveTopK]
+	}
+
+	meta := buildMeta(start, passed)
+	return CandidateList{
+		Candidates:  passed,
+		TotalFound:  len(passed),
+		RetrievedAt: time.Now().UTC(),
+		Meta:        meta,
+		SeedIDs:     seedIDs,
+	}
+}
+
+// EnrichAndRank takes pre-searched ObjectIDs (from nodeManager.DispatchQuery or
+// any DataPlane.Search caller) and enriches them with Memory metadata, applies
+// the safety filter, computes final scores, and marks seeds.
+//
+// This is the preferred integration point in Runtime.ExecuteQuery so the
+// existing nodeManager query-node dispatch (including registered query nodes)
+// is preserved while adding the full scoring + governance pipeline.
+func (r *Retriever) EnrichAndRank(objectIDs []string, req RetrievalRequest) CandidateList {
+	start := time.Now()
+
+	effectiveTopK := req.TopK
+	if req.ForGraph {
+		effectiveTopK = req.TopK * 2
+	}
+	if effectiveTopK <= 0 {
+		effectiveTopK = 10
+	}
+
+	// Build initial candidates with RRF scores from rank position
+	raw := make([]Candidate, 0, len(objectIDs))
+	for rank, id := range objectIDs {
+		rrf := 1.0 / (rrfK + float64(rank+1))
+		raw = append(raw, Candidate{
+			ObjectID:       id,
+			RRFScore:       rrf,
+			SourceChannels: []string{"dense", "sparse"},
+		})
+	}
+
+	// Metadata fetch + safety filter
+	passed := raw[:0]
+	for _, c := range raw {
+		mem, ok := r.objects.GetMemory(c.ObjectID)
+		if !ok {
+			// Non-memory objects (State, Artifact) pass through unfiltered
+			passed = append(passed, c)
+			continue
+		}
+		if !r.filter.Apply(mem, req) {
+			continue
+		}
+		c = enrichFromMemory(c, mem)
+		passed = append(passed, c)
+	}
+
+	markFinalScores(passed)
+	seedIDs := markSeeds(passed, r.SeedThreshold)
+
+	sort.Slice(passed, func(i, j int) bool {
+		return passed[i].FinalScore > passed[j].FinalScore
+	})
+	if len(passed) > effectiveTopK {
+		passed = passed[:effectiveTopK]
+	}
+
+	meta := buildMeta(start, passed)
+	return CandidateList{
+		Candidates:  passed,
+		TotalFound:  len(passed),
+		RetrievedAt: time.Now().UTC(),
+		Meta:        meta,
+		SeedIDs:     seedIDs,
+	}
+}
+
+// ─── Search paths ─────────────────────────────────────────────────────────────
+
+// hybridSearch calls TieredDataPlane.Search (lexical + vector) and converts
+// the ranked ObjectIDs into Candidate structs with RRF scores.
+func (r *Retriever) hybridSearch(req RetrievalRequest, topK int) []Candidate {
+	input := dataplane.SearchInput{
+		QueryText:      req.QueryText,
+		TopK:           topK,
+		Namespace:      namespaceFrom(req),
+		Constraints:    req.ObjectTypes,
+		IncludeGrowing: true,
+		ObjectTypes:    req.ObjectTypes,
+		MemoryTypes:    req.MemoryTypes,
+	}
+	if !req.TimeFrom.IsZero() {
+		input.TimeFromUnixTS = req.TimeFrom.Unix()
+	}
+	if !req.TimeTo.IsZero() {
+		input.TimeToUnixTS = req.TimeTo.Unix()
+	}
+
+	out := r.plane.Search(input)
+
+	candidates := make([]Candidate, 0, len(out.ObjectIDs))
+	for rank, id := range out.ObjectIDs {
+		rrf := 1.0 / (rrfK + float64(rank+1))
+		candidates = append(candidates, Candidate{
+			ObjectID:       id,
+			RRFScore:       rrf,
+			SourceChannels: []string{"dense", "sparse"},
+		})
+	}
+	return candidates
+}
+
+// filterOnlySearch skips the vector/lexical search and returns all memories
+// for the agent/session, ranked by importance.  Mirrors the Python
+// enable_filter_only=True behaviour.
+func (r *Retriever) filterOnlySearch(req RetrievalRequest, topK int) []Candidate {
+	mems := r.objects.ListMemories(req.AgentID, req.SessionID)
+
+	// Sort by importance descending
+	sort.Slice(mems, func(i, j int) bool {
+		return mems[i].Importance > mems[j].Importance
+	})
+
+	candidates := make([]Candidate, 0, min(topK, len(mems)))
+	for i, m := range mems {
+		if i >= topK*3 { // fetch 3× buffer before safety filter
+			break
+		}
+		rrf := 1.0 / (rrfK + float64(i+1))
+		candidates = append(candidates, Candidate{
+			ObjectID:       m.MemoryID,
+			RRFScore:       rrf,
+			SourceChannels: []string{"filter"},
+		})
+	}
+	return candidates
+}
+
+// ─── Scoring helpers ──────────────────────────────────────────────────────────
+
+// enrichFromMemory copies metadata fields from a Memory into a Candidate.
+func enrichFromMemory(c Candidate, m schemas.Memory) Candidate {
+	c.ObjectType = "memory"
+	c.AgentID = m.AgentID
+	c.SessionID = m.SessionID
+	c.Scope = m.Scope
+	c.Version = m.Version
+	c.ProvenanceRef = m.ProvenanceRef
+	c.Content = m.Content
+	c.Summary = m.Summary
+	c.Confidence = m.Confidence
+	c.Importance = m.Importance
+	c.FreshnessScore = m.FreshnessScore
+	c.Level = m.Level
+	c.MemoryType = m.MemoryType
+	c.IsActive = m.IsActive
+	c.TTL = m.TTL
+	c.ValidFrom = m.ValidFrom
+	c.ValidTo = m.ValidTo
+	c.LifecycleState = m.LifecycleState
+	c.SourceEventIDs = m.SourceEventIDs
+	if hasTag(m.PolicyTags, "quarantine") {
+		c.QuarantineFlag = true
+	}
+	return c
+}
+
+// markFinalScores applies the reranking formula in-place:
+//
+//	final_score = rrf_score × max(importance, 0.01) × max(freshness, 0.01) × max(confidence, 0.01)
+func markFinalScores(cs []Candidate) {
+	for i := range cs {
+		imp := math.Max(cs[i].Importance, 0.01)
+		fresh := math.Max(cs[i].FreshnessScore, 0.01)
+		conf := math.Max(cs[i].Confidence, 0.01)
+		cs[i].FinalScore = cs[i].RRFScore * imp * fresh * conf
+	}
+}
+
+// markSeeds marks candidates whose FinalScore ≥ threshold as seeds and
+// returns their ObjectIDs for QueryChain graph expansion.
+func markSeeds(cs []Candidate, threshold float64) []string {
+	var ids []string
+	for i := range cs {
+		if cs[i].FinalScore >= threshold {
+			cs[i].IsSeed = true
+			cs[i].SeedScore = cs[i].FinalScore
+			ids = append(ids, cs[i].ObjectID)
+		}
+	}
+	return ids
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+// namespaceFrom builds a DataPlane namespace string from the request isolation
+// fields (tenant_id / workspace_id), falling back to agent_id.
+func namespaceFrom(req RetrievalRequest) string {
+	if req.WorkspaceID != "" {
+		return req.TenantID + "/" + req.WorkspaceID
+	}
+	if req.AgentID != "" {
+		return req.AgentID
+	}
+	return ""
+}
+
+// buildMeta constructs QueryMeta from a completed candidate list.
+func buildMeta(start time.Time, cs []Candidate) QueryMeta {
+	latency := time.Since(start).Milliseconds()
+	channels := make(map[string]bool)
+	for _, c := range cs {
+		for _, ch := range c.SourceChannels {
+			channels[ch] = true
+		}
+	}
+	used := make([]string, 0, len(channels))
+	for ch := range channels {
+		used = append(used, ch)
+	}
+	return QueryMeta{
+		LatencyMs:    latency,
+		ChannelsUsed: used,
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

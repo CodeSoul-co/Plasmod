@@ -699,7 +699,7 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | Retry back-off in `retriever.py` on upstream timeout | ✅ | `_retry_with_backoff()` added to `src/internal/retrieval/service/retriever.py`; `retrieve()` uses it with max 3 retries, base_delay=0.1s, max_delay=2.0s |
 | GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
 | No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
-| **Review focus** | ⚠️ | C++ `is_seed=true` candidates → their IDs should map to `QueryChainInput.ObjectIDs` passed to `SubgraphExecutorWorker`; verify the Go gateway correctly extracts seed IDs from retrieval results before calling `QueryChain.Run` |
+| **Review focus** | ✅ | Seed IDs (`final_score ≥ 0.7`) now extracted by `goRetriever.EnrichAndRank()` and passed as `QueryChainInput.ObjectIDs` in `runtime.ExecuteQuery`; only high-confidence candidates seed the subgraph expansion. |
 | **Review focus** | ⚠️ | `proof_trace` field in `QueryResponse` may now contain up to depth=8 BFS steps (previously 1-hop); B's Python integration tests that assert `len(proof_trace) == N` must be updated to use `>= 1` instead of exact count |
 | **Review focus** | ⚠️ | When `S3ColdStore` is active, cold-path `GetMemory` adds HTTP round-trip latency; B's timeout settings in `retriever.py` may need to be increased from default if cold reads are expected during integration tests |
 
@@ -712,6 +712,9 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 | 2026-03-26 | **SDK Updated**: `sdk/python/andb_sdk/client.py` — `query()` now exposes all `QueryRequest` fields as explicit kwargs (`query_text`, `query_scope`, `session_id`, `agent_id`, `tenant_id`, `workspace_id`, `top_k`, `object_types`, `memory_types`, `relation_constraints`, `time_window`); `ingest_event()` now takes explicit kwargs with `workspace_id` support. |
 | 2026-03-26 | **Retry Added**: `src/internal/retrieval/service/retriever.py` — `_retry_with_backoff()` with exponential back-off (base=0.1s, max=2.0s, max_retries=3) added; `retrieve()` uses it on `TimeoutError`/`RuntimeError`. |
 | 2026-03-26 | **Docs**: Created `devdocs/index-build-worker-status.md` — clarifies `IndexBuildWorker` role (segment metadata tracker, not retrieval index), explains why it does not need to feed `ExecuteQuery`, documents E3 resolution. |
+| 2026-03-26 | **Task1 — 去掉第三方库**: 删除 `cpp/third_party/knowhere` + `cpp/third_party/pybind11`（CMakeLists.txt 已用 FetchContent，手动副本多余）；删除 `cpp/python/bindings.cpp` pybind11 绑定；CMakeLists.txt 移除 `ANDB_WITH_PYBIND` 选项和 pybind11 FetchContent 块。 |
+| 2026-03-26 | **Task2 — Python → Go 检索**: 新建 `src/internal/retrieval/` 包（纯 Go）：`candidate.go`（RetrievalRequest/Candidate/CandidateList 类型）、`filter.go`（7 条安全规则：quarantine/TTL/visible_time/is_active/as_of_ts/min_version/unverified）、`retriever.go`（RRF reranking `final_score = rrf × importance × freshness × confidence`，seed marking `≥ 0.7 → IsSeed=true`，for_graph / filter_only 模式，`EnrichAndRank` 方法接受外部搜索结果）。`go build ./...` exit 0。 |
+| 2026-03-26 | **Task3 — 接入 QueryChain**: `src/internal/worker/runtime.go` — `ExecuteQuery` 在 `nodeManager.DispatchQuery` 之后调用 `goRetriever.EnrichAndRank()`，安全过滤 + reranking + seed 标记；`CandidateList.SeedIDs`（high-confidence 候选）传入 `QueryChain.Run(ObjectIDs)` 做图扩展，替代原来的全量 ID，精准驱动 SubgraphExecutorWorker。 |
 
 ---
 
