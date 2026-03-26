@@ -147,7 +147,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		)
 	} else {
 		// Fallback for tests or code paths that don't initialise TieredObjectStore.
-		r.storage.Objects().PutMemory(mat.Memory)
+		r.storage.PutMemoryWithBaseEdges(mat.Memory)
 	}
 	r.storage.Versions().PutVersion(mat.Version)
 	for _, edge := range mat.Edges {

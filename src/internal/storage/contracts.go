@@ -141,6 +141,11 @@ type RuntimeStorage interface {
 	Audits() AuditStore
 	// AlgorithmStates returns the per-memory, per-algorithm state store.
 	AlgorithmStates() MemoryAlgorithmStateStore
+
+	PutMemoryWithBaseEdges(obj schemas.Memory)
+	PutArtifactWithBaseEdges(obj schemas.Artifact)
+	PutEventWithBaseEdges(obj schemas.Event)
+
 	// HotCache exposes the in-memory hot-object cache so the ingest path can
 	// immediately promote high-salience objects for instant activation.
 	HotCache() *HotObjectCache
