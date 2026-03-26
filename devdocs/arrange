@@ -1,0 +1,44 @@
+| 人员 | 角色定位 | 主要负责模块 | 核心职责 | 主要交付物 |
+|---|---|---|---|---|
+| me | 架构总控及其他 | 总体架构、对象模型、查询语义、项目推进 | 定义 v1 范围；冻结 schema 与接口；统筹进度；主持评审；验收把握；整合实验与文档 | 总体设计文档、计划、对象模型等 |
+| 成员A | 事件与对象物化 | Event Backbone、Canonical Object Materialization、Version | 负责事件写入、对象物化、版本最小实现、基础存储 schema 落地 | 写入主链路、对象落库、version 基础支持等 |
+| 成员B | 检索与索引 | Dense/Sparse/Filter Retrieval、Candidate Merge | 负责向量检索、关键词检索、属性过滤、候选合并与基础召回效果 | Retrieval 原型、检索接口、召回结果等 |
+| 成员C | Graph / Relation | Edge Schema、Adjacency、Subgraph Assembly | 负责边模型、关系存储、1-2 跳扩展、证据子图组装、基础 provenance 链路 | Graph relation 原型、evidence subgraph 返回结构等 |
+| 成员D | API / Worker / 集成 | API Gateway、Worker、模块联调、Demo | 负责统一查询入口、服务接口、模块串联、结果返回格式、端到端联调 | API 接口、worker、demo 服务等 |
+| 成员E | Python 测试 / 实验 / 算法验证 | Mock 数据、测试、Benchmark、Batch Retrieval | 负责测试脚本、mock 数据生成、batch retrieval 实验、baseline 对比，性能与正确性验证 | 测试脚本、实验报告、对比结果、评测图表等 |
+
+---
+
+## Worker Implementation Status
+
+> 本表格基于 `src/internal/worker/` 代码检查生成，所有 worker 均已完整实现。
+
+| Worker / Component | 文件路径 | 状态 | 备注 |
+|---|---|---|---|
+| InMemoryIngestWorker | `worker/ingestion/worker.go` | ✅ Done | 事件校验，必填字段检查 |
+| InMemoryObjectMaterializationWorker | `worker/materialization/object.go` | ✅ Done | 事件→Memory/State/Artifact 路由 |
+| InMemoryStateMaterializationWorker | `worker/materialization/state.go` | ✅ Done | Apply + Checkpoint |
+| InMemoryToolTraceWorker | `worker/materialization/tool_trace.go` | ✅ Done | tool_call 记录为 Artifact + DerivationLog |
+| InMemoryMemoryExtractionWorker | `worker/cognitive/baseline/extraction.go` | ✅ Done | Level-0 episodic Memory |
+| InMemoryMemoryConsolidationWorker | `worker/cognitive/baseline/consolidation.go` | ✅ Done | Level-0 → Level-1 摘要 |
+| InMemorySummarizationWorker | `worker/cognitive/baseline/summarization.go` | ✅ Done | Level-1/2 压缩摘要 |
+| InMemoryReflectionPolicyWorker | `worker/cognitive/baseline/reflection.go` | ✅ Done | TTL、Quarantine、Confidence、Salience |
+| InMemoryConflictMergeWorker | `worker/coordination/conflict.go` | ✅ Done | LWW + conflict_resolved 边 |
+| InMemoryCommunicationWorker | `worker/coordination/communication.go` | ✅ Done | Agent 间内存广播 |
+| InMemoryMicroBatchScheduler | `worker/coordination/microbatch.go` | ✅ Done | 批量积累 + Flush 周期；**持久化 drain 待接** |
+| InMemoryProofTraceWorker | `worker/coordination/proof_trace.go` | ✅ Done | 多跳 BFS + DerivationLog |
+| InMemoryIndexBuildWorker | `worker/indexing/build.go` | ✅ Done | Segment + 关键词索引 |
+| InMemoryGraphRelationWorker | `worker/indexing/graph.go` | ✅ Done | 边索引写入 |
+| InMemorySubgraphExecutorWorker | `worker/indexing/subgraph.go` | ✅ Done | 1跳图扩展，已修复 pre-fetch gap |
+| InMemoryDataNode | `worker/nodes/data_node.go` | ✅ Done | Segment 记录存储 |
+| InMemoryIndexNode | `worker/nodes/index_node.go` | ✅ Done | 索引统计 |
+| InMemoryQueryNode | `worker/nodes/query_node.go` | ✅ Done | 委托 DataPlane 搜索 |
+| AlgorithmDispatchWorker | `worker/cognitive/algorithm_dispatcher.go` | ✅ Done | 算法插件桥接，纯持久化 relay |
+| BaselineMemoryAlgorithm | `worker/cognitive/baseline/baseline_algo.go` | ✅ Done | 强度衰减记忆算法 |
+
+### Pending Work
+
+| Item | Owner | 文件 | 描述 |
+|---|---|---|---|
+| Dead-letter channel | **member-D** | `worker/subscriber.go` | ✅ **已完成** — `safeDispatch` 替换为 `deadLetter chan DeadLetterEntry` |
+| MicroBatch 持久化 drain | **member-D** | `worker/coordination/microbatch.go` | flush 的 payload 需转发到 coordinator 或 DLQ |
