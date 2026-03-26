@@ -84,9 +84,10 @@ private:
     SegmentIndexManager& operator=(const SegmentIndexManager&) = delete;
 
     struct Entry {
-        // Opaque Knowhere index — forward-declared to keep this header light.
-        void*   index_ptr   = nullptr;  // knowhere::Index<IndexNode>*
-        void*   config_ptr  = nullptr;  // knowhere::Json*
+        // Opaque pointers to internal index types — concrete types are in
+        // segment_index.cpp only and are never exposed through this header.
+        void*   index_ptr   = nullptr;  // internal: andb index instance
+        void*   config_ptr  = nullptr;  // internal: andb index config
         int     dim         = 0;
         int64_t num_vectors = 0;
     };

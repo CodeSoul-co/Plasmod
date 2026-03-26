@@ -10,8 +10,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 option(ANDB_WITH_GPU          "Enable GPU support (future, requires CUDA)"           OFF)
 option(ANDB_WITH_TESTS        "Build unit tests"                                     OFF)
-option(ANDB_KNOWHERE_FAISS    "Build Knowhere with faiss IVF indexes (needs OpenBLAS)" OFF)
-option(ANDB_KNOWHERE_DISKANN  "Build Knowhere with DiskANN"                           OFF)
+option(ANDB_KNOWHERE_FAISS    "Build ann_core with faiss IVF indexes (needs OpenBLAS)" OFF)
+option(ANDB_KNOWHERE_DISKANN  "Build ann_core with DiskANN"                           OFF)
 
 # =============================================================================
 # Platform Detection
@@ -31,39 +31,43 @@ elseif(UNIX)
 endif()
 
 # =============================================================================
-# Knowhere — CogDB-internal vector index library
-# Source: cpp/knowhere/  (include/ src/ engines/ compat/)
+# vendor/ — third-party source-level dependencies (ANN index engine)
+# Location: cpp/vendor/  (include/ src/ engines/ compat/)
+# Contains the Knowhere vector index library (source-level, not a package).
+# Internal headers use "knowhere/..." paths (upstream convention, unchanged).
+# The outer directory is named vendor/ — neutral, conventional, no confusion
+# with the cpp/knowhere/include/knowhere/ double-nesting we had before.
 # No folly / glog / prometheus / opentelemetry required.
-# HNSW is always on; IVF/DiskANN/GPU are opt-in.
+# HNSW always on; IVF/DiskANN/GPU opt-in.
 # =============================================================================
 set(KNOWHERE_WITH_FAISS   ${ANDB_KNOWHERE_FAISS}   CACHE BOOL "" FORCE)
 set(KNOWHERE_WITH_DISKANN ${ANDB_KNOWHERE_DISKANN} CACHE BOOL "" FORCE)
 set(KNOWHERE_WITH_GPU     ${ANDB_WITH_GPU}         CACHE BOOL "" FORCE)
 
-add_subdirectory(knowhere)   # → builds target: knowhere
+add_subdirectory(vendor)   # → builds CMake target: knowhere
 
-message(STATUS "Knowhere integration: source-level (cpp/knowhere/)")
-message(STATUS "  HNSW engine     : cpp/knowhere/engines/hnsw_engine/")
-message(STATUS "  faiss engine    : cpp/knowhere/engines/faiss_engine/  [opt ${ANDB_KNOWHERE_FAISS}]")
-message(STATUS "  diskann engine  : cpp/knowhere/engines/diskann_engine/ [opt ${ANDB_KNOWHERE_DISKANN}]")
+message(STATUS "vendor: source-level ANN engine (cpp/vendor/)")
+message(STATUS "  HNSW engine     : cpp/vendor/engines/hnsw_engine/")
+message(STATUS "  faiss engine    : cpp/vendor/engines/faiss_engine/  [opt ${ANDB_KNOWHERE_FAISS}]")
+message(STATUS "  diskann engine  : cpp/vendor/engines/diskann_engine/ [opt ${ANDB_KNOWHERE_DISKANN}]")
 
 # =============================================================================
-# andb_retrieval — B-module retrieval library
-# Uses Knowhere's C++ API (knowhere::IndexFactory, knowhere::DataSet, etc.)
+# andb_retrieval — B-module retrieval shared library
+# C++ layer responsibility: ANN index operations only.
+# Business logic (RRF, safety filter, seed marking) lives in Go.
 # =============================================================================
 add_library(andb_retrieval SHARED
     retrieval/retrieval.cpp       # extern "C" ANN API (no business logic)
     retrieval/segment_index.cpp   # SegmentIndexManager — per-segment HNSW
-    retrieval/dense.cpp           # DenseRetriever — Knowhere HNSW
+    retrieval/dense.cpp           # DenseRetriever — HNSW via ann_core
     retrieval/sparse.cpp          # SparseRetriever — C++ inverted index
-    # merger.cpp and filter.cpp removed — business logic lives in Go
 )
 
 target_include_directories(andb_retrieval PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include          # andb/ public headers
-    ${CMAKE_CURRENT_SOURCE_DIR}/knowhere/include # knowhere/ public API
-    ${CMAKE_CURRENT_SOURCE_DIR}/knowhere/compat  # glog+nlohmann+omp shims
-    ${CMAKE_CURRENT_SOURCE_DIR}/knowhere/engines/hnsw_engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include   # knowhere/ internal API
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/compat    # glog+nlohmann+omp shims
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/engines/hnsw_engine
 )
 
 # On macOS with Homebrew libomp, add its include dir so our compat/omp.h
@@ -80,7 +84,7 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(andb_retrieval PUBLIC knowhere Threads::Threads)
 
-message(STATUS "andb_retrieval: links against internal knowhere target")
+message(STATUS "andb_retrieval: links against vendor/knowhere (CMake target: knowhere)")
 
 # =============================================================================
 # Unit Tests
@@ -99,4 +103,4 @@ install(TARGETS andb_retrieval knowhere
 )
 
 install(DIRECTORY include/andb DESTINATION include)
-install(DIRECTORY knowhere/include/knowhere DESTINATION include)
+install(DIRECTORY vendor/include/knowhere DESTINATION include)
