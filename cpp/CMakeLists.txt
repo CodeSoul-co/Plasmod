@@ -52,12 +52,11 @@ message(STATUS "  diskann engine  : cpp/knowhere/engines/diskann_engine/ [opt ${
 # Uses Knowhere's C++ API (knowhere::IndexFactory, knowhere::DataSet, etc.)
 # =============================================================================
 add_library(andb_retrieval SHARED
-    retrieval/retrieval.cpp
+    retrieval/retrieval.cpp       # extern "C" ANN API (no business logic)
     retrieval/segment_index.cpp   # SegmentIndexManager — per-segment HNSW
-    retrieval/dense.cpp
-    retrieval/sparse.cpp
-    retrieval/filter.cpp
-    retrieval/merger.cpp
+    retrieval/dense.cpp           # DenseRetriever — Knowhere HNSW
+    retrieval/sparse.cpp          # SparseRetriever — C++ inverted index
+    # merger.cpp and filter.cpp removed — business logic lives in Go
 )
 
 target_include_directories(andb_retrieval PUBLIC
