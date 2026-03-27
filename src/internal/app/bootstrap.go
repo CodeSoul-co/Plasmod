@@ -15,8 +15,8 @@ import (
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
-	baseline "andb/src/internal/worker/cognitive/baseline"
 	cognitive "andb/src/internal/worker/cognitive"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/ingestion"
@@ -159,6 +159,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	nodeManager.RegisterObjectMaterialization(matworker.CreateInMemoryObjectMaterializationWorker(
 		"obj-mat-1",
 		store.Objects(),
+		store.Edges(),
 		store.Versions(),
 	))
 	nodeManager.RegisterStateMaterialization(matworker.CreateInMemoryStateMaterializationWorker(

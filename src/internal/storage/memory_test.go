@@ -261,11 +261,17 @@ func TestInMemoryAlgorithmStateStore_PutAndGet(t *testing.T) {
 func TestTieredObjectStore_ArchiveEdge(t *testing.T) {
 	hot := NewHotObjectCache(100)
 	warm := newMemoryObjectStore()
-	cold := NewInMemoryColdStore()
-	tiered := NewTieredObjectStore(hot, warm, cold)
-
 	warmEdges := newMemoryGraphEdgeStore()
-	warmEdges.PutEdge(schemas.Edge{EdgeID: "e_arc", SrcObjectID: "m1", DstObjectID: "m2", EdgeType: "derived_from"})
+	cold := NewInMemoryColdStore()
+
+	tiered := NewTieredObjectStore(hot, warm, warmEdges, cold)
+
+	warmEdges.PutEdge(schemas.Edge{
+		EdgeID:      "e_arc",
+		SrcObjectID: "m1",
+		DstObjectID: "m2",
+		EdgeType:    "derived_from",
+	})
 
 	tiered.ArchiveEdge(warmEdges, "e_arc")
 

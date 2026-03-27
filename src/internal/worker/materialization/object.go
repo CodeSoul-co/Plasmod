@@ -18,15 +18,22 @@ import (
 type InMemoryObjectMaterializationWorker struct {
 	id       string
 	objStore storage.ObjectStore
+	edgStore storage.GraphEdgeStore
 	verStore storage.SnapshotVersionStore
 }
 
 func CreateInMemoryObjectMaterializationWorker(
 	id string,
 	objStore storage.ObjectStore,
+	edgStore storage.GraphEdgeStore,
 	verStore storage.SnapshotVersionStore,
 ) *InMemoryObjectMaterializationWorker {
-	return &InMemoryObjectMaterializationWorker{id: id, objStore: objStore, verStore: verStore}
+	return &InMemoryObjectMaterializationWorker{
+		id:       id,
+		objStore: objStore,
+		edgStore: edgStore,
+		verStore: verStore,
+	}
 }
 
 func (w *InMemoryObjectMaterializationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
@@ -97,6 +104,9 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			}
 		}
 		w.objStore.PutArtifact(artifact)
+		for _, e := range schemas.BuildArtifactBaseEdges(artifact) {
+			w.edgStore.PutEdge(e)
+		}
 		w.verStore.PutVersion(schemas.ObjectVersion{
 			ObjectID:        artifact.ArtifactID,
 			ObjectType:      string(schemas.ObjectTypeArtifact),
@@ -105,9 +115,9 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			ValidFrom:       now,
 		})
 
-	// State objects are created exclusively by InMemoryStateMaterializationWorker
-	// (DispatchStateMaterialization) to avoid duplicate State storage.
-	// See Runtime.SubmitIngest for the synchronous call site.
+		// State objects are created exclusively by InMemoryStateMaterializationWorker
+		// (DispatchStateMaterialization) to avoid duplicate State storage.
+		// See Runtime.SubmitIngest for the synchronous call site.
 	}
 	return nil
 }

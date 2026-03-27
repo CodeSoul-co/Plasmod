@@ -31,7 +31,7 @@ func buildManager(t *testing.T) (*nodes.Manager, storage.RuntimeStorage) {
 
 	mgr.RegisterIngest(ingestion.CreateInMemoryIngestWorker("ingest-1"))
 	mgr.RegisterObjectMaterialization(
-		matworker.CreateInMemoryObjectMaterializationWorker("obj-mat-1", store.Objects(), store.Versions()))
+		matworker.CreateInMemoryObjectMaterializationWorker("obj-mat-1", store.Objects(), store.Edges(), store.Versions()))
 	mgr.RegisterStateMaterialization(
 		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions()))
 	mgr.RegisterToolTrace(

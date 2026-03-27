@@ -15,7 +15,7 @@ import (
 // Runtime.SubmitIngest via TieredObjectStore.PutMemory, not by this worker.
 func TestObjectMatWorker_Materialize_DefaultToMemory(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions())
 
 	ev := schemas.Event{
 		EventID:   "evt1",
@@ -36,7 +36,12 @@ func TestObjectMatWorker_Materialize_DefaultToMemory(t *testing.T) {
 
 func TestObjectMatWorker_Materialize_ToolCallToArtifact(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker(
+		"test-obj",
+		store.Objects(),
+		store.Edges(),
+		store.Versions(),
+	)
 
 	ev := schemas.Event{
 		EventID:   "evt2",
@@ -48,12 +53,40 @@ func TestObjectMatWorker_Materialize_ToolCallToArtifact(t *testing.T) {
 		t.Fatalf("Materialize failed: %v", err)
 	}
 
-	art, ok := store.Objects().GetArtifact(schemas.IDPrefixArtifact + "evt2")
+	artID := schemas.IDPrefixArtifact + "evt2"
+	art, ok := store.Objects().GetArtifact(artID)
 	if !ok {
 		t.Fatal("expected Artifact to be stored for tool_call event")
 	}
 	if art.ArtifactType != string(schemas.EventTypeToolCall) {
 		t.Errorf("wrong artifact type: %q", art.ArtifactType)
+	}
+
+	edges := store.Edges().EdgesFrom(artID)
+	if len(edges) == 0 {
+		t.Fatal("expected artifact base edges to be created")
+	}
+
+	var hasSession, hasAgent, hasProduced bool
+	for _, e := range edges {
+		switch e.EdgeType {
+		case string(schemas.EdgeTypeBelongsToSession):
+			if e.DstObjectID == "s1" {
+				hasSession = true
+			}
+		case string(schemas.EdgeTypeOwnedByAgent):
+			if e.DstObjectID == "a1" {
+				hasAgent = true
+			}
+		case string(schemas.EdgeTypeToolProduces):
+			if e.DstObjectID == "evt2" {
+				hasProduced = true
+			}
+		}
+	}
+
+	if !hasSession || !hasAgent || !hasProduced {
+		t.Fatalf("missing expected artifact base edges: %+v", edges)
 	}
 }
 
@@ -64,7 +97,7 @@ func TestObjectMatWorker_Materialize_ToolCallToArtifact(t *testing.T) {
 
 func TestObjectMatWorker_Run_TypedDispatch(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions())
 
 	out, err := w.Run(schemas.ObjectMaterializationInput{
 		Event: schemas.Event{EventID: "evt4", AgentID: "a1", SessionID: "s1"},
@@ -86,7 +119,7 @@ func TestObjectMatWorker_Run_TypedDispatch(t *testing.T) {
 
 func TestObjectMatWorker_Run_WrongInputType(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions())
 	_, err := w.Run(schemas.IngestInput{})
 	if err == nil {
 		t.Error("expected error for wrong input type")
