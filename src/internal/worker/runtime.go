@@ -11,7 +11,6 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/evidence"
 	"andb/src/internal/materialization"
-	"andb/src/internal/retrieval"
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
@@ -36,10 +35,6 @@ type Runtime struct {
 	storage           storage.RuntimeStorage
 	tieredObjects     *storage.TieredObjectStore
 	queryChain        *chain.QueryChain
-	// goRetriever applies safety-filter, RRF reranking, and seed marking on top
-	// of the raw DataPlane search results.  It replaces the Python retrieval
-	// service and integrates the CandidateList.SeedIDs into QueryChain.
-	goRetriever *retrieval.Retriever
 	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
 	// can fire synchronously in SubmitIngest (not only async via subscriber).
 	lastMem map[string]string
@@ -62,7 +57,7 @@ func CreateRuntime(
 	store storage.RuntimeStorage,
 	tieredObjs *storage.TieredObjectStore,
 ) *Runtime {
-	rt := &Runtime{
+	return &Runtime{
 		wal:               wal,
 		bus:               bus,
 		plane:             plane,
@@ -81,12 +76,6 @@ func CreateRuntime(
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
 	}
-	// Wire the Go retrieval engine when both a DataPlane and ObjectStore are
-	// available.  Falls back gracefully when store is nil (test stubs).
-	if store != nil {
-		rt.goRetriever = retrieval.New(plane, store.Objects())
-	}
-	return rt
 }
 
 func (r *Runtime) RegisterDefaults() {
@@ -158,7 +147,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		)
 	} else {
 		// Fallback for tests or code paths that don't initialise TieredObjectStore.
-		r.storage.Objects().PutMemory(mat.Memory)
+		r.storage.PutMemoryWithBaseEdges(mat.Memory)
 	}
 	r.storage.Versions().PutVersion(mat.Version)
 	for _, edge := range mat.Edges {
@@ -214,8 +203,6 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		ObjectTypes:    plan.ObjectTypes,
 		MemoryTypes:    plan.MemoryTypes,
 	}
-
-	// ── DataPlane search (lexical + CGO Knowhere vector) ─────────────────────
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 
@@ -225,49 +212,6 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// canonical store so they appear in the response alongside memory results.
 	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
 	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
-
-	// ── Go retrieval enrichment: safety filter + RRF reranking + seed marking ─
-	// goRetriever.EnrichAndRank enriches the raw object IDs with Memory
-	// metadata, applies the 7-rule safety filter, computes
-	//   final_score = rrf × importance × freshness × confidence
-	// and marks high-confidence candidates as seeds (final_score ≥ 0.7).
-	// SeedIDs are passed to QueryChain for targeted graph expansion instead of
-	// expanding the entire result set.
-	var chainObjectIDs []string
-	if r.goRetriever != nil && len(result.ObjectIDs) > 0 {
-		retreq := retrieval.RetrievalRequest{
-			QueryText:          req.QueryText,
-			TenantID:           req.TenantID,
-			WorkspaceID:        req.WorkspaceID,
-			AgentID:            req.AgentID,
-			SessionID:          req.SessionID,
-			Scope:              req.QueryScope,
-			TopK:               plan.TopK,
-			ObjectTypes:        plan.ObjectTypes,
-			MemoryTypes:        plan.MemoryTypes,
-			EnableDense:        true,
-			EnableSparse:       true,
-			ExcludeQuarantined: true,
-		}
-		cl := r.goRetriever.EnrichAndRank(result.ObjectIDs, retreq)
-
-		// Rebuild result.ObjectIDs from the filtered, ranked candidate list so
-		// the evidence assembler sees the same order and filtering.
-		ranked := make([]string, 0, len(cl.Candidates))
-		for _, c := range cl.Candidates {
-			ranked = append(ranked, c.ObjectID)
-		}
-		result.ObjectIDs = ranked
-
-		// Prefer seed IDs for QueryChain graph expansion; fall back to all IDs
-		// when no seeds were identified (e.g. all scores < 0.7).
-		chainObjectIDs = cl.SeedIDs
-		if len(chainObjectIDs) == 0 {
-			chainObjectIDs = ranked
-		}
-	} else {
-		chainObjectIDs = result.ObjectIDs
-	}
 
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
@@ -279,11 +223,9 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
-	// chainObjectIDs = SeedIDs (final_score ≥ 0.7) when goRetriever is active,
-	// ensuring only high-confidence candidates seed the subgraph expansion.
-	if len(chainObjectIDs) > 0 {
+	if len(result.ObjectIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:   chainObjectIDs,
+			ObjectIDs:   result.ObjectIDs,
 			MaxDepth:    0, // default cap of 8
 			ObjectStore: r.storage.Objects(),
 			EdgeStore:   r.storage.Edges(),
@@ -292,6 +234,10 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 
 		if len(chainOut.ProofTrace) > 0 {
 			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
+		}
+
+		if len(chainOut.Subgraph.Nodes) > 0 {
+			resp.Nodes = chainOut.Subgraph.Nodes
 		}
 
 		// Merge subgraph-expanded edges into resp.Edges, deduplicating by EdgeID.
@@ -320,6 +266,13 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 	var ids []string
 	for _, t := range objectTypes {
 		switch t {
+		case "event":
+			if r.storage != nil {
+				for _, e := range r.storage.Objects().ListEvents(agentID, sessionID) {
+					ids = append(ids, e.EventID)
+				}
+			}
+
 		case "state":
 			if r.storage != nil {
 				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {
