@@ -118,14 +118,32 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	// Call the materialization workers here (not only in the async subscriber)
 	// so tests and synchronous query paths can read them without waiting for
 	// the next WAL poll cycle.
+	//
+	// Routing:
+	//   - Artifact (tool_call/tool_result) → ObjectMaterializationWorker
+	//   - State    (state_update/state_change/checkpoint) → StateMaterializationWorker
+	//     (NOTE: State is NOT handled by ObjectMaterializationWorker to avoid
+	//     creating duplicate State objects with different field values for the
+	//     same event. StateMaterializationWorker stores via PutState directly.)
+	//   - Memory   → stored directly below via tieredObjects.PutMemory (richer
+	//     MaterializeEvent output), not via ObjectMaterializationWorker.
 	r.nodeManager.DispatchObjectMaterialization(ev)
 	r.nodeManager.DispatchToolTrace(ev)
 
-	// checkpoint events: synchronously snapshot all current states so the
-	// version entries are available for immediate queries without waiting for
-	// the async subscriber's 200ms poll cycle.
-	if ev.EventType == string(schemas.EventTypeCheckpoint) && ev.AgentID != "" && ev.SessionID != "" {
-		r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+	// State objects for ALL state events are created synchronously so they are
+	// immediately queryable.  The async subscriber's StateMaterialization handler
+	// handles the same events (creating a second State record with a different
+	// version number), which is intentional — the VersionStore accumulates
+	// snapshots rather than overwriting.
+	isStateEvent := ev.EventType == string(schemas.EventTypeStateUpdate) ||
+		ev.EventType == string(schemas.EventTypeStateChange) ||
+		ev.EventType == string(schemas.EventTypeCheckpoint)
+	if isStateEvent && ev.AgentID != "" && ev.SessionID != "" {
+		r.nodeManager.DispatchStateMaterialization(ev)
+		// checkpoint events additionally snapshot all current states.
+		if ev.EventType == string(schemas.EventTypeCheckpoint) {
+			r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+		}
 	}
 
 	// ── Persist canonical objects ─────────────────────────────────────────

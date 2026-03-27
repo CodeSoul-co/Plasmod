@@ -10,6 +10,9 @@ import (
 
 // ─── ObjectMaterializationWorker ─────────────────────────────────────────────
 
+// TestObjectMatWorker_Materialize_DefaultToMemory verifies that ObjectMaterializationWorker
+// is a no-op for non-artifact events (e.g. agent_thought). Memory is created by
+// Runtime.SubmitIngest via TieredObjectStore.PutMemory, not by this worker.
 func TestObjectMatWorker_Materialize_DefaultToMemory(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
 	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Versions())
@@ -24,12 +27,10 @@ func TestObjectMatWorker_Materialize_DefaultToMemory(t *testing.T) {
 		t.Fatalf("Materialize failed: %v", err)
 	}
 
-	mem, ok := store.Objects().GetMemory(schemas.IDPrefixMemory + "evt1")
-	if !ok {
-		t.Fatal("expected Memory to be stored for default event type")
-	}
-	if mem.AgentID != "a1" {
-		t.Errorf("wrong AgentID: %q", mem.AgentID)
+	// ObjectMaterializationWorker should NOT create Memory for non-artifact events.
+	_, ok := store.Objects().GetMemory(schemas.IDPrefixMemory + "evt1")
+	if ok {
+		t.Fatal("ObjectMaterializationWorker should not create Memory; it is a no-op for agent_thought events")
 	}
 }
 
@@ -56,28 +57,10 @@ func TestObjectMatWorker_Materialize_ToolCallToArtifact(t *testing.T) {
 	}
 }
 
-func TestObjectMatWorker_Materialize_StateUpdateToState(t *testing.T) {
-	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Versions())
-
-	ev := schemas.Event{
-		EventID:   "evt3",
-		AgentID:   "a1",
-		SessionID: "s1",
-		EventType: string(schemas.EventTypeStateUpdate),
-	}
-	if err := w.Materialize(ev); err != nil {
-		t.Fatalf("Materialize failed: %v", err)
-	}
-
-	state, ok := store.Objects().GetState(schemas.IDPrefixState + "evt3")
-	if !ok {
-		t.Fatal("expected State to be stored for state_update event")
-	}
-	if state.AgentID != "a1" {
-		t.Errorf("wrong AgentID: %q", state.AgentID)
-	}
-}
+// TestObjectMatWorker_Materialize_StateUpdateToState is removed.
+// State is exclusively created by InMemoryStateMaterializationWorker (DispatchStateMaterialization).
+// See Runtime.SubmitIngest for the synchronous call site; StateMaterializationWorker.Apply
+// is tested in TestStateMatWorker_Apply_StateUpdateEvent.
 
 func TestObjectMatWorker_Run_TypedDispatch(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()

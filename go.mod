@@ -4,12 +4,12 @@ go 1.24.0
 
 require (
 	andb/retrievalplane v0.0.0
+	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/hamba/avro/v2 v2.31.0
 )
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dgraph-io/badger/v4 v4.9.1 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

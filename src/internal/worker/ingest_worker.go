@@ -103,7 +103,7 @@ func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) 
 	if err := w.plane.Ingest(record); err != nil {
 		return nil, err
 	}
-	if _, err := w.nodeManager.DispatchAlgorithm(
+	w.nodeManager.DispatchAlgorithmDispatch(
 		"ingest",
 		[]string{mat.Memory.MemoryID},
 		"",
@@ -111,9 +111,7 @@ func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) 
 		ev.AgentID,
 		ev.SessionID,
 		nil,
-	); err != nil {
-		return nil, err
-	}
+	)
 
 	ack := map[string]any{
 		"status":    "accepted",
