@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"andb/src/internal/access"
 	"andb/src/internal/coordinator"
@@ -13,6 +14,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/evidence"
 	"andb/src/internal/materialization"
+	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
@@ -85,17 +87,40 @@ func BuildServer() (*http.Server, func() error, error) {
 		coldStore = storage.NewInMemoryColdStore()
 		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
 	}
-	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), coldStore)
+	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), coldStore)
 
 	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
 	policyEngine := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
 
+	// ── Algorithm Config — all tunable worker parameters ─────────────────────
+	// Defaults are in schemas.DefaultAlgorithmConfig().  Environment variables
+	// override specific fields when set:
+	//   ANDB_EVIDENCE_CACHE_SIZE   (default 10000)
+	//   ANDB_MAX_PROOF_DEPTH       (default 8)
+	//   ANDB_HOT_TIER_THRESHOLD    (default 0.5)
+	algoCfg := schemas.DefaultAlgorithmConfig()
+	if sz := os.Getenv("ANDB_EVIDENCE_CACHE_SIZE"); sz != "" {
+		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
+			algoCfg.EvidenceCacheSize = n
+		}
+	}
+	if d := os.Getenv("ANDB_MAX_PROOF_DEPTH"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+			algoCfg.MaxProofDepth = n
+		}
+	}
+	if t := os.Getenv("ANDB_HOT_TIER_THRESHOLD"); t != "" {
+		if f, err := strconv.ParseFloat(t, 64); err == nil && f > 0 {
+			algoCfg.HotTierSalienceThreshold = f
+		}
+	}
+
 	// ── Materialization & Evidence ───────────────────────────────────────────
-	evCache := evidence.NewCache(10000)
+	evCache := evidence.NewCache(algoCfg.EvidenceCacheSize)
 	materializer := materialization.NewService()
-	preCompute := materialization.NewPreComputeService(evCache)
+	preCompute := materialization.NewPreComputeServiceWithConfig(evCache, algoCfg)
 	assembler := evidence.NewCachedAssembler(evCache).
 		WithEdgeStore(store.Edges()).
 		WithVersionStore(store.Versions()).

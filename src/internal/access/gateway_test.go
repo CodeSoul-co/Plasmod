@@ -21,7 +21,7 @@ func buildTestGateway() *Gateway {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
-	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), storage.NewInMemoryColdStore())
 	plane := dataplane.NewTieredDataPlane(tieredObjs)
 	policy := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()

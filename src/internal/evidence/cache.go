@@ -1,6 +1,10 @@
 package evidence
 
-import "sync"
+import (
+	"sync"
+
+	"andb/src/internal/schemas"
+)
 
 // Cache stores pre-computed EvidenceFragments keyed by object ID.
 // It is the hot-path lookup used by the Assembler to avoid re-deriving proof
@@ -14,10 +18,10 @@ type Cache struct {
 }
 
 // NewCache creates an EvidenceCache with the given capacity.
-// A maxSize of 0 means unbounded.
+// A maxSize of 0 means unbounded; falls back to schemas.DefaultEvidenceCacheSize.
 func NewCache(maxSize int) *Cache {
 	if maxSize <= 0 {
-		maxSize = 10000
+		maxSize = schemas.DefaultEvidenceCacheSize
 	}
 	return &Cache{
 		fragments: make(map[string]EvidenceFragment, maxSize),

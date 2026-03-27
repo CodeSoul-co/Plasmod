@@ -160,7 +160,7 @@ func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
 	)
 	evCache := evidence.NewCache(100)
 	preCompute := materialization.NewPreComputeService(evCache)
-	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), storage.NewInMemoryColdStore())
 	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
 
 	_, err := r.SubmitIngest(schemas.Event{

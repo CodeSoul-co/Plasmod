@@ -182,14 +182,23 @@ func (c *HotObjectCache) evictOne() {
 // Hot reads are served from HotObjectCache.
 // Warm reads fall through to the standard ObjectStore.
 // Cold reads use the ColdObjectStore (disk-backed or simulated).
+// hotThreshold controls the minimum salience required to promote a memory to the hot cache
+// (defaults to schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold).
 type TieredObjectStore struct {
-	hot      *HotObjectCache
-	warm     ObjectStore
-	warmEdge GraphEdgeStore
-	cold     ColdObjectStore
+	hot          *HotObjectCache
+	warm         ObjectStore
+	warmEdge     GraphEdgeStore
+	cold         ColdObjectStore
+	hotThreshold float64
 }
 
 func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore) *TieredObjectStore {
+	return NewTieredObjectStoreWithThreshold(hot, warm, warmEdge, cold, schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold)
+}
+
+// NewTieredObjectStoreWithThreshold creates a TieredObjectStore with an explicit hot-tier
+// salience threshold. Use this when the default threshold (0.5) needs tuning.
+func NewTieredObjectStoreWithThreshold(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore, hotThreshold float64) *TieredObjectStore {
 	if hot == nil {
 		hot = NewHotObjectCache(0)
 	}
@@ -197,10 +206,11 @@ func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphE
 		cold = NewInMemoryColdStore()
 	}
 	return &TieredObjectStore{
-		hot:      hot,
-		warm:     warm,
-		warmEdge: warmEdge,
-		cold:     cold,
+		hot:          hot,
+		warm:         warm,
+		warmEdge:     warmEdge,
+		cold:         cold,
+		hotThreshold: hotThreshold,
 	}
 }
 
@@ -242,7 +252,7 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 			t.warmEdge.PutEdge(e)
 		}
 	}
-	if salience >= 0.5 {
+	if salience >= t.hotThreshold {
 		t.hot.Put(m.MemoryID, "memory", m, salience)
 	}
 }
