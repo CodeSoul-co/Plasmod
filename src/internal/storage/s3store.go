@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,6 +27,21 @@ import (
 type S3ColdStore struct {
 	cfg        S3Config
 	ensureOnce sync.Once
+}
+
+type s3ColdScored struct {
+	id    string
+	ts    int64
+	score float64
+}
+
+type s3ColdSearchConfig struct {
+	maxKeys        int
+	concurrency    int
+	batchSize      int
+	bufferFactor   int
+	earlyStopScore float64
+	noImprovePages int
 }
 
 // NewS3ColdStore returns an S3-backed ColdObjectStore using the supplied config.
@@ -52,6 +69,10 @@ func (s *S3ColdStore) agentKey(id string) string {
 
 func (s *S3ColdStore) stateKey(id string) string {
 	return fmt.Sprintf("%s/cold/states/%s.json", s.cfg.Prefix, id)
+}
+
+func (s *S3ColdStore) artifactKey(id string) string {
+	return fmt.Sprintf("%s/cold/artifacts/%s.json", s.cfg.Prefix, id)
 }
 
 func (s *S3ColdStore) edgeKey(id string) string {
@@ -148,6 +169,36 @@ func (s *S3ColdStore) GetState(id string) (schemas.State, bool) {
 	return st, true
 }
 
+func (s *S3ColdStore) PutArtifact(art schemas.Artifact) {
+	s.doEnsureBucket()
+	data, err := json.Marshal(art)
+	if err != nil {
+		log.Printf("s3cold: marshal artifact %s: %v", art.ArtifactID, err)
+		return
+	}
+	if err := PutBytes(context.Background(), nil, s.cfg, s.artifactKey(art.ArtifactID), data, "application/json"); err != nil {
+		log.Printf("s3cold: put artifact %s: %v", art.ArtifactID, err)
+	}
+}
+
+func (s *S3ColdStore) GetArtifact(id string) (schemas.Artifact, bool) {
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.artifactKey(id))
+	if err != nil {
+		log.Printf("s3cold: get artifact %s: %v", id, err)
+		return schemas.Artifact{}, false
+	}
+	if data == nil {
+		log.Printf("s3cold: miss artifact key=%s", s.artifactKey(id))
+		return schemas.Artifact{}, false
+	}
+	var art schemas.Artifact
+	if err := json.Unmarshal(data, &art); err != nil {
+		log.Printf("s3cold: unmarshal artifact %s: %v", id, err)
+		return schemas.Artifact{}, false
+	}
+	return art, true
+}
+
 func (s *S3ColdStore) PutEdge(e schemas.Edge) {
 	s.doEnsureBucket()
 	data, err := json.Marshal(e)
@@ -191,71 +242,224 @@ func (s *S3ColdStore) ListEdges() []schemas.Edge {
 // For production with large cold archives, this should be replaced with a
 // metadata index (e.g. DynamoDB or SQLite) keyed by text tokens.
 func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
+	if topK <= 0 {
+		return nil
+	}
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
+	cfg := loadS3ColdSearchConfigFromEnv()
 
 	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
-
-	type scored struct {
-		key  string
-		id   string
-		ts   int64
-		score float64
+	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
+		keys = keys[:cfg.maxKeys]
 	}
-	var results []scored
-	lq := strings.ToLower(query)
 
-	for _, key := range keys {
-		data, err := GetBytes(ctx, nil, s.cfg, key)
-		if err != nil || data == nil {
-			continue
+	targetCandidates := topK * cfg.bufferFactor
+	if targetCandidates < topK {
+		targetCandidates = topK
+	}
+	maxCandidates := targetCandidates * 2
+	if maxCandidates < topK {
+		maxCandidates = topK
+	}
+
+	results := make([]s3ColdScored, 0, min(maxCandidates, len(keys)))
+	noImprovePages := 0
+	prevCutoff := -1.0
+
+	for start := 0; start < len(keys); start += cfg.batchSize {
+		end := start + cfg.batchSize
+		if end > len(keys) {
+			end = len(keys)
 		}
-		var m schemas.Memory
-		if err := json.Unmarshal(data, &m); err != nil {
-			continue
-		}
-		text := strings.ToLower(m.Content)
-		summary := strings.ToLower(m.Summary)
-		var score float64
-		if strings.Contains(text, lq) || strings.Contains(summary, lq) {
-			score = 1.0
-		} else {
-			qTokens := strings.Fields(lq)
-			textTokens := strings.Fields(text)
-			match := 0
-			for _, qt := range qTokens {
-				for _, tt := range textTokens {
-					if tt == qt {
-						match++
-						break
-					}
+		page := keys[start:end]
+
+		pageResults := make([]s3ColdScored, 0, len(page))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, cfg.concurrency)
+
+		for _, key := range page {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(objectKey string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				data, err := GetBytes(ctx, nil, s.cfg, objectKey)
+				if err != nil || data == nil {
+					return
 				}
-			}
-			if len(qTokens) > 0 {
-				score = float64(match) / float64(len(qTokens))
-			}
+				var m schemas.Memory
+				if err := json.Unmarshal(data, &m); err != nil {
+					return
+				}
+				score := scoreColdMemory(query, m)
+				if score <= 0 {
+					return
+				}
+				mu.Lock()
+				pageResults = append(pageResults, s3ColdScored{
+					id:    m.MemoryID,
+					ts:    m.Version,
+					score: score,
+				})
+				mu.Unlock()
+			}(key)
 		}
-		if score > 0 {
-			results = append(results, scored{key: key, id: m.MemoryID, ts: m.Version, score: score})
+		wg.Wait()
+
+		if len(pageResults) > 0 {
+			results = append(results, pageResults...)
+			results = selectTopScored(results, maxCandidates)
+		}
+
+		topNow := selectTopScored(results, topK)
+		currCutoff := cutoffScore(topNow, topK)
+		if currCutoff > prevCutoff {
+			noImprovePages = 0
+			prevCutoff = currCutoff
+		} else {
+			noImprovePages++
+		}
+
+		if shouldEarlyStop(topNow, len(results), topK, targetCandidates, cfg.earlyStopScore, noImprovePages, cfg.noImprovePages) {
+			break
 		}
 	}
 
+	results = selectTopScored(results, topK)
+	out := make([]string, 0, len(results))
+	for _, r := range results {
+		out = append(out, r.id)
+	}
+	return out
+}
+
+func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
+	cfg := s3ColdSearchConfig{
+		maxKeys:        5000,
+		concurrency:    8,
+		batchSize:      128,
+		bufferFactor:   3,
+		earlyStopScore: 0.95,
+		noImprovePages: 2,
+	}
+	if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxKeys); v > 0 {
+		cfg.maxKeys = v
+	}
+	if v := parseEnvIntWithDefault("S3_COLDSEARCH_CONCURRENCY", cfg.concurrency); v > 0 {
+		cfg.concurrency = v
+	}
+	if v := parseEnvIntWithDefault("S3_COLDSEARCH_BATCH_SIZE", cfg.batchSize); v > 0 {
+		cfg.batchSize = v
+	}
+	if v := parseEnvIntWithDefault("S3_COLDSEARCH_BUFFER_FACTOR", cfg.bufferFactor); v > 0 {
+		cfg.bufferFactor = v
+	}
+	if v := parseEnvFloatWithDefault("S3_COLDSEARCH_EARLY_STOP_SCORE", cfg.earlyStopScore); v > 0 && v <= 1 {
+		cfg.earlyStopScore = v
+	}
+	if v := parseEnvIntWithDefault("S3_COLDSEARCH_NO_IMPROVE_PAGES", cfg.noImprovePages); v > 0 {
+		cfg.noImprovePages = v
+	}
+	return cfg
+}
+
+func parseEnvIntWithDefault(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func parseEnvFloatWithDefault(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func scoreColdMemory(query string, m schemas.Memory) float64 {
+	lq := strings.ToLower(query)
+	if strings.TrimSpace(lq) == "" {
+		return 0
+	}
+	text := strings.ToLower(m.Content)
+	summary := strings.ToLower(m.Summary)
+	if strings.Contains(text, lq) || strings.Contains(summary, lq) {
+		return 1.0
+	}
+	qTokens := strings.Fields(lq)
+	textTokens := strings.Fields(text)
+	match := 0
+	for _, qt := range qTokens {
+		for _, tt := range textTokens {
+			if tt == qt {
+				match++
+				break
+			}
+		}
+	}
+	if len(qTokens) == 0 {
+		return 0
+	}
+	return float64(match) / float64(len(qTokens))
+}
+
+func selectTopScored(results []s3ColdScored, n int) []s3ColdScored {
+	if len(results) == 0 || n <= 0 {
+		return nil
+	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].score != results[j].score {
 			return results[i].score > results[j].score
 		}
 		return results[i].ts > results[j].ts
 	})
-
-	out := make([]string, 0, min(topK, len(results)))
-	for i := range results {
-		if i >= topK {
-			break
-		}
-		out = append(out, results[i].id)
+	if len(results) <= n {
+		return results
 	}
-	return out
+	return results[:n]
+}
+
+func cutoffScore(results []s3ColdScored, topK int) float64 {
+	if topK <= 0 || len(results) < topK {
+		return -1
+	}
+	return results[topK-1].score
+}
+
+func shouldEarlyStop(
+	topResults []s3ColdScored,
+	totalCandidates int,
+	topK int,
+	targetCandidates int,
+	highScoreThreshold float64,
+	noImprovePages int,
+	noImprovePagesThreshold int,
+) bool {
+	if topK <= 0 || len(topResults) < topK || totalCandidates < targetCandidates {
+		return false
+	}
+	high := 0
+	for _, r := range topResults {
+		if r.score >= highScoreThreshold {
+			high++
+		}
+	}
+	return high >= topK && noImprovePages >= noImprovePagesThreshold
 }

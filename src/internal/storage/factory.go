@@ -70,7 +70,7 @@ func buildRuntime(get func(string) string) (*RuntimeBundle, error) {
 		DataDir:        dataDir,
 		BadgerEnabled:  needBadger,
 		Stores:         stores,
-		WALPersistence: false,
+		WALPersistence: needBadger || mode == backendDisk,
 	}
 
 	if !needBadger {

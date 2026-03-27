@@ -22,10 +22,22 @@ type DerivationLog struct {
 	clock   *HybridClock
 	bus     Bus
 	entries []DerivationEntry
+	store   DerivationStore
 }
 
 func NewDerivationLog(clock *HybridClock, bus Bus) *DerivationLog {
-	return &DerivationLog{clock: clock, bus: bus}
+	return NewDerivationLogWithStore(clock, bus, nil)
+}
+
+func NewDerivationLogWithStore(clock *HybridClock, bus Bus, store DerivationStore) *DerivationLog {
+	d := &DerivationLog{clock: clock, bus: bus, store: store}
+	if store == nil {
+		return d
+	}
+	if restored, err := store.Load(); err == nil && len(restored) > 0 {
+		d.entries = append(d.entries, restored...)
+	}
+	return d
 }
 
 // Append records a derivation step and broadcasts it on "derivation.events".
@@ -42,6 +54,9 @@ func (d *DerivationLog) Append(sourceID, sourceType, derivedID, derivedType, ope
 	}
 	d.mu.Lock()
 	d.entries = append(d.entries, entry)
+	if d.store != nil {
+		_ = d.store.Append(entry)
+	}
 	d.mu.Unlock()
 	d.bus.Publish(Message{Channel: "derivation.events", Body: entry})
 	return entry

@@ -25,8 +25,6 @@ func TestLoadFromEnv_S3KeysTakePrecedence(t *testing.T) {
 }
 
 func TestLoadFromEnv_FallbackToMinioAliases(t *testing.T) {
-	t.Skip("LoadFromEnv has no MINIO_* fallback; needs separate LoadFromMinioEnv() or env-var unification")
-	// Clear any S3_* vars left from the previous test to avoid cross-test pollution
 	t.Setenv("S3_ENDPOINT", "")
 	t.Setenv("S3_ACCESS_KEY", "")
 	t.Setenv("S3_SECRET_KEY", "")
@@ -47,6 +45,12 @@ func TestLoadFromEnv_FallbackToMinioAliases(t *testing.T) {
 	}
 	if cfg.Endpoint != "127.0.0.1:9000" || cfg.AccessKey != "minio_key" || cfg.SecretKey != "minio_secret" || cfg.Bucket != "minio_bucket" {
 		t.Fatalf("unexpected cfg from MINIO_* aliases: %+v", cfg)
+	}
+	if cfg.Prefix != "andb/minio" {
+		t.Fatalf("expected prefix from MINIO_ROOT_PATH, got %q", cfg.Prefix)
+	}
+	if cfg.Region != "us-east-1" {
+		t.Fatalf("expected region from MINIO_REGION, got %q", cfg.Region)
 	}
 	if !cfg.Secure {
 		t.Fatalf("expected secure=true from MINIO_USE_SSL")
