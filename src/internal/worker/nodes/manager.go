@@ -35,11 +35,11 @@ type Manager struct {
 	// Cognitive Compression
 	summarizationWorkers []SummarizationWorker
 
-	// Memory algorithm dispatch
-	algoDispatchWorkers []AlgorithmDispatchWorker
-
 	// Structure Layer — subgraph execution
 	subgraphWorkers []SubgraphExecutorWorker
+
+	// Algorithm dispatch — bridges MemoryManagementAlgorithm plugins into the pipeline
+	algorithmDispatchWorkers []AlgorithmDispatchWorker
 }
 
 func CreateManager() *Manager {
@@ -61,8 +61,8 @@ func CreateManager() *Manager {
 		commWorkers:          []CommunicationWorker{},
 		microBatchWorkers:    []MicroBatchScheduler{},
 		summarizationWorkers: []SummarizationWorker{},
-		algoDispatchWorkers:  []AlgorithmDispatchWorker{},
-		subgraphWorkers:      []SubgraphExecutorWorker{},
+		subgraphWorkers:           []SubgraphExecutorWorker{},
+		algorithmDispatchWorkers: []AlgorithmDispatchWorker{},
 	}
 }
 
@@ -302,18 +302,41 @@ func (m *Manager) DispatchSubgraphExpand(
 	return m.subgraphWorkers[0].Expand(req, nodes, edges)
 }
 
+// ─── Algorithm Dispatch registration ───────────────────────────────────────────
+
+// RegisterAlgorithmDispatch registers an AlgorithmDispatchWorker.
+func (m *Manager) RegisterAlgorithmDispatch(w AlgorithmDispatchWorker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.algorithmDispatchWorkers = append(m.algorithmDispatchWorkers, w)
+}
+
+// DispatchAlgorithmDispatch forwards an operation to all registered
+// AlgorithmDispatchWorkers and returns the first non-empty result.
+// Falls back to an empty output when none are registered.
+func (m *Manager) DispatchAlgorithmDispatch(
+	operation string,
+	memoryIDs []string,
+	query, nowTS, agentID, sessionID string,
+	signals map[string]float64,
+) schemas.AlgorithmDispatchOutput {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, w := range m.algorithmDispatchWorkers {
+		out, err := w.Dispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
+		if err == nil && !out.IsEmpty() {
+			return out
+		}
+	}
+	return schemas.AlgorithmDispatchOutput{}
+}
+
 // ─── Cognitive Compression registration ─────────────────────────────────────────
 
 func (m *Manager) RegisterSummarization(w SummarizationWorker) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.summarizationWorkers = append(m.summarizationWorkers, w)
-}
-
-func (m *Manager) RegisterAlgorithmDispatch(w AlgorithmDispatchWorker) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.algoDispatchWorkers = append(m.algoDispatchWorkers, w)
 }
 
 // ─── New Dispatch methods ────────────────────────────────────────────────────────
@@ -421,20 +444,6 @@ func (m *Manager) FlushMicroBatch() []any {
 	return all
 }
 
-func (m *Manager) DispatchAlgorithm(
-	operation string,
-	memoryIDs []string,
-	query, nowTS, agentID, sessionID string,
-	signals map[string]float64,
-) (schemas.AlgorithmDispatchOutput, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if len(m.algoDispatchWorkers) == 0 {
-		return schemas.AlgorithmDispatchOutput{Operation: operation}, nil
-	}
-	return m.algoDispatchWorkers[0].Dispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
-}
-
 // ─── Topology ─────────────────────────────────────────────────────────────────
 
 func (m *Manager) Topology() []NodeInfo {
@@ -492,10 +501,10 @@ func (m *Manager) Topology() []NodeInfo {
 	for _, n := range m.summarizationWorkers {
 		out = append(out, n.Info())
 	}
-	for _, n := range m.algoDispatchWorkers {
+	for _, n := range m.subgraphWorkers {
 		out = append(out, n.Info())
 	}
-	for _, n := range m.subgraphWorkers {
+	for _, n := range m.algorithmDispatchWorkers {
 		out = append(out, n.Info())
 	}
 	return out

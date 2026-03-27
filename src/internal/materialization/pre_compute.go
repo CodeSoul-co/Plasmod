@@ -19,6 +19,9 @@ type PreComputeService struct {
 }
 
 func NewPreComputeService(cache *evidence.Cache) *PreComputeService {
+	if cache == nil {
+		cache = evidence.NewCache(0)
+	}
 	return &PreComputeService{cache: cache, policyTag: "default"}
 }
 
@@ -38,7 +41,7 @@ func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord
 		Namespace:     rec.Namespace,
 		TextTokens:    tokens,
 		RelatedIDs:    related,
-		EdgeTypes:     []string{"derived_from", "causal"},
+		EdgeTypes:     []string{string(schemas.EdgeTypeDerivedFrom), string(schemas.EdgeTypeCausedBy)},
 		PolicyFilters: filters,
 		SalienceScore: salience,
 		Level:         0,
@@ -46,14 +49,18 @@ func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord
 		LogicalTS:     ev.LogicalTS,
 	}
 
-	s.cache.Put(frag)
+	if s.cache != nil {
+		s.cache.Put(frag)
+	}
 	return frag
 }
 
 // Recompute invalidates and rebuilds the fragment for an already-known object.
 // Called by the ReflectionPolicyWorker when policy or salience changes.
 func (s *PreComputeService) Recompute(ev schemas.Event, rec dataplane.IngestRecord) evidence.EvidenceFragment {
-	s.cache.Invalidate(rec.ObjectID)
+	if s.cache != nil {
+		s.cache.Invalidate(rec.ObjectID)
+	}
 	return s.Compute(ev, rec)
 }
 

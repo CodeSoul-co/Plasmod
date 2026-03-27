@@ -276,3 +276,50 @@ func TestTieredObjectStore_ArchiveEdge(t *testing.T) {
 		t.Error("ArchiveEdge: edge should exist in cold store")
 	}
 }
+
+func TestMemoryRuntimeStorage_PutMemoryWithBaseEdges(t *testing.T) {
+	store := NewMemoryRuntimeStorage()
+
+	mem := schemas.Memory{
+		MemoryID:       "mem_auto_1",
+		AgentID:        "agent_1",
+		SessionID:      "sess_1",
+		ProvenanceRef:  "evt_1",
+		SourceEventIDs: []string{"evt_1"},
+	}
+
+	store.PutMemoryWithBaseEdges(mem)
+
+	_, ok := store.Objects().GetMemory("mem_auto_1")
+	if !ok {
+		t.Fatal("expected memory to be stored")
+	}
+
+	edges := store.Edges().EdgesFrom("mem_auto_1")
+	if len(edges) != 3 {
+		t.Fatalf("expected 3 auto-built edges, got %d", len(edges))
+	}
+
+	var hasSession, hasAgent, hasDerived bool
+	for _, e := range edges {
+		switch e.EdgeType {
+		case string(schemas.EdgeTypeBelongsToSession):
+			if e.DstObjectID == "sess_1" {
+				hasSession = true
+			}
+		case string(schemas.EdgeTypeOwnedByAgent):
+			if e.DstObjectID == "agent_1" {
+				hasAgent = true
+			}
+		case string(schemas.EdgeTypeDerivedFrom):
+			if e.DstObjectID == "evt_1" {
+				hasDerived = true
+			}
+		}
+	}
+
+	if !hasSession || !hasAgent || !hasDerived {
+		t.Fatalf("missing expected auto-built edges: %+v", edges)
+	}
+
+}

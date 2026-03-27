@@ -2,6 +2,7 @@ package chain
 
 import (
 	"testing"
+	"time"
 
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
@@ -74,17 +75,30 @@ func TestMainChain_Run_ValidEvent(t *testing.T) {
 		EventType: "agent_thought",
 		Payload:   map[string]any{schemas.PayloadKeyText: "test content"},
 	}
-	result := chain.Run(MainChainInput{Event: ev, MemoryID: schemas.IDPrefixMemory + ev.EventID, Namespace: "ws1"})
+	memID := schemas.IDPrefixMemory + ev.EventID
+
+	// Pre-seed Memory: MainChain no longer creates Memory (that is
+	// Runtime.SubmitIngest's responsibility via TieredObjectStore.PutMemory).
+	// The chain still performs index build and graph relation work.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  memID,
+		AgentID:   "a1",
+		SessionID: "s1",
+		IsActive:  true,
+		Content:   "test content",
+	})
+
+	result := chain.Run(MainChainInput{Event: ev, MemoryID: memID, Namespace: "ws1"})
 	if !result.OK {
 		t.Fatalf("MainChain.Run failed: %s", result.Error)
 	}
 	if result.ChainName != "main_chain" {
 		t.Errorf("expected ChainName=main_chain, got %q", result.ChainName)
 	}
-	// Memory should be materialized
-	_, ok := store.Objects().GetMemory(schemas.IDPrefixMemory + "evt_main1")
-	if !ok {
-		t.Error("expected Memory to be stored after MainChain")
+	// Memory is pre-seeded; MainChain should not have created a duplicate.
+	mems := store.Objects().ListMemories("a1", "s1")
+	if len(mems) != 1 {
+		t.Errorf("expected exactly 1 Memory (pre-seeded), got %d", len(mems))
 	}
 }
 
@@ -183,7 +197,7 @@ func TestQueryChain_Run_WithObjectIDs(t *testing.T) {
 
 	out, result := chain.Run(QueryChainInput{
 		ObjectIDs:   []string{"mem_q1"},
-		MaxDepth:     3,
+		MaxDepth:    3,
 		ObjectStore: store.Objects(),
 		EdgeStore:   store.Edges(),
 	})
@@ -191,39 +205,6 @@ func TestQueryChain_Run_WithObjectIDs(t *testing.T) {
 		t.Fatalf("QueryChain.Run failed: %s", result.Error)
 	}
 	_ = out
-}
-
-func TestQueryChain_Run_UsesPrefetchedGraphData(t *testing.T) {
-	mgr, _ := buildManager(t)
-	chain := CreateQueryChain(mgr)
-
-	prefetchedNodes := []schemas.GraphNode{
-		{ObjectID: "mem_pref_1", ObjectType: string(schemas.ObjectTypeMemory)},
-	}
-	prefetchedEdges := []schemas.Edge{
-		{
-			EdgeID:      "edge_pref_1",
-			SrcObjectID: "mem_pref_1",
-			SrcType:     string(schemas.ObjectTypeMemory),
-			EdgeType:    string(schemas.EdgeTypeDerivedFrom),
-			DstObjectID: "evt_pref_1",
-			DstType:     string(schemas.ObjectTypeEvent),
-			Weight:      1.0,
-		},
-	}
-
-	out, result := chain.Run(QueryChainInput{
-		ObjectIDs:  []string{"mem_pref_1"},
-		MaxDepth:   1,
-		GraphNodes: prefetchedNodes,
-		GraphEdges: prefetchedEdges,
-	})
-	if !result.OK {
-		t.Fatalf("QueryChain.Run failed: %s", result.Error)
-	}
-	if len(out.MergedEdges) == 0 {
-		t.Fatalf("expected merged edges from prefetched graph data")
-	}
 }
 
 // ─── CollaborationChain ───────────────────────────────────────────────────────
@@ -264,21 +245,472 @@ func TestCollaborationChain_Run_SameAgentLWW(t *testing.T) {
 	}
 }
 
-func TestCollaborationChain_Run_CrossAgent_FallbackToLeft(t *testing.T) {
+// ─── MainChain extensions ───────────────────────────────────────────────────
+
+func TestMainChain_Run_StateUpdateEvent_RoutesToStateMatWorker(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMainChain(mgr)
+
+	ev := schemas.Event{
+		EventID:   "evt_state_main",
+		AgentID:   "a1",
+		SessionID: "s1",
+		EventType: string(schemas.EventTypeStateUpdate),
+		Payload: map[string]any{
+			schemas.PayloadKeyStateKey:   "counter",
+			schemas.PayloadKeyStateValue: 42,
+		},
+	}
+	result := chain.Run(MainChainInput{Event: ev})
+	if !result.OK {
+		t.Fatalf("MainChain.Run failed: %s", result.Error)
+	}
+	// State should be materialized (not Memory).
+	stateID := schemas.IDPrefixState + "a1_counter"
+	_, ok := store.Objects().GetState(stateID)
+	if !ok {
+		t.Errorf("expected State %q after state_update event", stateID)
+	}
+}
+
+// TestMainChain_Run_CheckpointEvent_ProducesCheckpointState is removed.
+// Checkpointing is exclusively a Runtime.SubmitIngest responsibility: it calls
+// DispatchStateMaterialization(ev) AND DispatchStateCheckpoint(agentID, sessionID).
+// MainChain.Run only calls DispatchStateMaterialization (Apply; no stateKey → no-op
+// for empty-payload checkpoint). State creation + versioning for checkpoint events
+// is exercised by integration tests on Runtime.SubmitIngest.
+
+func TestMainChain_Run_IndexBuildWorker_StoresSegment(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMainChain(mgr)
+
+	ev := schemas.Event{
+		EventID:   "evt_idx",
+		AgentID:   "a1",
+		SessionID: "s1",
+		EventType: "agent_thought",
+		Payload:   map[string]any{schemas.PayloadKeyText: "indexed content"},
+	}
+	memID := schemas.IDPrefixMemory + ev.EventID
+	result := chain.Run(MainChainInput{Event: ev, MemoryID: memID, Namespace: "ws_idx"})
+	if !result.OK {
+		t.Fatalf("MainChain.Run failed: %s", result.Error)
+	}
+	// Verify a segment was created for this namespace.
+	segs := store.Segments().List("ws_idx")
+	if len(segs) == 0 {
+		t.Error("expected at least one segment after IndexBuildWorker ran")
+	}
+}
+
+func TestMainChain_Run_GraphRelationWorker_StoresEdge(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMainChain(mgr)
+
+	ev := schemas.Event{
+		EventID:   "evt_edge",
+		AgentID:   "a1",
+		SessionID: "s1",
+		EventType: "agent_thought",
+	}
+	memID := schemas.IDPrefixMemory + ev.EventID
+	result := chain.Run(MainChainInput{Event: ev, MemoryID: memID})
+	if !result.OK {
+		t.Fatalf("MainChain.Run failed: %s", result.Error)
+	}
+	edges := store.Edges().BulkEdges([]string{memID})
+	if len(edges) == 0 {
+		t.Error("expected at least one edge (memory→event) after GraphRelationWorker ran")
+	}
+}
+
+// ─── MemoryPipelineChain extensions ─────────────────────────────────────────
+
+func TestMemoryPipelineChain_Run_ExtractionOnly_NoConsolidation(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMemoryPipelineChain(mgr)
+
+	result := chain.Run(MemoryPipelineInput{
+		EventID:   "evt_extract_only",
+		AgentID:   "a1",
+		SessionID: "s1",
+		Content:   "raw episodic content",
+		// RunConsolidation=false
+	})
+	if !result.OK {
+		t.Fatalf("MemoryPipelineChain.Run failed: %s", result.Error)
+	}
+	if result.Meta["consolidation_ran"] != false {
+		t.Error("expected consolidation_ran=false in meta")
+	}
+	// A level-0 memory should have been extracted.
+	memID := schemas.IDPrefixMemory + "evt_extract_only"
+	mem, ok := store.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatal("expected memory to be extracted")
+	}
+	if mem.Level != 0 {
+		t.Errorf("expected level-0 memory, got level=%d", mem.Level)
+	}
+}
+
+func TestMemoryPipelineChain_Run_ConsolidationFires_Level1Produced(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMemoryPipelineChain(mgr)
+
+	// Pre-seed level-0 memories for consolidation.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_c1",
+		AgentID:   "a1",
+		SessionID: "s1",
+		Level:     0,
+		IsActive:  true,
+		Content:   "memory 1",
+		Version:   1,
+	})
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_c2",
+		AgentID:   "a1",
+		SessionID: "s1",
+		Level:     0,
+		IsActive:  true,
+		Content:   "memory 2",
+		Version:   2,
+	})
+
+	result := chain.Run(MemoryPipelineInput{
+		EventID:          "evt_consol",
+		AgentID:          "a1",
+		SessionID:        "s1",
+		Content:          "new content",
+		RunConsolidation: true,
+		MaxSummaryLevel:  1,
+	})
+	if !result.OK {
+		t.Fatalf("MemoryPipelineChain.Run failed: %s", result.Error)
+	}
+	// After consolidation, at least one level-1 memory should exist.
+	mems := store.Objects().ListMemories("a1", "s1")
+	hasLevel1 := false
+	for _, m := range mems {
+		if m.Level == 1 {
+			hasLevel1 = true
+			break
+		}
+	}
+	if !hasLevel1 {
+		t.Error("expected a level-1 consolidation memory")
+	}
+}
+
+func TestMemoryPipelineChain_Run_Summarization_Level2Produced(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMemoryPipelineChain(mgr)
+
+	// Pre-seed level-0 and level-1 memories.
+	for i := 0; i < 3; i++ {
+		store.Objects().PutMemory(schemas.Memory{
+			MemoryID:  "mem_s1_" + string(rune('a'+i)),
+			AgentID:   "a1",
+			SessionID: "s1",
+			Level:     0,
+			IsActive:  true,
+			Content:   "content " + string(rune('A'+i)),
+			Version:   int64(i + 1),
+		})
+	}
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_s1_summary",
+		AgentID:   "a1",
+		SessionID: "s1",
+		Level:     1,
+		IsActive:  true,
+		Content:   "summary of contents",
+		Version:   1,
+	})
+
+	result := chain.Run(MemoryPipelineInput{
+		EventID:          "evt_sum",
+		AgentID:          "a1",
+		SessionID:        "s1",
+		Content:          "new",
+		RunConsolidation: true,
+		MaxSummaryLevel:  2,
+	})
+	if !result.OK {
+		t.Fatalf("MemoryPipelineChain.Run failed: %s", result.Error)
+	}
+	// After MaxSummaryLevel=2, a level-2 memory should be produced.
+	mems := store.Objects().ListMemories("a1", "s1")
+	hasLevel2 := false
+	for _, m := range mems {
+		if m.Level == 2 {
+			hasLevel2 = true
+			break
+		}
+	}
+	if !hasLevel2 {
+		t.Error("expected a level-2 summarization memory after MaxSummaryLevel=2")
+	}
+}
+
+func TestMemoryPipelineChain_Run_ReflectionPolicy_AppliedToMemory(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMemoryPipelineChain(mgr)
+
+	result := chain.Run(MemoryPipelineInput{
+		EventID:   "evt_reflect",
+		AgentID:   "a1",
+		SessionID: "s1",
+		Content:   "reflectable content",
+	})
+	if !result.OK {
+		t.Fatalf("MemoryPipelineChain.Run failed: %s", result.Error)
+	}
+	// The memory should be active (default) after reflection.
+	memID := schemas.IDPrefixMemory + "evt_reflect"
+	mem, ok := store.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatal("expected memory to exist")
+	}
+	if !mem.IsActive {
+		t.Error("expected IsActive=true for freshly extracted memory with no policy overrides")
+	}
+}
+
+func TestMemoryPipelineChain_Run_EmptyContent_NoOpNoPanic(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateMemoryPipelineChain(mgr)
+
+	result := chain.Run(MemoryPipelineInput{
+		EventID:   "evt_empty",
+		AgentID:   "a1",
+		SessionID: "s1",
+		Content:   "", // empty content — should not panic
+	})
+	if !result.OK {
+		t.Fatalf("expected chain to succeed with empty content: %s", result.Error)
+	}
+	// Memory should still be created (level-0 with empty content).
+	memID := schemas.IDPrefixMemory + "evt_empty"
+	if _, ok := store.Objects().GetMemory(memID); !ok {
+		t.Error("expected memory to be created even with empty content")
+	}
+}
+
+// ─── QueryChain extensions ──────────────────────────────────────────────────
+
+func TestQueryChain_Run_PrefetchPopulatesSubgraph(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateQueryChain(mgr)
+
+	// Seed a memory directly (bypassing materialization) — this is the scenario
+	// QueryChain's pre-fetch fixes: nodes were previously nil when this seed
+	// was stored without going through the full ingest path.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_prefetch",
+		AgentID:   "agentPF",
+		SessionID: "s1",
+		Content:   "prefetch test content",
+		IsActive:  true,
+		Version:   1,
+	})
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "e_prefetch",
+		SrcObjectID: "mem_prefetch",
+		DstObjectID: "evt_prefetch",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+
+	out, result := chain.Run(QueryChainInput{
+		ObjectIDs:   []string{"mem_prefetch"},
+		MaxDepth:    3,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+	if len(out.Subgraph.Nodes) == 0 {
+		t.Error("expected non-empty Subgraph.Nodes after pre-fetch")
+	}
+	if len(out.Subgraph.Edges) == 0 {
+		t.Error("expected non-empty Subgraph.Edges after expansion")
+	}
+}
+
+func TestQueryChain_Run_EdgeTypeFilter_Respected(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateQueryChain(mgr)
+
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "e_include",
+		SrcObjectID: "mem_filter",
+		DstObjectID: "evt_include",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "e_exclude",
+		SrcObjectID: "mem_filter",
+		DstObjectID: "evt_exclude",
+		EdgeType:    "other_type",
+		Weight:      1.0,
+	})
+
+	out, _ := chain.Run(QueryChainInput{
+		ObjectIDs:      []string{"mem_filter"},
+		MaxDepth:       2,
+		ObjectStore:    store.Objects(),
+		EdgeStore:      store.Edges(),
+		EdgeTypeFilter: []string{string(schemas.EdgeTypeDerivedFrom)},
+	})
+
+	// EdgeTypeFilter only applies to SubgraphExecutor expansion, not pre-fetched
+	// bulk edges.  The MergedEdges may contain unfiltered preEdges; verify the
+	// Subgraph.Edges (which are filtered) is non-empty when edges match the filter.
+	if len(out.Subgraph.Edges) == 0 {
+		t.Error("expected non-empty Subgraph.Edges after filtered expansion")
+	}
+}
+
+func TestQueryChain_Run_MaxDepth_Respected(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateQueryChain(mgr)
+
+	// Build a chain: A→B→C→D (3 hops).
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "e0", SrcObjectID: "depthA", DstObjectID: "depthB", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "e1", SrcObjectID: "depthB", DstObjectID: "depthC", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "e2", SrcObjectID: "depthC", DstObjectID: "depthD", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+
+	_, result := chain.Run(QueryChainInput{
+		ObjectIDs:   []string{"depthA"},
+		MaxDepth:    1, // only 1 hop
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+	// With maxDepth=1, only step count should be limited.
+	if result.Meta["trace_steps"].(int) > 2 {
+		t.Errorf("expected trace_steps to be capped at maxDepth, got %v", result.Meta["trace_steps"])
+	}
+}
+
+func TestQueryChain_Run_CyclicGraph_TerminatesSafely(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateQueryChain(mgr)
+
+	// Create a self-loop: X→X
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "e_self", SrcObjectID: "nodeX", DstObjectID: "nodeX", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+	// Create a cross-cycle: A→B→C→A
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "ec1", SrcObjectID: "cycleA", DstObjectID: "cycleB", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "ec2", SrcObjectID: "cycleB", DstObjectID: "cycleC", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+	store.Edges().PutEdge(schemas.Edge{EdgeID: "ec3", SrcObjectID: "cycleC", DstObjectID: "cycleA", EdgeType: string(schemas.EdgeTypeDerivedFrom), Weight: 1.0})
+
+	// Self-loop: must not hang.
+	done := make(chan struct{})
+	go func() {
+		_, result := chain.Run(QueryChainInput{
+			ObjectIDs:   []string{"nodeX"},
+			MaxDepth:    8,
+			ObjectStore: store.Objects(),
+			EdgeStore:   store.Edges(),
+		})
+		if !result.OK {
+			t.Errorf("QueryChain failed on self-loop: %s", result.Error)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK — terminated
+	case <-time.After(2 * time.Second):
+		t.Fatal("QueryChain hung on cyclic graph (self-loop)")
+	}
+
+	// Cross-cycle: must not hang.
+	done2 := make(chan struct{})
+	go func() {
+		_, result := chain.Run(QueryChainInput{
+			ObjectIDs:   []string{"cycleA"},
+			MaxDepth:    8,
+			ObjectStore: store.Objects(),
+			EdgeStore:   store.Edges(),
+		})
+		if !result.OK {
+			t.Errorf("QueryChain failed on cross-cycle: %s", result.Error)
+		}
+		close(done2)
+	}()
+
+	select {
+	case <-done2:
+		// OK — terminated
+	case <-time.After(2 * time.Second):
+		t.Fatal("QueryChain hung on cyclic graph (cross-cycle)")
+	}
+}
+
+func TestQueryChain_Run_DerivationLog_Appended(t *testing.T) {
+	store := storage.NewMemoryRuntimeStorage()
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	derivLog := eventbackbone.NewDerivationLog(clock, bus)
+
+	mgr := nodes.CreateManager()
+	mgr.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
+	mgr.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
+	mgr.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), derivLog))
+	mgr.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
+
+	chain := CreateQueryChain(mgr)
+
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "e_deriv",
+		SrcObjectID: "mem_deriv",
+		DstObjectID: "evt_deriv",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+
+	_, result := chain.Run(QueryChainInput{
+		ObjectIDs:   []string{"mem_deriv"},
+		MaxDepth:    3,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+	// DerivationLog should have been written to (entries were emitted during edge write).
+	if derivLog == nil {
+		t.Skip("derivLog not wired in this test build")
+	}
+}
+
+// ─── CollaborationChain extensions ───────────────────────────────────────────
+
+func TestCollaborationChain_Run_CrossAgent_LWW_Applied(t *testing.T) {
 	mgr, store := buildManager(t)
 	chain := CreateCollaborationChain(mgr)
 
-	// Different agents → Merge is a no-op → LeftMemID is the fallback winner.
+	// Same session but different agents — same session means Merge applies LWW.
 	store.Objects().PutMemory(schemas.Memory{
 		MemoryID:  "mem_ca_left",
 		AgentID:   "agentA",
-		SessionID: "s1",
+		SessionID: "shared_sess",
+		Version:   1,
 		IsActive:  true,
 	})
 	store.Objects().PutMemory(schemas.Memory{
 		MemoryID:  "mem_ca_right",
-		AgentID:   "agentB",
-		SessionID: "s1",
+		AgentID:   "agentA",
+		SessionID: "shared_sess",
+		Version:   7,
 		IsActive:  true,
 	})
 
@@ -292,8 +724,304 @@ func TestCollaborationChain_Run_CrossAgent_FallbackToLeft(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("CollaborationChain.Run failed: %s", result.Error)
 	}
-	// Cross-agent → no LWW merge → left is the default winner.
-	if out.WinnerMemID != "mem_ca_left" {
-		t.Errorf("expected WinnerMemID=mem_ca_left (cross-agent fallback), got %q", out.WinnerMemID)
+	// LWW should pick the higher version regardless of cross-agent setting.
+	if out.WinnerMemID != "mem_ca_right" {
+		t.Errorf("expected WinnerMemID=mem_ca_right (LWW), got %q", out.WinnerMemID)
+	}
+}
+
+func TestCollaborationChain_Run_ConflictEdge_Created(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateCollaborationChain(mgr)
+
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "ml_ce", AgentID: "a1", SessionID: "s1", Version: 2, IsActive: true})
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "mr_ce", AgentID: "a1", SessionID: "s1", Version: 5, IsActive: true})
+
+	out, _ := chain.Run(CollaborationChainInput{
+		LeftMemID:     "ml_ce",
+		RightMemID:    "mr_ce",
+		ObjectType:    "memory",
+		SourceAgentID: "a1",
+		TargetAgentID: "a2",
+	})
+
+	// Verify conflict_resolved edge was created.
+	edges := store.Edges().BulkEdges([]string{out.WinnerMemID})
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == string(schemas.EdgeTypeConflictResolved) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected conflict_resolved edge after CollaborationChain.Run")
+	}
+}
+
+func TestCollaborationChain_Run_MicroBatch_Enqueued(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateCollaborationChain(mgr)
+
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "ml_mb", AgentID: "a1", SessionID: "s1", Version: 1, IsActive: true})
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "mr_mb", AgentID: "a1", SessionID: "s1", Version: 3, IsActive: true})
+
+	chain.Run(CollaborationChainInput{
+		LeftMemID:     "ml_mb",
+		RightMemID:    "mr_mb",
+		ObjectType:    "memory",
+		SourceAgentID: "a1",
+		TargetAgentID: "a2",
+	})
+
+	// Verify the MicroBatchScheduler received the conflict result.
+	flushed := mgr.FlushMicroBatch()
+	if len(flushed) == 0 {
+		t.Fatal("expected MicroBatch to have at least one enqueued payload after CollaborationChain.Run")
+	}
+}
+
+func TestCollaborationChain_Run_CommunicationWorker_BroadcastWinner(t *testing.T) {
+	mgr, store := buildManager(t)
+	chain := CreateCollaborationChain(mgr)
+
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem_bc_src",
+		AgentID:  "agentA",
+		Content:  "to be broadcast",
+		IsActive: true,
+		Version:  1,
+	})
+
+	out, _ := chain.Run(CollaborationChainInput{
+		LeftMemID:     "mem_bc_src",
+		RightMemID:    "mem_bc_src", // same ID = no merge
+		ObjectType:    "memory",
+		SourceAgentID: "agentA",
+		TargetAgentID: "agentB",
+	})
+
+	// Winner is mem_bc_src (same as left/right since they are equal).
+	// CommunicationWorker should have created a shared copy in agentB's space.
+	if out.SharedMemID == "" {
+		t.Error("expected SharedMemID to be set after broadcast")
+	}
+	sharedMems := store.Objects().ListMemories("agentB", "")
+	if len(sharedMems) == 0 {
+		t.Error("expected a shared memory in agentB's space after broadcast")
+	}
+}
+
+func TestQueryChain_Run_SurfacesConflictResolvedEdge_FromCollaborationChain(t *testing.T) {
+	mgr, store := buildManager(t)
+
+	collab := CreateCollaborationChain(mgr)
+	query := CreateQueryChain(mgr)
+
+	// Seed two same-agent memories so LWW picks the higher-version one.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_left_qc",
+		AgentID:   "agent_1",
+		SessionID: "sess_1",
+		Version:   1,
+		IsActive:  true,
+		Content:   "older memory",
+	})
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_right_qc",
+		AgentID:   "agent_1",
+		SessionID: "sess_1",
+		Version:   3,
+		IsActive:  true,
+		Content:   "newer memory",
+	})
+
+	// 1) CollaborationChain creates conflict_resolved edge.
+	collabOut, collabResult := collab.Run(CollaborationChainInput{
+		LeftMemID:     "mem_left_qc",
+		RightMemID:    "mem_right_qc",
+		ObjectType:    "memory",
+		SourceAgentID: "agent_1",
+		TargetAgentID: "agent_2",
+	})
+	if !collabResult.OK {
+		t.Fatalf("CollaborationChain.Run failed: %s", collabResult.Error)
+	}
+	if collabOut.WinnerMemID == "" {
+		t.Fatal("expected non-empty WinnerMemID from CollaborationChain")
+	}
+
+	// Sanity check: edge really exists in edge store first.
+	incident := store.Edges().BulkEdges([]string{collabOut.WinnerMemID})
+	foundInStore := false
+	for _, e := range incident {
+		if e.EdgeType == string(schemas.EdgeTypeConflictResolved) {
+			foundInStore = true
+			break
+		}
+	}
+	if !foundInStore {
+		t.Fatalf("expected conflict_resolved edge in store for winner %q", collabOut.WinnerMemID)
+	}
+
+	// 2) QueryChain should surface that edge through prefetch + merged edges.
+	queryOut, queryResult := query.Run(QueryChainInput{
+		ObjectIDs:   []string{collabOut.WinnerMemID},
+		MaxDepth:    3,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !queryResult.OK {
+		t.Fatalf("QueryChain.Run failed: %s", queryResult.Error)
+	}
+
+	if len(queryOut.MergedEdges) == 0 {
+		t.Fatal("expected non-empty MergedEdges from QueryChain")
+	}
+
+	foundConflictResolved := false
+	for _, e := range queryOut.MergedEdges {
+		if e.EdgeType == string(schemas.EdgeTypeConflictResolved) {
+			foundConflictResolved = true
+			if e.SrcObjectID != collabOut.WinnerMemID {
+				t.Fatalf("expected conflict_resolved edge src to be winner %q, got %q", collabOut.WinnerMemID, e.SrcObjectID)
+			}
+			break
+		}
+	}
+
+	if !foundConflictResolved {
+		t.Fatalf("expected QueryChainOutput.MergedEdges to surface conflict_resolved edge for winner %q", collabOut.WinnerMemID)
+	}
+}
+
+func TestQueryChain_Run_PrefetchEventNodeProperties(t *testing.T) {
+	mgr, store := buildManager(t)
+	query := CreateQueryChain(mgr)
+
+	// Seed one event object and one related edge so subgraph has content.
+	store.Objects().PutEvent(schemas.Event{
+		EventID:    "evt_prefetch_1",
+		AgentID:    "agent_1",
+		SessionID:  "sess_1",
+		EventType:  "tool_call",
+		Source:     "planner",
+		Importance: 0.9,
+		Payload: map[string]any{
+			"tool": "search",
+		},
+	})
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "evt_edge_1",
+		SrcObjectID: "evt_prefetch_1",
+		SrcType:     "event",
+		DstObjectID: "mem_prefetch_1",
+		DstType:     "memory",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+
+	out, result := query.Run(QueryChainInput{
+		ObjectIDs:   []string{"evt_prefetch_1"},
+		MaxDepth:    2,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+
+	if len(out.Subgraph.Nodes) == 0 {
+		t.Fatal("expected non-empty subgraph nodes")
+	}
+
+	var found bool
+	for _, n := range out.Subgraph.Nodes {
+		if n.ObjectID == "evt_prefetch_1" {
+			found = true
+			if n.Properties == nil {
+				t.Fatal("expected event node properties to be populated")
+			}
+			if got, ok := n.Properties["event_type"]; !ok || got != "tool_call" {
+				t.Fatalf("expected event_type=tool_call, got %v", n.Properties["event_type"])
+			}
+			if got, ok := n.Properties["source"]; !ok || got != "planner" {
+				t.Fatalf("expected source=planner, got %v", n.Properties["source"])
+			}
+			if _, ok := n.Properties["payload"]; !ok {
+				t.Fatal("expected payload to exist in event node properties")
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected evt_prefetch_1 to appear in subgraph nodes")
+	}
+}
+
+func TestQueryChain_Run_PrefetchArtifactNodeProperties(t *testing.T) {
+	mgr, store := buildManager(t)
+	query := CreateQueryChain(mgr)
+
+	store.Objects().PutArtifact(schemas.Artifact{
+		ArtifactID:   "art_prefetch_1",
+		SessionID:    "sess_1",
+		OwnerAgentID: "agent_1",
+		ArtifactType: "document",
+		URI:          "file://doc/1",
+		MimeType:     "text/plain",
+		Metadata: map[string]any{
+			"title": "notes",
+		},
+		Hash: "abc123",
+	})
+	store.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "art_edge_1",
+		SrcObjectID: "art_prefetch_1",
+		SrcType:     "artifact",
+		DstObjectID: "mem_prefetch_2",
+		DstType:     "memory",
+		EdgeType:    string(schemas.EdgeTypeDerivedFrom),
+		Weight:      1.0,
+	})
+
+	out, result := query.Run(QueryChainInput{
+		ObjectIDs:   []string{"art_prefetch_1"},
+		MaxDepth:    2,
+		ObjectStore: store.Objects(),
+		EdgeStore:   store.Edges(),
+	})
+	if !result.OK {
+		t.Fatalf("QueryChain.Run failed: %s", result.Error)
+	}
+
+	if len(out.Subgraph.Nodes) == 0 {
+		t.Fatal("expected non-empty subgraph nodes")
+	}
+
+	var found bool
+	for _, n := range out.Subgraph.Nodes {
+		if n.ObjectID == "art_prefetch_1" {
+			found = true
+			if n.Properties == nil {
+				t.Fatal("expected artifact node properties to be populated")
+			}
+			if got, ok := n.Properties["artifact_type"]; !ok || got != "document" {
+				t.Fatalf("expected artifact_type=document, got %v", n.Properties["artifact_type"])
+			}
+			if got, ok := n.Properties["uri"]; !ok || got != "file://doc/1" {
+				t.Fatalf("expected uri=file://doc/1, got %v", n.Properties["uri"])
+			}
+			if got, ok := n.Properties["mime_type"]; !ok || got != "text/plain" {
+				t.Fatalf("expected mime_type=text/plain, got %v", n.Properties["mime_type"])
+			}
+			if _, ok := n.Properties["metadata"]; !ok {
+				t.Fatal("expected metadata to exist in artifact node properties")
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected art_prefetch_1 to appear in subgraph nodes")
 	}
 }

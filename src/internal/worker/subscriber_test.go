@@ -288,3 +288,99 @@ func TestMicroBatch_FlushIntegration(t *testing.T) {
 		t.Errorf("expected empty queue after subscriber drain, got %d items", len(remaining))
 	}
 }
+
+// ─── Dead-letter queue tests ─────────────────────────────────────────────────
+
+// TestEventSubscriber_DeadLetter_RecoveredPanic verifies that a handler panic
+// is caught, the entry is sent to the dead-letter channel, and subsequent
+// events are still processed normally.
+func TestEventSubscriber_DeadLetter_RecoveredPanic(t *testing.T) {
+	wal, mgr, _, _ := buildSubscriberRuntime(t)
+	sub := CreateEventSubscriber(wal, mgr)
+	sub.SetPollInterval(20 * time.Millisecond)
+
+	panicID := "evt_panic"
+	processed := make(chan string, 10)
+
+	// Handler 1: panics on panicID, does nothing otherwise.
+	sub.AddHandler(func(entry eventbackbone.WALEntry) {
+		if entry.Event.EventID == panicID {
+			panic("intentional test panic")
+		}
+		processed <- entry.Event.EventID
+	})
+
+	// Write panic event first, then a normal event.
+	_, _ = wal.Append(schemas.Event{EventID: panicID, AgentID: "a", SessionID: "s"})
+	_, _ = wal.Append(schemas.Event{EventID: "evt_ok", AgentID: "a", SessionID: "s"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	go sub.Run(ctx)
+	<-ctx.Done()
+
+	// Verify DLQ received the panicking entry.
+	select {
+	case entry := <-sub.DeadLetterChannel():
+		if entry.Entry.Event.EventID != panicID {
+			t.Errorf("expected DLQ entry for %q, got %q", panicID, entry.Entry.Event.EventID)
+		}
+		if entry.PanicValue == nil {
+			t.Error("expected non-nil PanicValue")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("dead-letter channel did not receive the panicking entry")
+	}
+
+	// Verify the non-panicking event was still processed.
+	select {
+	case id := <-processed:
+		if id != "evt_ok" {
+			t.Errorf("expected processed evt_ok, got %s", id)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Error("non-panicking event was not processed")
+	}
+
+	stats := sub.DLQStats()
+	if stats.PanicCount != 1 {
+		t.Errorf("expected PanicCount=1, got %d", stats.PanicCount)
+	}
+	if stats.TotalProcessed < 1 {
+		t.Error("expected TotalProcessed >= 1")
+	}
+}
+
+// TestEventSubscriber_DeadLetter_DLQFull_DoesNotBlock verifies that when the
+// dead-letter channel is at capacity the subscriber does not block; it logs
+// the drop and continues processing.
+func TestEventSubscriber_DeadLetter_DLQFull_DoesNotBlock(t *testing.T) {
+	wal, mgr, _, _ := buildSubscriberRuntime(t)
+	sub := CreateEventSubscriber(wal, mgr)
+	sub.SetPollInterval(20 * time.Millisecond)
+
+	panicCount := 0
+	sub.AddHandler(func(entry eventbackbone.WALEntry) {
+		if entry.Event.EventID == "evt_overflow" {
+			panic("overflow panic")
+		}
+		panicCount++
+	})
+
+	// Exhaust the DLQ capacity by writing many panicking events.
+	for i := 0; i < 100; i++ {
+		_, _ = wal.Append(schemas.Event{EventID: "evt_overflow", AgentID: "a", SessionID: "s"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	go sub.Run(ctx)
+	<-ctx.Done()
+
+	// The subscriber should have continued without blocking.
+	// We can only verify that the DLQ stats are positive and the test completed.
+	stats := sub.DLQStats()
+	if stats.PanicCount == 0 {
+		t.Error("expected at least one panic to be recorded")
+	}
+}

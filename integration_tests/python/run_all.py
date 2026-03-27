@@ -25,7 +25,12 @@ def run_module(name: str) -> None:
 
 
 def main() -> None:
-    modules = ["test_sdk_ingest_query"]
+    modules = [
+        "test_sdk_ingest_query",
+        "test_chain_main",
+        "test_chain_query",
+        "test_chain_collab",
+    ]
 
     if os.getenv("ANDB_RUN_S3_TESTS", "").lower() in ("1", "true", "yes"):
         modules.append("test_s3_dataflow")

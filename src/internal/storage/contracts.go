@@ -49,6 +49,10 @@ type ObjectStore interface {
 	GetSession(id string) (schemas.Session, bool)
 	ListSessions(agentID string) []schemas.Session
 
+	PutEvent(obj schemas.Event)
+	GetEvent(id string) (schemas.Event, bool)
+	ListEvents(agentID, sessionID string) []schemas.Event
+
 	PutMemory(obj schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
 	ListMemories(agentID, sessionID string) []schemas.Memory
@@ -137,6 +141,11 @@ type RuntimeStorage interface {
 	Audits() AuditStore
 	// AlgorithmStates returns the per-memory, per-algorithm state store.
 	AlgorithmStates() MemoryAlgorithmStateStore
+
+	PutMemoryWithBaseEdges(obj schemas.Memory)
+	PutArtifactWithBaseEdges(obj schemas.Artifact)
+	PutEventWithBaseEdges(obj schemas.Event)
+
 	// HotCache exposes the in-memory hot-object cache so the ingest path can
 	// immediately promote high-salience objects for instant activation.
 	HotCache() *HotObjectCache

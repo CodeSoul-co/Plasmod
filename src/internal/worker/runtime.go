@@ -2,9 +2,10 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"time"
+
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
 	"andb/src/internal/eventbackbone"
@@ -34,7 +35,9 @@ type Runtime struct {
 	storage           storage.RuntimeStorage
 	tieredObjects     *storage.TieredObjectStore
 	queryChain        *chain.QueryChain
-	ingest            IngestWorker
+	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
+	// can fire synchronously in SubmitIngest (not only async via subscriber).
+	lastMem map[string]string
 }
 
 func CreateRuntime(
@@ -54,10 +57,6 @@ func CreateRuntime(
 	store storage.RuntimeStorage,
 	tieredObjs *storage.TieredObjectStore,
 ) *Runtime {
-	var sched *coordinator.WorkerScheduler
-	if coord != nil {
-		sched = coord.Schedule
-	}
 	return &Runtime{
 		wal:               wal,
 		bus:               bus,
@@ -75,7 +74,7 @@ func CreateRuntime(
 		storage:           store,
 		tieredObjects:     tieredObjs,
 		queryChain:        chain.CreateQueryChain(nodeManager),
-		ingest:            NewPipelineIngestWorker(sched, wal, materializer, preCompute, nodeManager, plane, store),
+		lastMem:           make(map[string]string),
 	}
 }
 
@@ -96,12 +95,117 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
-	return r.ingest.Accept(ev)
-}
+	if strings.TrimSpace(ev.EventID) == "" {
+		return nil, errors.New("event_id is required")
+	}
+	// IngestWorker validation: runs all registered IngestWorkers before WAL
+	// append so malformed events are rejected before touching durable state.
+	if err := r.nodeManager.DispatchIngestValidation(ev); err != nil {
+		return nil, err
+	}
+	entry, err := r.wal.Append(ev)
+	if err != nil {
+		return nil, err
+	}
+	if ev.LogicalTS == 0 {
+		ev.LogicalTS = entry.LSN
+	}
+	mat := r.materializer.MaterializeEvent(ev)
+	record := mat.Record
 
-// IngestWorker returns the active ingest pipeline (for registry wiring or tests).
-func (r *Runtime) IngestWorker() IngestWorker {
-	return r.ingest
+	// ── Synchronous object materialization ─────────────────────────────────
+	// State and Artifact objects are needed immediately for query correctness.
+	// Call the materialization workers here (not only in the async subscriber)
+	// so tests and synchronous query paths can read them without waiting for
+	// the next WAL poll cycle.
+	//
+	// Routing:
+	//   - Artifact (tool_call/tool_result) → ObjectMaterializationWorker
+	//   - State    (state_update/state_change/checkpoint) → StateMaterializationWorker
+	//     (NOTE: State is NOT handled by ObjectMaterializationWorker to avoid
+	//     creating duplicate State objects with different field values for the
+	//     same event. StateMaterializationWorker stores via PutState directly.)
+	//   - Memory   → stored directly below via tieredObjects.PutMemory (richer
+	//     MaterializeEvent output), not via ObjectMaterializationWorker.
+	r.nodeManager.DispatchObjectMaterialization(ev)
+	r.nodeManager.DispatchToolTrace(ev)
+
+	// State objects for ALL state events are created synchronously so they are
+	// immediately queryable.  The async subscriber's StateMaterialization handler
+	// handles the same events (creating a second State record with a different
+	// version number), which is intentional — the VersionStore accumulates
+	// snapshots rather than overwriting.
+	isStateEvent := ev.EventType == string(schemas.EventTypeStateUpdate) ||
+		ev.EventType == string(schemas.EventTypeStateChange) ||
+		ev.EventType == string(schemas.EventTypeCheckpoint)
+	if isStateEvent && ev.AgentID != "" && ev.SessionID != "" {
+		r.nodeManager.DispatchStateMaterialization(ev)
+		// checkpoint events additionally snapshot all current states.
+		if ev.EventType == string(schemas.EventTypeCheckpoint) {
+			r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+		}
+	}
+
+	// ── Persist canonical objects ─────────────────────────────────────────
+	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
+	// are kept in sync and cold queries (IncludeCold=true) can find results.
+	if r.tieredObjects != nil {
+		// Compute salience from the event importance if available, default 0.5.
+		salience := mat.Memory.Importance
+		if salience <= 0 {
+			salience = 0.5
+		}
+		r.tieredObjects.PutMemory(mat.Memory, salience)
+		r.tieredObjects.ArchiveColdRecord(
+			mat.Memory.MemoryID,
+			record.Text,
+			record.Attributes,
+			record.Namespace,
+			record.EventUnixTS,
+		)
+	} else {
+		// Fallback for tests or code paths that don't initialise TieredObjectStore.
+		r.storage.PutMemoryWithBaseEdges(mat.Memory)
+	}
+	r.storage.Versions().PutVersion(mat.Version)
+	for _, edge := range mat.Edges {
+		r.storage.Edges().PutEdge(edge)
+	}
+
+	// ── Synchronous ConflictMerge ──────────────────────────────────────────
+	// Detect and resolve same-session memory conflicts immediately after the new
+	// memory is stored.  The async subscriber also fires ConflictMerge (for
+	// cross-event races); this synchronous pass ensures the conflict_resolved
+	// edge is present before SubmitIngest returns — critical for test queries
+	// and any caller that reads edges immediately after ingest.
+	if mat.Memory.AgentID != "" && mat.Memory.SessionID != "" && mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) {
+		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
+		if prevID, hasPrev := r.lastMem[key]; hasPrev {
+			r.nodeManager.DispatchConflictMerge(mat.Memory.MemoryID, prevID, string(schemas.ObjectTypeMemory))
+		}
+		r.lastMem[key] = mat.Memory.MemoryID
+	}
+
+	// ── Pre-compute evidence fragment ─────────────────────────────────────
+	if r.preCompute != nil {
+		frag := r.preCompute.Compute(ev, record)
+		if frag.SalienceScore >= 0.5 {
+			r.storage.HotCache().Put(record.ObjectID, ev.EventType, record, frag.SalienceScore)
+		}
+	}
+
+	// ── Retrieval plane ───────────────────────────────────────────────────
+	r.nodeManager.DispatchIngest(record)
+	if err := r.plane.Ingest(record); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"status":    "accepted",
+		"lsn":       entry.LSN,
+		"event_id":  ev.EventID,
+		"memory_id": mat.Memory.MemoryID,
+		"edges":     len(mat.Edges),
+	}, nil
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
@@ -118,10 +222,15 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		MemoryTypes:    plan.MemoryTypes,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
-	result.ObjectIDs = r.includeStateCandidates(req, result.ObjectIDs, plan.ObjectTypes)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
-	result.ObjectIDs = r.rebuildWithMemoryView(req, result.ObjectIDs)
-	result.ObjectIDs = capObjectIDs(result.ObjectIDs, plan.TopK)
+
+	// ── Canonical-object supplemental retrieval ──────────────────────────────
+	// State and Artifact objects are stored directly in ObjectStore, not in the
+	// retrieval plane.  When query requests these types, fetch them from the
+	// canonical store so they appear in the response alongside memory results.
+	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
+	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
@@ -133,26 +242,20 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	if len(result.ObjectIDs) > 0 {
-		preNodes := make([]schemas.GraphNode, 0, len(result.ObjectIDs))
-		for _, id := range result.ObjectIDs {
-			if m, ok := r.storage.Objects().GetMemory(id); ok {
-				preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
-			}
-		}
-		preEdges := r.storage.Edges().BulkEdges(result.ObjectIDs)
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:      result.ObjectIDs,
-			MaxDepth:       0, // default cap of 8
-			GraphNodes:     preNodes,
-			GraphEdges:     preEdges,
-			EdgeTypeFilter: req.EdgeTypes,
-			ObjectStore:    r.storage.Objects(),
-			EdgeStore:      r.storage.Edges(),
+			ObjectIDs:   result.ObjectIDs,
+			MaxDepth:    0, // default cap of 8
+			ObjectStore: r.storage.Objects(),
+			EdgeStore:   r.storage.Edges(),
 		})
 		_ = chainResult // chainResult.OK is advisory; non-fatal
 
 		if len(chainOut.ProofTrace) > 0 {
 			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
+		}
+
+		if len(chainOut.Subgraph.Nodes) > 0 {
+			resp.Nodes = chainOut.Subgraph.Nodes
 		}
 
 		// Merge subgraph-expanded edges into resp.Edges, deduplicating by EdgeID.
@@ -170,171 +273,39 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		}
 	}
 
-	if len(req.EdgeTypes) > 0 {
-		resp.Edges = filterEdgesByType(resp.Edges, req.EdgeTypes)
-	}
-
 	return resp
 }
 
-func (r *Runtime) rebuildWithMemoryView(req schemas.QueryRequest, ids []string) []string {
-	if len(ids) == 0 {
-		return ids
-	}
-	memories := make([]schemas.Memory, 0, len(ids))
-	memoryIDs := make([]string, 0, len(ids))
-	otherIDs := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if m, ok := r.storage.Objects().GetMemory(id); ok {
-			memories = append(memories, m)
-			memoryIDs = append(memoryIDs, id)
-			continue
-		}
-		otherIDs = append(otherIDs, id)
-	}
-	if len(memories) == 0 {
-		return ids
-	}
+// fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical
+// ObjectStore for the given agent/session/namespace.  These types bypass the
+// retrieval plane and are stored directly in ObjectStore by the materialization
+// workers, so they must be fetched explicitly to appear in query responses.
+func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID, namespace string) []string {
+	var ids []string
+	for _, t := range objectTypes {
+		switch t {
+		case "event":
+			if r.storage != nil {
+				for _, e := range r.storage.Objects().ListEvents(agentID, sessionID) {
+					ids = append(ids, e.EventID)
+				}
+			}
 
-	visibleScopes := []string{
-		string(schemas.MemoryScopePrivateUser),
-		string(schemas.MemoryScopePrivateAgent),
-		string(schemas.MemoryScopeSessionLocal),
-		string(schemas.MemoryScopeWorkspaceShared),
-		string(schemas.MemoryScopeTeamShared),
-		string(schemas.MemoryScopeGlobalShared),
-		string(schemas.MemoryScopeRestrictedShared),
-	}
-	snapshot := &schemas.AccessGraphSnapshot{
-		SnapshotID:    "local-query",
-		AgentID:       req.AgentID,
-		SessionID:     req.SessionID,
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
-		VisibleScopes: visibleScopes,
-	}
-
-	scorer := func(query string, candidates []schemas.Memory, ctx schemas.AlgorithmContext) []schemas.ScoredMemory {
-		candidateIDs := make([]string, 0, len(candidates))
-		byID := make(map[string]schemas.Memory, len(candidates))
-		for _, c := range candidates {
-			candidateIDs = append(candidateIDs, c.MemoryID)
-			byID[c.MemoryID] = c
-		}
-		out, err := r.nodeManager.DispatchAlgorithm(
-			"recall",
-			candidateIDs,
-			query,
-			ctx.Timestamp,
-			req.AgentID,
-			req.SessionID,
-			nil,
-		)
-		if err != nil || len(out.ScoredRefs) == 0 {
-			return nil
-		}
-		scored := make([]schemas.ScoredMemory, 0, len(out.ScoredRefs))
-		for i, id := range out.ScoredRefs {
-			if m, ok := byID[id]; ok {
-				scored = append(scored, schemas.ScoredMemory{
-					Memory: m,
-					Score:  float64(len(out.ScoredRefs) - i),
-					Signal: "algorithm_dispatch_recall",
-				})
+		case "state":
+			if r.storage != nil {
+				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {
+					ids = append(ids, s.StateID)
+				}
+			}
+		case "artifact":
+			if r.storage != nil {
+				for _, a := range r.storage.Objects().ListArtifacts(sessionID) {
+					ids = append(ids, a.ArtifactID)
+				}
 			}
 		}
-		return scored
 	}
-
-	view := storage.NewMemoryViewBuilder(req.SessionID, req.TenantID, req.AgentID).
-		WithSnapshot(snapshot).
-		WithPolicyStore(r.storage.Policies()).
-		WithAlgorithmScorer(scorer).
-		Build(memories, req.QueryText)
-
-	out := make([]string, 0, len(view.VisibleMemoryRefs)+len(otherIDs))
-	out = append(out, view.VisibleMemoryRefs...)
-	out = append(out, otherIDs...)
-	if len(out) == 0 {
-		return ids
-	}
-	return out
-}
-
-func (r *Runtime) includeStateCandidates(req schemas.QueryRequest, ids []string, objectTypes []string) []string {
-	if !isStateOnlyObjectTypeFilter(objectTypes) {
-		return ids
-	}
-	needState := false
-	for _, ot := range objectTypes {
-		if strings.TrimSpace(ot) == string(schemas.ObjectTypeState) {
-			needState = true
-			break
-		}
-	}
-	if !needState {
-		return ids
-	}
-	states := r.storage.Objects().ListStates(req.AgentID, req.SessionID)
-	if len(states) == 0 {
-		return ids
-	}
-	seen := make(map[string]bool, len(ids)+len(states))
-	out := make([]string, 0, len(ids)+len(states))
-	for _, id := range ids {
-		out = append(out, id)
-		seen[id] = true
-	}
-	for _, st := range states {
-		if st.StateID == "" || seen[st.StateID] {
-			continue
-		}
-		out = append(out, st.StateID)
-		seen[st.StateID] = true
-	}
-	return out
-}
-
-func isStateOnlyObjectTypeFilter(objectTypes []string) bool {
-	if len(objectTypes) == 0 {
-		return false
-	}
-	hasState := false
-	for _, ot := range objectTypes {
-		v := strings.TrimSpace(ot)
-		if v == "" {
-			continue
-		}
-		if v == string(schemas.ObjectTypeState) {
-			hasState = true
-			continue
-		}
-		return false
-	}
-	return hasState
-}
-
-func capObjectIDs(ids []string, topK int) []string {
-	if topK <= 0 || len(ids) <= topK {
-		return ids
-	}
-	return ids[:topK]
-}
-
-func filterEdgesByType(edges []schemas.Edge, allowed []string) []schemas.Edge {
-	if len(allowed) == 0 || len(edges) == 0 {
-		return edges
-	}
-	allow := make(map[string]bool, len(allowed))
-	for _, t := range allowed {
-		allow[strings.TrimSpace(t)] = true
-	}
-	out := make([]schemas.Edge, 0, len(edges))
-	for _, e := range edges {
-		if allow[e.EdgeType] {
-			out = append(out, e)
-		}
-	}
-	return out
+	return ids
 }
 
 func (r *Runtime) Topology() map[string]any {

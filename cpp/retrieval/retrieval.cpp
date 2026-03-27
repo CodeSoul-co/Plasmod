@@ -1,284 +1,158 @@
 // Copyright 2024 CogDB Authors
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unified retrieval implementation combining dense, sparse, and filter paths.
+// C++ retrieval layer — ANN index operations only.
+//
+// This file implements the extern "C" API declared in andb/retrieval.h.
+// All business logic (RRF reranking, safety filtering, seed marking) has been
+// removed and lives exclusively in the Go retrieval engine
+// (src/internal/retrieval/).
+//
+// The flat-index path (andb_retriever_*) uses FlatIndexHandle, a minimal
+// wrapper around DenseRetriever.  No Merger, no Reranker, no Seed logic.
+// The segment path (andb_segment_*) delegates to SegmentIndexManager.
 
 #include "andb/retrieval.h"
-#include <chrono>
-#include <cstring>
+#include "andb/segment_index.h"
+#include <algorithm>
+#include <vector>
 
 namespace andb {
 
-static const char* kVersion = "andb-retrieval-0.2.0";
+static const char* kVersion = "andb-retrieval-0.3.0";
 
-const char* Version() {
-    return kVersion;
-}
+const char* Version() { return kVersion; }
 
-// Retriever implementation
-
-Retriever::Retriever()
-    : dense_(std::make_unique<DenseRetriever>()),
-      sparse_(std::make_unique<SparseRetriever>()),
-      merger_(std::make_unique<Merger>()) {}
-
-Retriever::~Retriever() = default;
-
-Retriever::Retriever(Retriever&&) noexcept = default;
-Retriever& Retriever::operator=(Retriever&&) noexcept = default;
-
-bool Retriever::Init(
-    const IndexConfig& dense_config,
-    const std::string& sparse_index_type,
-    const MergeConfig& merge_config
-) {
-    if (!dense_->Init(dense_config)) {
-        return false;
-    }
-    if (!sparse_->Init(sparse_index_type)) {
-        return false;
-    }
-    merger_->SetConfig(merge_config);
-    return true;
-}
-
-bool Retriever::Build(
-    const float* dense_vectors,
-    const SparseVector* sparse_vectors,
-    int64_t num_vectors
-) {
-    if (!dense_->Build(dense_vectors, num_vectors)) {
-        return false;
-    }
-    if (!sparse_->Build(sparse_vectors, num_vectors)) {
-        return false;
-    }
-    ready_ = true;
-    return true;
-}
-
-RetrievalResult Retriever::Retrieve(const RetrievalRequest& request) const {
-    auto start = std::chrono::steady_clock::now();
-    RetrievalResult result;
-    
-    if (!ready_) {
-        return result;
-    }
-    
-    SearchResult dense_results;
-    SearchResult sparse_results;
-    
-    // Effective top_k for search (fetch more for better RRF merge)
-    int32_t search_k = request.for_graph ? request.top_k * 4 : request.top_k * 2;
-    
-    // Execute dense search if enabled
-    if (request.enable_dense && request.query_vector && request.vector_dim > 0) {
-        dense_results = dense_->Search(
-            request.query_vector,
-            1,  // Single query
-            search_k,
-            request.filter_bitset,
-            request.filter_bitset_size
-        );
-        result.dense_hits = dense_results.count;
-    }
-    
-    // Execute sparse search if enabled
-    if (request.enable_sparse && !request.query_text.empty()) {
-        SparseVector query_sparse = SparseRetriever::TextToSparse(request.query_text);
-        sparse_results = sparse_->Search(
-            query_sparse,
-            search_k,
-            request.filter_bitset,
-            request.filter_bitset_size
-        );
-        result.sparse_hits = sparse_results.count;
-    }
-    
-    // Merge results
-    result.candidates = merger_->Merge(
-        dense_results,
-        sparse_results,
-        request.top_k,
-        request.for_graph
-    );
-    
-    result.total_found = static_cast<int64_t>(result.candidates.size());
-    
-    auto end = std::chrono::steady_clock::now();
-    result.latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    
-    return result;
-}
-
-RetrievalResult Retriever::BenchmarkRetrieve(const RetrievalRequest& request) const {
-    auto start = std::chrono::steady_clock::now();
-    RetrievalResult result;
-    
-    if (!ready_) {
-        return result;
-    }
-    
-    SearchResult dense_results;
-    SearchResult sparse_results;
-    
-    // For benchmark, fetch all available results
-    int32_t search_k = 10000;  // Large number to get all
-    
-    if (request.enable_dense && request.query_vector && request.vector_dim > 0) {
-        dense_results = dense_->Search(
-            request.query_vector,
-            1,
-            search_k,
-            request.filter_bitset,
-            request.filter_bitset_size
-        );
-        result.dense_hits = dense_results.count;
-    }
-    
-    if (request.enable_sparse && !request.query_text.empty()) {
-        SparseVector query_sparse = SparseRetriever::TextToSparse(request.query_text);
-        sparse_results = sparse_->Search(
-            query_sparse,
-            search_k,
-            request.filter_bitset,
-            request.filter_bitset_size
-        );
-        result.sparse_hits = sparse_results.count;
-    }
-    
-    // Merge WITHOUT truncation for benchmark
-    result.candidates = merger_->Merge(
-        dense_results,
-        sparse_results,
-        search_k,  // No truncation
-        false
-    );
-    
-    result.total_found = static_cast<int64_t>(result.candidates.size());
-    
-    auto end = std::chrono::steady_clock::now();
-    result.latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    
-    return result;
-}
-
-DenseRetriever& Retriever::GetDenseRetriever() { return *dense_; }
-const DenseRetriever& Retriever::GetDenseRetriever() const { return *dense_; }
-SparseRetriever& Retriever::GetSparseRetriever() { return *sparse_; }
-const SparseRetriever& Retriever::GetSparseRetriever() const { return *sparse_; }
-Merger& Retriever::GetMerger() { return *merger_; }
-const Merger& Retriever::GetMerger() const { return *merger_; }
-
-bool Retriever::Serialize(std::vector<uint8_t>& output) const {
-    // TODO: Implement serialization
-    return false;
-}
-
-bool Retriever::Deserialize(const std::vector<uint8_t>& input) {
-    // TODO: Implement deserialization
-    return false;
-}
-
-bool Retriever::Load(const std::string& dir_path) {
-    // TODO: Implement loading
-    return false;
-}
-
-bool Retriever::Save(const std::string& dir_path) const {
-    // TODO: Implement saving
-    return false;
-}
-
-bool Retriever::IsReady() const {
-    return ready_;
-}
+// ── FlatIndexHandle ───────────────────────────────────────────────────────────
+// Thin RAII wrapper used by andb_retriever_* functions.
+// No merger, no reranker — purely an HNSW index.
+struct FlatIndexHandle {
+    DenseRetriever dense;
+    bool           ready = false;
+};
 
 }  // namespace andb
 
-// C API implementation
+// ── C API implementation ──────────────────────────────────────────────────────
 
-const char* andb_version() {
-    return andb::Version();
-}
+const char* andb_version() { return andb::Version(); }
+
+// ── Flat handle lifecycle ─────────────────────────────────────────────────────
 
 void* andb_retriever_create() {
-    return new andb::Retriever();
+    return new andb::FlatIndexHandle();
 }
 
-void andb_retriever_destroy(void* retriever) {
-    delete static_cast<andb::Retriever*>(retriever);
+void andb_retriever_destroy(void* handle) {
+    delete static_cast<andb::FlatIndexHandle*>(handle);
 }
 
-int andb_retriever_init(
-    void* retriever,
-    const char* dense_index_type,
-    const char* metric_type,
-    int dim,
-    const char* sparse_index_type,
-    int rrf_k
-) {
-    if (!retriever) return 0;
-    
-    andb::IndexConfig dense_config;
-    dense_config.index_type = dense_index_type ? dense_index_type : "HNSW";
-    dense_config.metric_type = metric_type ? metric_type : "IP";
-    dense_config.dim = dim;
-    
-    andb::MergeConfig merge_config;
-    merge_config.rrf_k = rrf_k > 0 ? rrf_k : 60;
-    
-    auto* r = static_cast<andb::Retriever*>(retriever);
-    return r->Init(dense_config, sparse_index_type ? sparse_index_type : "SPARSE_INVERTED_INDEX", merge_config) ? 1 : 0;
+int andb_retriever_init(void* handle,
+                        const char* index_type,
+                        const char* metric_type,
+                        int dim,
+                        const char* /*unused1*/,
+                        int         /*unused2*/) {
+    if (!handle || dim <= 0) return 0;
+    auto* h = static_cast<andb::FlatIndexHandle*>(handle);
+
+    andb::IndexConfig cfg;
+    cfg.index_type  = index_type  ? index_type  : "HNSW";
+    cfg.metric_type = metric_type ? metric_type : "IP";
+    cfg.dim         = dim;
+
+    return h->dense.Init(cfg) ? 1 : 0;
 }
 
-int andb_retriever_build(
-    void* retriever,
-    const float* dense_vectors,
-    int64_t num_vectors,
-    int dim
-) {
-    if (!retriever || !dense_vectors || num_vectors <= 0 || dim <= 0) return 0;
-    
-    // For now, build without sparse vectors (can be extended)
-    auto* r = static_cast<andb::Retriever*>(retriever);
-    return r->GetDenseRetriever().Build(dense_vectors, num_vectors) ? 1 : 0;
+int andb_retriever_build(void* handle,
+                         const float* vectors,
+                         int64_t      n,
+                         int          dim) {
+    if (!handle || !vectors || n <= 0 || dim <= 0) return 0;
+    auto* h = static_cast<andb::FlatIndexHandle*>(handle);
+    if (!h->dense.Build(vectors, n)) return 0;
+    h->ready = true;
+    return 1;
 }
 
-int andb_retriever_search(
-    void* retriever,
-    const float* query_vector,
-    int dim,
-    int top_k,
-    int for_graph,
-    const uint8_t* filter_bitset,
-    size_t filter_size,
-    int64_t* out_ids,
-    float* out_scores,
-    int max_results
-) {
-    if (!retriever || !query_vector || dim <= 0 || top_k <= 0 || !out_ids || !out_scores) {
+// ANN search — raw nearest neighbours, no business logic.
+int andb_retriever_search(void*          handle,
+                          const float*   query,
+                          int            dim,
+                          int            top_k,
+                          int            /*unused_for_graph*/,
+                          const uint8_t* filter_bitset,
+                          size_t         filter_size,
+                          int64_t*       out_ids,
+                          float*         out_scores,
+                          int            max_results) {
+    if (!handle || !query || dim <= 0 || top_k <= 0 || !out_ids || !out_scores) {
         return 0;
     }
-    
-    andb::RetrievalRequest request;
-    request.query_vector = query_vector;
-    request.vector_dim = dim;
-    request.top_k = top_k;
-    request.for_graph = for_graph != 0;
-    request.filter_bitset = filter_bitset;
-    request.filter_bitset_size = filter_size;
-    request.enable_dense = true;
-    request.enable_sparse = false;  // No text query in C API
-    
-    auto* r = static_cast<andb::Retriever*>(retriever);
-    andb::RetrievalResult result = r->Retrieve(request);
-    
-    int count = std::min(static_cast<int>(result.candidates.size()), max_results);
-    for (int i = 0; i < count; ++i) {
-        out_ids[i] = result.candidates[i].internal_id;
-        out_scores[i] = result.candidates[i].final_score;
+    auto* h = static_cast<andb::FlatIndexHandle*>(handle);
+    if (!h->ready) return 0;
+
+    const int k = std::min(top_k, max_results);
+    std::vector<int64_t> ids(k, -1);
+    std::vector<float>   dists(k, 0.0f);
+
+    // allow_count in bits = filter_size (bytes) × 8
+    const int64_t allow_count = filter_bitset
+                                    ? static_cast<int64_t>(filter_size * 8)
+                                    : 0;
+    bool ok = h->dense.Search(query, /*nq=*/1, k,
+                               filter_bitset, allow_count,
+                               ids.data(), dists.data());
+    if (!ok) return 0;
+
+    int count = 0;
+    for (int i = 0; i < k; ++i) {
+        if (ids[i] < 0) break;   // Knowhere fills unused slots with -1
+        out_ids[count]    = ids[i];
+        out_scores[count] = dists[i];
+        ++count;
     }
-    
     return count;
+}
+
+// ── SegmentIndexManager C API ─────────────────────────────────────────────────
+
+int andb_segment_build(const char* segment_id, const float* vectors,
+                       int64_t n, int dim) {
+    if (!segment_id || !vectors || n <= 0 || dim <= 0) return -2;
+    return andb::SegmentIndexManager::Instance().BuildSegment(
+        segment_id, vectors, n, dim);
+}
+
+int andb_segment_search(const char* segment_id, const float* query,
+                        int64_t nq, int topk,
+                        int64_t* out_ids, float* out_dists) {
+    if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
+    return andb::SegmentIndexManager::Instance().Search(
+        segment_id, query, nq, topk, out_ids, out_dists);
+}
+
+int andb_segment_search_filter(const char* segment_id, const float* query,
+                               int64_t nq, int topk,
+                               const uint8_t* allow_bits, int64_t allow_count,
+                               int64_t* out_ids, float* out_dists) {
+    if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
+    return andb::SegmentIndexManager::Instance().SearchWithFilter(
+        segment_id, query, nq, topk, allow_bits, allow_count,
+        out_ids, out_dists);
+}
+
+int andb_segment_unload(const char* segment_id) {
+    if (!segment_id) return -2;
+    return andb::SegmentIndexManager::Instance().UnloadSegment(segment_id);
+}
+
+int andb_segment_exists(const char* segment_id) {
+    if (!segment_id) return 0;
+    return andb::SegmentIndexManager::Instance().HasSegment(segment_id) ? 1 : 0;
+}
+
+int64_t andb_segment_size(const char* segment_id) {
+    if (!segment_id) return -1;
+    return andb::SegmentIndexManager::Instance().SegmentSize(segment_id);
 }
