@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"sort"
 	"strings"
 	"time"
@@ -79,18 +80,123 @@ func (c S3Config) baseURL() string {
 	return fmt.Sprintf("%s://%s", scheme, c.Endpoint)
 }
 
+type s3HTTPConfig struct {
+	timeout    time.Duration
+	maxRetries int
+	retryBase  time.Duration
+}
+
+func loadS3HTTPConfigFromEnv() s3HTTPConfig {
+	timeoutMS := parseEnvInt("S3_HTTP_TIMEOUT_MS", 8000)
+	if timeoutMS <= 0 {
+		timeoutMS = 8000
+	}
+	maxRetries := parseEnvInt("S3_MAX_RETRIES", 2)
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	retryBaseMS := parseEnvInt("S3_RETRY_BASE_MS", 150)
+	if retryBaseMS <= 0 {
+		retryBaseMS = 150
+	}
+	return s3HTTPConfig{
+		timeout:    time.Duration(timeoutMS) * time.Millisecond,
+		maxRetries: maxRetries,
+		retryBase:  time.Duration(retryBaseMS) * time.Millisecond,
+	}
+}
+
+func parseEnvInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func resolveS3HTTPClient(httpClient *http.Client, cfg s3HTTPConfig) *http.Client {
+	if httpClient != nil {
+		return httpClient
+	}
+	return &http.Client{Timeout: cfg.timeout}
+}
+
+func isRetryableS3Status(code int) bool {
+	switch code {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func doSignedS3Request(
+	ctx context.Context,
+	httpClient *http.Client,
+	cfg S3Config,
+	method, rawURL string,
+	body []byte,
+	contentType string,
+) (*http.Response, error) {
+	httpCfg := loadS3HTTPConfigFromEnv()
+	client := resolveS3HTTPClient(httpClient, httpCfg)
+	attempts := httpCfg.maxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		var bodyReader io.Reader
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.ContentLength = int64(len(body))
+		}
+		s3Sign(req, cfg, body, contentType)
+
+		resp, err := client.Do(req)
+		if err == nil {
+			if !isRetryableS3Status(resp.StatusCode) || attempt == attempts-1 {
+				return resp, nil
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("retryable status %d", resp.StatusCode)
+		} else {
+			lastErr = err
+			if attempt == attempts-1 {
+				return nil, err
+			}
+		}
+
+		delay := time.Duration(attempt+1) * httpCfg.retryBase
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
 // EnsureBucket makes sure the bucket exists (creates if missing).
 func EnsureBucket(ctx context.Context, httpClient *http.Client, cfg S3Config) error {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	rawURL := fmt.Sprintf("%s/%s", cfg.baseURL(), cfg.Bucket)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, rawURL, nil)
-	if err != nil {
-		return fmt.Errorf("ensure bucket new request: %w", err)
-	}
-	s3Sign(req, cfg, nil, "")
-	resp, err := httpClient.Do(req)
+	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodPut, rawURL, nil, "")
 	if err != nil {
 		return fmt.Errorf("ensure bucket do: %w", err)
 	}
@@ -113,9 +219,6 @@ func PutJSONAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Config
 }
 
 func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string, data []byte, contentType string) (int, bool, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	if strings.HasPrefix(objectKey, "/") {
 		objectKey = strings.TrimLeft(objectKey, "/")
 	}
@@ -125,13 +228,7 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 	}
 
 	putURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
-	putReq, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(data))
-	if err != nil {
-		return 0, false, fmt.Errorf("put new request: %w", err)
-	}
-	putReq.ContentLength = int64(len(data))
-	s3Sign(putReq, cfg, data, contentType)
-	putResp, err := httpClient.Do(putReq)
+	putResp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodPut, putURL, data, contentType)
 	if err != nil {
 		return 0, false, fmt.Errorf("put do: %w", err)
 	}
@@ -143,12 +240,7 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 
 	// Round-trip verification: GET the object back and compare bytes.
 	getURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
-	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
-	if err != nil {
-		return 0, false, fmt.Errorf("get new request: %w", err)
-	}
-	s3Sign(getReq, cfg, nil, "")
-	getResp, err := httpClient.Do(getReq)
+	getResp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, getURL, nil, "")
 	if err != nil {
 		return 0, false, fmt.Errorf("get do: %w", err)
 	}
@@ -171,18 +263,9 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 // NOTE: bucket creation is the caller's responsibility. S3ColdStore calls
 // EnsureBucket once via sync.Once before its first write.
 func PutBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string, data []byte, contentType string) error {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	objectKey = strings.TrimLeft(objectKey, "/")
 	putURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("s3 put new request: %w", err)
-	}
-	req.ContentLength = int64(len(data))
-	s3Sign(req, cfg, data, contentType)
-	resp, err := httpClient.Do(req)
+	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodPut, putURL, data, contentType)
 	if err != nil {
 		return fmt.Errorf("s3 put do: %w", err)
 	}
@@ -197,17 +280,9 @@ func PutBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, object
 // GetBytes fetches an object from S3 at objectKey.
 // Returns (nil, nil) when the object does not exist (404).
 func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string) ([]byte, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	objectKey = strings.TrimLeft(objectKey, "/")
 	getURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("s3 get new request: %w", err)
-	}
-	s3Sign(req, cfg, nil, "")
-	resp, err := httpClient.Do(req)
+	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, getURL, nil, "")
 	if err != nil {
 		return nil, fmt.Errorf("s3 get do: %w", err)
 	}
@@ -230,9 +305,6 @@ func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, object
 // The prefix must not have a leading slash.  Returns nil on any error (caller
 // should treat a nil return as "no keys found").
 func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, prefix string) ([]string, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	prefix = strings.TrimLeft(prefix, "/")
 
 	// S3 ListObjectsV2 with continuation token support.
@@ -246,13 +318,7 @@ func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, pre
 			listURL += "&continuation-token=" + continuationToken
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("list objects new request: %w", err)
-		}
-		s3Sign(req, cfg, nil, "")
-
-		resp, err := httpClient.Do(req)
+		resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, listURL, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("list objects do: %w", err)
 		}
