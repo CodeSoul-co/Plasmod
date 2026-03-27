@@ -29,23 +29,23 @@ type S3Config struct {
 }
 
 func LoadFromEnv() (S3Config, error) {
-	endpoint := strings.TrimSpace(os.Getenv("S3_ENDPOINT"))
-	accessKey := strings.TrimSpace(os.Getenv("S3_ACCESS_KEY"))
-	secretKey := strings.TrimSpace(os.Getenv("S3_SECRET_KEY"))
-	bucket := strings.TrimSpace(os.Getenv("S3_BUCKET"))
+	endpoint := firstNonEmptyEnv("S3_ENDPOINT", "MINIO_ADDRESS")
+	accessKey := firstNonEmptyEnv("S3_ACCESS_KEY", "MINIO_ACCESS_KEY_ID")
+	secretKey := firstNonEmptyEnv("S3_SECRET_KEY", "MINIO_SECRET_ACCESS_KEY")
+	bucket := firstNonEmptyEnv("S3_BUCKET", "MINIO_BUCKET_NAME")
 	if endpoint == "" || accessKey == "" || secretKey == "" || bucket == "" {
-		return S3Config{}, errors.New("missing S3 config: require S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET")
+		return S3Config{}, errors.New("missing S3 config: require S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET (MINIO_* aliases supported)")
 	}
 
-	secure := os.Getenv("S3_SECURE")
+	secure := firstNonEmptyEnv("S3_SECURE", "MINIO_USE_SSL")
 	isSecure := secure == "true" || secure == "1"
 
-	region := strings.TrimSpace(os.Getenv("S3_REGION"))
+	region := firstNonEmptyEnv("S3_REGION", "MINIO_REGION")
 	if region == "" {
 		region = "us-east-1"
 	}
 
-	prefix := strings.TrimSpace(os.Getenv("S3_PREFIX"))
+	prefix := firstNonEmptyEnv("S3_PREFIX", "MINIO_ROOT_PATH")
 	prefix = strings.TrimRight(prefix, "/")
 	if prefix == "" {
 		prefix = "andb/integration_tests"
@@ -60,6 +60,15 @@ func LoadFromEnv() (S3Config, error) {
 		Region:    region,
 		Prefix:    prefix,
 	}, nil
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (c S3Config) baseURL() string {

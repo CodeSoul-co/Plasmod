@@ -814,7 +814,7 @@ S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
 S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 ```
 
-#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
+#### S3 Utility Layer (`src/internal/storage/s3util.go`)
 
 | Function | Purpose |
 |---|---|
@@ -830,13 +830,13 @@ S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 At startup, `bootstrap.go` selects the cold tier automatically:
 
 ```
-S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET 已设置
+S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET configured
   → S3ColdStore  (MinIO / AWS S3 backed)
-  → 日志: [bootstrap] cold store: S3 endpoint=... bucket=...
+  → log: [bootstrap] cold store: S3 endpoint=... bucket=...
 
-未设置
+not configured
   → InMemoryColdStore  (in-process simulation, default)
-  → 日志: [bootstrap] cold store: in-memory simulation
+  → log: [bootstrap] cold store: in-memory simulation
 ```
 
 `S3ColdStore` objects stored as:
@@ -884,8 +884,8 @@ S3_PREFIX      andb/integration_tests (default)
 | Cold archival `Scope`/`OwnerType` attribute fix | ✅ | `ArchiveColdRecord` now reads `attrs["visibility"]` as `Scope` and `attrs["event_type"]` as `OwnerType`; `buildAttributes` sets these keys |
 | `InMemoryColdStore.ColdSearch` | ✅ | Lexical substring search over cold memories, sorted by score+recency |
 | `S3ColdStore.ColdSearch` | ✅ | ListObjectsV2 + per-key GET + lexical scoring; `ListObjects` added to `s3util` |
-| Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
-| Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
+| S3 integration test in `integration_tests/` | ✅ | `integration_tests/s3_dataflow_test.go` covers ingest → archive/query capture → S3 round-trip (gated by `ANDB_RUN_S3_TESTS=true`) |
+| `S3_*` config key standardisation | ✅ | `storage.LoadFromEnv()` uses `S3_*` as canonical keys and supports `MINIO_*` alias fallback for compatibility |
 | `handleS3SnapshotExport` nil panic | ✅ Fixed | Full implementation in `src/internal/access/s3_snapshot_export_stub.go` using Avro manifest + JSON metadata + S3 round-trip verification; returns 501 only if S3 env vars absent |
 | `src/internal/s3util/` module removed | ✅ Fixed | S3 helpers (`LoadFromEnv`, SigV4 signing, etc.) moved to `src/internal/storage/s3util.go`; imports updated in gateway, bootstrap, and snapshot export; old `src/internal/s3util/` directory deleted |
 
