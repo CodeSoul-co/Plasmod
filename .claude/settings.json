@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(brew install:*)",
+      "Bash(make cpp:*)",
+      "Bash(ls /Users/erwin/Downloads/codespace/CogDB/cpp/build/*.dylib /Users/erwin/Downloads/codespace/CogDB/cpp/build/*.so)",
+      "Bash(cmake -S cpp -B cpp/build)",
+      "Bash(cmake --build cpp/build)",
+      "Bash(cmake -S cpp -B cpp/build -DCMAKE_PREFIX_PATH=/opt/homebrew)",
+      "Read(//opt/homebrew/lib/cmake/**)",
+      "Read(//opt/homebrew/**)",
+      "Bash(cmake -S cpp -B cpp/build -DOpenMP_C_FLAGS=\"-Xclang -fopenmp -I/opt/homebrew/Cellar/libomp/22.1.1/include\" -DOpenMP_C_LIB_NAMES=\"omp\" -DOpenMP_omp_LIBRARY=\"/opt/homebrew/Cellar/libomp/22.1.1/lib/libomp.dylib\")",
+      "Bash(cmake -S cpp -B cpp/build -DOpenMP_C_FLAGS=\"-Xclang -fopenmp -I/opt/homebrew/Cellar/libomp/22.1.1/include\" -DOpenMP_C_LIB_NAMES=\"omp\" -DOpenMP_omp_LIBRARY=\"/opt/homebrew/Cellar/libomp/22.1.1/lib/libomp.dylib\" -DOpenMP_CXX_FLAGS=\"-Xclang -fopenmp -I/opt/homebrew/Cellar/libomp/22.1.1/include\" -DOpenMP_CXX_LIB_NAMES=\"omp\" -DOpenMP_omp_LIBRARY=\"/opt/homebrew/Cellar/libomp/22.1.1/lib/libomp.dylib\")",
+      "Bash(cmake -S cpp -B cpp/build -DOpenMP_C_FLAGS=\"-Xclang -fopenmp -I/opt/homebrew/Cellar/libomp/22.1.1/include\" -DOpenMP_C_LIB_NAMES=\"omp\" -DOpenMP_omp_LIBRARY=\"/opt/homebrew/Cellar/libomp/22.1.1/lib/libomp.dylib\" -DOpenMP_CXX_FLAGS=\"-Xclang -fopenmp -I/opt/homebrew/Cellar/libomp/22.1.1/include\" -DOpenMP_CXX_LIB_NAMES=\"omp\" -DOpenMP_omp_LIBRARY=\"/opt/homebrew/Cellar/libomp/22.1.1/lib/libomp.dylib\" -DCMAKE_PREFIX_PATH=\"/opt/homebrew\")",
+      "Bash(python3 scripts/seed_mock_data.py)",
+      "Bash(python3 scripts/run_demo.py)",
+      "Bash(conda --version)",
+      "Bash(conda env:*)",
+      "Bash(conda create:*)",
+      "Bash(conda run:*)",
+      "Bash(curl -s http://127.0.0.1:8080/healthz)",
+      "Bash(curl -s -X POST http://127.0.0.1:8080/v1/ingest -H \"Content-Type: application/json\" -d '{:*)",
+      "Bash(curl -s -X POST http://127.0.0.1:8080/v1/query -H \"Content-Type: application/json\" -d '{:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)",
+      "Bash(git restore:*)",
+      "Bash(git merge:*)"
+    ]
+  }
+}

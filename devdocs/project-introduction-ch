@@ -1,0 +1,1178 @@
+1. 方案定位 
+本系统拟设计为一种面向多智能体系统（MAS）的 agent-native database。
+能不能把 agent 的 memory/state/event/artifact 统一成对象系统，并通过事件驱动物化和结构化检索，提升推理相关记忆检索的有效性与效率？
+它不是传统关系数据库的简单延伸，也不只是向量数据库加几张 memory 表，而是一个同时支持：
+- 对象化记忆管理
+- 事件驱动状态演化
+- 版本与可见性控制
+- 多表示检索
+- 结构化证据召回
+- 多智能体共享治理
+- 推理型原生查询算子
+- 云原生弹性执行
+的数据库系统。
+从工程路线看，系统采用：Milvus as Data Plane + Manu as Control/Event Plane + Agent-Native Semantic/Governance Layer
+其中，Milvus 提供高性能向量检索、segment、LSM 式动态数据管理、snapshot isolation、异构 CPU/GPU 执行等能力；Manu 提供 access / coordinator / worker / storage 四层架构、WAL/binlog 主干、TSO/time-tick、独立扩缩容 worker 等云原生机制。 
+
+---
+2. 总体设计目标
+2.1 让数据库存储“智能体认知状态”而非仅存向量
+现有向量数据库通常把对象看作“向量 + 属性”，但 MAS 场景中的关键对象包括：
+- 事件轨迹
+- 记忆单元
+- 当前状态
+- 工具调用痕迹
+- 共享黑板
+- 归纳规则
+- 推理链及来源
+这些内容不能简化为一张 memory(id, content, embedding, metadata) 表。
+2.2 让数据库返回“结构化证据”，而不是一组孤立 chunk
+数据库查询不应只返回 top-k 片段，而应返回：
+- 证据子图
+- 证据子张量
+- 版本边界
+- provenance
+- proof trace
+从而让多跳推理、对比推理、约束推理等在 DB 内部由原生算子支撑。
+2.3 让状态演化由事件流推进，而不是直接覆盖写
+系统中 memory、state、policy 等对象不直接 upsert，而是：
+request → WAL/event log → 异步物化 → canonical object / retrieval view
+这一路线与 Manu 的 log backbone 思想一致：所有改变系统状态的请求进入逻辑日志，再由各类 subscriber 独立消费与更新。
+2.4 让多智能体共享具有边界、可解释、可审计
+共享记忆不是简单“大家都能读一个 namespace”，而必须内建：
+- scope / ACL
+- TTL / decay
+- quarantine
+- conflict / merge
+- provenance
+- rollback / audit
+
+---
+3. 顶层架构
+3.1 Data Plane：参考 Milvus
+这一层是系统的检索与存储内核，保留 Milvus 式能力：
+- vector query
+- multi-vector query
+- attribute filtering
+- segment-based storage
+- LSM / MemTable / merge
+- snapshot isolation
+- CPU/GPU heterogeneous execution
+- bufferpool / SSD / object storage 分层缓存
+Milvus 的核心特点包括：支持 Query Engine / GPU Engine / Storage Engine 组合，支持多向量对象、属性过滤、图索引和量化索引，采用 LSM 风格管理动态写入，以 segment 为搜索、调度和缓冲的基本单位，并通过 snapshot isolation 保证读写一致视图。
+Data Plane 在本系统中的职责
+它不直接暴露为“用户可见的 memory 语义接口”，而是负责：
+- 向量与混合索引执行
+- segment 管理
+- 数据 flush / merge / compaction
+- snapshot 一致读
+- CPU/GPU 协同执行
+- 热冷分层缓存
+- retrieval view 的底层执行也就是说，它是执行面，不是完整的语义面。
+
+---
+3.2 Control + Event Plane：参考 Manu
+这一层是系统的云原生调度与事件中枢，采用 Manu 风格的分层：
+- Access Layer
+- Coordinator Layer
+- Worker Layer
+- Storage Layer
+- WAL / binlog / pub-sub backbone
+- TSO / time-tick
+- 独立扩缩容 worker
+Manu 的四层架构非常清晰：access layer 由无状态 proxy 构成，负责接收请求、路由、聚合和元数据校验；coordinator layer 负责管理系统状态和元数据，并协调 query/data/index 等节点；worker layer 由无状态 query/data/index nodes 构成，可独立扩缩容；storage layer 使用 etcd 存状态与元数据，使用 S3/MinIO/文件系统持久化大体量数据和索引。更关键的是，Manu 把 WAL 和 binlog 作为系统主干：WAL 是增量、流式、低延迟的 row-based 日志，binlog 是基础、批式、列式的持久层；logger 写 WAL，data nodes 把 WAL 转成 column-based binlog，query/index 等只读组件作为独立 subscriber 消费日志并维护自己的只读视图。
+Control/Event Plane 在本系统中的职责
+- 写入事件化
+- 对象生命周期协调
+- worker 编排
+- 元数据管理
+- 版本可见性推进
+- policy 与共享治理协调
+- event-sourcing 与回放
+
+---
+3.3 Agent-Native Semantic & Governance Layer
+用于把数据库从“向量检索系统”升级为“智能体认知数据库”。
+这一层不是单独加一个物理大层，而是横跨 coordinator、worker、storage 的语义层，包含：
+- 记忆语义建模
+- 状态语义建模
+- policy 治理
+- share contract
+- proof trace
+- 冲突与合并
+- subtensor / subgraph reasoning operators
+
+---
+4. 两套 layer 的区分
+4.1 工程系统分层
+运行与部署层：
+- Access Layer
+- Coordinator Layer
+- Event Backbone
+- Worker Layer
+- Storage Layer
+4.2 记忆语义分层
+数据与治理层：
+- Base Layer
+- Policy Layer
+- Adaptation Layer
+
+---
+5. 核心数据建模原则
+5.1 从表模型转向“对象 + 事件 + 版本 + 索引”
+系统不应以关系表和 join 为中心，而应以：
+- 对象
+- 事件
+- 版本
+- 索引投影
+为中心。
+
+Milvus 已经证明，把 entity 视作由一个或多个向量与可选属性组成的对象，并采用列式存储与 segment 管理，是向量系统中有效的建模方式。Manu 则说明，向量数据库不需要关系数据库那种跨表操作，更适合简单对象模型、日志驱动和可调一致性。
+因此本系统中：
+- 状态不是直接覆盖写，而由事件流推进
+- 对象不是单一向量，而是多表示实体
+- 查询视图不是唯一真相，而是带版本和时间边界的 materialized view
+
+---
+5.2 记忆不是一张表
+错误做法是：memory(id, content, embedding, metadata)
+这样的问题是：
+- 没有事件来源
+- 没有版本
+- 没有因果关系
+- 没有状态层
+- 没有异步物化链
+- 没有多索引投影
+- 没有共享治理语义
+正确做法是把系统拆成对象系统。
+
+---
+6. 一等公民对象（Canonical Objects）
+6.1 Agent
+表示执行主体。
+字段：
+- agent_id
+- tenant_id
+- workspace_id
+- agent_type
+- role_profile
+- policy_ref
+- capability_set
+- policy_ref
+- created_at
+- status
+它的作用更像“命名空间 + 执行身份”。
+
+---
+6.2 Session 
+表示具体任务、会话或推理线程。
+字段：
+- session_id
+- agent_id
+- parent_session_id
+- task_type
+- goal
+- context_ref
+- start_ts
+- end_ts
+- status
+- budget_token
+- budget_time_ms
+设计上，大量运行态数据应优先挂在 session 上。
+
+---
+6.3 Event
+Event 是系统事实来源。
+典型事件：
+- user_message
+- assistant_message
+- tool_call_issued
+- tool_result_returned
+- retrieval_executed
+- memory_write_requested
+- memory_consolidated
+- plan_updated
+- critique_generated
+- task_finished
+- handoff_occurred
+字段：
+- event_id
+- tenant_id
+- workspace_id
+- agent_id
+- session_id
+- event_type
+- event_time
+- ingest_time
+- visible_time
+- logical_ts
+- parent_event_id
+- causal_refs
+- payload
+- source
+- importance
+- visibility
+- version
+
+---
+6.4 Memory Object
+Memory 应被看作有类型、可追踪、可治理的知识单元。
+类型：
+- episodic memory：发生过什么
+- semantic memory：抽象事实与知识
+- procedural memory：规则、流程、策略
+- social/shared memory：共享约定、团队状态
+- reflective memory：反思、修正、经验结论
+字段：
+- memory_id
+- memory_type
+- agent_id
+- session_id
+- source_event_ids
+- content
+- summary
+- confidence
+- importance
+- freshness_score
+- ttl
+- owner_scope
+- created_ts
+- updated_ts
+- valid_from
+- valid_to
+- version
+- level
+- provenance_ref
+- is_active
+其中 level 表示蒸馏层级，例如：
+- 0 = 原始记录
+- 1 = 摘要
+- 2 = 归纳规律
+
+---
+6.5 State Object
+State 和 memory 不同：
+- memory 偏长期、可复用
+- state 偏当前运行态
+例如：
+- 当前 plan tree
+- 当前工具调用栈
+- 当前 budget
+- 当前执行状态
+- 当前共享黑板
+- 当前 blocking / failed 状态
+- 短期的上下文
+字段：
+- state_id
+- agent_id
+- session_id
+- state_type
+- state_key
+- state_value
+- version
+- derived_from_event_id
+- checkpoint_ts
+
+---
+6.6 Artifact / External Object
+表示外部工件：
+- 文档
+- 代码
+- SQL
+- 图像
+- 报表
+- API 返回
+- 文件引用
+字段：
+- artifact_id
+- artifact_type
+- uri
+- content_ref
+- owner_agent_id
+- session_id
+- produced_by_event_id
+- mime_type
+- metadata
+- hash
+- version
+
+---
+6.7 Relation / Edge
+对象关系不以 join 为中心，而以显式边和 reference graph 为中心。
+关键边类型：
+- caused_by
+- derived_from
+- supports
+- contradicts
+- summarizes
+- updates
+- uses_tool
+- belongs_to_task
+- shared_with
+这层直接支撑 graph retrieval 和 reasoning trace replay。
+
+---
+6.8 User
+定义用户信息，用户包括模型使用者和模型训练者等等
+- user_id
+- user_name
+- user_tenant_id
+- user_workspace_id
+- visibility
+此处设计为了方便后续数据库进行优化升级
+
+---
+6.9 Policy
+定义Agent必须遵循的规则，通过额外定义方便系统更好地实现解耦
+- policy_id
+- policy_version
+- policy_start_time
+- policy_end_time
+- Context
+- publisher_id
+- policy_type
+
+---
+6.10 Embedding
+定义了向量里面包含的内容，对向量进行单独存储可以减少其他类对其的多次复用，后续其他类进行引用时可以直接通过vector_id来寻找内容，减少了空间浪费
+- vector_id
+- vector_context
+- embedding_type
+- dim
+- model_id
+- vector_ref
+
+---
+7. Tensor 化记忆：作为逻辑抽象
+7.1 核心定义
+系统把 MAS 记忆建模为一个稀疏、结构化、版本化的 tensor-object space。
+维度：
+- tenant_id
+- workspace_id
+- agent_id
+- scope
+- session_id / task_id
+- time_bucket
+- memory_type
+- modality
+- version
+- level
+tensor cell 的含义：每个 cell 不是一个数值，而是一个 structured sparse tensor cell，内部存：
+- base payload
+- embedding_base
+- provenance
+- confidence
+- ttl
+- weight
+- verified_state
+- quarantine_flag
+Tensor 是数据库的逻辑表示与查询抽象；底层物理实现可由 object store、columnar segments、graph edges、vector indexes 等共同支撑。
+8. 对象的三层表示：Base Record + Fixed Representation + Reasoning Structure
+8.1 Canonical Record Layer
+存：
+- 主键
+- 结构化字段
+- payload
+- 生命周期
+- 时间戳
+- 版本
+- provenance
+8.2 Fixed Representation Layer
+存：
+- dense embeddings
+- sparse features / keywords
+- tags
+- entities
+- topic / intent / role labels
+- filter attributes
+- time_bucket
+参考Milvus 的多向量与属性列存储。
+8.3 Reasoning Structure Layer
+存：
+- graph edges
+- subtensor relations
+- path hints
+- constraints
+- aggregation-ready links
+这一层是数据库内原生推理的基础。
+
+---
+9. 记忆语义三层：Base / Policy / Adaptation
+9.1 Base Layer
+保存：
+- embedding_base
+- 原始文本 / blob
+- provenance
+- source event
+- 写入时间
+- 版本戳
+- revision lineage
+原则：
+- append-only
+- 支持 time-travel
+- correction 通过新版本或 correction edge 表达
+- 不直接覆写旧事实
+
+---
+9.2 Policy Layer
+这是治理层，负责：
+- salience_weight
+- ttl
+- decay_fn
+- confidence
+- verified_state
+- quarantine_flag
+- visibility_policy
+- read_acl / write_acl
+建议再加：
+- policy_reason
+- policy_source
+- policy_event_id
+原则：
+- 默认软遗忘，不直接物理删除
+- 合规要求下才硬删
+- 支持 soft TTL / hard delete window
+- 所有 policy 调整可审计
+
+---
+9.3 Adaptation Layer
+允许学习的是：
+- retrieval profile
+- ranking parameters
+- filtering thresholds
+- projection weights
+- embedding family selection
+限制：
+- 不重写 base embedding
+- 不篡改 base payload
+- 不修改 provenance
+- 必须可审计、可回滚、可禁用
+
+---
+10. 三层数据模型
+10.1 Canonical Object Layer
+存标准对象：
+- Agent
+- Session
+- Event
+- Memory
+- State
+- Artifact
+- Relation
+- Policy Record
+- Share Contract
+10.2 Log / Version Layer
+存：
+- append-only WAL events
+- object mutations
+- time-tick / watermark
+- replay log
+- compaction log
+- visibility publication records
+- derivation log
+- policy decision log
+这里借鉴 Manu：所有状态变更先进 log，再由各类 subscriber 独立物化。
+10.3 Materialized Retrieval Layer
+存：
+- segments
+- dense vector index
+- sparse index
+- graph index
+- temporal index
+- filtered views
+- hot cache
+- snapshots
+- subtensor / subgraph retrieval views
+这里借鉴 Milvus：segment 是检索、调度和缓冲的基本单位，snapshot 提供一致读。
+
+---
+11. 原生推理型查询算子
+这是系统与普通 VDB 最大的区别。
+11.1 Subgraph / Subtensor Retrieval
+输入 query 与约束，返回：
+- 连通证据子图
+- 或局部证据子张量
+- 附带 provenance / version / scope / confidence
+11.2 Explainable Proof Trace
+每个结果返回：
+- 用了哪些对象
+- 哪些边
+- 哪些版本
+- 哪些来源
+- 哪些策略过滤生效
+- 哪些步骤是直接证据，哪些是派生结果
+11.3 Constrained Multi-hop Expansion
+支持：
+- hop 限制
+- relation type 限制
+- scope 限制
+- time window 限制
+- confidence threshold 限制
+11.4 Slice / Window / Rollback Query
+支持：
+- time-slice retrieval
+- scope-slice retrieval
+- version rollback query
+- visibility-aware retrieval
+11.5 Aggregate / Contrast / Consensus Operators
+例如：
+- ConsensusReduce
+- ConflictCompare
+- ScopedAggregate
+适合 MAS 共识提取、冲突比较与多 scope 聚合。
+11.6 Policy-aware Retrieval
+检索原生支持：
+- ACL-aware
+- TTL-aware
+- quarantine-aware
+- salience-aware
+- verified-state-aware
+
+---
+12. 共享治理与冲突处理
+12.1 Share Contract
+引入：
+MemoryShareContract
+字段包括：
+- scope
+- read_acl
+- write_acl
+- derive_acl
+- ttl_policy
+- consistency_level
+- merge_policy
+- quarantine_policy
+- audit_policy
+这让共享不是单个 scope 字段，而是完整协议单元。
+
+---
+12.2 Conflict & Merge Engine
+冲突是 MAS 中的原生现象，不是异常。
+处理三类冲突：
+Fact conflict
+同一事实多版本并存，不强制合一。
+Plan conflict
+多个 agent 对计划不一致，可通过权重、投票或仲裁处理。
+State conflict
+共享状态并发写入，可采用：
+- last-writer-wins
+- causal merge
+- weighted merge
+- CRDT-like partial merge
+
+---
+13. 版本与时间模型
+统一四种语义：
+- event_time：事件实际发生时间
+- ingest_time：进入 WAL 时间
+- visible_time：对查询可见时间
+- logical_version：对象版本号
+Manu 通过 TSO 和 hybrid logical clock 生成与物理时间接近的逻辑时间，并用 time semantics 支撑确定性顺序与 bounded staleness。Milvus 则通过 snapshot isolation 让每个查询工作在启动时的快照上，不受后续写入干扰。
+本系统据此支持：
+- replay
+- time-travel query
+- bounded staleness
+- session-consistent reads
+- rollback / audit
+
+---
+14. 索引模型
+五类索引：
+14.1 Dense Vector Index
+对象：
+- memory
+- event
+- artifact
+- plan node
+14.2 Sparse / Keyword Index
+对象：
+- 实体名
+- 工具名
+- 参数名
+- 错误码
+- 标签词
+14.3 Attribute Filter Index
+字段：
+- tenant_id
+- agent_id
+- session_id
+- memory_type
+- tool_name
+- time_range
+- confidence
+- importance
+- visibility
+- scope
+14.4 Graph / Relation Index
+支持：
+- 证据路径
+- plan 依赖
+- memory lineage
+- reasoning trace
+14.5 Temporal Index
+支持：
+- 最近窗口
+- TTL
+- 某时刻之前可见
+- session 窗口
+Milvus 已展示多向量、属性列和多类索引统一抽象的可行性；Manu 也列举了向量量化、倒排、邻近图和数值属性索引等多类索引。
+
+---
+15. 分片、channel 与 segment 设计
+15.1 写入分片键
+优先级：
+- tenant_id
+- workspace_id
+- agent_id
+- session_id
+规则
+- WAL channel 按 tenant / agent / session hash
+- shared scope 可单独 namespace channel
+- lineage 尽量与写入流同向
+Manu 中 logger 组织成 hash ring，实体按主键 hash 到 shard/WAL channel，并借助 TSO 分配 LSN。
+15.2 segment 维度
+建议按：
+- object_type
+- namespace
+- time_bucket
+- embedding_family
+- hot/cold tier
+例如：
+- memory.semantic.2026w11.agentA
+- event.tooltrace.2026-03-13.sessionX
+- state.plan.current.agentB
+Milvus 中 segment 是搜索、调度和缓冲的基本单位；Manu 中 segment 也是数据组织单位，并有 growing / sealed 状态。
+
+---
+16. 系统分层
+16.1 Access Layer
+- API Gateway
+- Session Router
+- Namespace / Tenant Router
+- Query Planner Gateway
+- ACL / Policy Gate
+作用：
+- 接收客户端请求
+- 做轻量校验与路由
+- 做 query planning 入口
+- 提前拦截不合法访问
+16.2 Coordinator Layer
+- Schema Coordinator
+- Object Coordinator
+- Shard Coordinator
+- Memory Coordinator
+- Policy Coordinator
+- Index Coordinator
+- Version / Consistency Coordinator
+- Worker Scheduler
+作用：
+- 管对象 schema
+- 管对象命名空间与生命周期
+- 管 shard / segment / index 分配
+- 管 policy 与 share contract
+- 管可见性与一致性
+- 管 worker 编排
+扩展自 Manu 的 root/data/query/index coordinators。
+16.3 Event Backbone
+- TSO / Logical Clock
+- WAL Stream
+- Time Tick / Watermark
+- Binlog / Materialization Log
+- Derivation Log
+- Policy Decision Log
+作用：
+- 统一系统状态变化记录
+- 统一事件顺序
+- 提供 subscriber 解耦机制
+- 支撑 replay、物化、proof trace
+Manu 的 WAL/binlog/logical log 思想是这里的直接原型。
+16.4 Worker Layer
+- Ingest Worker
+- Object Materialization Worker
+- Memory Extraction Worker
+- Memory Consolidation Worker
+- State Materialization Worker
+- Tool Trace Worker
+- Summarization Worker
+- Reflection / Policy Worker
+- Communication Worker
+- Index Build Worker
+- Graph / Relation Worker
+- Proof Trace Worker
+- Conflict & Merge Worker
+- Query Worker
+- Micro-batch Scheduler
+作用：
+- 事件消费
+- 对象物化
+- 记忆抽取与压缩
+- 共享同步
+- 多索引构建
+- 推理轨迹组装
+- 查询执行与批调度
+Manu 的 worker 节点无状态、读只读副本、不同类型独立扩缩容，这一点非常适合这里。
+16.5 Storage Layer
+- Metadata KV Store
+- Object Store
+- Hot Cache / SSD Cache
+- Vector Index Store
+- Graph / Edge Store
+- Snapshot / Version Store
+- Policy Store
+- Share Contract Store
+作用：
+- 存元数据
+- 存大体量对象
+- 存索引
+- 存版本和治理记录
+Manu 使用 etcd + object storage 的组合；Milvus 使用 S3 + 本地缓存 + 多存储支持，这两者都给了很强的工程启发。
+
+---
+17. Micro-batching 执行机制
+这部分放进 Query Worker / Retrieval Executor。
+17.1 Cross-agent micro-batching
+多个 agent 并发查询时，按：
+- query signature
+- scope
+- time window
+- embedding family
+- namespace
+进行聚类和合批。
+17.2 Intra-agent chain batching
+单 agent 长思维链中，把相邻检索步骤：
+- 合并预取
+- 共享候选簇
+- 分阶段消费
+17.3 目的
+- 提升 GPU/CPU 利用率
+- 降低重复索引访问
+- 减少多 agent 并发时的检索瓶颈
+- 为 subtensor/subgraph retrieval 做批式执行优化
+
+---
+18. 最小 schema 
+agents
+- agent_id
+- tenant_id
+- workspace_id
+- agent_type
+- profile
+- capabilities
+- policy_ref
+- created_ts
+- status
+sessions
+- session_id
+- agent_id
+- parent_session_id
+- task_type
+- goal
+- status
+- budget_token
+- budget_time_ms
+- start_ts
+- end_ts
+events
+- event_id
+- tenant_id
+- workspace_id
+- session_id
+- agent_id
+- event_type
+- payload
+- event_time
+- ingest_time
+- visible_time
+- logical_ts
+- parent_event_id
+- causal_refs
+- source
+- importance
+- version
+memories
+- memory_id
+- memory_type
+- agent_id
+- session_id
+- scope
+- level
+- content
+- summary
+- source_event_ids
+- confidence
+- importance
+- freshness_score
+- ttl
+- valid_from
+- valid_to
+- provenance_ref
+- version
+- is_active
+states
+- state_id
+- agent_id
+- session_id
+- state_type
+- state_key
+- state_value
+- derived_from_event_id
+- checkpoint_ts
+- version
+artifacts
+- artifact_id
+- session_id
+- owner_agent_id
+- artifact_type
+- uri
+- content_ref
+- mime_type
+- metadata
+- hash
+- produced_by_event_id
+- version
+embeddings
+- object_id
+- object_type
+- embedding_type
+- vector_ref
+- model_id
+- dim
+- created_ts
+edges
+- edge_id
+- src_object_id
+- src_type
+- edge_type
+- dst_object_id
+- dst_type
+- weight
+- provenance_ref
+- created_ts
+object_versions
+- object_id
+- object_type
+- version
+- mutation_event_id
+- valid_from
+- valid_to
+- snapshot_tag
+policy_records
+- policy_id
+- object_id
+- object_type
+- salience_weight
+- ttl
+- decay_fn
+- confidence_override
+- verified_state
+- quarantine_flag
+- visibility_policy
+- policy_reason
+- policy_source
+- policy_event_id
+share_contracts
+- contract_id
+- scope
+- read_acl
+- write_acl
+- derive_acl
+- ttl_policy
+- consistency_level
+- merge_policy
+- quarantine_policy
+- audit_policy
+retrieval_segments
+- segment_id
+- object_type
+- namespace
+- time_bucket
+- embedding_family
+- storage_ref
+- index_ref
+- row_count
+- min_ts
+- max_ts
+- tier
+
+---
+19. 对象关系图（推荐最终版）
+flowchart TD
+    A[Agent] --> B[Session / Task]
+    B --> C[Event Log]
+    B --> D[State Object]
+    B --> E[Artifact]
+
+    C --> F[Memory Object]
+    C --> D
+    C --> E
+
+    F --> G[Fixed Representation]
+    C --> G
+    D --> G
+    E --> G
+
+    F --> H[Relation / Edge]
+    C --> H
+    D --> H
+    E --> H
+
+    F --> M[Object Version / Snapshot]
+    C --> M
+    D --> M
+    E --> M
+
+    G --> I[Dense Vector Index]
+    G --> J[Sparse / Keyword Index]
+    H --> K[Graph Index]
+    G --> L[Temporal / Filter Index]
+
+---
+20. 系统分层图
+简略：
+flowchart TB
+
+    subgraph L1[Access Layer]
+        A1[API Gateway]
+        A2[Session / Tenant Router]
+        A3[ACL Gate]
+    end
+
+    subgraph L2[Control Plane]
+        B1[Schema / Object Coordinator]
+        B2[Shard / Index Coordinator]
+        B3[Policy / Version Coordinator]
+        B4[Query Coordinator]
+        B5[Worker Scheduler]
+    end
+
+    subgraph X[Event & Version Backbone]
+        E1[TSO / Logical Clock]
+        E2[WAL Stream]
+        E3[Materialization / Derivation Log]
+        E4[Policy Decision Log]
+    end
+
+    subgraph L3[Execution Plane]
+        C1[Ingestion & Materialization Workers]
+        C2[Memory & Governance Workers]
+        C3[Retrieval & Reasoning Workers]
+    end
+
+    subgraph L4[Storage Plane]
+        D1[Metadata Store]
+        D2[Canonical Object Store]
+        D3[Segment / Index Store]
+        D4[Snapshot / Version Store]
+        D5[Policy / Share Store]
+        D6[Cache]
+    end
+
+    A1 --> A2 --> A3 --> B4
+    B4 --> B1
+    B4 --> B2
+    B4 --> B3
+    B4 --> B5
+
+    B3 --> E1
+    B1 --> E2
+    B2 --> E2
+    B3 --> E4
+    E2 --> E3
+
+    E2 --> C1
+    E3 --> C2
+    E3 --> C3
+    E4 --> C2
+
+    C1 --> D2
+    C2 --> D5
+    C3 --> D3
+    C3 --> D4
+    C3 --> D6
+
+    D1 --> B1
+    D1 --> B2
+    D1 --> B3
+
+完整：
+flowchart TB
+
+    subgraph L1[Access Layer]
+        A1[API Gateway]
+        A2[Session Router]
+        A3[Namespace / Tenant Router]
+        A4[ACL / Policy Gate]
+    end
+
+    subgraph L2[Control Plane]
+        B1[Schema Coordinator]
+        B2[Object Coordinator]
+        B3[Shard Coordinator]
+        B4[Memory Coordinator]
+        B5[Policy Coordinator]
+        B6[Index Coordinator]
+        B7[Version / Consistency Coordinator]
+        B8[Query Coordinator / Planner]
+        B9[Worker Scheduler]
+    end
+
+    subgraph L3[Execution Plane]
+        subgraph G1[Ingestion & Materialization]
+            C1[Ingest Worker]
+            C2[Object Materialization Worker]
+            C3[Memory Extraction Worker]
+            C4[State Materialization Worker]
+            C5[Tool Trace Worker]
+        end
+
+        subgraph G2[Memory & Governance]
+            C6[Memory Consolidation Worker]
+            C7[Reflection / Policy Worker]
+            C8[Communication Worker]
+            C9[Conflict & Merge Worker]
+        end
+
+        subgraph G3[Retrieval & Reasoning]
+            C10[Index Build Worker]
+            C11[Graph / Relation Worker]
+            C12[Proof Trace Worker]
+            C13[Query Worker]
+            C14[Micro-batch Scheduler]
+        end
+    end
+
+    subgraph L4[Storage Plane]
+        D1[Metadata KV Store]
+        D2[Canonical Object Store]
+        D3[Artifact Store]
+        D4[Segment / Materialized View Store]
+        D5[Vector Index Store]
+        D6[Graph / Edge Store]
+        D7[Snapshot / Version Store]
+        D8[Policy Store]
+        D9[Share Contract Store]
+        D10[Hot Cache / SSD Cache]
+        D11[WAL / Log Store]
+    end
+
+    subgraph X[Event & Version Backbone]
+        E1[TSO / Logical Clock]
+        E2[WAL Stream]
+        E3[Time Tick / Watermark]
+        E4[Binlog / Materialization Log]
+        E5[Derivation Log]
+        E6[Policy Decision Log]
+    end
+
+    A1 --> A2
+    A2 --> A3
+    A3 --> A4
+    A4 --> B8
+
+    B8 --> B1
+    B8 --> B2
+    B8 --> B3
+    B8 --> B4
+    B8 --> B5
+    B8 --> B6
+    B8 --> B7
+    B8 --> B9
+
+    B9 --> C1
+    B9 --> C2
+    B9 --> C3
+    B9 --> C4
+    B9 --> C5
+    B9 --> C6
+    B9 --> C7
+    B9 --> C8
+    B9 --> C9
+    B9 --> C10
+    B9 --> C11
+    B9 --> C12
+    B9 --> C13
+    B9 --> C14
+
+    B7 --> E1
+    B2 --> E2
+    B4 --> E2
+    B5 --> E6
+    E1 --> E3
+    E2 --> E4
+    E2 --> D11
+
+    E2 --> C1
+    E2 --> C2
+    E2 --> C3
+    E2 --> C4
+    E2 --> C5
+
+    E4 --> C6
+    E4 --> C10
+    E4 --> C11
+    E5 --> C12
+    E6 --> C7
+    E6 --> C9
+
+    C1 --> D2
+    C2 --> D2
+    C3 --> D2
+    C4 --> D7
+    C5 --> D2
+    C6 --> D2
+    C7 --> D8
+    C8 --> D9
+    C9 --> D2
+    C10 --> D5
+    C11 --> D6
+    C12 --> D7
+    C13 --> D4
+    C13 --> D5
+    C13 --> D6
+    C13 --> D7
+    C13 --> D10
+    C14 --> C13
+
+    D1 --> B1
+    D1 --> B2
+    D1 --> B3
+    D1 --> B4
+    D1 --> B5
+    D1 --> B6
+    D1 --> B7
+21. 数据流
+flowchart LR
+
+    U[Client / Agent Request] --> A[Access Layer]
+    A --> B[Control Plane]
+
+    %% 写入主线
+    B --> C[WAL / Event Backbone]
+    C --> D1[Ingestion & Materialization]
+    D1 --> E1[Canonical Objects]
+    D1 --> E2[Snapshot / Version Store]
+
+    E1 --> F1[Memory Extraction / State Update]
+    F1 --> E1
+    F1 --> E3[Policy / Share Store]
+
+    F1 --> G1[Index Build / Graph Build]
+    G1 --> E4[Segment / Index Store]
+
+    %% 查询主线
+    B --> Q1[Query Planning]
+    Q1 --> Q2[Policy / Version Filter]
+    Q2 --> Q3[Retrieval & Reasoning Workers]
+    E4 --> Q3
+    E1 --> Q3
+    E2 --> Q3
+    E3 --> Q3
+
+    Q3 --> Q4[Subgraph / Subtensor Assembly]
+    Q4 --> Q5[Proof Trace / Context View]
+    Q5 --> R[Response to Agent]
+
+    %% 治理辅助线
+    C --> H1[Policy Decision / Derivation Log]
+    H1 --> E3
+    H1 --> Q2

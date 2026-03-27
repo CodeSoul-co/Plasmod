@@ -552,7 +552,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 |---|---|---|---|
 | **E1** | `TieredDataPlane.Ingest` never wrote to cold tier; `Flush()` never called | S3/Cold Module | ✅ Fixed |
 | **E2** | `TieredObjectStore` (with `S3ColdStore`) completely bypassed in `SubmitIngest` — cold tier orphaned | S3/Cold Module | ✅ Fixed |
-| **E3** | C++ Knowhere retrieval module (`retrievalplane`) never imported from query path — pure lexical search only | Member B | 🔲 Pending |
+| **E3** | C++ Knowhere retrieval module (`retrievalplane`) never imported from query path — pure lexical search only | Member B | ✅ Fixed |
 | **D1** | `subscriber.go` panic handler silently drops panics when DLQ channel is full | Integration | ✅ Fixed |
 | **F1** | `handleS3SnapshotExport` registered as HTTP route but method was nil — would panic | Integration | ✅ Fixed |
 | **F2** | `AlgorithmDispatchWorker` defined in contracts but never wired into Manager/bootstrap | Integration | ✅ Fixed |
