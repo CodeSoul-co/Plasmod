@@ -47,11 +47,6 @@ B_第二周实现文档.md
 B_第三周实现文档.md
 B_第四周实现文档.md
 方案定位.md
-
-# 根目录个人方案/分工文档（避免 git add . 误加入）
-/方案.md
-/分工情况.pdf
-/分工情况.md
 agent-native-db-spec.md
 rule
 
@@ -64,27 +59,24 @@ server.*.log
 # Local MinIO data (Docker volume)
 .minio-data/
 
-# Embedded Badger / local ANDB data dir (see STORAGE_BACKEND.md)
-.andb_data/
-
 # Old integration run artifacts (moved to scripts/dev/artifacts/)
 s3-integration-run-record-*.md
 s3-go-integration-output-*.txt
 integration_tests/s3-python-output-*.txt
 
-arch-design.zh-CN.md
-docs/worker-types-overview.md
-
-# Ingest / Storage / Object Worker 说明（本地笔记，默认不入库）
-/ingest-storage-object-workers.md
-系统分层架构图.md
-工作记录.md
-
 # Local dev test files (not for push)
 src/retrieval/test_*.py
+系统分层架构图.md
 方案.md
 分工情况.md
 arch-design.zh-CN.md
 
-# Dev docs directory (local design notes, not for push)
-devdocs/
+# Build artifacts & compiled binaries
+build/
+cpp/build/
+server
+
+# 非 README 的项目 md 文档（不推送到 GitHub）
+RETRIEVAL_B.md
+ingest-storage-object-workers.md
+src/internal/platformpkg/UPSTREAM_README.md

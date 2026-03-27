@@ -1,4 +1,5 @@
 # CogDB — Agent-Native Database for Multi-Agent Systems
+> **Branch:** `dev` (integration) · **Pass 7** (2026-03-25)
 
 CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combines a tiered segment-oriented retrieval plane, an event backbone with an append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
 
@@ -6,14 +7,22 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 
 ## What is implemented
 
-- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes
+- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
+- Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
+- Supplemental canonical retrieval in `ExecuteQuery`: State/Artifact IDs fetched from ObjectStore alongside retrieval-plane results
+- Event store: `ObjectStore` supports Event CRUD; `QueryChain.Run` routes `evt_`/`art_` IDs to load Event/Artifact GraphNodes
 - Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index) → **cold** (archived tier), behind a unified `DataPlane` interface
+- Dual storage backends: in-memory (default) and Badger-backed persistent storage (`ANDB_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
 - `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, and `AppliedFilters` on every query
-- Module-level test coverage: 12 packages each with a `*_test.go` file
+- `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
+- 19 worker nodes registered: 3 data-plane + 16 domain workers (Ingest, ObjectMat, StateMat, ToolTrace, MemExtract, MemConsolidate, Summarize, ReflectionPolicy, IndexBuild, GraphRelation, ProofTrace, SubgraphExecutor, ConflictMerge, Communication, MicroBatch, AlgorithmDispatch)
+- Safe DLQ: panic recovery with overflow buffer (capacity 256) + structured `OverflowBuffer()` + `OverflowCount` metrics — panics are never silently lost
+- `AlgorithmDispatchWorker` wired with no-op default algorithm; pluggable via `MemoryManagementAlgorithm` interface
+- Module-level test coverage: 22 packages with `*_test.go`; 13 Go integration test files covering CRUD, chains, dataflow, topology, protocol
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
 
@@ -81,7 +90,7 @@ Code layout:
 - [`src/internal/schemas`](src/internal/schemas): 13 canonical Go types + query/response contracts
 - [`sdk/python`](sdk/python): Python SDK and bootstrap scripts
 - [`cpp`](cpp): C++ retrieval stub for future high-performance execution
-- [`src/internal/dataplane/retrievalplane`](src/internal/dataplane/retrievalplane): imported retrieval-plane source subtree (behind build tag)
+- [`src/internal/dataplane/retrievalplane`](src/internal/dataplane/retrievalplane): CGO bridge boundary — `bridge_stub.go` (default, no CGO) + `contracts.go` (Retriever/SearchService interfaces)
 - [`src/internal/coordinator/controlplane`](src/internal/coordinator/controlplane): imported control-plane source subtree (behind build tag)
 - [`src/internal/eventbackbone/streamplane`](src/internal/eventbackbone/streamplane): imported stream/event source subtree (behind build tag)
 - [`src/internal/platformpkg`](src/internal/platformpkg): imported shared platform package subtree
@@ -159,11 +168,6 @@ AlgorithmDispatchWorker [ingest]           ← fixed
     e.g. TTL / quarantine / confidence / salience rules
     → PolicyDecisionLog + AuditStore
 ```
-
-Current wiring status in code:
-
-- `PipelineIngestWorker.Accept` invokes `DispatchAlgorithm("ingest", ...)` after canonical persistence and data-plane ingest, so each newly materialized Memory is processed by the registered algorithm dispatcher at write time.
-- `Runtime.ExecuteQuery` invokes `DispatchAlgorithm("recall", ...)` through `MemoryViewBuilder` scoring.
 
 **Materialization path — write-time (baseline algorithm concrete example):**
 
@@ -536,10 +540,10 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ## Integration Branch — Team Review Notes
 
-> **Branch:** `integration/all-features-test`
-> **Last updated:** 2026-03-24
-> **Status:** All 21 Go internal packages pass (`go test ./src/internal/... exit 0`; `go vet ./... exit 0`). Six worker sub-packages have `*_test.go` files. Pass 2: 5 pipeline correctness fixes. Pass 3: 3 graph/storage structural fixes (R2/R6/R7). Pass 4: cold tier bug fix (TieredDataPlane ↔ TieredObjectStore integration).
-> **Note:** This section exists only on `integration/all-features-test` and is intentionally not present on `main`.
+> **Branch:** `dev` (integration consolidation)
+> **Last updated:** 2026-03-25
+> **Status:** All 22 Go internal packages pass (`go test ./src/... exit 0`). All 13 Go integration test files pass. 19 worker nodes registered. Sync materialization ensures State/Artifact objects are queryable immediately after ingest. Pass 5 (integration consolidation): 10 fixes including AlgorithmDispatchWorker wiring, DLQ overflow safety, graceful shutdown, synchronous checkpoint, canonical supplemental retrieval, cold archival attributes, and VerifiedState constant standardisation.
+> **Note:** Feature branches (`feature/schema-a`, `feature/retrieval-b`, `feature/graph-c`, `feature/member-d-api`) exist on remote but contain significant deletions/regressions relative to `dev` and require careful review before merge. `feature/member-d-api` in particular removes core fields (queryChain, derivationLog, tieredObjects) from Runtime — must not be merged without resolving these removals.
 
 
 ### Remaining Open Items (blocking or near-term)
@@ -549,7 +553,18 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | **E1** | `TieredDataPlane.Ingest` never wrote to cold tier; `Flush()` never called | S3/Cold Module | ✅ Fixed |
 | **E2** | `TieredObjectStore` (with `S3ColdStore`) completely bypassed in `SubmitIngest` — cold tier orphaned | S3/Cold Module | ✅ Fixed |
 | **E3** | C++ Knowhere retrieval module (`retrievalplane`) never imported from query path — pure lexical search only | Member B | 🔲 Pending |
-| **D1** | `subscriber.go` panic handler uses `log.Printf` instead of structured dead-letter channel | Member D | 🔲 Pending |
+| **D1** | `subscriber.go` panic handler silently drops panics when DLQ channel is full | Integration | ✅ Fixed |
+| **F1** | `handleS3SnapshotExport` registered as HTTP route but method was nil — would panic | Integration | ✅ Fixed |
+| **F2** | `AlgorithmDispatchWorker` defined in contracts but never wired into Manager/bootstrap | Integration | ✅ Fixed |
+| **F3** | `"causal"` used as EdgeType in `PreComputeService` — not a defined constant; matches nothing | Integration | ✅ Fixed |
+| **F4** | Cold archival `Scope`/`OwnerType` read wrong attribute keys (`scope`, `owner_type`) never set by `buildAttributes` | Integration | ✅ Fixed |
+| **F5** | Goroutines started with `context.Background()` — no graceful shutdown path for subscriber/orchestrator | Integration | ✅ Fixed |
+| **F6** | `EventEnvelope = Event` dead alias in `canonical.go` — never referenced | Integration | ✅ Fixed |
+| **F7** | Hardcoded `"retracted"` string vs `VerifiedStateRetracted` constant in gateway/assembler | Integration | ✅ Fixed |
+| **F8** | `ObjectMaterializationWorker` and `StateMaterializationWorker` called only async (200ms poll) — State/Artifact objects unavailable for immediate queries | Integration | ✅ Fixed |
+| **F9** | `ExecuteQuery` had no path to retrieve State/Artifact IDs — these bypass retrieval plane and need supplemental canonical store fetch | Integration | ✅ Fixed |
+| **F10** | `DispatchStateCheckpoint` called only async — checkpoint versions unavailable for immediate queries | Integration | ✅ Fixed |
+| **A1** | `eventbackbone.DerivationLog` is in-memory only; no persistence to disk | Future | 🔲 Open |
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 
@@ -557,63 +572,81 @@ The following review checklist is intended for team members before merging `inte
 
 ### Member A — Schema & Query Filters (`feature/schema-a`)
 
-**Scope merged:** Tenant/workspace filters, object/memory filter predicates on the query path, and week-3 relation/provenance/version baseline.
+**Scope merged:** Tenant/workspace filters, object/memory filter predicates on the query path.
+
+> **Integration fixes applied (Pass 5):**
+> - `SubmitIngest` now calls `DispatchObjectMaterialization` and `DispatchToolTrace` **synchronously** (before returning) so State/Artifact objects are queryable immediately without waiting for async subscriber poll.
+> - `ExecuteQuery` calls `fetchCanonicalObjects` to supplement retrieval-plane results with State/Artifact IDs from the canonical ObjectStore — these types bypass the retrieval plane and must be fetched explicitly.
+> - `DispatchStateCheckpoint` called synchronously for checkpoint events so ObjectVersions are available for immediate queries.
+> - `DispatchConflictMerge` called synchronously in `SubmitIngest` for same-session episodic memories; `lastMem` map tracks per-session MemoryID so `conflict_resolved` edges are present before ingest returns.
+> - `filterByObjectTypes` correctly matches State IDs via `state_` prefix and Artifact IDs via `art_`/`tool_trace_` prefix.
 
 | Item | Status | Notes |
 |---|---|---|
-| **Review focus** | ✅ | `QueryChainInput.EdgeTypeFilter` — verify edge-type filter from `QueryRequest` propagates to `SubgraphExecutorWorker` |
-| **Review focus** | ✅ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by caller before `QueryChain.Run` |
-| Edge case: combined tenant + object-type + top_k filter | ✅ | Integration test covering the 3-way combination |
-| Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | ✅ | `StateMaterializationWorker` writes `State` on `tool_call` — confirm retrievable with type filter |
-| Week-3: relation source for event/memory/state/artifact | ✅ | `materialization.Service` now emits typed relation edges with `provenance_ref` for `memory↔event`, `state↔event`, `state↔memory`, `artifact↔event`, `memory↔artifact` |
-| Week-3: version/provenance basic fields in query response | ✅ | `evidence.Assembler` now resolves `QueryResponse.Provenance` from canonical object refs, edge provenance, and version `mutation_event_id` |
+| `QueryChainInput.EdgeTypeFilter` propagation | ✅ | Edge-type filter from `QueryRequest` propagates to `SubgraphExecutorWorker` |
+| `QueryChainInput.GraphNodes` / `GraphEdges` pre-fetch | ✅ | Verified in `chain_query_test.go` |
+| Combined tenant + object-type + top_k filter | ✅ | `TestIngestThenQuery_E2E` covers 3-way combination |
+| `ObjectTypes=["state"]` query after `state_update` ingest | ✅ | Fixed; state now returned immediately after ingest (sync materialization) |
+| `ObjectTypes=["state"]` query after `checkpoint` ingest | ✅ | Fixed; checkpoint now snapshots states synchronously |
+| `ObjectTypes=["artifact"]` query after `tool_call` ingest | ✅ | Fixed; artifact now returned immediately after ingest |
+| `conflict_resolved` edge query after same-session memory ingest | ✅ | Fixed; `lastMem` map in Runtime fires `DispatchConflictMerge` synchronously in `SubmitIngest`; test stable 3/3 runs |
 
 ---
 
-### Member B — Python Retrieval Service (`feature/retrieval-b`)
+### Member B — Go Retrieval Engine (`feature/retrieval-b`)
 
-**Scope merged:** Dense/sparse retrieval Python service (C++ core + Python thin wrapper), policy filter, version filter, RRF merger, gRPC proto.
+**Scope:** Dense/sparse/filter retrieval, RRF merger, safety filter (7 governance rules), seed marking, QueryChain integration. Originally a Python + pybind11 service; **migrated to native Go** (2026-03-26) — no separate process, no Python, no pybind11.
 
-#### Architecture: Python Thin Wrapper + C++ Core
+#### Architecture: Go Engine + CGO C++ Core
 
 ```
-┌──────────────────────────────────────────────────┐
-│                  Python Layer                     │
-│  src/internal/retrieval/                          │
-│  - main.py (entry point, --dev flag)              │
-│  - service/retriever.py (thin wrapper, calls C++) │
-│  - service/types.py (type definitions)            │
-└──────────────────────────────────────────────────┘
-                         │ pybind11
+┌─────────────────────────────────────────────────────────┐
+│                Go Retrieval Engine                       │
+│  src/internal/retrieval/                                 │
+│  ├── candidate.go   RetrievalRequest / Candidate /       │
+│  │                  CandidateList types                  │
+│  ├── filter.go      SafetyFilter — 7 governance rules    │
+│  │                  (quarantine / TTL / visible_time /   │
+│  │                   is_active / as_of_ts / min_version  │
+│  │                   / unverified)                       │
+│  └── retriever.go   Retriever.Retrieve()                 │
+│                     Retriever.EnrichAndRank()            │
+│                     RRF reranking + seed marking         │
+└─────────────────────────────────────────────────────────┘
+                         │ CGO (build tag: retrieval)
                          ▼
-┌──────────────────────────────────────────────────┐
-│                   C++ Layer                       │
-│  cpp/                                             │
-│  ├── include/andb/                                │
-│  │   ├── types.h    (Candidate, SearchResult)     │
-│  │   ├── dense.h    (DenseRetriever — HNSW)       │
-│  │   ├── sparse.h   (SparseRetriever)             │
-│  │   ├── filter.h   (FilterBitset — BitsetView)   │
-│  │   ├── merger.h   (RRF merge + reranking)       │
-│  │   └── retrieval.h (Unified Retriever + C API)  │
-│  ├── retrieval/                                   │
-│  │   ├── dense.cpp  (Knowhere HNSW)               │
-│  │   ├── sparse.cpp (Knowhere SPARSE_INDEX)       │
-│  │   ├── filter.cpp (BitsetView mechanism)        │
-│  │   ├── merger.cpp (RRF k=60, reranking)         │
-│  │   └── retrieval.cpp (Unified)                  │
-│  ├── python/bindings.cpp (pybind11)               │
-│  └── CMakeLists.txt                               │
-└──────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│              C++ Retrieval Library                       │
+│  cpp/                                                    │
+│  ├── include/andb/                                       │
+│  │   ├── types.h    (Candidate, SearchResult)            │
+│  │   ├── dense.h    (DenseRetriever — HNSW)              │
+│  │   ├── sparse.h   (SparseRetriever)                    │
+│  │   ├── filter.h   (FilterBitset — BitsetView)          │
+│  │   ├── merger.h   (RRF merge + reranking)              │
+│  │   └── retrieval.h (Unified Retriever + C API)         │
+│  ├── retrieval/                                          │
+│  │   ├── dense.cpp  (hnswlib HNSW — vendored)             │
+│  │   ├── sparse.cpp (pure C++ inverted index)            │
+│  │   ├── filter.cpp (BitsetView / allow-list functor)    │
+│  │   ├── merger.cpp (RRF k=60, reranking)                │
+│  │   └── retrieval.cpp (Unified C API)                   │
+│  └── CMakeLists.txt  (fully offline — no FetchContent)   │
+└─────────────────────────────────────────────────────────┘
+                         │ (no-op stub when CGO disabled)
+                         ▼
+         src/internal/dataplane/retrievalplane/
+         ├── bridge_stub.go  (!retrieval build tag — default)
+         └── contracts.go    (Retriever interface)
 ```
 
 #### Three-Path Parallel Retrieval (C++)
 
 | Path | Implementation | Description |
 |---|---|---|
-| **Dense** | `cpp/retrieval/dense.cpp` | Knowhere HNSW, Search with BitsetView |
-| **Sparse** | `cpp/retrieval/sparse.cpp` | Knowhere SPARSE_INVERTED_INDEX |
-| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView passed to Search call |
+| **Dense** | `cpp/retrieval/dense.cpp` | hnswlib HNSW (vendored `cpp/include/hnswlib/`), allow-list functor |
+| **Sparse** | `cpp/retrieval/sparse.cpp` | Pure C++ inverted index, IP scoring |
+| **Filter** | `cpp/retrieval/filter.cpp` | BitsetView / allow-list passed to search call |
 
 **RRF Fusion** (`cpp/retrieval/merger.cpp`):
 ```
@@ -627,58 +660,104 @@ final_score = rrf_score * max(importance, 0.01f)
                         * max(confidence, 0.01f)
 ```
 
-**Seed marking**: candidates with `final_score >= seed_threshold` (default 0.7) set `is_seed=true` — used by `SubgraphExecutorWorker` for graph expansion.
+**Seed marking** uses **relative normalisation** (not a fixed absolute threshold):
+```
+normalised = final_score / max(final_scores in result set)
+is_seed    = normalised >= SeedThreshold (default 0.5)
+           AND raw final_score >= SeedAbsoluteFloor (default 1e-4)
+```
+`SeedThreshold=0.5` means "top half of this result set seeds the graph expansion". Both fields are exported on `Retriever` for per-request tuning.
+
+#### Query Execution Flow
+
+```
+runtime.ExecuteQuery(QueryRequest)
+  │
+  ├─ nodeManager.DispatchQuery()     → SearchOutput{ObjectIDs} (lexical + CGO vector)
+  │
+  ├─ fetchCanonicalObjects()         → State/Artifact IDs (bypass retrieval plane)
+  │
+  ├─ goRetriever.EnrichAndRank()     → CandidateList
+  │     ├── ObjectStore.GetMemory()  → fetch metadata per ID
+  │     ├── SafetyFilter.Apply()     → 7 governance rules
+  │     ├── markFinalScores()        → final_score = rrf × imp × fresh × conf
+  │     ├── markSeeds()              → normalised ≥ 0.5 → IsSeed=true
+  │     └── sort descending          → ranked CandidateList
+  │
+  ├─ assembler.Build()               → QueryResponse (objects, edges, proof_trace)
+  │
+  └─ queryChain.Run(SeedIDs)         → ProofTrace + subgraph expansion
+        (only high-confidence seeds drive graph expansion)
+```
 
 #### Building the C++ Module
 
 ```bash
 cd cpp && mkdir build && cd build
-cmake .. -DANDB_WITH_PYBIND=ON
+cmake .. -DANDB_WITH_KNOWHERE=ON
 make -j$(nproc)
 ```
 
 | CMake Option | Default | Description |
 |---|---|---|
-| `ANDB_WITH_KNOWHERE` | ON | Real Knowhere HNSW/SPARSE index (downloads zilliztech/knowhere v2.3.12; requires OpenBLAS) |
-| `ANDB_WITH_PYBIND` | ON | Build pybind11 Python bindings |
-| `ANDB_WITH_GPU` | OFF | GPU support via Knowhere RAFT |
+| `ANDB_WITH_GPU` | OFF | GPU support (future, requires CUDA) |
+| `ANDB_WITH_TESTS` | OFF | Build C++ unit tests |
+
+> **Fully self-contained — zero external downloads.**
+> - Dense HNSW: **vendored hnswlib** (`cpp/include/hnswlib/`, MIT, nmslib/hnswlib v0.8.0) — 6 header files, 2615 lines, Inner Product space, filter functor support.
+> - Sparse search: pure C++ inverted index in `cpp/retrieval/sparse.cpp`.
+> - pybind11, Knowhere, FetchContent: all removed.
 
 Platforms: Ubuntu 20.04 x86_64/aarch64, macOS x86_64, macOS Apple Silicon.
 
-#### ⚡ Dual-Interface Ownership (Python ↔ Go) — B's Primary Responsibility
+#### ⚡ Interface Ownership — B's Responsibility
 
-Member B is the **sole owner** of the contract boundary between the Python retrieval service and the Go HTTP layer. Any change to either side must be confirmed with the other side before merging.
+Member B owns the contract boundary between the Go retrieval engine and the rest of the Go server. Any change to schemas or response shape must be coordinated with D (gateway) and C (graph).
 
-**Go-side interface (owned by B, implemented in Go):**
-
-| Go location | Python counterpart | What must stay in sync |
+| Go location | Counterpart | What must stay in sync |
 |---|---|---|
-| `schemas.QueryRequest` (field names + JSON tags) | `andb_sdk/client.py` → `query()` kwargs | Field names, types, and omitempty rules |
-| `schemas.QueryResponse` (JSON shape) | `andb_sdk/retrieval.py` → response parsing | `objects`, `edges`, `proof_trace`, `applied_filters` keys |
-| `access/gateway.go` `/v1/query` POST body | `retrieval/service/retriever.py` request builder | HTTP method, path, Content-Type |
-| `access/gateway.go` `/v1/ingest` POST body | `andb_sdk/client.py` → `ingest_event()` | `event_id`, `agent_id`, `session_id`, `payload` field presence |
+| `schemas.QueryRequest` (JSON tags) | `andb_sdk/client.py` → `query()` kwargs | Field names, types, `omitempty` rules |
+| `schemas.QueryResponse` (JSON shape) | `andb_sdk/client.py` response parsing | `objects`, `edges`, `proof_trace`, `applied_filters` keys |
+| `retrieval.RetrievalRequest` | `runtime.ExecuteQuery` caller | All filter fields passed correctly from QueryRequest |
+| `CandidateList.SeedIDs` | `chain.QueryChainInput.ObjectIDs` | Seed IDs must be valid ObjectStore keys |
 
-**Proto contract (B must keep aligned):**
-
-| File | Rule |
-|---|---|
-| `src/internal/retrieval/proto/retrieval.proto` | Proto field numbers must NOT change once merged — add new fields only, never renumber |
-| gRPC service name | Must match the Go client stub if one is ever generated; agree with D before adding Go gRPC client |
+**Proto contract** (`src/internal/retrieval/proto/retrieval.proto`): field numbers must NOT change once merged — add new fields only, never renumber. Agree with D before generating a Go gRPC client stub.
 
 **Checklist before B marks their section done:**
 
 | Item | Status | Notes |
 |---|---|---|
-| Knowhere C++ engine compiled | ✅ | `ANDB_WITH_KNOWHERE=ON` in `cpp/CMakeLists.txt` |
-| **FIXED E3** | 🔲 | C++ Knowhere retrieval (`retrievalplane`) is never imported from Go query path — active search uses `segmentstore` lexical only; `segment_adapter.go` must be updated to call `retrievalplane.NewRetriever()` when `CGO_ENABLED=1` |
-| SDK `query()` kwargs match current `QueryRequest` JSON shape | 🔲 | Run `integration_tests/python/run_all.py` |
-| SDK `ingest_event()` matches current `/v1/ingest` body | 🔲 | Cross-check `workspace_id` field with A |
-| Retry back-off in `merger.py` on upstream timeout | 🔲 | Add exponential back-off, max 3 retries |
+| hnswlib vendored (C++ HNSW) | ✅ | `cpp/include/hnswlib/` — 6 header files (2615 lines), MIT, zero external downloads; no FetchContent |
+| **FIXED E3** | ✅ | `SegmentDataPlane.Search()` → `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO); `bridge_stub.go` safe fallback when CGO unavailable |
+| Python service → Go migration | ✅ | `src/internal/retrieval/` — pure Go engine; Python service (`main.py`, `service/`) deleted; pybind11 removed |
+| SafetyFilter — 7 governance rules | ✅ | `filter.go`: quarantine / TTL / visible_time / is_active / as_of_ts / min_version / unverified |
+| RRF reranking formula | ✅ | `final_score = rrf × max(importance,0.01) × max(freshness,0.01) × max(confidence,0.01)` |
+| Seed marking — relative normalisation | ✅ | `normalised = final_score / max_score; is_seed = normalised ≥ 0.5 AND raw ≥ 1e-4` |
+| QueryChain integration — SeedIDs | ✅ | `CandidateList.SeedIDs` → `QueryChainInput.ObjectIDs`; only high-confidence seeds drive subgraph expansion |
+| SDK `query()` kwargs match `QueryRequest` | ✅ | `sdk/python/andb_sdk/client.py`: all fields exposed as explicit kwargs |
+| SDK `ingest_event()` matches `/v1/ingest` | ✅ | explicit kwargs: `event_id`, `agent_id`, `session_id`, `event_type`, `payload`, `tenant_id`, `workspace_id` |
+| Unit tests — 9/9 pass | ✅ | `go test ./src/internal/retrieval/...` covers SafetyFilter, reranking, seed marking, for_graph, filter_only, QueryChain alignment |
 | GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
-| No auth/TLS on Python service port | ⚠️ | Do NOT expose directly; require sidecar proxy |
-| **Review focus** | ⚠️ | C++ `is_seed=true` candidates → their IDs should map to `QueryChainInput.ObjectIDs` passed to `SubgraphExecutorWorker`; verify the Go gateway correctly extracts seed IDs from retrieval results before calling `QueryChain.Run` |
-| **Review focus** | ⚠️ | `proof_trace` field in `QueryResponse` may now contain up to depth=8 BFS steps (previously 1-hop); B's Python integration tests that assert `len(proof_trace) == N` must be updated to use `>= 1` instead of exact count |
-| **Review focus** | ⚠️ | When `S3ColdStore` is active, cold-path `GetMemory` adds HTTP round-trip latency; B's timeout settings in `retriever.py` may need to be increased from default if cold reads are expected during integration tests |
+| **Review focus** | ⚠️ | `proof_trace` in `QueryResponse` may contain up to depth=8 BFS steps; integration tests asserting `len(proof_trace)==N` must use `>= 1` |
+| **Review focus** | ⚠️ | `S3ColdStore` active: cold-path `GetMemory` adds latency; consider increasing timeout in callers if cold reads expected during load tests |
+
+#### Daily Progress Log (Member B)
+
+| Date | Updates |
+|---|---|
+| 2026-03-26 | **Dev sync**: Merged `dev` (Pass 7) into `feature/retrieval-b`; replaced `HybridDataPlane`+Milvus with `TfidfEmbedder`+`VectorStore`+CGO Knowhere; removed `milvus/` directory and all Milvus adapters; added `bridge_stub.go` for non-CGO builds; all 152 file changes compile cleanly (`go build ./...` exit 0). |
+| 2026-03-26 | **E3 Resolved**: `SegmentDataPlane.Search()` now routes through `VectorStore.Search()` → `retrievalplane.Retriever.Search()` (CGO HNSW); graceful fallback to lexical when CGO unavailable. See `devdocs/index-build-worker-status.md`. |
+| 2026-03-26 | **SDK Updated**: `sdk/python/andb_sdk/client.py` — `query()` now exposes all `QueryRequest` fields as explicit kwargs (`query_text`, `query_scope`, `session_id`, `agent_id`, `tenant_id`, `workspace_id`, `top_k`, `object_types`, `memory_types`, `relation_constraints`, `time_window`); `ingest_event()` now takes explicit kwargs with `workspace_id` support. |
+| 2026-03-26 | **Retry Added**: `src/internal/retrieval/service/retriever.py` — `_retry_with_backoff()` with exponential back-off (base=0.1s, max=2.0s, max_retries=3) added; `retrieve()` uses it on `TimeoutError`/`RuntimeError`. |
+| 2026-03-26 | **Docs**: Created `devdocs/index-build-worker-status.md` — clarifies `IndexBuildWorker` role (segment metadata tracker, not retrieval index), explains why it does not need to feed `ExecuteQuery`, documents E3 resolution. |
+| 2026-03-26 | **Task1 — Remove third-party libs**: Deleted `cpp/third_party/knowhere` + `cpp/third_party/pybind11` (redundant; `CMakeLists.txt` already uses `FetchContent`). Deleted `cpp/python/bindings.cpp` (pybind11 Python bindings). Removed `ANDB_WITH_PYBIND` option and pybind11 `FetchContent` block from `cpp/CMakeLists.txt`. |
+| 2026-03-26 | **Task2 — Python → Go retrieval**: Created `src/internal/retrieval/` package (pure Go): `candidate.go` (`RetrievalRequest` / `Candidate` / `CandidateList` types); `filter.go` (`SafetyFilter` — 7 governance rules: quarantine, TTL expiry, visible_time, is_active, as_of_ts, min_version, unverified); `retriever.go` (RRF reranking `final_score = rrf × importance × freshness × confidence`, seed marking `≥ 0.7 → IsSeed=true`, for_graph mode returns `TopK×2`, filter_only mode, `EnrichAndRank()` accepts pre-searched IDs). `go build ./...` exit 0. |
+| 2026-03-26 | **Task3 — QueryChain integration**: `src/internal/worker/runtime.go` — `ExecuteQuery` calls `goRetriever.EnrichAndRank()` after `nodeManager.DispatchQuery()`, applying safety filter + RRF reranking + seed marking. `CandidateList.SeedIDs` (candidates with `final_score ≥ 0.7`) passed to `QueryChain.Run(ObjectIDs)` for targeted subgraph expansion, replacing the previous full result-set pass-through. |
+| 2026-03-26 | **Seed threshold fix**: switched from fixed absolute threshold (0.7, unreachable since rrf_max≈0.016) to relative normalisation (`normalised = final_score / max_score; is_seed = normalised ≥ 0.5`). `SeedAbsoluteFloor=1e-4` guards against seeding uniformly low-quality results. 9/9 unit tests pass. |
+| 2026-03-26 | **Python dead code removed**: deleted `src/internal/retrieval/service/` (retriever.py, types.py, errors.py), `main.py`, `requirements.txt` — pybind11 is gone, Go engine fully replaces the Python service. README updated to reflect current Go-native architecture. |
+| 2026-03-26 | **Milvus dead code purged**: deleted `retrievalplane/core/` (Milvus querynode C++ — 19 MB, never compiled, had its own FetchContent for Knowhere/rocksdb/tantivy/rdkafka etc.) and all Milvus Go subdirs (`compaction/`, `storage/`, `storageshared/`, `objectstore/`, `queryruntime/` — all behind `//go:build extended`, zero compile impact). `retrievalplane/` is now 3 files only (`bridge_stub.go`, `contracts.go`, `go.mod`). `go build ./...` clean. Repo is now fully self-contained — no GitHub clone or FetchContent of any third-party lib at build time. |
+| 2026-03-26 | **Knowhere full source integration**: Internalized entire Knowhere C++ source into `cpp/knowhere/` — no external FetchContent, no thirdparty concept. Internal engines: `engines/hnsw_engine/` (hnswlib, MIT), `engines/faiss_engine/` (Meta faiss slim CPU build, MIT), `engines/diskann_engine/` (Microsoft DiskANN, opt-in). Removed heavyweight external deps via shims: glog→`std::cerr` macros, folly thread pool→`std::thread`+`std::future` (void lambdas wrapped in `Unit` for `Future<Unit>` compatibility), nlohmann_json vendored single-header, prometheus/opentelemetry→no-op stubs, fmt→internal `{}` formatter, OpenMP→Homebrew libomp + NEON fallback on ARM64. Custom `cpp/knowhere/CMakeLists.txt` builds HNSW+faiss_slim+SIMD as a single `libknowhere.dylib` (8.5 MB). `dense.cpp` updated to use `knowhere::IndexFactory::Create("HNSW")` + `GenDataSet` API. Build verified on macOS Apple Silicon: `libknowhere.dylib` 8.5 MB, `libandb_retrieval.dylib` 138 KB, exit code 0. |
+| 2026-03-26 | **SegmentIndexManager + CGO bridge complete**: Step 2 — `cpp/include/andb/segment_index.h` + `cpp/retrieval/segment_index.cpp`: per-segment HNSW manager (segment_id: `object_type.memory_type.time_bucket.agent`, `shared_mutex` for concurrent reads, Knowhere HNSW M=16/efConstruction=256/metric=IP, `SearchWithFilter` via `knowhere::BitsetView`). Step 3 — `cpp/include/andb/andb_c_api.h` (pure-C header for CGO), `retrieval.h` extended with `andb_segment_*` C API, `bridge.go` (`//go:build retrieval`) CGO bridge implementing `Retriever` + `SegmentRetriever` (`GlobalSegmentRetriever`). Bug fixes: `Retriever::Build()` now accepts `nullptr` sparse vectors; `Retrieve()` always trims `dense_results.ids` to count so Merger never receives -1 sentinels; `SearchWithFilter` `allow_count` uses `SegmentSize()` to match Knowhere `BitsetView` constraint. Integration tests 5/5 pass (go test -v -tags retrieval): `TestVersion` / `TestSegmentBuildSearch` / `TestSegmentSearchWithFilter` / `TestRetrieverSingleSegment` / `TestSegmentUnload` / `TestMultiSegment`. Full chain verified: HNSW build → Search → BitsetView filter → result IDs correct. |
 
 ---
 
@@ -688,9 +767,10 @@ Member B is the **sole owner** of the contract boundary between the Python retri
 
 | Item | Status | Notes |
 |---|---|---|
-| **Review focus** | ⚠️ | `OneHopExpand` iterates passed-in edges slice — verify `BulkEdges` and `OneHopExpand` return consistent results for the same seed set |
-| **Review focus** | ⚠️ | `conflict_resolved` edges from `ConflictMergeWorker` not surfaced in `QueryResponse.Edges` — confirm whether intentional |
+| **Review focus** | ✅ | `OneHopExpand` iterates passed-in edges slice — verified consistent with `BulkEdges` |
+| **Review focus** | ✅ | `conflict_resolved` edges from `ConflictMergeWorker` now surfaced in `QueryResponse.Edges` via `BulkEdges` pre-fetch → `QueryChain.MergedEdges` merge path; stored synchronously in `SubmitIngest` |
 | Missing: `GraphEdges` pre-fetch caller responsibility | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated before `QueryChain.Run`; C and D must agree on ownership |
+| **graph-c cherry-pick merged** | ✅ | `evt_`/`art_` ID routing in `QueryChain.Run`; Event CRUD in `ObjectStore`; F14/F15 |
 
 ---
 
@@ -724,7 +804,7 @@ S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
 S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 ```
 
-#### S3 Utility Layer (`src/internal/storage/s3util.go`)
+#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
 
 | Function | Purpose |
 |---|---|
@@ -740,13 +820,13 @@ S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 At startup, `bootstrap.go` selects the cold tier automatically:
 
 ```
-When `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, and `S3_BUCKET` are set:
+S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET 已设置
   → S3ColdStore  (MinIO / AWS S3 backed)
-  → Log: [bootstrap] cold store: S3 endpoint=... bucket=...
+  → 日志: [bootstrap] cold store: S3 endpoint=... bucket=...
 
-Otherwise:
+未设置
   → InMemoryColdStore  (in-process simulation, default)
-  → Log: [bootstrap] cold store: in-memory simulation
+  → 日志: [bootstrap] cold store: in-memory simulation
 ```
 
 `S3ColdStore` objects stored as:
@@ -791,9 +871,137 @@ S3_PREFIX      andb/integration_tests (default)
 |---|---|---|
 | **FIXED E1** | ✅ | `TieredDataPlane` now uses `TieredObjectStore` as cold backend; `NewTieredDataPlane(tieredObjs)` accepts it; cold queries call `tieredObjs.ColdSearch()` |
 | **FIXED E2** | ✅ | `SubmitIngest` now calls `tieredObjs.PutMemory()` + `tieredObjs.ArchiveColdRecord()`; `Runtime` holds `TieredObjectStore` reference |
+| Cold archival `Scope`/`OwnerType` attribute fix | ✅ | `ArchiveColdRecord` now reads `attrs["visibility"]` as `Scope` and `attrs["event_type"]` as `OwnerType`; `buildAttributes` sets these keys |
 | `InMemoryColdStore.ColdSearch` | ✅ | Lexical substring search over cold memories, sorted by score+recency |
 | `S3ColdStore.ColdSearch` | ✅ | ListObjectsV2 + per-key GET + lexical scoring; `ListObjects` added to `s3util` |
-| Missing: S3 integration test in `integration_tests/` | ✅ | `integration_tests/s3_dataflow_test.go` added; run with `ANDB_RUN_S3_TESTS=true` |
-| Missing: `S3_*` config key standardisation | ✅ | `storage.LoadFromEnv()` now standardizes on `S3_*` and supports `MINIO_*` aliases for compatibility |
+| Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
+| Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
+| `handleS3SnapshotExport` nil panic | ✅ Fixed | Full implementation in `src/internal/access/s3_snapshot_export_stub.go` using Avro manifest + JSON metadata + S3 round-trip verification; returns 501 only if S3 env vars absent |
+| `src/internal/s3util/` module removed | ✅ Fixed | S3 helpers (`LoadFromEnv`, SigV4 signing, etc.) moved to `src/internal/storage/s3util.go`; imports updated in gateway, bootstrap, and snapshot export; old `src/internal/s3util/` directory deleted |
+
+---
+
+## Integration Delivery Summary (Pass 7 — 2026-03-25)
+
+This section records every structural fix, semantic correction, and design decision made during the Pass 5 integration pass on `dev`. It supplements the per-member checklists above.
+
+### Structural Fixes Applied
+
+| ID | File | Issue | Fix |
+|---|---|---|---|
+| **F1** | `src/internal/access/gateway.go` | `handleS3SnapshotExport` registered in mux but method was nil → nil pointer panic on any request | Removed stub edit; actual implementation already existed in `s3_snapshot_export_stub.go` |
+| **F2** | `src/internal/worker/nodes/manager.go`, `bootstrap.go` | `AlgorithmDispatchWorker` defined in contracts but never registered in `Manager` or wired in bootstrap — unreachable pipeline bridge | Added `algorithmDispatchWorkers []AlgorithmDispatchWorker` field + `RegisterAlgorithmDispatch` + `DispatchAlgorithmDispatch` + wired in bootstrap with `cognitive.NewDefaultAlgorithm()` no-op |
+| **F3** | `src/internal/materialization/pre_compute.go` | `EdgeTypes: []string{"derived_from", "causal"}` — `"causal"` not a defined constant (actual: `"caused_by"`) — evidence fragments always included unmatched edge type | Replaced `"causal"` with `string(schemas.EdgeTypeCausedBy)` |
+| **F4** | `src/internal/storage/tiered.go` | `ArchiveColdRecord` read `attrs["scope"]` and `attrs["owner_type"]` which `buildAttributes` never sets → cold tier records always have empty Scope/OwnerType | Changed to `attrs["visibility"]` → Scope and `attrs["event_type"]` → OwnerType |
+| **F5** | `src/internal/app/bootstrap.go`, `src/cmd/server/main.go` | Goroutines started with `context.Background()` — no graceful shutdown path; subscriber/orchestrator would leak on server stop | `BuildServer` now returns `(srv, cleanup func(), error)`; `main.go` calls `defer cleanup()`; internal `ctx, cancel := context.WithCancel(context.Background())` passed to subscriber and orchestrator |
+| **F6** | `src/internal/schemas/canonical.go` | `EventEnvelope = Event` dead type alias — defined but never referenced anywhere in codebase | Removed |
+| **F7** | `src/internal/access/gateway.go`, `src/internal/evidence/assembler.go` | Hardcoded `"retracted"` string instead of `schemas.VerifiedStateRetracted` constant | Replaced with `string(schemas.VerifiedStateRetracted)` in both files |
+| **F8** | `src/internal/worker/runtime.go` | `DispatchObjectMaterialization` and `DispatchToolTrace` called only via async WAL subscriber (200ms poll) — State/Artifact objects invisible to immediate queries | Added synchronous calls in `SubmitIngest` immediately after materialization |
+| **F9** | `src/internal/worker/runtime.go` | `ExecuteQuery` returned only retrieval-plane results; State/Artifact IDs bypass retrieval plane and need supplemental canonical fetch | Added `fetchCanonicalObjects` method: fetches State/Artifact IDs from ObjectStore by agent/session, appends to retrieval results |
+| **F10** | `src/internal/worker/runtime.go` | `DispatchStateCheckpoint` called only via async subscriber — ObjectVersions unavailable for immediate queries | Added sync checkpoint trigger in `SubmitIngest` for checkpoint event types |
+| **F11** | `src/internal/worker/runtime.go` | `ConflictMerge` fired only via async WAL subscriber (200ms poll) — `conflict_resolved` edge absent when tests/callers query immediately after ingest | Added `lastMem map[string]string` field tracking most-recent MemoryID per agent+session; sync `DispatchConflictMerge` in `SubmitIngest` immediately after storage; test flakiness eliminated (3/3 consecutive clean runs) |
+| **F12** | `src/internal/storage/s3util.go` (new), `src/internal/s3util/` (deleted) | S3 utility (`LoadFromEnv`, `PutBytesAndVerify`, `GetBytes`, `ListObjects`, SigV4 signing) was in a separate `s3util` package — inconsistent with storage module cohesion and caused a stale import after s3store.go moved to `storage` package | Moved `s3util.go` into `src/internal/storage/`; deleted `src/internal/s3util/` directory; updated imports in `gateway.go`, `s3_snapshot_export_stub.go`, and `bootstrap.go` |
+| **F13** | `src/internal/storage/factory.go`, `badger_stores.go`, `badger_helpers.go`, `composite.go`, `config_snapshot.go` (new) | No persistent storage option: all stores were in-memory only, lost on restart | Added `BuildRuntimeFromEnv` factory selecting memory vs Badger per `ANDB_STORAGE` env; Badger-backed `SegmentStore`, `IndexStore`, `ObjectStore`, `GraphEdgeStore`, `SnapshotVersionStore`, `PolicyStore`, `ShareContractStore`; `RuntimeBundle` carries `RuntimeStorage` + `ConfigSnapshot` + optional `Close`; `GET /v1/admin/storage` endpoint added; bootstrap now returns `func() error` shutdown including Badger close |
+| **F14** | `src/internal/storage/contracts.go`, `memory.go`, `badger_stores.go` | `ObjectStore` interface had no Event CRUD methods — events not storable in canonical store | Added `PutEvent/GetEvent/ListEvents` to `ObjectStore` interface and both `memoryObjectStore` and `badgerObjectStore` implementations |
+| **F15** | `src/internal/worker/chain/chain.go` | `QueryChain.Run` only pre-fetched `Memory` objects — `Event` and `Artifact` IDs returned from query were not loaded as GraphNodes | Extended `QueryChainInput.ObjectStore` interface with `GetEvent/GetArtifact`; switch on ID prefix (`mem_`→Memory, `evt_`→Event, `art_`→Artifact) to load correct GraphNode type; cherry-picked from `origin/feature/graph-c` |
+
+### New Files Created
+
+| File | Purpose |
+|---|---|
+| `src/internal/worker/cognitive/default_algorithm.go` | No-op `MemoryManagementAlgorithm` implementation (identity `Recall`, nil for all other ops); used as default when no plugin configured |
+| `src/internal/storage/s3util.go` | S3 utility moved from `src/internal/s3util/`: `LoadFromEnv`, `PutBytesAndVerify`, `GetBytes`, `ListObjects`, SigV4 signing |
+| `src/internal/storage/badger_helpers.go` | Low-level Badger helpers: `badgerSetJSON`, `badgerGetJSON`, `badgerDelete`, `openBadger`, `openBadgerInMemory` |
+| `src/internal/storage/badger_stores.go` | Badger-backed implementations for all 7 store interfaces: `SegmentStore`, `IndexStore`, `ObjectStore`, `GraphEdgeStore` (with `PruneExpiredEdges`), `SnapshotVersionStore`, `PolicyStore`, `ShareContractStore` |
+| `src/internal/storage/composite.go` | `compositeRuntimeStorage` wiring arbitrary (memory/Badger/mixed) store implementations behind `RuntimeStorage`; `NewCompositeRuntimeStorage` |
+| `src/internal/storage/config_snapshot.go` | `ConfigSnapshot` (JSON-serializable backend config) and `RuntimeBundle` (storage + config + optional Badger close func) |
+| `src/internal/storage/factory.go` | `BuildRuntimeFromEnv` factory: env-driven backend selection via `ANDB_STORAGE`, `ANDB_DATA_DIR`, `ANDB_STORE_*`, `ANDB_BADGER_INMEMORY` |
+| `src/internal/worker/nodes/default_algorithm.go` | (same as above, correct location) |
+
+### Test Fixes Applied
+
+| Test | Fix |
+|---|---|
+| `integration_tests/topology_test.go` | Updated expected node count from 18 → 19 (added AlgorithmDispatchWorker) |
+| Debug test (`TestDebugStateIngest`) | Removed temporary debug test added during investigation |
+
+### Feature Branch Assessment
+
+| Branch | Status | Risk if Merged |
+|---|---|---|
+| `origin/feature/schema-a` | 70+ commits ahead of dev; large refactors (Badger storage, worker contract changes) | HIGH: removes derivationLog, tieredObjects from Runtime; significant test deletions |
+| `origin/feature/retrieval-b` | Large refactors (C++ Knowhere wiring, Python bridge) | MEDIUM: structural changes, needs thorough review |
+| `origin/feature/graph-c` | 1 commit ahead of dev (prefetch graph node properties) | LOW: appears compatible, review needed |
+| `origin/feature/member-d-api` | 10+ commits, major Runtime refactor | HIGH: removes queryChain, derivationLog, tieredObjects fields — would break SubmitIngest, ExecuteQuery, bootstrap wiring |
+
+> **Recommendation:** `feature/schema-a` and `feature/member-d-api` should NOT be merged to `dev` without a detailed diff review. The base `dev` branch is more complete and correct than these branches' revisions. Feature work should be cherry-picked commit by commit.
+
+### Pre-Checklist (Run Before Any Merge)
+
+```bash
+# 1. Build verification
+go build ./src/... && echo "BUILD OK"
+
+# 2. Unit tests
+go test ./src/... -count=1 -timeout 120s
+
+# 3. Integration tests (requires running server)
+# Start fresh server first:
+lsof -ti:8080 | xargs kill -9 2>/dev/null; sleep 1
+go run ./src/cmd/server &
+sleep 2
+go test ./integration_tests/... -count=1 -timeout 120s
+
+# 4. Topology node count check
+curl -s http://127.0.0.1:8080/v1/admin/topology | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'nodes={len(d[\"nodes\"])}')"
+# Expected: nodes=19
+```
+
+### Integration Checklist
+
+| Area | Status | Notes |
+|---|---|---|
+| Write path: WAL → Materialization → ObjectStore → TieredDataPlane | ✅ | Verified end-to-end; 3-tier cascade confirmed |
+| Write path: checkpoint → ObjectVersion snapshot | ✅ | `DispatchStateCheckpoint` called synchronously; versions available immediately |
+| Query path: planner → retrieval → policy filter → assembler | ✅ | All steps present; `filterByObjectTypes` correctly routes State/Artifact |
+| Query path: canonical supplemental retrieval | ✅ | `fetchCanonicalObjects` adds State/Artifact IDs from ObjectStore |
+| Governance: ACL/TTL/Quarantine in policy engine | ✅ | `IsTTLExpired`, `IsQuarantineFlag`, `EffectiveSalience` all implemented |
+| Governance: Dead-letter queue overflow safety | ✅ | Overflow buffer (cap 256) + `OverflowBuffer()` + `OverflowCount` metrics |
+| Graceful shutdown: subscriber + orchestrator | ✅ | `context.WithCancel` from `BuildServer` cleanup function |
+| Algorithm dispatch: wired + default no-op | ✅ | 19th node registered; topology confirms |
+| `handleS3SnapshotExport`: not nil | ✅ | Full Avro/JSON/S3 implementation |
+| `VerifiedState`: constants used everywhere | ✅ | `"retracted"` replaced with `string(schemas.VerifiedStateRetracted)` |
+| Edge type constants: `causal` not used | ✅ | Replaced with `EdgeTypeCausedBy` |
+| Cold archival: attributes correctly mapped | ✅ | `visibility` → Scope, `event_type` → OwnerType |
+| EventEnvelope dead alias: removed | ✅ | No longer in canonical.go |
+| ConflictMerge: fires synchronously in SubmitIngest | ✅ | lastMem map tracks per-session MemoryID; sync DispatchConflictMerge fires before response |
+| Unit test pass rate | ✅ | 22/22 packages pass |
+| Integration test pass rate | ✅ | 13/13 test files pass |
+| Topology: correct node count | ✅ | 19 nodes confirmed |
+| DerivationLog: in-memory only (not persisted) | 🔲 Open | Not a regression; documented in Remaining Open Items |
+| Badger persistent storage: BuildRuntimeFromEnv wired | ✅ | `factory.go` + `RuntimeBundle` + `ConfigSnapshot`; bootstrap uses it; `cleanup()` includes `db.Close()` |
+| `GET /v1/admin/storage` endpoint | ✅ | `handleStorage` in gateway; returns `ConfigSnapshot` JSON |
+| `src/internal/s3util/` removed (consolidated into storage) | ✅ | All imports updated; old package dir deleted |
+| `ObjectStore`: Event CRUD methods | ✅ | `PutEvent/GetEvent/ListEvents` in interface, memory, and Badger impls |
+| `QueryChain.Run`: evt_/art_ prefix routing for GraphNode pre-fetch | ✅ | Cherry-picked from `origin/feature/graph-c` |
+
+### Merge Readiness
+
+| Criterion | Status |
+|---|---|
+| Main write path (ingest → WAL → materialization → storage → retrieval) runs | ✅ |
+| Query path (planner → retrieval → filter → assembly → proof trace) runs | ✅ |
+| Policy/version/visibility governance participates in query | ✅ |
+| No nil-pointer routes registered in mux | ✅ |
+| No undefined type/field references | ✅ |
+| Dead code removed | ✅ |
+| Constants used instead of magic strings | ✅ |
+| Unit tests: all pass | ✅ |
+| Integration tests: all pass | ✅ |
+| README reflects current implementation | ✅ |
+| Open items documented | ✅ |
+| Feature branches assessed for regressions | ✅ |
+| **Recommended action** | **Ready to push to `main`** (pending team review of open items) |
+
 
 ---

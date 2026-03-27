@@ -68,6 +68,7 @@ type memoryObjectStore struct {
 	mu        sync.RWMutex
 	agents    map[string]schemas.Agent
 	sessions  map[string]schemas.Session
+	events    map[string]schemas.Event
 	memories  map[string]schemas.Memory
 	states    map[string]schemas.State
 	artifacts map[string]schemas.Artifact
@@ -78,6 +79,7 @@ func newMemoryObjectStore() *memoryObjectStore {
 	return &memoryObjectStore{
 		agents:    map[string]schemas.Agent{},
 		sessions:  map[string]schemas.Session{},
+		events:    map[string]schemas.Event{},
 		memories:  map[string]schemas.Memory{},
 		states:    map[string]schemas.State{},
 		artifacts: map[string]schemas.Artifact{},
@@ -123,6 +125,32 @@ func (s *memoryObjectStore) ListSessions(agentID string) []schemas.Session {
 	out := []schemas.Session{}
 	for _, v := range s.sessions {
 		if agentID == "" || v.AgentID == agentID {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *memoryObjectStore) PutEvent(obj schemas.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events[obj.EventID] = obj
+}
+
+func (s *memoryObjectStore) GetEvent(id string) (schemas.Event, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.events[id]
+	return v, ok
+}
+
+func (s *memoryObjectStore) ListEvents(agentID, sessionID string) []schemas.Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []schemas.Event{}
+	for _, v := range s.events {
+		if (agentID == "" || v.AgentID == agentID) &&
+			(sessionID == "" || v.SessionID == sessionID) {
 			out = append(out, v)
 		}
 	}
@@ -601,10 +629,12 @@ func (s *MemoryRuntimeStorage) AlgorithmStates() MemoryAlgorithmStateStore { ret
 func (s *MemoryRuntimeStorage) HotCache() *HotObjectCache                  { return s.hotCache }
 
 // ─── Exported constructors for hybrid / composite runtimes ───────────────────
-func NewMemorySegmentStore() SegmentStore                { return newMemorySegmentStore() }
-func NewMemoryIndexStore() IndexStore                    { return newMemoryIndexStore() }
-func NewMemoryObjectStore() ObjectStore                  { return newMemoryObjectStore() }
-func NewMemoryGraphEdgeStore() GraphEdgeStore            { return newMemoryGraphEdgeStore() }
+// Used by BuildRuntimeFromEnv when selecting per-store backends (memory vs Badger).
+
+func NewMemorySegmentStore() SegmentStore        { return newMemorySegmentStore() }
+func NewMemoryIndexStore() IndexStore           { return newMemoryIndexStore() }
+func NewMemoryObjectStore() ObjectStore         { return newMemoryObjectStore() }
+func NewMemoryGraphEdgeStore() GraphEdgeStore   { return newMemoryGraphEdgeStore() }
 func NewMemorySnapshotVersionStore() SnapshotVersionStore { return newMemorySnapshotVersionStore() }
-func NewMemoryPolicyStore() PolicyStore                  { return newMemoryPolicyStore() }
-func NewMemoryShareContractStore() ShareContractStore    { return newMemoryShareContractStore() }
+func NewMemoryPolicyStore() PolicyStore         { return newMemoryPolicyStore() }
+func NewMemoryShareContractStore() ShareContractStore { return newMemoryShareContractStore() }
