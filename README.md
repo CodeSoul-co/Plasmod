@@ -570,7 +570,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | **F19** | `NewTieredObjectStore` no nil guard — callers passing nil panicked | Integration | ✅ Fixed |
 | **F20** | `NewTieredDataPlane` / `WithEmbedder` no nil guard on `TieredObjectStore` | Integration | ✅ Fixed |
 | **F21** | `NewPreComputeService` no nil guard; `Compute`/`Recompute` panicked on nil cache | Integration | ✅ Fixed |
-| **A1** | `eventbackbone.DerivationLog` is in-memory only; no persistence to disk | Integration | ✅ Fixed |
+| **A1** | `eventbackbone.DerivationLog` is in-memory only; no persistence to disk | Integration | ✅ |
 | **F19** | `NewTieredObjectStore` accepted nil for hot/warm/cold without guard — callers passing nil would panic | Integration | ✅ Fixed |
 | **F20** | `NewTieredDataPlane` accepted nil `TieredObjectStore` without guard — closure panics on cold access | Integration | ✅ Fixed |
 | **F21** | `NewPreComputeService` accepted nil `evidence.Cache`; `Compute`/`Recompute` panicked on nil cache | Integration | ✅ Fixed |
