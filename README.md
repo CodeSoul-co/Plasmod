@@ -800,10 +800,13 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 
 **Scope merged:** S3-compatible object storage (MinIO) for admin export, snapshot export, and cold-tier archival.
 
-Recent P0 hardening in storage/runtime path:
+Recent storage/runtime hardening:
 - `Runtime.SubmitIngest` now fail-fast checks `plane.Ingest(record)` before canonical object writes to reduce partial-success inconsistency.
 - Runtime conflict-tracking map (`lastMem`) is now mutex-protected for concurrent ingest safety.
 - WAL supports file-backed persistence (`wal.log`) in disk mode via `FileWAL`, with restart reload.
+
+Recent cold-search optimisation:
+- `S3ColdStore.ColdSearch` now uses batched concurrent fetch, bounded top-candidate selection, and early-stop heuristics to reduce tail latency on large cold archives.
 
 #### Admin API Endpoints (`src/internal/access/gateway.go`)
 
@@ -878,6 +881,12 @@ S3_BUCKET      e.g. andb-integration
 S3_SECURE      false (default)
 S3_REGION      us-east-1 (default)
 S3_PREFIX      andb/integration_tests (default)
+S3_COLDSEARCH_MAX_KEYS           5000 (default)
+S3_COLDSEARCH_CONCURRENCY        8 (default)
+S3_COLDSEARCH_BATCH_SIZE         128 (default)
+S3_COLDSEARCH_BUFFER_FACTOR      3 (default)
+S3_COLDSEARCH_EARLY_STOP_SCORE   0.95 (default)
+S3_COLDSEARCH_NO_IMPROVE_PAGES   2 (default)
 ```
 
 #### S3 Module Review Checklist
