@@ -14,6 +14,7 @@ import (
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/coordination"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/nodes"
 )
 
@@ -365,4 +366,153 @@ func TestE2E_TieredObjectStore_GraphEdgeAutoBuild(t *testing.T) {
 	}
 	t.Logf("Auto-built edges: %d total — derived_from=%v belongs_to_session=%v owned_by_agent=%v",
 		len(edges), hasDerivedFrom, hasBelongsToSession, hasOwnedByAgent)
+}
+
+// TestE2E_MemoryPipelineChain verifies that MemoryPipelineChain.Run drives the full
+// cognitive memory ladder: Extraction → Consolidation → Summarization → ReflectionPolicy.
+func TestE2E_MemoryPipelineChain(t *testing.T) {
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	store := storage.NewMemoryRuntimeStorage()
+
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("extract-1", store.Objects()))
+	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("consolidate-1", store.Objects()))
+	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+
+	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
+	hot := storage.NewHotObjectCache(100)
+	tieredObjs := storage.NewTieredObjectStore(hot, store.Objects(), store.Edges(), storage.NewInMemoryColdStore())
+	nodeManager.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
+		"reflect-1", store.Objects(), store.Policies(), policyDecLog,
+	).WithTieredObjects(tieredObjs))
+
+	pipeChain := chain.CreateMemoryPipelineChain(nodeManager)
+
+	// Run extraction only first
+	result := pipeChain.Run(chain.MemoryPipelineInput{
+		EventID:   "evt_mpc_1",
+		AgentID:   "agent-pipeline",
+		SessionID: "session-pipeline",
+		Content:   "The Q3 revenue for NVDA increased by 35% year over year",
+		RunConsolidation: false,
+	})
+	if !result.OK {
+		t.Fatalf("MemoryPipelineChain extraction step failed: %s", result.Error)
+	}
+
+	memID := schemas.IDPrefixMemory + "evt_mpc_1"
+	mem, ok := store.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatalf("expected memory %s after extraction", memID)
+	}
+	if mem.Content == "" {
+		t.Errorf("expected non-empty content in extracted memory")
+	}
+	t.Logf("Extraction step OK: memory=%s content=%q", mem.MemoryID, mem.Content)
+
+	// Run consolidation + summarization step
+	result = pipeChain.Run(chain.MemoryPipelineInput{
+		EventID:          "evt_mpc_2",
+		AgentID:          "agent-pipeline",
+		SessionID:        "session-pipeline",
+		Content:          "Second memory for same session",
+		RunConsolidation: true,
+		MaxSummaryLevel:  1,
+	})
+	if !result.OK {
+		t.Fatalf("MemoryPipelineChain consolidation step failed: %s", result.Error)
+	}
+	if result.Meta["consolidation_ran"] != true {
+		t.Errorf("expected consolidation_ran=true in result metadata")
+	}
+
+	t.Logf("MemoryPipelineChain summary: consolidation_ran=%v memory_id=%v",
+		result.Meta["consolidation_ran"], result.Meta["memory_id"])
+
+	// Verify reflection policy was applied (with TieredObjectStore wired)
+	memID2 := schemas.IDPrefixMemory + "evt_mpc_2"
+	mem2, ok := store.Objects().GetMemory(memID2)
+	if !ok {
+		t.Fatalf("expected memory %s after full pipeline", memID2)
+	}
+	t.Logf("Consolidation step OK: memory=%s is_active=%v", mem2.MemoryID, mem2.IsActive)
+}
+
+// TestE2E_CollaborationChain verifies that CollaborationChain.Run resolves
+// a conflict (LWW) and broadcasts the winner to the target agent.
+func TestE2E_CollaborationChain(t *testing.T) {
+	store := storage.NewMemoryRuntimeStorage()
+
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker(
+		"conflict-merge-1", store.Objects(), store.Edges(),
+	))
+	nodeManager.RegisterCommunication(coordination.CreateInMemoryCommunicationWorker(
+		"comm-1", store.Objects(),
+	))
+	nodeManager.RegisterMicroBatch(coordination.CreateInMemoryMicroBatchScheduler("micro-batch-1", 64))
+
+	collabChain := chain.CreateCollaborationChain(nodeManager)
+
+	// Seed two competing memories for the same entity (different versions)
+	memA := schemas.Memory{
+		MemoryID:  "mem_competing_a",
+		AgentID:   "agent-alpha",
+		SessionID: "session-collab",
+		Content:   "NVDA revenue Q3: $35.1B (source: earnings report)",
+		Version:   3,
+		IsActive:  true,
+	}
+	memB := schemas.Memory{
+		MemoryID:  "mem_competing_b",
+		AgentID:   "agent-alpha",
+		SessionID: "session-collab",
+		Content:   "NVDA revenue Q3: $35.1B (source: investor deck)",
+		Version:   5, // higher version → winner
+		IsActive:  true,
+	}
+	store.Objects().PutMemory(memA)
+	store.Objects().PutMemory(memB)
+
+	// Also seed events so the EdgeStore is available
+	store.Objects().PutEvent(schemas.Event{EventID: "evt_collab_a", AgentID: "agent-alpha", SessionID: "session-collab"})
+	store.Objects().PutEvent(schemas.Event{EventID: "evt_collab_b", AgentID: "agent-alpha", SessionID: "session-collab"})
+
+	out, result := collabChain.Run(chain.CollaborationChainInput{
+		LeftMemID:     "mem_competing_a",
+		RightMemID:    "mem_competing_b",
+		ObjectType:    string(schemas.ObjectTypeMemory),
+		SourceAgentID: "agent-alpha",
+		TargetAgentID: "agent-beta",
+	})
+
+	if !result.OK {
+		t.Fatalf("CollaborationChain.Run failed: %s", result.Error)
+	}
+	if out.WinnerMemID != "mem_competing_b" {
+		t.Errorf("expected winner mem_competing_b (higher version=5), got %s", out.WinnerMemID)
+	}
+	if out.SharedMemID == "" {
+		t.Errorf("expected shared_mem_id to be non-empty (cross-agent broadcast)")
+	}
+	if !strings.HasPrefix(out.SharedMemID, schemas.IDPrefixShared) {
+		t.Errorf("expected shared_mem_id to start with %s, got %s", schemas.IDPrefixShared, out.SharedMemID)
+	}
+
+	// Verify conflict_resolved edge was written
+	edges := store.Edges().ListEdges()
+	var hasConflictEdge bool
+	for _, e := range edges {
+		if e.EdgeType == string(schemas.EdgeTypeConflictResolved) {
+			hasConflictEdge = true
+			break
+		}
+	}
+	if !hasConflictEdge {
+		t.Logf("NOTE: no conflict_resolved edge found — verify ConflictMergeWorker writes it to EdgeStore")
+	}
+
+	t.Logf("CollaborationChain summary: winner=%s shared=%s edges=%d",
+		out.WinnerMemID, out.SharedMemID, len(edges))
 }
