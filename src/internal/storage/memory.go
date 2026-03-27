@@ -627,14 +627,34 @@ func (s *MemoryRuntimeStorage) Contracts() ShareContractStore              { ret
 func (s *MemoryRuntimeStorage) Audits() AuditStore                         { return s.auditStore }
 func (s *MemoryRuntimeStorage) AlgorithmStates() MemoryAlgorithmStateStore { return s.algoStore }
 func (s *MemoryRuntimeStorage) HotCache() *HotObjectCache                  { return s.hotCache }
+func (s *MemoryRuntimeStorage) PutMemoryWithBaseEdges(obj schemas.Memory) {
+	s.objectStore.PutMemory(obj)
+	for _, e := range schemas.BuildMemoryBaseEdges(obj) {
+		s.edgeStore.PutEdge(e)
+	}
+}
+
+func (s *MemoryRuntimeStorage) PutArtifactWithBaseEdges(obj schemas.Artifact) {
+	s.objectStore.PutArtifact(obj)
+	for _, e := range schemas.BuildArtifactBaseEdges(obj) {
+		s.edgeStore.PutEdge(e)
+	}
+}
+
+func (s *MemoryRuntimeStorage) PutEventWithBaseEdges(obj schemas.Event) {
+	s.objectStore.PutEvent(obj)
+	for _, e := range schemas.BuildEventBaseEdges(obj) {
+		s.edgeStore.PutEdge(e)
+	}
+}
 
 // ─── Exported constructors for hybrid / composite runtimes ───────────────────
 // Used by BuildRuntimeFromEnv when selecting per-store backends (memory vs Badger).
 
-func NewMemorySegmentStore() SegmentStore        { return newMemorySegmentStore() }
-func NewMemoryIndexStore() IndexStore           { return newMemoryIndexStore() }
-func NewMemoryObjectStore() ObjectStore         { return newMemoryObjectStore() }
-func NewMemoryGraphEdgeStore() GraphEdgeStore   { return newMemoryGraphEdgeStore() }
+func NewMemorySegmentStore() SegmentStore                 { return newMemorySegmentStore() }
+func NewMemoryIndexStore() IndexStore                     { return newMemoryIndexStore() }
+func NewMemoryObjectStore() ObjectStore                   { return newMemoryObjectStore() }
+func NewMemoryGraphEdgeStore() GraphEdgeStore             { return newMemoryGraphEdgeStore() }
 func NewMemorySnapshotVersionStore() SnapshotVersionStore { return newMemorySnapshotVersionStore() }
-func NewMemoryPolicyStore() PolicyStore         { return newMemoryPolicyStore() }
-func NewMemoryShareContractStore() ShareContractStore { return newMemoryShareContractStore() }
+func NewMemoryPolicyStore() PolicyStore                   { return newMemoryPolicyStore() }
+func NewMemoryShareContractStore() ShareContractStore     { return newMemoryShareContractStore() }

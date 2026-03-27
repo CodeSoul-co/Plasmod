@@ -71,11 +71,12 @@ src/retrieval/test_*.py
 分工情况.md
 arch-design.zh-CN.md
 
-# Dev docs directory (local design notes, not for push)
-devdocs/
-
-# Badger persistent storage data (ANDB_DATA_DIR, default .andb_data)
-.andb_data/
-
-# C++ build artifacts (vendored Knowhere / pybind11 build output)
+# Build artifacts & compiled binaries
+build/
 cpp/build/
+server
+
+# 非 README 的项目 md 文档（不推送到 GitHub）
+RETRIEVAL_B.md
+ingest-storage-object-workers.md
+src/internal/platformpkg/UPSTREAM_README.md

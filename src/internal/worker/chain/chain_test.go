@@ -75,17 +75,30 @@ func TestMainChain_Run_ValidEvent(t *testing.T) {
 		EventType: "agent_thought",
 		Payload:   map[string]any{schemas.PayloadKeyText: "test content"},
 	}
-	result := chain.Run(MainChainInput{Event: ev, MemoryID: schemas.IDPrefixMemory + ev.EventID, Namespace: "ws1"})
+	memID := schemas.IDPrefixMemory + ev.EventID
+
+	// Pre-seed Memory: MainChain no longer creates Memory (that is
+	// Runtime.SubmitIngest's responsibility via TieredObjectStore.PutMemory).
+	// The chain still performs index build and graph relation work.
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  memID,
+		AgentID:   "a1",
+		SessionID: "s1",
+		IsActive:  true,
+		Content:   "test content",
+	})
+
+	result := chain.Run(MainChainInput{Event: ev, MemoryID: memID, Namespace: "ws1"})
 	if !result.OK {
 		t.Fatalf("MainChain.Run failed: %s", result.Error)
 	}
 	if result.ChainName != "main_chain" {
 		t.Errorf("expected ChainName=main_chain, got %q", result.ChainName)
 	}
-	// Memory should be materialized
-	_, ok := store.Objects().GetMemory(schemas.IDPrefixMemory + "evt_main1")
-	if !ok {
-		t.Error("expected Memory to be stored after MainChain")
+	// Memory is pre-seeded; MainChain should not have created a duplicate.
+	mems := store.Objects().ListMemories("a1", "s1")
+	if len(mems) != 1 {
+		t.Errorf("expected exactly 1 Memory (pre-seeded), got %d", len(mems))
 	}
 }
 
@@ -260,27 +273,12 @@ func TestMainChain_Run_StateUpdateEvent_RoutesToStateMatWorker(t *testing.T) {
 	}
 }
 
-func TestMainChain_Run_CheckpointEvent_ProducesCheckpointState(t *testing.T) {
-	mgr, store := buildManager(t)
-	chain := CreateMainChain(mgr)
-
-	ev := schemas.Event{
-		EventID:   "evt_ckpt",
-		AgentID:   "a1",
-		SessionID: "s1",
-		EventType: string(schemas.EventTypeCheckpoint),
-		Payload:   map[string]any{},
-	}
-	result := chain.Run(MainChainInput{Event: ev})
-	if !result.OK {
-		t.Fatalf("MainChain.Run failed: %s", result.Error)
-	}
-	// StateMaterializationWorker applies checkpoint events even without state payload.
-	states := store.Objects().ListStates("a1", "s1")
-	if len(states) == 0 {
-		t.Error("expected at least one state after checkpoint event")
-	}
-}
+// TestMainChain_Run_CheckpointEvent_ProducesCheckpointState is removed.
+// Checkpointing is exclusively a Runtime.SubmitIngest responsibility: it calls
+// DispatchStateMaterialization(ev) AND DispatchStateCheckpoint(agentID, sessionID).
+// MainChain.Run only calls DispatchStateMaterialization (Apply; no stateKey → no-op
+// for empty-payload checkpoint). State creation + versioning for checkpoint events
+// is exercised by integration tests on Runtime.SubmitIngest.
 
 func TestMainChain_Run_IndexBuildWorker_StoresSegment(t *testing.T) {
 	mgr, store := buildManager(t)

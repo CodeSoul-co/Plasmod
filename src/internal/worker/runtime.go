@@ -118,14 +118,32 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	// Call the materialization workers here (not only in the async subscriber)
 	// so tests and synchronous query paths can read them without waiting for
 	// the next WAL poll cycle.
+	//
+	// Routing:
+	//   - Artifact (tool_call/tool_result) → ObjectMaterializationWorker
+	//   - State    (state_update/state_change/checkpoint) → StateMaterializationWorker
+	//     (NOTE: State is NOT handled by ObjectMaterializationWorker to avoid
+	//     creating duplicate State objects with different field values for the
+	//     same event. StateMaterializationWorker stores via PutState directly.)
+	//   - Memory   → stored directly below via tieredObjects.PutMemory (richer
+	//     MaterializeEvent output), not via ObjectMaterializationWorker.
 	r.nodeManager.DispatchObjectMaterialization(ev)
 	r.nodeManager.DispatchToolTrace(ev)
 
-	// checkpoint events: synchronously snapshot all current states so the
-	// version entries are available for immediate queries without waiting for
-	// the async subscriber's 200ms poll cycle.
-	if ev.EventType == string(schemas.EventTypeCheckpoint) && ev.AgentID != "" && ev.SessionID != "" {
-		r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+	// State objects for ALL state events are created synchronously so they are
+	// immediately queryable.  The async subscriber's StateMaterialization handler
+	// handles the same events (creating a second State record with a different
+	// version number), which is intentional — the VersionStore accumulates
+	// snapshots rather than overwriting.
+	isStateEvent := ev.EventType == string(schemas.EventTypeStateUpdate) ||
+		ev.EventType == string(schemas.EventTypeStateChange) ||
+		ev.EventType == string(schemas.EventTypeCheckpoint)
+	if isStateEvent && ev.AgentID != "" && ev.SessionID != "" {
+		r.nodeManager.DispatchStateMaterialization(ev)
+		// checkpoint events additionally snapshot all current states.
+		if ev.EventType == string(schemas.EventTypeCheckpoint) {
+			r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+		}
 	}
 
 	// ── Persist canonical objects ─────────────────────────────────────────
@@ -147,7 +165,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		)
 	} else {
 		// Fallback for tests or code paths that don't initialise TieredObjectStore.
-		r.storage.Objects().PutMemory(mat.Memory)
+		r.storage.PutMemoryWithBaseEdges(mat.Memory)
 	}
 	r.storage.Versions().PutVersion(mat.Version)
 	for _, edge := range mat.Edges {
@@ -225,15 +243,19 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	if len(result.ObjectIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:    result.ObjectIDs,
-			MaxDepth:     0, // default cap of 8
-			ObjectStore:  r.storage.Objects(),
-			EdgeStore:    r.storage.Edges(),
+			ObjectIDs:   result.ObjectIDs,
+			MaxDepth:    0, // default cap of 8
+			ObjectStore: r.storage.Objects(),
+			EdgeStore:   r.storage.Edges(),
 		})
 		_ = chainResult // chainResult.OK is advisory; non-fatal
 
 		if len(chainOut.ProofTrace) > 0 {
 			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
+		}
+
+		if len(chainOut.Subgraph.Nodes) > 0 {
+			resp.Nodes = chainOut.Subgraph.Nodes
 		}
 
 		// Merge subgraph-expanded edges into resp.Edges, deduplicating by EdgeID.
@@ -262,6 +284,13 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 	var ids []string
 	for _, t := range objectTypes {
 		switch t {
+		case "event":
+			if r.storage != nil {
+				for _, e := range r.storage.Objects().ListEvents(agentID, sessionID) {
+					ids = append(ids, e.EventID)
+				}
+			}
+
 		case "state":
 			if r.storage != nil {
 				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {

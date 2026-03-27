@@ -13,8 +13,8 @@ import (
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/indexing"
-	"andb/src/internal/worker/nodes"
 	matworker "andb/src/internal/worker/materialization"
+	"andb/src/internal/worker/nodes"
 )
 
 func buildTestRuntime(t *testing.T) *Runtime {
@@ -217,4 +217,79 @@ func TestRuntime_StateCheckpoint_Flow(t *testing.T) {
 	if !checkpointFound {
 		t.Error("expected at least one snapshot with non-empty SnapshotTag after DispatchStateCheckpoint")
 	}
+}
+
+func TestRuntime_ExecuteQuery_ReturnsEventNodeProperties(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:    "evt_runtime_props_1",
+		AgentID:    "agent_rt",
+		SessionID:  "sess_rt",
+		EventType:  "tool_call",
+		Source:     "planner",
+		Importance: 0.8,
+		Payload: map[string]any{
+			"text": "tool_call search",
+			"tool": "search",
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit ingest failed: %v", err)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText: "tool_call",
+		SessionID: "sess_rt",
+		TopK:      5,
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatalf("expected non-empty resp.Objects, got %+v", resp)
+	}
+	if len(resp.Nodes) == 0 {
+		t.Fatalf("expected non-empty resp.Nodes, got %+v", resp)
+	}
+
+	found := false
+	for _, n := range resp.Nodes {
+		if n.ObjectID == "mem_evt_runtime_props_1" {
+			found = true
+
+			if n.ObjectType != "memory" {
+				t.Fatalf("expected memory node, got %s", n.ObjectType)
+			}
+			if n.Properties == nil {
+				t.Fatal("expected node properties")
+			}
+
+			if got, ok := n.Properties["provenance_ref"]; !ok || got != "evt_runtime_props_1" {
+				t.Fatalf("expected provenance_ref=evt_runtime_props_1, got %v", n.Properties["provenance_ref"])
+			}
+
+			srcIDs, ok := n.Properties["source_event_ids"]
+			if !ok {
+				t.Fatal("expected source_event_ids in memory node properties")
+			}
+
+			ids, ok := srcIDs.([]string)
+			if !ok {
+				t.Fatalf("expected source_event_ids to be []string, got %T", srcIDs)
+			}
+			if len(ids) == 0 || ids[0] != "evt_runtime_props_1" {
+				t.Fatalf("expected source_event_ids to contain evt_runtime_props_1, got %+v", ids)
+			}
+
+			if got, ok := n.Properties["content"]; !ok || got != "tool_call search" {
+				t.Fatalf("expected content=tool_call search, got %v", n.Properties["content"])
+			}
+		}
+	}
+
+	if !found {
+		t.Fatalf("expected memory node mem_evt_runtime_props_1 in resp.Nodes, got %+v", resp.Nodes)
+	}
+}
+func TestRuntime_ExecuteQuery_ReturnsArtifactNodeProperties(t *testing.T) {
+	t.Skip("artifact nodes are not currently materialized into resp.Nodes by ExecuteQuery; raw PutArtifact + PutEdge does not make artifacts query-visible in the current runtime path")
 }

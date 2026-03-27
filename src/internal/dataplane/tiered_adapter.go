@@ -33,14 +33,18 @@ type TieredDataPlane struct {
 // The warm tier performs only lexical search.  To enable hybrid (lexical+vector) warm
 // search, use NewTieredDataPlaneWithEmbedder instead.
 func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane {
+	if tieredObjs == nil {
+		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil)
+	}
+	objs := tieredObjs
 	return &TieredDataPlane{
 		hot:  segmentstore.NewIndex(),
 		warm: NewSegmentDataPlane(),
 		coldSearch: func(query string, topK int) []string {
-			return tieredObjs.ColdSearch(query, topK)
+			return objs.ColdSearch(query, topK)
 		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
-			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
+			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
 	}
 }
@@ -50,6 +54,9 @@ func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane 
 // in the CGO Knowhere/HNSW retriever for dense vector search.
 // The VectorStore gracefully degrades to lexical-only when CGO is unavailable.
 func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator) (*TieredDataPlane, error) {
+	if tieredObjs == nil {
+		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil)
+	}
 	if embedder == nil {
 		return NewTieredDataPlane(tieredObjs), nil
 	}

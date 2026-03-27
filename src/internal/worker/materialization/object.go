@@ -64,6 +64,18 @@ func (w *InMemoryObjectMaterializationWorker) Info() nodes.NodeInfo {
 	}
 }
 
+// Materialize routes an event to its canonical store(s).
+//
+// Routing contract:
+//   - tool_call / tool_result  → Artifact (ObjectStore)
+//   - Memory objects are stored directly by Runtime.SubmitIngest via
+//     TieredObjectStore.PutMemory (the richer MaterializeEvent output), NOT here.
+//     The default case intentionally skips Memory to avoid duplicate storage.
+//   - State creation is handled exclusively by InMemoryStateMaterializationWorker
+//     (DispatchStateMaterialization), called synchronously in Runtime.SubmitIngest.
+//     Having both ObjectMaterializationWorker and StateMaterializationWorker handle
+//     State creates duplicate State objects with different field values for the same
+//     event, so State is excluded from this worker.
 func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	switch ev.EventType {
@@ -93,47 +105,9 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			ValidFrom:       now,
 		})
 
-	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
-		state := schemas.State{
-			StateID:            schemas.IDPrefixState + ev.EventID,
-			AgentID:            ev.AgentID,
-			SessionID:          ev.SessionID,
-			StateType:          ev.EventType,
-			DerivedFromEventID: ev.EventID,
-			CheckpointTS:       now,
-			Version:            ev.Version + 1,
-		}
-		if ev.Payload != nil {
-			if k, ok := ev.Payload[schemas.PayloadKeyStateKey].(string); ok {
-				state.StateKey = k
-			}
-			if v, ok := ev.Payload[schemas.PayloadKeyStateValue].(string); ok {
-				state.StateValue = v
-			}
-		}
-		w.objStore.PutState(state)
-
-	default:
-		text := ""
-		if ev.Payload != nil {
-			if t, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
-				text = t
-			}
-		}
-		w.objStore.PutMemory(schemas.Memory{
-			MemoryID:       schemas.IDPrefixMemory + ev.EventID,
-			MemoryType:     string(schemas.MemoryTypeEpisodic),
-			AgentID:        ev.AgentID,
-			SessionID:      ev.SessionID,
-			Level:          0,
-			Content:        text,
-			Confidence:     1.0,
-			Importance:     ev.Importance,
-			IsActive:       true,
-			ValidFrom:      now,
-			Version:        ev.Version + 1,
-			SourceEventIDs: []string{ev.EventID},
-		})
+	// State objects are created exclusively by InMemoryStateMaterializationWorker
+	// (DispatchStateMaterialization) to avoid duplicate State storage.
+	// See Runtime.SubmitIngest for the synchronous call site.
 	}
 	return nil
 }

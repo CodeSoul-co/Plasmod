@@ -18,6 +18,32 @@ Example:
 }
 ```
 
+### `GET /v1/admin/storage`
+
+Returns the resolved **runtime storage** configuration (memory vs Badger per sub-store).
+
+Example shape:
+
+```json
+{
+  "mode": "hybrid",
+  "data_dir": ".andb_data",
+  "badger_enabled": true,
+  "stores": {
+    "segments": "memory",
+    "indexes": "memory",
+    "objects": "disk",
+    "edges": "memory",
+    "versions": "memory",
+    "policies": "memory",
+    "contracts": "memory"
+  },
+  "wal_persistence": false
+}
+```
+
+When `data_dir` is `:memory:`, Badger was opened with `InMemory` (see `ANDB_BADGER_INMEMORY`).
+
 ### `GET /v1/admin/topology`
 
 Returns runtime topology and storage snapshots.

@@ -61,7 +61,7 @@ func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 	// literal namespace value; the actual IDs are in WorkspaceID / SessionID.
 	ns := req.WorkspaceID
 	if ns == "" {
-		ns = req.SessionID
+		ns = "" // "" means all-shard search (matches materializer.resolveNamespace fallback to "default")
 	}
 	fromTS, _ := parseRFC3339ToUnix(req.TimeWindow.From)
 	toTS, _ := parseRFC3339ToUnix(req.TimeWindow.To)

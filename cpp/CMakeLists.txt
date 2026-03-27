@@ -8,10 +8,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 # Build Options
 # =============================================================================
-option(ANDB_WITH_GPU "Enable GPU support via Knowhere RAFT" OFF)
-option(ANDB_WITH_TESTS "Build unit tests" OFF)
-option(ANDB_WITH_PYBIND "Build Python bindings" ON)
-option(ANDB_WITH_KNOWHERE "Enable real Knowhere HNSW/SPARSE index (requires internet + OpenBLAS at build time)" ON)
+option(ANDB_WITH_GPU          "Enable GPU support (future, requires CUDA)"           OFF)
+option(ANDB_WITH_TESTS        "Build unit tests"                                     OFF)
+option(ANDB_KNOWHERE_FAISS    "Build ann_core with faiss IVF indexes (needs OpenBLAS)" OFF)
+option(ANDB_KNOWHERE_DISKANN  "Build ann_core with DiskANN"                           OFF)
 
 # =============================================================================
 # Platform Detection
@@ -22,113 +22,85 @@ if(APPLE)
     else()
         message(STATUS "Platform: macOS x86_64")
     endif()
-    # Disable GPU on macOS
-    set(ANDB_WITH_GPU OFF)
 elseif(UNIX)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-        message(STATUS "Platform: Linux Aarch64")
+        message(STATUS "Platform: Linux aarch64")
     else()
         message(STATUS "Platform: Linux x86_64")
     endif()
 endif()
 
 # =============================================================================
-# Knowhere Integration via FetchContent
+# vendor/ — third-party source-level dependencies (ANN index engine)
+# Location: cpp/vendor/  (include/ src/ engines/ compat/)
+# Contains the Knowhere vector index library (source-level, not a package).
+# Internal headers use "knowhere/..." paths (upstream convention, unchanged).
+# The outer directory is named vendor/ — neutral, conventional, no confusion
+# with the cpp/knowhere/include/knowhere/ double-nesting we had before.
+# No folly / glog / prometheus / opentelemetry required.
+# HNSW always on; IVF/DiskANN/GPU opt-in.
 # =============================================================================
-include(FetchContent)
+set(KNOWHERE_WITH_FAISS   ${ANDB_KNOWHERE_FAISS}   CACHE BOOL "" FORCE)
+set(KNOWHERE_WITH_DISKANN ${ANDB_KNOWHERE_DISKANN} CACHE BOOL "" FORCE)
+set(KNOWHERE_WITH_GPU     ${ANDB_WITH_GPU}         CACHE BOOL "" FORCE)
 
-# Knowhere build options
-set(KNOWHERE_WITH_UT OFF CACHE BOOL "" FORCE)
-set(KNOWHERE_WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
-if(ANDB_WITH_GPU)
-    set(KNOWHERE_WITH_RAFT ON CACHE BOOL "" FORCE)
-else()
-    set(KNOWHERE_WITH_RAFT OFF CACHE BOOL "" FORCE)
-endif()
+add_subdirectory(vendor)   # → builds CMake target: knowhere
 
-if(ANDB_WITH_KNOWHERE)
-    # Fetch Knowhere from zilliztech (active repo)
-    FetchContent_Declare(
-        knowhere
-        GIT_REPOSITORY https://github.com/zilliztech/knowhere.git
-        GIT_TAG        v2.3.12
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(knowhere)
-    message(STATUS "Knowhere integration: ENABLED (zilliztech/knowhere v2.3.12)")
-else()
-    message(STATUS "Knowhere integration: DISABLED (brute-force fallback; use -DANDB_WITH_KNOWHERE=ON to enable)")
-endif()
+message(STATUS "vendor: source-level ANN engine (cpp/vendor/)")
+message(STATUS "  HNSW engine     : cpp/vendor/engines/hnsw_engine/")
+message(STATUS "  faiss engine    : cpp/vendor/engines/faiss_engine/  [opt ${ANDB_KNOWHERE_FAISS}]")
+message(STATUS "  diskann engine  : cpp/vendor/engines/diskann_engine/ [opt ${ANDB_KNOWHERE_DISKANN}]")
 
 # =============================================================================
-# pybind11 for Python bindings
-# =============================================================================
-if(ANDB_WITH_PYBIND)
-    FetchContent_Declare(
-        pybind11
-        GIT_REPOSITORY https://github.com/pybind/pybind11.git
-        GIT_TAG        v2.11.1
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(pybind11)
-endif()
-
-# =============================================================================
-# Core Library
+# andb_retrieval — B-module retrieval shared library
+# C++ layer responsibility: ANN index operations only.
+# Business logic (RRF, safety filter, seed marking) lives in Go.
 # =============================================================================
 add_library(andb_retrieval SHARED
-    retrieval/retrieval.cpp
-    retrieval/dense.cpp
-    retrieval/sparse.cpp
-    retrieval/filter.cpp
-    retrieval/merger.cpp
+    retrieval/retrieval.cpp       # extern "C" ANN API (no business logic)
+    retrieval/segment_index.cpp   # SegmentIndexManager — per-segment HNSW
+    retrieval/dense.cpp           # DenseRetriever — HNSW via ann_core
+    retrieval/sparse.cpp          # SparseRetriever — C++ inverted index
 )
 
-target_include_directories(andb_retrieval PUBLIC 
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+target_include_directories(andb_retrieval PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include          # andb/ public headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include   # knowhere/ internal API
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/compat    # glog+nlohmann+omp shims
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/engines/hnsw_engine
 )
 
-# Link Knowhere when enabled
-if(ANDB_WITH_KNOWHERE)
-    target_compile_definitions(andb_retrieval PRIVATE ANDB_USE_KNOWHERE)
-    target_link_libraries(andb_retrieval PUBLIC knowhere)
+# On macOS with Homebrew libomp, add its include dir so our compat/omp.h
+# can resolve "include_next <omp.h>" properly when _OPENMP is defined.
+if(APPLE)
+    set(LIBOMP_INC "/opt/homebrew/opt/libomp/include")
+    if(EXISTS "${LIBOMP_INC}/omp.h")
+        target_include_directories(andb_retrieval PRIVATE "${LIBOMP_INC}")
+        target_compile_options(andb_retrieval PRIVATE -Xpreprocessor -fopenmp)
+        target_link_libraries(andb_retrieval PRIVATE "-L/opt/homebrew/opt/libomp/lib" omp)
+    endif()
 endif()
 
-# =============================================================================
-# Python Bindings
-# =============================================================================
-if(ANDB_WITH_PYBIND)
-    pybind11_add_module(andb_retrieval_py
-        python/bindings.cpp
-    )
-    target_link_libraries(andb_retrieval_py PRIVATE andb_retrieval)
-    target_include_directories(andb_retrieval_py PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    
-    # Set output name without lib prefix
-    set_target_properties(andb_retrieval_py PROPERTIES
-        OUTPUT_NAME "andb_retrieval"
-    )
-endif()
+find_package(Threads REQUIRED)
+target_link_libraries(andb_retrieval PUBLIC knowhere Threads::Threads)
+
+message(STATUS "andb_retrieval: links against vendor/knowhere (CMake target: knowhere)")
 
 # =============================================================================
 # Unit Tests
 # =============================================================================
 if(ANDB_WITH_TESTS)
     enable_testing()
-    # Add test targets here
 endif()
 
 # =============================================================================
 # Installation
 # =============================================================================
-install(TARGETS andb_retrieval
+install(TARGETS andb_retrieval knowhere
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY include/andb
-    DESTINATION include
-)
+install(DIRECTORY include/andb DESTINATION include)
+install(DIRECTORY vendor/include/knowhere DESTINATION include)

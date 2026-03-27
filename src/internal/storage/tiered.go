@@ -189,6 +189,15 @@ type TieredObjectStore struct {
 }
 
 func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, cold ColdObjectStore) *TieredObjectStore {
+	if hot == nil {
+		hot = NewHotObjectCache(0)
+	}
+	if warm == nil {
+		panic("TieredObjectStore: warm ObjectStore must not be nil")
+	}
+	if cold == nil {
+		cold = NewInMemoryColdStore()
+	}
 	return &TieredObjectStore{hot: hot, warm: warm, cold: cold}
 }
 

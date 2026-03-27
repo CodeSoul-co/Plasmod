@@ -2,9 +2,11 @@
 
 ## Purpose
 
-This document describes the event ingest endpoint used by the ANDB v1 prototype.
+This document defines the `POST /v1/ingest/events` contract for the ANDB v1 prototype.
 
-The ingest path accepts an event envelope, appends it to the event backbone, and forwards it into the runtime materialization and retrieval-projection path.
+The endpoint accepts an event payload, appends it to WAL, materializes canonical objects, and projects retrieval records.
+
+**Implementation:** the synchronous pipeline lives in `worker.PipelineIngestWorker` (`src/internal/worker/ingest_worker.go`), invoked by `worker.Runtime.SubmitIngest`. The coordinator module registry exposes it as `ingest_worker` after `app.BuildServer` wiring.
 
 ## Endpoint
 
@@ -12,11 +14,11 @@ The ingest path accepts an event envelope, appends it to the event backbone, and
 - Path: `/v1/ingest/events`
 - Content-Type: `application/json`
 
-## Request Schema
+## Request schema
 
-The current server decodes the request into `schemas.Event` from `src/internal/schemas/canonical.go`.
+The server decodes the request into `schemas.Event` from `src/internal/schemas/canonical.go`.
 
-Required practical fields:
+Practical required fields:
 
 - `event_id`
 - `tenant_id`
@@ -34,7 +36,15 @@ Strongly recommended fields:
 - `source`
 - `version`
 
-## Example Request
+### Payload notes
+
+- `payload.text` is used as the primary retrieval text for materialization.
+- Optional artifact creation is enabled when payload includes a URI field:
+  - `artifact_uri`, or
+  - nested `artifact.uri`, or
+  - top-level `uri` when `event_type=artifact_attached`
+
+## Example request
 
 ```json
 {
@@ -47,11 +57,12 @@ Strongly recommended fields:
   "event_time": "2026-03-16T08:00:00Z",
   "ingest_time": "2026-03-16T08:00:00Z",
   "visible_time": "2026-03-16T08:00:00Z",
-  "logical_ts": 1,
+  "logical_ts": 0,
   "parent_event_id": "",
   "causal_refs": [],
   "payload": {
-    "text": "hello andb"
+    "text": "hello andb",
+    "artifact_uri": "s3://bucket/demo.bin"
   },
   "source": "api",
   "importance": 0.5,
@@ -60,45 +71,50 @@ Strongly recommended fields:
 }
 ```
 
-## Success Response
+## Success response
 
-The current runtime returns a lightweight acknowledgment.
+On success, the runtime returns an acknowledgment object.
 
-### Example
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | `"accepted"` |
+| `lsn` | number | WAL logical sequence number |
+| `event_id` | string | Echo of ingested event id |
+| `memory_id` | string | Canonical memory object id (`mem_<event_id>`) |
+| `edges` | number | Count of derived edges |
+| `state_id` | string | *(optional)* Present when a state checkpoint row is materialized |
+| `artifact_id` | string | *(optional)* Present when artifact URI fields are provided |
+
+### Example response
 
 ```json
 {
   "status": "accepted",
-  "lsn": 1,
-  "event_id": "evt_demo_001"
+  "lsn": 12,
+  "event_id": "evt_demo_001",
+  "memory_id": "mem_evt_demo_001",
+  "edges": 2,
+  "state_id": "state_sess_a_evt_demo_001",
+  "artifact_id": "art_evt_demo_001"
 }
 ```
 
-## Error Behavior
+## Error behavior
 
-Current server behavior:
+- Malformed JSON: HTTP `400`
+- Unsupported method: HTTP `405`
+- Runtime validation errors: HTTP `400`
 
-- malformed JSON returns HTTP `400`
-- unsupported methods return HTTP `405`
-- runtime validation errors return HTTP `400`
+Current explicit runtime validation is intentionally small; at minimum, `event_id` must be non-empty.
 
-Current explicit runtime validation is intentionally small. At minimum, `event_id` must be present.
+## Runtime behavior (ingest-only)
 
-## Current Runtime Flow
+The processing order for this endpoint is:
 
-The current path is:
+`HTTP gateway -> Runtime.SubmitIngest -> WAL.Append -> materialization -> canonical persistence -> retrieval projection`
 
-`HTTP gateway -> runtime.SubmitIngest -> WAL append -> materialization -> retrieval projection`
+Primary entry points:
 
-The implementation entry points are:
-
-- `src/internal/access/gateway.go`
-- `src/internal/worker/runtime.go`
-
-## v1 Notes
-
-In the current prototype, ingest immediately feeds a lightweight materialization path and then projects a retrieval-ready record.
-
-This is intentionally simpler than the long-term target, but it already preserves the core rule:
-
-**events are written first, and downstream state derives from events rather than direct overwrite.**
+- `src/internal/access/gateway.go` (`handleIngest`)
+- `src/internal/worker/runtime.go` (`SubmitIngest`)
+- `src/internal/materialization/service.go` (`MaterializeEvent`)
