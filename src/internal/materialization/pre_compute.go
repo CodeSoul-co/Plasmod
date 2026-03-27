@@ -38,7 +38,7 @@ func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord
 		Namespace:     rec.Namespace,
 		TextTokens:    tokens,
 		RelatedIDs:    related,
-		EdgeTypes:     []string{string(schemas.EdgeTypeDerivedFrom), string(schemas.EdgeTypeCausedBy)},
+		EdgeTypes:     []string{"derived_from", "causal"},
 		PolicyFilters: filters,
 		SalienceScore: salience,
 		Level:         0,

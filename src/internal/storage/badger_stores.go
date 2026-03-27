@@ -9,16 +9,15 @@ import (
 	"github.com/dgraph-io/badger/v4"
 )
 
-// Key prefixes (ASCII, stable) for Badger key-value layout.
+// Key prefixes (ASCII, stable).
 const (
-	kpSeg        = "seg|"
-	kpIdx        = "idx|"
+	kpSeg = "seg|"
+	kpIdx = "idx|"
 	kpObjAgent    = "obj|agent|"
 	kpObjSession  = "obj|session|"
 	kpObjMemory   = "obj|memory|"
 	kpObjState    = "obj|state|"
 	kpObjArtifact = "obj|artifact|"
-	kpObjEvent    = "obj|event|"
 	kpObjUser     = "obj|user|"
 	kpEdge        = "edg|"
 	kpVer         = "ver|"
@@ -208,29 +207,6 @@ func (s *badgerObjectStore) ListArtifacts(sessionID string) []schemas.Artifact {
 	return out
 }
 
-func (s *badgerObjectStore) PutEvent(obj schemas.Event) {
-	_ = badgerSetJSON(s.db, []byte(kpObjEvent+obj.EventID), obj)
-}
-func (s *badgerObjectStore) GetEvent(id string) (schemas.Event, bool) {
-	var o schemas.Event
-	ok, err := badgerGetJSON(s.db, []byte(kpObjEvent+id), &o)
-	return o, ok && err == nil
-}
-func (s *badgerObjectStore) ListEvents(agentID, sessionID string) []schemas.Event {
-	all := listByPrefix[schemas.Event](s.db, kpObjEvent)
-	if agentID == "" && sessionID == "" {
-		return all
-	}
-	out := make([]schemas.Event, 0)
-	for _, v := range all {
-		if (agentID == "" || v.AgentID == agentID) &&
-			(sessionID == "" || v.SessionID == sessionID) {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 func (s *badgerObjectStore) PutUser(obj schemas.User) {
 	_ = badgerSetJSON(s.db, []byte(kpObjUser+obj.UserID), obj)
 }
@@ -330,29 +306,14 @@ func (s *badgerGraphEdgeStore) ListEdges() []schemas.Edge {
 }
 
 func (s *badgerGraphEdgeStore) PruneExpiredEdges(now string) int {
-	var count int
-	_ = s.db.Update(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		prefix := []byte(kpEdge)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			_ = item.Value(func(val []byte) error {
-				var e schemas.Edge
-				if err := json.Unmarshal(val, &e); err != nil {
-					return err
-				}
-				if e.ExpiresAt != "" && e.ExpiresAt <= now {
-					if err := txn.Delete(item.Key()); err == nil {
-						count++
-					}
-				}
-				return nil
-			})
+	pruned := 0
+	for _, e := range s.allEdges() {
+		if e.ExpiresAt != "" && e.ExpiresAt <= now {
+			s.DeleteEdge(e.EdgeID)
+			pruned++
 		}
-		return nil
-	})
-	return count
+	}
+	return pruned
 }
 
 // ─── SnapshotVersionStore ────────────────────────────────────────────────────

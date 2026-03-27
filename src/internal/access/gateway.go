@@ -107,12 +107,12 @@ func (g *Gateway) handleStorage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if g.storageCfg == nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"mode":             "memory",
-			"data_dir":         "",
-			"badger_enabled":   false,
-			"stores":           map[string]string{},
-			"wal_persistence":  false,
-			"note":             "storage config not wired (nil ConfigSnapshot)",
+			"mode":            "memory",
+			"data_dir":        "",
+			"badger_enabled":  false,
+			"stores":          map[string]string{},
+			"wal_persistence": false,
+			"note":            "storage config not wired (nil ConfigSnapshot)",
 		})
 		return
 	}
@@ -614,7 +614,7 @@ func assembleTraceSteps(id, objType string, frag any, edges []schemas.Edge, vers
 					Detail: "object is quarantined",
 				})
 			}
-			if pol.VerifiedState == string(schemas.VerifiedStateRetracted) {
+			if pol.VerifiedState == "retracted" {
 				steps = append(steps, TraceStep{
 					Phase:  "policy",
 					Label:  "retracted",

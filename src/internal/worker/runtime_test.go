@@ -1,7 +1,7 @@
 package worker
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 
 	"andb/src/internal/coordinator"
@@ -14,7 +14,6 @@ import (
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/nodes"
-	matworker "andb/src/internal/worker/materialization"
 )
 
 func buildTestRuntime(t *testing.T) *Runtime {
@@ -34,8 +33,6 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
 	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
-	nodeManager.RegisterStateMaterialization(
-		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions()))
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
 		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
@@ -144,9 +141,11 @@ func TestRuntime_SubgraphExpand_NodesPopulated(t *testing.T) {
 	}
 
 	resp := r.ExecuteQuery(schemas.QueryRequest{
-		QueryText: "subgraph node test",
-		SessionID: "session_sg",
-		TopK:      5,
+		QueryText:   "subgraph node test",
+		WorkspaceID: "default",
+		SessionID:   "session_sg",
+		TopK:        5,
+		ObjectTypes: []string{string(schemas.ObjectTypeMemory)},
 	})
 
 	if len(resp.Objects) == 0 {
@@ -158,63 +157,102 @@ func TestRuntime_SubgraphExpand_NodesPopulated(t *testing.T) {
 	}
 }
 
-// TestRuntime_StateCheckpoint_Flow verifies that:
-//  1. StateMaterializationWorker applies state_update events to create State objects.
-//  2. DispatchStateCheckpoint writes ObjectVersion snapshots for each active State.
-//  3. The snapshot tag is non-empty after checkpoint.
-//
-// Note: SubmitIngest does NOT create State objects synchronously (State creation is
-// driven by StateMaterializationWorker, which is invoked asynchronously by EventSubscriber).
-// Therefore the test directly calls DispatchStateMaterialization to exercise the worker.
-func TestRuntime_StateCheckpoint_Flow(t *testing.T) {
+func TestRuntime_Query_TenantObjectTypeTopK_Combination(t *testing.T) {
 	r := buildTestRuntime(t)
 
-	// Step 1: Ingest state_update events via SubmitIngest (creates Memories).
-	var stateEvents []schemas.Event
-	for i := 0; i < 2; i++ {
-		stateEvents = append(stateEvents, schemas.Event{
-			EventID:   fmt.Sprintf("evt_ckpt_%d", i),
-			AgentID:   "agent_ckpt",
-			SessionID: "session_ckpt",
-			EventType: string(schemas.EventTypeStateUpdate),
-			Payload: map[string]any{
-				schemas.PayloadKeyStateKey:   fmt.Sprintf("key_%d", i),
-				schemas.PayloadKeyStateValue: fmt.Sprintf("value_%d", i),
-			},
-		})
+	events := []schemas.Event{
+		{
+			EventID:     "evt_combo_t1_a",
+			TenantID:    "tenant_a",
+			WorkspaceID: "w_combo",
+			AgentID:     "agent_combo",
+			SessionID:   "s_combo",
+			Payload:     map[string]any{"text": "combo query alpha"},
+		},
+		{
+			EventID:     "evt_combo_t1_b",
+			TenantID:    "tenant_a",
+			WorkspaceID: "w_combo",
+			AgentID:     "agent_combo",
+			SessionID:   "s_combo",
+			Payload:     map[string]any{"text": "combo query beta"},
+		},
+		{
+			EventID:     "evt_combo_t2_x",
+			TenantID:    "tenant_b",
+			WorkspaceID: "w_combo",
+			AgentID:     "agent_combo",
+			SessionID:   "s_combo",
+			Payload:     map[string]any{"text": "combo query gamma"},
+		},
 	}
-	for _, ev := range stateEvents {
-		_, err := r.SubmitIngest(ev)
-		if err != nil {
-			t.Fatalf("SubmitIngest failed: %v", err)
-		}
-		// Step 2: StateMaterializationWorker runs asynchronously via EventSubscriber;
-		// in unit tests we drive it directly.
-		r.nodeManager.DispatchStateMaterialization(ev)
-	}
-
-	// Step 3: Verify State objects were created by StateMaterializationWorker.
-	states := r.storage.Objects().ListStates("agent_ckpt", "session_ckpt")
-	if len(states) == 0 {
-		t.Fatalf("expected at least one State object after DispatchStateMaterialization, got %d", len(states))
-	}
-	t.Logf("created %d State objects", len(states))
-
-	// Step 4: Trigger a checkpoint.
-	r.nodeManager.DispatchStateCheckpoint("agent_ckpt", "session_ckpt")
-
-	// Step 5: Verify ObjectVersion snapshots were written for each state.
-	checkpointFound := false
-	for _, state := range states {
-		versions := r.storage.Versions().GetVersions(state.StateID)
-		for _, v := range versions {
-			if v.SnapshotTag != "" {
-				checkpointFound = true
-				t.Logf("snapshot: state=%s tag=%s", state.StateID, v.SnapshotTag)
-			}
+	for _, ev := range events {
+		if _, err := r.SubmitIngest(ev); err != nil {
+			t.Fatalf("ingest failed for %s: %v", ev.EventID, err)
 		}
 	}
-	if !checkpointFound {
-		t.Error("expected at least one snapshot with non-empty SnapshotTag after DispatchStateCheckpoint")
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "combo query",
+		TenantID:    "tenant_a",
+		WorkspaceID: "w_combo",
+		SessionID:   "s_combo",
+		TopK:        2,
+		ObjectTypes: []string{string(schemas.ObjectTypeMemory)},
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatalf("expected non-empty query results")
+	}
+	if len(resp.Objects) > 2 {
+		t.Fatalf("expected top_k cap 2, got %d objects: %v", len(resp.Objects), resp.Objects)
+	}
+	for _, id := range resp.Objects {
+		if !strings.HasPrefix(id, schemas.IDPrefixMemory) {
+			t.Fatalf("expected memory-only results, got object id %q", id)
+		}
+		if strings.Contains(id, "evt_combo_t2_x") {
+			t.Fatalf("expected tenant filter to exclude tenant_b object %q", id)
+		}
+	}
+}
+
+func TestRuntime_Query_StateOnly_AfterToolCallIngest(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:     "evt_state_toolcall_1",
+		EventType:   "tool_call",
+		TenantID:    "tenant_state",
+		WorkspaceID: "w_state",
+		AgentID:     "agent_state",
+		SessionID:   "s_state",
+		Payload: map[string]any{
+			"text":      "tool call state query",
+			"state_key": "k1",
+			"state_val": "v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "tool call state query",
+		TenantID:    "tenant_state",
+		WorkspaceID: "w_state",
+		AgentID:     "agent_state",
+		SessionID:   "s_state",
+		TopK:        5,
+		ObjectTypes: []string{string(schemas.ObjectTypeState)},
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatalf("expected state-only query to return at least one object")
+	}
+	for _, id := range resp.Objects {
+		if !strings.HasPrefix(id, schemas.IDPrefixState) {
+			t.Fatalf("expected only state_* objects, got %q", id)
+		}
 	}
 }

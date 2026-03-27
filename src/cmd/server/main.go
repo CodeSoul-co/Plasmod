@@ -7,17 +7,19 @@ import (
 )
 
 func main() {
-	srv, shutdown, err := app.BuildServer()
+	s, cleanup, err := app.BuildServer()
 	if err != nil {
 		log.Fatalf("build server failed: %v", err)
 	}
 	defer func() {
-		if err := shutdown(); err != nil {
-			log.Printf("shutdown: %v", err)
+		if cleanup != nil {
+			if err := cleanup(); err != nil {
+				log.Printf("storage cleanup: %v", err)
+			}
 		}
 	}()
-	log.Printf("ANDB server listen on %s", srv.Addr)
-	if err := srv.ListenAndServe(); err != nil {
+	log.Printf("ANDB server listen on %s", s.Addr)
+	if err := s.ListenAndServe(); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
 }

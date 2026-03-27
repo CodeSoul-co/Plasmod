@@ -15,8 +15,8 @@ import (
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
+	"andb/src/internal/worker/cognitive"
 	baseline "andb/src/internal/worker/cognitive/baseline"
-	cognitive "andb/src/internal/worker/cognitive"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/ingestion"
@@ -24,17 +24,8 @@ import (
 	"andb/src/internal/worker/nodes"
 )
 
-// BuildServer constructs and wires all ANDB server components.
-// Returns the HTTP server, a cleanup function, and any build error.
-// The cleanup function must be called when the server is shutting down;
-// it cancels the background worker contexts (EventSubscriber, Orchestrator).
-//
-// Usage:
-//
-//	srv, cleanup, err := app.BuildServer()
-//	if err != nil { ... }
-//	defer cleanup()
-//	if err := srv.ListenAndServe(); err != nil { ... }
+// BuildServer constructs the HTTP server and a cleanup function that must be
+// invoked on shutdown to close Badger when on-disk stores are enabled.
 func BuildServer() (*http.Server, func() error, error) {
 	addr := os.Getenv("ANDB_HTTP_ADDR")
 	if addr == "" {
@@ -50,20 +41,13 @@ func BuildServer() (*http.Server, func() error, error) {
 	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 
 	// ── Storage Layer (memory / Badger / hybrid — see STORAGE_BACKEND.md) ────
-	// BuildRuntimeFromEnv selects the backend based on ANDB_STORAGE env var.
-	// Default mode is "memory" (all stores in-process).  Set ANDB_STORAGE=disk
-	// for Badger-backed persistent storage under ANDB_DATA_DIR.
 	bundle, err := storage.BuildRuntimeFromEnv()
 	if err != nil {
 		return nil, nil, err
 	}
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
-	if storageCfg.BadgerEnabled {
-		log.Printf("[bootstrap] storage: Badger enabled (mode=%s, dir=%s)", storageCfg.Mode, storageCfg.DataDir)
-	} else {
-		log.Printf("[bootstrap] storage: in-memory mode")
-	}
+	cleanup := bundle.Close
 
 	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
 	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
@@ -182,13 +166,9 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Cognitive Compression workers ─────────────────────────────────────────
 	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
-
-	// ── Algorithm Dispatch worker ─────────────────────────────────────────────
-	// Bridges MemoryManagementAlgorithm plugins into the cognitive pipeline.
-	// Uses a no-op default when no custom algorithm is configured.
 	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
 		"algo-dispatch-1",
-		cognitive.NewDefaultAlgorithm(),
+		baseline.NewDefault(),
 		store.Objects(),
 		store.AlgorithmStates(),
 		store.Audits(),
@@ -202,6 +182,7 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
+	coord.Registry.Register("ingest_worker", runtime.IngestWorker())
 	runtime.RegisterDefaults()
 
 	// ── QueryChain (post-retrieval reasoning: ProofTrace + SubgraphExpand) ───
@@ -214,17 +195,17 @@ func BuildServer() (*http.Server, func() error, error) {
 	// ── Async Worker Subscriber ───────────────────────────────────────────────
 	// The subscriber polls the WAL every 200 ms and drives governance workers
 	// (ReflectionPolicy, ConflictMerge, MemoryConsolidation) asynchronously.
-	// Uses a cancellable context so goroutines can be cleanly stopped on shutdown.
-	ctx, cancel := context.WithCancel(context.Background())
+	// It is tied to the process lifetime via context.Background(); for graceful
+	// shutdown, replace with a cancellable context from the caller.
 	subscriber := worker.CreateEventSubscriber(wal, nodeManager)
-	runtime.StartSubscriber(ctx, subscriber)
+	runtime.StartSubscriber(context.Background(), subscriber)
 	coord.Registry.Register("event_subscriber", subscriber)
 
 	// ── Execution Orchestrator ─────────────────────────────────────────────────
 	// The orchestrator provides priority-aware task dispatch across the 4 flow
 	// chains.  concurrency=4, queueCap=256 per priority level.
 	orch := worker.CreateOrchestrator(nodeManager, 4, 256)
-	go orch.Run(ctx)
+	go orch.Run(context.Background())
 	coord.Registry.Register("orchestrator", orch)
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
@@ -232,11 +213,5 @@ func BuildServer() (*http.Server, func() error, error) {
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
 
-	// shutdown bundles context cancellation (subscriber/orchestrator) and
-	// Badger close (storage cleanup) into one cleanup function.
-	shutdown := func() error {
-		cancel()
-		return bundle.Close()
-	}
-	return &http.Server{Addr: addr, Handler: mux}, shutdown, nil
+	return &http.Server{Addr: addr, Handler: mux}, cleanup, nil
 }

@@ -11,15 +11,15 @@ import (
 
 // Environment variable names (see STORAGE_BACKEND.md).
 const (
-	EnvStorage        = "ANDB_STORAGE"
-	EnvDataDir        = "ANDB_DATA_DIR"
-	EnvStoreSegments  = "ANDB_STORE_SEGMENTS"
-	EnvStoreIndexes   = "ANDB_STORE_INDEXES"
-	EnvStoreObjects   = "ANDB_STORE_OBJECTS"
-	EnvStoreEdges     = "ANDB_STORE_EDGES"
-	EnvStoreVersions  = "ANDB_STORE_VERSIONS"
-	EnvStorePolicies  = "ANDB_STORE_POLICIES"
-	EnvStoreContracts = "ANDB_STORE_CONTRACTS"
+	EnvStorage         = "ANDB_STORAGE"
+	EnvDataDir         = "ANDB_DATA_DIR"
+	EnvStoreSegments   = "ANDB_STORE_SEGMENTS"
+	EnvStoreIndexes    = "ANDB_STORE_INDEXES"
+	EnvStoreObjects    = "ANDB_STORE_OBJECTS"
+	EnvStoreEdges      = "ANDB_STORE_EDGES"
+	EnvStoreVersions   = "ANDB_STORE_VERSIONS"
+	EnvStorePolicies   = "ANDB_STORE_POLICIES"
+	EnvStoreContracts  = "ANDB_STORE_CONTRACTS"
 	// EnvBadgerInMemory forces Badger to use in-RAM tables only (tests / constrained disks).
 	EnvBadgerInMemory = "ANDB_BADGER_INMEMORY"
 )
@@ -30,8 +30,6 @@ const (
 )
 
 // BuildRuntimeFromEnv constructs RuntimeStorage from process environment.
-// Default mode is "memory" (all stores in-process).  Set ANDB_STORAGE=disk to
-// enable Badger-backed persistent storage under ANDB_DATA_DIR (default .andb_data).
 func BuildRuntimeFromEnv() (*RuntimeBundle, error) {
 	return buildRuntime(os.Getenv)
 }

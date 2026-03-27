@@ -83,7 +83,7 @@ func TestTopologyConnectivity(t *testing.T) {
 
 	t.Run("topology has expected node count", func(t *testing.T) {
 		nodes, _ := topo["nodes"].([]any)
-		const wantNodes = 19 // 18 standard workers + 1 AlgorithmDispatchWorker
+		const wantNodes = 19
 		if len(nodes) != wantNodes {
 			t.Errorf("node count: got %d, want %d", len(nodes), wantNodes)
 		}
