@@ -37,7 +37,12 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	materializer := materialization.NewService()
 	assembler := evidence.NewAssembler()
 	store := storage.NewMemoryRuntimeStorage()
-	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	tieredObjs := storage.NewTieredObjectStore(
+		store.HotCache(),
+		store.Objects(),
+		store.Edges(),
+		storage.NewInMemoryColdStore(),
+	)
 	nodeManager := nodes.CreateManager()
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
@@ -89,7 +94,12 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
-	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	tieredObjs := storage.NewTieredObjectStore(
+		store.HotCache(),
+		store.Objects(),
+		store.Edges(),
+		storage.NewInMemoryColdStore(),
+	)
 	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
 
 	_, err := r.SubmitIngest(schemas.Event{
@@ -342,6 +352,61 @@ func TestRuntime_ExecuteQuery_ReturnsEventNodeProperties(t *testing.T) {
 		t.Fatalf("expected memory node mem_evt_runtime_props_1 in resp.Nodes, got %+v", resp.Nodes)
 	}
 }
+
+func TestRuntime_SubmitIngest_AutoBuildsMemoryBaseEdges(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:    "evt_auto_edges_1",
+		AgentID:    "agent_auto",
+		SessionID:  "sess_auto",
+		EventType:  "tool_call",
+		Source:     "planner",
+		Importance: 0.9,
+		Payload: map[string]any{
+			"text": "search quarterly revenue",
+			"tool": "search",
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit ingest failed: %v", err)
+	}
+
+	memID := "mem_evt_auto_edges_1"
+
+	_, ok := r.storage.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatalf("expected memory %s to be stored", memID)
+	}
+
+	edges := r.storage.Edges().EdgesFrom(memID)
+	if len(edges) == 0 {
+		t.Fatalf("expected auto-built edges from %s, got none", memID)
+	}
+
+	var hasSession, hasAgent, hasDerived bool
+	for _, e := range edges {
+		switch e.EdgeType {
+		case string(schemas.EdgeTypeBelongsToSession):
+			if e.DstObjectID == "sess_auto" {
+				hasSession = true
+			}
+		case string(schemas.EdgeTypeOwnedByAgent):
+			if e.DstObjectID == "agent_auto" {
+				hasAgent = true
+			}
+		case string(schemas.EdgeTypeDerivedFrom):
+			if e.DstObjectID == "evt_auto_edges_1" {
+				hasDerived = true
+			}
+		}
+	}
+
+	if !hasSession || !hasAgent || !hasDerived {
+		t.Fatalf("missing expected auto-built edges: %+v", edges)
+	}
+}
+
 func TestRuntime_ExecuteQuery_ReturnsArtifactNodeProperties(t *testing.T) {
 	t.Skip("artifact nodes are not currently materialized into resp.Nodes by ExecuteQuery; raw PutArtifact + PutEdge does not make artifacts query-visible in the current runtime path")
 }
