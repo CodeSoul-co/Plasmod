@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"andb/src/internal/access"
 	"andb/src/internal/coordinator"
@@ -46,8 +47,6 @@ func BuildServer() (*http.Server, func() error, error) {
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
 	watermark := eventbackbone.NewWatermarkPublisher(clock, bus)
-	derivLog := eventbackbone.NewDerivationLog(clock, bus)
-	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 
 	// ── Storage Layer (memory / Badger / hybrid — see STORAGE_BACKEND.md) ────
 	// BuildRuntimeFromEnv selects the backend based on ANDB_STORAGE env var.
@@ -59,6 +58,9 @@ func BuildServer() (*http.Server, func() error, error) {
 	}
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
+	derivStore := eventbackbone.NewFileDerivationStore(filepath.Join(storageCfg.DataDir, "derivation.log"))
+	derivLog := eventbackbone.NewDerivationLogWithStore(clock, bus, derivStore)
+	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 	if storageCfg.BadgerEnabled {
 		log.Printf("[bootstrap] storage: Badger enabled (mode=%s, dir=%s)", storageCfg.Mode, storageCfg.DataDir)
 	} else {
