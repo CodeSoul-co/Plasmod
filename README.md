@@ -557,7 +557,7 @@ The following review checklist is intended for team members before merging `inte
 
 ### Member A — Schema & Query Filters (`feature/schema-a`)
 
-**Scope merged:** Tenant/workspace filters, object/memory filter predicates on the query path.
+**Scope merged:** Tenant/workspace filters, object/memory filter predicates on the query path, and week-3 relation/provenance/version baseline.
 
 | Item | Status | Notes |
 |---|---|---|
@@ -565,6 +565,8 @@ The following review checklist is intended for team members before merging `inte
 | **Review focus** | ✅ | `QueryChainInput.GraphNodes` / `GraphEdges` must be pre-fetched by caller before `QueryChain.Run` |
 | Edge case: combined tenant + object-type + top_k filter | ✅ | Integration test covering the 3-way combination |
 | Edge case: `ObjectTypes=["state"]` query after a `tool_call` ingest | ✅ | `StateMaterializationWorker` writes `State` on `tool_call` — confirm retrievable with type filter |
+| Week-3: relation source for event/memory/state/artifact | ✅ | `materialization.Service` now emits typed relation edges with `provenance_ref` for `memory↔event`, `state↔event`, `state↔memory`, `artifact↔event`, `memory↔artifact` |
+| Week-3: version/provenance basic fields in query response | ✅ | `evidence.Assembler` now resolves `QueryResponse.Provenance` from canonical object refs, edge provenance, and version `mutation_event_id` |
 
 ---
 

@@ -29,24 +29,23 @@ type S3Config struct {
 }
 
 func LoadFromEnv() (S3Config, error) {
-	// Canonical keys are S3_*; MINIO_* aliases are supported for compatibility.
-	endpoint := firstNonEmptyEnv("S3_ENDPOINT", "MINIO_ADDRESS")
-	accessKey := firstNonEmptyEnv("S3_ACCESS_KEY", "MINIO_ACCESS_KEY_ID")
-	secretKey := firstNonEmptyEnv("S3_SECRET_KEY", "MINIO_SECRET_ACCESS_KEY")
-	bucket := firstNonEmptyEnv("S3_BUCKET", "MINIO_BUCKET_NAME")
+	endpoint := strings.TrimSpace(os.Getenv("S3_ENDPOINT"))
+	accessKey := strings.TrimSpace(os.Getenv("S3_ACCESS_KEY"))
+	secretKey := strings.TrimSpace(os.Getenv("S3_SECRET_KEY"))
+	bucket := strings.TrimSpace(os.Getenv("S3_BUCKET"))
 	if endpoint == "" || accessKey == "" || secretKey == "" || bucket == "" {
-		return S3Config{}, errors.New("missing S3 config: require S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/S3_BUCKET (MINIO_* aliases supported)")
+		return S3Config{}, errors.New("missing S3 config: require S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET")
 	}
 
-	secure := firstNonEmptyEnv("S3_SECURE", "MINIO_USE_SSL")
+	secure := os.Getenv("S3_SECURE")
 	isSecure := secure == "true" || secure == "1"
 
-	region := firstNonEmptyEnv("S3_REGION", "MINIO_REGION")
+	region := strings.TrimSpace(os.Getenv("S3_REGION"))
 	if region == "" {
 		region = "us-east-1"
 	}
 
-	prefix := firstNonEmptyEnv("S3_PREFIX", "MINIO_ROOT_PATH")
+	prefix := strings.TrimSpace(os.Getenv("S3_PREFIX"))
 	prefix = strings.TrimRight(prefix, "/")
 	if prefix == "" {
 		prefix = "andb/integration_tests"
@@ -61,15 +60,6 @@ func LoadFromEnv() (S3Config, error) {
 		Region:    region,
 		Prefix:    prefix,
 	}, nil
-}
-
-func firstNonEmptyEnv(keys ...string) string {
-	for _, key := range keys {
-		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func (c S3Config) baseURL() string {
@@ -325,14 +315,17 @@ func s3Sign(req *http.Request, cfg S3Config, body []byte, contentType string) {
 	sort.Strings(signedNames)
 
 	canonHeaders := bytes.Buffer{}
+	canonHeaderParts := make([]string, 0, len(signedNames))
 	for _, name := range signedNames {
 		// Note: header values must be trimmed and sequential spaces collapsed.
 		val := strings.TrimSpace(req.Header.Get(httpHeaderCanonicalName(name)))
 		val = strings.Join(strings.Fields(val), " ")
+		canonHeaderParts = append(canonHeaderParts, name)
 		canonHeaders.WriteString(name)
 		canonHeaders.WriteByte(':')
 		canonHeaders.WriteString(val)
 		canonHeaders.WriteByte('\n')
+		_ = canonHeaderParts // keep for readability
 	}
 
 	canonURI := req.URL.EscapedPath()

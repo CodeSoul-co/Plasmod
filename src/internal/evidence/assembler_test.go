@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"andb/src/internal/dataplane"
+	"andb/src/internal/schemas"
+	"andb/src/internal/storage"
 )
 
 func TestAssembler_Build_Basic(t *testing.T) {
@@ -162,6 +164,47 @@ func TestAssembler_NoFilterPassthrough(t *testing.T) {
 	resp := a.Build(input, result, nil)
 	if len(resp.Objects) != 3 {
 		t.Errorf("NoFilter: want 3 objects, got %d", len(resp.Objects))
+	}
+}
+
+func TestAssembler_ProvenanceFromCanonicalObjectsAndEdges(t *testing.T) {
+	objStore := storage.NewMemoryObjectStore()
+	edgeStore := storage.NewMemoryGraphEdgeStore()
+	verStore := storage.NewMemorySnapshotVersionStore()
+
+	mem := schemas.Memory{
+		MemoryID:       "mem_evt_p1",
+		SourceEventIDs: []string{"evt_p1"},
+		ProvenanceRef:  "evt_p1",
+	}
+	objStore.PutMemory(mem)
+	edgeStore.PutEdge(schemas.Edge{
+		EdgeID:        "edge_mem_evt_p1_event",
+		SrcObjectID:   "mem_evt_p1",
+		SrcType:       "memory",
+		EdgeType:      "caused_by",
+		DstObjectID:   "evt_p1",
+		DstType:       "event",
+		ProvenanceRef: "evt_p1",
+	})
+	verStore.PutVersion(schemas.ObjectVersion{
+		ObjectID:        "mem_evt_p1",
+		ObjectType:      "memory",
+		Version:         1,
+		MutationEventID: "evt_p1",
+	})
+
+	a := NewAssembler().
+		WithObjectStore(objStore).
+		WithEdgeStore(edgeStore).
+		WithVersionStore(verStore)
+	resp := a.Build(dataplane.SearchInput{TopK: 5}, dataplane.SearchOutput{ObjectIDs: []string{"mem_evt_p1"}}, nil)
+
+	if len(resp.Provenance) == 0 {
+		t.Fatalf("expected non-empty provenance, got empty")
+	}
+	if len(resp.Provenance) != 1 || resp.Provenance[0] != "evt_p1" {
+		t.Fatalf("expected provenance [evt_p1], got %v", resp.Provenance)
 	}
 }
 

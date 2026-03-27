@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"andb/src/internal/dataplane"
@@ -116,7 +117,7 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 	return schemas.QueryResponse{
 		Objects:        outputIDs,
 		Edges:          edges,
-		Provenance:     []string{"event_projection", "retrieval_projection", "fragment_cache", "graph_expansion"},
+		Provenance:     a.resolveProvenance(outputIDs, edges, versions),
 		Versions:       versions,
 		AppliedFilters: filters,
 		ProofTrace:     trace,
@@ -203,6 +204,49 @@ func (a *Assembler) resolveVersions(objectIDs []string) []schemas.ObjectVersion 
 		}
 	}
 	return versions
+}
+
+func (a *Assembler) resolveProvenance(objectIDs []string, edges []schemas.Edge, versions []schemas.ObjectVersion) []string {
+	seen := map[string]struct{}{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		seen[v] = struct{}{}
+	}
+
+	for _, e := range edges {
+		add(e.ProvenanceRef)
+	}
+	for _, v := range versions {
+		add(v.MutationEventID)
+	}
+	if a.objectStore != nil {
+		for _, id := range objectIDs {
+			if m, ok := a.objectStore.GetMemory(id); ok {
+				for _, src := range m.SourceEventIDs {
+					add(src)
+				}
+				add(m.ProvenanceRef)
+				continue
+			}
+			if s, ok := a.objectStore.GetState(id); ok {
+				add(s.DerivedFromEventID)
+				continue
+			}
+			if art, ok := a.objectStore.GetArtifact(id); ok {
+				add(art.ProducedByEventID)
+			}
+		}
+	}
+
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // expandEdges performs a 1-hop expansion over the retrieved object IDs.

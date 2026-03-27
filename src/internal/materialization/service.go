@@ -84,9 +84,9 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventType),
 	}
 
-	edges := deriveEdges(ev, memoryID)
 	st, stVer := deriveStateAndVersion(ev, memoryID, now)
 	art, artVer := deriveArtifactAndVersion(ev, now)
+	edges := deriveEdges(ev, memoryID, st, art)
 
 	return MaterializationResult{
 		Record:          record,
@@ -142,9 +142,21 @@ func resolveMemoryType(ev schemas.Event) string {
 //   - memory → session  ("belongs_to_session")
 //   - memory → agent    ("owned_by_agent")
 //   - memory → causal   ("derived_from")  for each causal ref
-func deriveEdges(ev schemas.Event, memoryID string) []schemas.Edge {
+func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *schemas.Artifact) []schemas.Edge {
 	now := time.Now().UTC().Format(time.RFC3339)
 	edges := []schemas.Edge{}
+
+	edges = append(edges, schemas.Edge{
+		EdgeID:        schemas.IDPrefixEdge + memoryID + "_event",
+		SrcObjectID:   memoryID,
+		SrcType:       string(schemas.ObjectTypeMemory),
+		EdgeType:      string(schemas.EdgeTypeCausedBy),
+		DstObjectID:   ev.EventID,
+		DstType:       string(schemas.ObjectTypeEvent),
+		Weight:        schemas.DefaultEdgeWeight,
+		ProvenanceRef: ev.EventID,
+		CreatedTS:     now,
+	})
 
 	if ev.SessionID != "" {
 		edges = append(edges, schemas.Edge{
@@ -181,6 +193,54 @@ func deriveEdges(ev schemas.Event, memoryID string) []schemas.Edge {
 			DstObjectID:   ref,
 			DstType:       string(schemas.ObjectTypeEvent),
 			Weight:        schemas.DefaultCausalWeight,
+			ProvenanceRef: ev.EventID,
+			CreatedTS:     now,
+		})
+	}
+	if st != nil {
+		edges = append(edges, schemas.Edge{
+			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_event",
+			SrcObjectID:   st.StateID,
+			SrcType:       string(schemas.ObjectTypeState),
+			EdgeType:      string(schemas.EdgeTypeDerivedFrom),
+			DstObjectID:   ev.EventID,
+			DstType:       string(schemas.ObjectTypeEvent),
+			Weight:        schemas.DefaultEdgeWeight,
+			ProvenanceRef: ev.EventID,
+			CreatedTS:     now,
+		})
+		edges = append(edges, schemas.Edge{
+			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_memory",
+			SrcObjectID:   st.StateID,
+			SrcType:       string(schemas.ObjectTypeState),
+			EdgeType:      string(schemas.EdgeTypeProjectedFrom),
+			DstObjectID:   memoryID,
+			DstType:       string(schemas.ObjectTypeMemory),
+			Weight:        schemas.DefaultEdgeWeight,
+			ProvenanceRef: ev.EventID,
+			CreatedTS:     now,
+		})
+	}
+	if art != nil {
+		edges = append(edges, schemas.Edge{
+			EdgeID:        schemas.IDPrefixEdge + art.ArtifactID + "_event",
+			SrcObjectID:   art.ArtifactID,
+			SrcType:       string(schemas.ObjectTypeArtifact),
+			EdgeType:      string(schemas.EdgeTypeCreatedBy),
+			DstObjectID:   ev.EventID,
+			DstType:       string(schemas.ObjectTypeEvent),
+			Weight:        schemas.DefaultEdgeWeight,
+			ProvenanceRef: ev.EventID,
+			CreatedTS:     now,
+		})
+		edges = append(edges, schemas.Edge{
+			EdgeID:        schemas.IDPrefixEdge + memoryID + "_artifact",
+			SrcObjectID:   memoryID,
+			SrcType:       string(schemas.ObjectTypeMemory),
+			EdgeType:      string(schemas.EdgeTypeGroundedOnResource),
+			DstObjectID:   art.ArtifactID,
+			DstType:       string(schemas.ObjectTypeArtifact),
+			Weight:        schemas.DefaultEdgeWeight,
 			ProvenanceRef: ev.EventID,
 			CreatedTS:     now,
 		})

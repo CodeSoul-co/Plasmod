@@ -57,17 +57,22 @@ func TestService_MaterializeEvent_EdgeDerivation(t *testing.T) {
 	}
 	res := svc.MaterializeEvent(ev)
 
-	if len(res.Edges) < 3 {
-		t.Errorf("Expected at least 3 edges (session+agent+causal), got %d", len(res.Edges))
+	if len(res.Edges) < 5 {
+		t.Errorf("Expected at least 5 edges (event+session+agent+causal+state relations), got %d", len(res.Edges))
 	}
 
 	edgeTypes := map[string]bool{}
 	for _, e := range res.Edges {
 		edgeTypes[e.EdgeType] = true
 	}
-	for _, want := range []string{"belongs_to_session", "owned_by_agent", "derived_from"} {
+	for _, want := range []string{"caused_by", "belongs_to_session", "owned_by_agent", "derived_from", "projected_from"} {
 		if !edgeTypes[want] {
 			t.Errorf("Missing edge type: %q", want)
+		}
+	}
+	for _, e := range res.Edges {
+		if e.ProvenanceRef != ev.EventID {
+			t.Errorf("edge %s provenance_ref: want %q, got %q", e.EdgeID, ev.EventID, e.ProvenanceRef)
 		}
 	}
 }
@@ -103,6 +108,18 @@ func TestService_MaterializeEvent_StateAndArtifact(t *testing.T) {
 	}
 	if res.Artifact.Metadata["name"] != "weights.pt" {
 		t.Errorf("artifact_name in metadata: %#v", res.Artifact.Metadata)
+	}
+	edgeTypes := map[string]bool{}
+	for _, e := range res.Edges {
+		edgeTypes[e.EdgeType] = true
+		if e.ProvenanceRef != ev.EventID {
+			t.Errorf("edge %s provenance_ref: want %q, got %q", e.EdgeID, ev.EventID, e.ProvenanceRef)
+		}
+	}
+	for _, want := range []string{"created_by", "grounded_on_resource", "projected_from"} {
+		if !edgeTypes[want] {
+			t.Errorf("missing relation edge type: %s", want)
+		}
 	}
 }
 
