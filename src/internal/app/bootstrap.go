@@ -156,7 +156,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		store.Objects(),
 		store.Policies(),
 		policyDecLog,
-	))
+	).WithTieredObjects(tieredObjects))
 	nodeManager.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker(
 		"conflict-merge-1",
 		store.Objects(),

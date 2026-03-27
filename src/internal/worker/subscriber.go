@@ -21,6 +21,17 @@ type DeadLetterEntry struct {
 	Timestamp  time.Time              `json:"timestamp"`
 }
 
+// SubscriberError is a structured error report sent to ErrorCh when both the
+// dead-letter channel and the overflow buffer are at capacity.  It carries the
+// same information as DeadLetterEntry plus a human-readable message so that
+// ops dashboards can alert on it without parsing unstructured log output.
+type SubscriberError struct {
+	Entry     eventbackbone.WALEntry `json:"entry"`
+	PanicValue any                   `json:"panic_value"`
+	Timestamp time.Time              `json:"timestamp"`
+	Reason    string                 `json:"reason"`
+}
+
 // DLQStats returns statistics about the dead-letter queue.
 type DLQStats struct {
 	PanicCount       int   `json:"panic_count"`
@@ -58,6 +69,7 @@ type EventSubscriber struct {
 
 	// dead-letter queue fields
 	deadLetter     chan DeadLetterEntry
+	ErrorCh        chan SubscriberError // structured error channel; never nil (defaults to discard)
 	panicCount     atomic.Int64
 	processedCount atomic.Int64
 	overflowCount  atomic.Int64
@@ -87,6 +99,7 @@ func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *Event
 		agentEventCount:  make(map[string]int),
 		agentLastMem:     make(map[string]string),
 		deadLetter:       make(chan DeadLetterEntry, 64),
+		ErrorCh:          make(chan SubscriberError, 64),
 		overflowCap:      defaultOverflowCap,
 		overflowBuf:      make([]DeadLetterEntry, 0, defaultOverflowCap),
 	}
@@ -203,7 +216,7 @@ func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WA
 			if len(s.overflowBuf) < cap(s.overflowBuf) {
 				s.overflowBuf = append(s.overflowBuf, entry)
 			} else {
-				// Overflow buffer also full — increment overflow counter and log.
+				// Overflow buffer also full — increment overflow counter.
 				// The buffer is append-only (oldest entries are pushed out via
 				// oldest-first eviction when full).  The count tracks total lost.
 				s.overflowCount.Add(1)
@@ -212,7 +225,19 @@ func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WA
 				s.overflowBuf[len(s.overflowBuf)-1] = entry
 			}
 			s.overflowMu.Unlock()
-			log.Printf("subscriber: DLQ channel full, panic stored in overflow buffer (lsn=%d event=%s): %v",
+			// Structured error reporting: send to ErrorCh so ops dashboards can
+			// alert without parsing unstructured log output.
+			select {
+			case s.ErrorCh <- SubscriberError{
+				Entry:     entry.Entry,
+				PanicValue: r,
+				Timestamp: time.Now(),
+				Reason:    "DLQ and overflow buffer both full",
+			}:
+			default:
+				// ErrorCh consumer also slow; drop rather than block.
+			}
+			log.Printf("subscriber: DLQ and overflow buffer full; panic reported via ErrorCh (lsn=%d event=%s): %v",
 				entry.Entry.LSN, entry.Entry.Event.EventID, r)
 		}
 	}()

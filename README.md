@@ -747,7 +747,7 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 | SDK `query()` kwargs match `QueryRequest` | ✅ | `sdk/python/andb_sdk/client.py`: all fields exposed as explicit kwargs |
 | SDK `ingest_event()` matches `/v1/ingest` | ✅ | explicit kwargs: `event_id`, `agent_id`, `session_id`, `event_type`, `payload`, `tenant_id`, `workspace_id` |
 | Unit tests — 9/9 pass | ✅ | `go test ./src/internal/retrieval/...` covers SafetyFilter, reranking, seed marking, for_graph, filter_only, QueryChain alignment |
-| GPU support via Knowhere RAFT | 🔲 | v1.x / v2+ scope |
+| GPU support via Knowhere RAFT | ✅ | `cpp/CMakeLists.txt`: `-DANDB_WITH_GPU=ON` enables CUDA path on Linux+CUDA; `vendor/CMakeLists.txt` fetches NVIDIA RAFT 44.00.00 + RMM 22.12.00 via FetchContent, compiles gpu_raft/*.cc + raft/integration/*.cu (CAGRA/brute_force/ivf_flat/ivf_pq), links CUDA/cuRAND; `dense.cpp`: `cudaAvailable()` runtime probe → `tryCreateGpuIndex("GPU_CAGRA")` → falls back to CPU HNSW automatically |
 | **Review focus** | ⚠️ | `proof_trace` in `QueryResponse` may contain up to depth=8 BFS steps; integration tests asserting `len(proof_trace)==N` must use `>= 1` |
 | **Review focus** | ⚠️ | `S3ColdStore` active: cold-path `GetMemory` adds latency; consider increasing timeout in callers if cold reads expected during load tests |
 
@@ -779,7 +779,7 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 |---|---|---|
 | **Review focus** | ✅ | `OneHopExpand` iterates passed-in edges slice — verified consistent with `BulkEdges` |
 | **Review focus** | ✅ | `conflict_resolved` edges from `ConflictMergeWorker` now surfaced in `QueryResponse.Edges` via `BulkEdges` pre-fetch → `QueryChain.MergedEdges` merge path; stored synchronously in `SubmitIngest` |
-| Missing: `GraphEdges` pre-fetch caller responsibility | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated before `QueryChain.Run`; C and D must agree on ownership |
+| Missing: `GraphEdges` pre-fetch caller responsibility | ✅ | `QueryChain.Run` internally calls `EdgeStore.BulkEdges(in.ObjectIDs)` to fetch edges; no caller pre-population required; `QueryChainInput` has no separate `GraphEdges` field |
 | **graph-c cherry-pick merged** | ✅ | `evt_`/`art_` ID routing in `QueryChain.Run`; Event CRUD in `ObjectStore`; F14/F15 |
 
 ---
@@ -790,9 +790,9 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 
 | Item | Status | Notes |
 |---|---|---|
-| **D1 — FIX** | 🔲 | `subscriber.go` panic handler uses `log.Printf` instead of structured dead-letter channel — replace with `sub.ErrorCh` dead-letter reporting before production |
-| **Review focus** | ⚠️ | `ReflectionPolicyWorker` eviction — confirm uses `tiered_objects.ArchiveMemory()` not direct `store.Objects()` |
-| Missing: `GraphEdges` pre-fetch in `QueryChain.Run` path | 🔲 | `QueryChainInput.GraphEdges` must be pre-populated; C and D must agree on ownership |
+| **D1 — FIX** | ✅ | `subscriber.go` panic handler now sends structured `SubscriberError` to `ErrorCh` (capacity 64) before falling back to `log.Printf`; `EventSubscriber` gains `SubscriberError` struct and `ErrorCh chan SubscriberError` field |
+| **Review focus** | ✅ | `ReflectionPolicyWorker` eviction — confirmed via `WithTieredObjects(tieredObjects)` wiring in `bootstrap.go`; deactivated memories archived to cold tier via `tieredObjs.ArchiveMemory()` |
+| Missing: `GraphEdges` pre-fetch in `QueryChain.Run` path | ✅ | `QueryChain.Run` handles edge pre-fetch internally via `EdgeStore.BulkEdges(in.ObjectIDs)`; no caller pre-population required |
 
 ---
 
@@ -1051,7 +1051,7 @@ curl -s http://127.0.0.1:8080/v1/admin/topology | python3 -c "import sys,json; d
 | Unit test pass rate | ✅ | 22/22 packages pass |
 | Integration test pass rate | ✅ | 13/13 test files pass |
 | Topology: correct node count | ✅ | 19 nodes confirmed |
-| DerivationLog: in-memory only (not persisted) | 🔲 Open | Not a regression; documented in Remaining Open Items |
+| DerivationLog: in-memory only (not persisted) | ✅ | `bootstrap.go` wires `FileDerivationStore` via `NewDerivationLogWithStore(clock, bus, derivStore)`; restart reload via `store.Load()` in constructor |
 | Badger persistent storage: BuildRuntimeFromEnv wired | ✅ | `factory.go` + `RuntimeBundle` + `ConfigSnapshot`; bootstrap uses it; `cleanup()` includes `db.Close()` |
 | `GET /v1/admin/storage` endpoint | ✅ | `handleStorage` in gateway; returns `ConfigSnapshot` JSON |
 | `src/internal/s3util/` removed (consolidated into storage) | ✅ | All imports updated; old package dir deleted |

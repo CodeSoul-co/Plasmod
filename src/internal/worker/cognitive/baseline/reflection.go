@@ -14,12 +14,16 @@ import (
 // objects: TTL expiry, quarantine, confidence override, salience decay.
 // This is the baseline algorithm's reflection/governance pipeline step.
 // An optional AuditStore (set via WithAuditStore) also receives AuditRecords.
+// tieredObjs (set via WithTieredObjects) is used to archive memories to cold
+// storage when they are deactivated (quarantined or TTL-expired), keeping the
+// hot/warm/cold tiers in sync.
 type InMemoryReflectionPolicyWorker struct {
-	id         string
-	objStore   storage.ObjectStore
-	polStore   storage.PolicyStore
-	policyLog  eventbackbone.PolicyDecisionLogger
-	auditStore storage.AuditStore
+	id          string
+	objStore    storage.ObjectStore
+	polStore    storage.PolicyStore
+	policyLog   eventbackbone.PolicyDecisionLogger
+	auditStore  storage.AuditStore
+	tieredObjs  *storage.TieredObjectStore
 }
 
 func CreateInMemoryReflectionPolicyWorker(
@@ -40,6 +44,14 @@ func CreateInMemoryReflectionPolicyWorker(
 // AuditRecords in addition to the PolicyDecisionLog.
 func (w *InMemoryReflectionPolicyWorker) WithAuditStore(a storage.AuditStore) *InMemoryReflectionPolicyWorker {
 	w.auditStore = a
+	return w
+}
+
+// WithTieredObjects wires a TieredObjectStore so that deactivated memories
+// (quarantined or TTL-expired) are archived to cold storage rather than
+// lingering in the hot/warm tiers.
+func (w *InMemoryReflectionPolicyWorker) WithTieredObjects(t *storage.TieredObjectStore) *InMemoryReflectionPolicyWorker {
+	w.tieredObjs = t
 	return w
 }
 
@@ -129,6 +141,12 @@ func (w *InMemoryReflectionPolicyWorker) Reflect(objectID, objectType string) er
 	}
 	if modified {
 		w.objStore.PutMemory(mem)
+		// Archive to cold tier if the memory was deactivated (quarantined or
+		// TTL-expired), so the hot/warm tiers do not serve stale objects and the
+		// cold store holds the authoritative historical record.
+		if w.tieredObjs != nil && !mem.IsActive {
+			w.tieredObjs.ArchiveMemory(mem.MemoryID)
+		}
 	}
 	return nil
 }

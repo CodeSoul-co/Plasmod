@@ -8,7 +8,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # =============================================================================
 # Build Options
 # =============================================================================
-option(ANDB_WITH_GPU          "Enable GPU support (future, requires CUDA)"           OFF)
+option(ANDB_WITH_GPU          "Enable GPU support via Knowhere RAFT (requires CUDA)" OFF)
+
+# GPU path requires CUDA toolkit and is only available on Linux x86_64/aarch64.
+if(ANDB_WITH_GPU)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    # Default to sm_70 (Volta) minimum; override with -DCMAKE_CUDA_ARCHITECTURES=...
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86)
+    endif()
+    message(STATUS "GPU support enabled: CUDA ${CUDAToolkit_VERSION}, architectures ${CMAKE_CUDA_ARCHITECTURES}")
+else()
+    message(STATUS "GPU support disabled (default). Set -DANDB_WITH_GPU=ON on Linux + CUDA to enable.")
+endif()
 option(ANDB_WITH_TESTS        "Build unit tests"                                     OFF)
 option(ANDB_KNOWHERE_FAISS    "Build ann_core with faiss IVF indexes (needs OpenBLAS)" OFF)
 option(ANDB_KNOWHERE_DISKANN  "Build ann_core with DiskANN"                           OFF)
@@ -50,6 +63,7 @@ message(STATUS "vendor: source-level ANN engine (cpp/vendor/)")
 message(STATUS "  HNSW engine     : cpp/vendor/engines/hnsw_engine/")
 message(STATUS "  faiss engine    : cpp/vendor/engines/faiss_engine/  [opt ${ANDB_KNOWHERE_FAISS}]")
 message(STATUS "  diskann engine  : cpp/vendor/engines/diskann_engine/ [opt ${ANDB_KNOWHERE_DISKANN}]")
+message(STATUS "  gpu/raft engine : [opt ${ANDB_WITH_GPU}] — NVIDIA RAFT (brute_force/cagra/ivf_flat/ivf_pq)")
 
 # =============================================================================
 # andb_retrieval — B-module retrieval shared library
@@ -83,6 +97,10 @@ endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(andb_retrieval PUBLIC knowhere Threads::Threads)
+if(ANDB_WITH_GPU)
+    target_link_libraries(andb_retrieval PUBLIC CUDA::cudart CUDA::nvrtc)
+    target_compile_definitions(andb_retrieval PUBLIC ANDB_WITH_GPU=1)
+endif()
 
 message(STATUS "andb_retrieval: links against vendor/knowhere (CMake target: knowhere)")
 
