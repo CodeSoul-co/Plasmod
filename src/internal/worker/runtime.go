@@ -199,6 +199,11 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.plane.Ingest(record); err != nil {
 		return nil, err
 	}
+	// Build vector index after ingest so VectorStore.Ready() returns true.
+	// This enables vector search on subsequent queries.
+	if err := r.plane.Flush(); err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
