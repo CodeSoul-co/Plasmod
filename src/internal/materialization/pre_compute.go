@@ -13,16 +13,32 @@ import (
 // every ingested object.  This implements the "DB-side pre-computation" design:
 // the database pre-assembles partial evidence chains so that the query path can
 // merge cached + delta rather than deriving from scratch on every request.
+//
+// All tunable parameters are sourced from cfg (schemas.AlgorithmConfig).
+// Use NewPreComputeService (defaults) or NewPreComputeServiceWithConfig (custom).
 type PreComputeService struct {
-	cache     *evidence.Cache
-	policyTag string
+	cache *evidence.Cache
+	cfg    schemas.AlgorithmConfig
 }
 
+var defaultPreComputeCfg = schemas.DefaultAlgorithmConfig()
+
+// NewPreComputeService creates a PreComputeService with all defaults.
+// Convenience wrapper for NewPreComputeServiceWithConfig(schemas.DefaultAlgorithmConfig()).
 func NewPreComputeService(cache *evidence.Cache) *PreComputeService {
 	if cache == nil {
-		cache = evidence.NewCache(0)
+		cache = evidence.NewCache(defaultPreComputeCfg.EvidenceCacheSize)
 	}
-	return &PreComputeService{cache: cache, policyTag: "default"}
+	return NewPreComputeServiceWithConfig(cache, defaultPreComputeCfg)
+}
+
+// NewPreComputeServiceWithConfig creates a PreComputeService with an explicit cfg.
+// Use schemas.DefaultAlgorithmConfig() as a baseline and override specific fields.
+func NewPreComputeServiceWithConfig(cache *evidence.Cache, cfg schemas.AlgorithmConfig) *PreComputeService {
+	if cache == nil {
+		cache = evidence.NewCache(cfg.EvidenceCacheSize)
+	}
+	return &PreComputeService{cache: cache, cfg: cfg}
 }
 
 // Compute builds and caches an EvidenceFragment for the given event + ingest record.
@@ -33,7 +49,7 @@ func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord
 	related := collectRelated(ev)
 	filters := deriveFilters(ev)
 
-	salience := computeSalience(ev, tokens)
+	salience := s.computeSalience(ev, tokens)
 
 	frag := evidence.EvidenceFragment{
 		ObjectID:      rec.ObjectID,
@@ -111,23 +127,25 @@ func deriveFilters(ev schemas.Event) []string {
 	return filters
 }
 
-func computeSalience(ev schemas.Event, tokens []string) float64 {
-	// Start from Importance if provided, else default to 0.5.
+// computeSalience scores the importance of an object for retrieval ranking.
+// All thresholds and bonuses are sourced from s.cfg (schemas.AlgorithmConfig).
+func (s *PreComputeService) computeSalience(ev schemas.Event, tokens []string) float64 {
+	cfg := s.cfg
 	base := ev.Importance
 	if base == 0 {
-		base = 0.5
+		base = cfg.DefaultImportance
 	}
-	if len(tokens) > 10 {
-		base += 0.1
+	if len(tokens) > cfg.TokenCountThreshold {
+		base += cfg.TokenBonus
 	}
 	if len(ev.CausalRefs) > 0 {
-		base += 0.1
+		base += cfg.CausalRefBonus
 	}
 	if ev.Visibility == "global" {
-		base += 0.2
+		base += cfg.GlobalVisibilityBonus
 	}
-	if base > 1.0 {
-		base = 1.0
+	if base > cfg.SalienceCap {
+		base = cfg.SalienceCap
 	}
 	return base
 }

@@ -34,7 +34,7 @@ type TieredDataPlane struct {
 // search, use NewTieredDataPlaneWithEmbedder instead.
 func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane {
 	if tieredObjs == nil {
-		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil)
+		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	objs := tieredObjs
 	return &TieredDataPlane{
@@ -55,7 +55,7 @@ func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane 
 // The VectorStore gracefully degrades to lexical-only when CGO is unavailable.
 func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator) (*TieredDataPlane, error) {
 	if tieredObjs == nil {
-		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil)
+		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	if embedder == nil {
 		return NewTieredDataPlane(tieredObjs), nil

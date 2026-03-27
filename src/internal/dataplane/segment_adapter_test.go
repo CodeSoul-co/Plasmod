@@ -41,7 +41,7 @@ func TestSegmentDataPlane_Flush(t *testing.T) {
 
 func TestTieredDataPlane_IngestAndSearch(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), storage.NewInMemoryColdStore())
 	plane := NewTieredDataPlane(tieredObjs)
 
 	rec := IngestRecord{

@@ -33,6 +33,42 @@ option(KNOWHERE_WITH_DISKANN  "Build DiskANN index"                             
 option(KNOWHERE_WITH_GPU      "Build GPU indexes (needs CUDA)"                  OFF)
 option(KNOWHERE_WITH_OPENMP   "Enable OpenMP parallelism"                       ON)
 
+# ── NVIDIA RAPIDS: RAFT + RMM (GPU path) ────────────────────────────────────
+# RAFT provides GPU-accelerated ANN algorithms: CAGRA, brute_force, ivf_flat, ivf_pq.
+# RMM provides the RAPIDS Memory Manager for GPU memory pools.
+# Both are header-only (RAFT) or minimal-header (RMM) and fetched via FetchContent.
+if(KNOWHERE_WITH_GPU)
+    include(FetchContent)
+
+    # NVIDIA RAFT — pinned to the release that matches Knowhere's GPU index implementations.
+    # RAFT is header-only; no separate compilation step.
+    FetchContent_Declare(
+        raft
+        GIT_REPOSITORY https://github.com/nv-tabular/raft.git
+        GIT_TAG        44.00.00
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  cpp/include
+    )
+    FetchContent_MakeAvailable(raft)
+
+    # NVIDIA RMM — RAPIDS Memory Manager, required by RAFT's device memory pools.
+    # rmm::rmm is header-only as of 22.12.
+    FetchContent_Declare(
+        rmm
+        GIT_REPOSITORY https://github.com/rapidsai/rmm.git
+        GIT_TAG        22.12.00
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  cmake
+    )
+    FetchContent_MakeAvailable(rmm)
+
+    # Expose RAFT/RMM headers to all knowhere targets via interface include dirs.
+    set_property(TARGET raft PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+        $<TARGET_PROPERTY:raft,INTERFACE_INCLUDE_DIRECTORIES>)
+    set_property(TARGET rmm PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+        $<TARGET_PROPERTY:rmm,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()
+
 # ── Include paths ────────────────────────────────────────────────────────────
 set(KW_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -45,6 +81,13 @@ include_directories(BEFORE
     ${KW_ROOT}/engines/hnsw_engine     # direct: "hnswalg.h" etc.
     ${KW_ROOT}/engines/faiss_engine    # faiss/Index.h etc (headers always needed)
 )
+if(KNOWHERE_WITH_GPU)
+    # RAFT + RMM from FetchContent take priority over any system installs.
+    include_directories(BEFORE SYSTEM
+        ${raft_INCLUDE_DIR}
+        ${RMM_INCLUDE_DIR}
+    )
+endif()
 
 # ── OpenMP — use Homebrew libomp on macOS if system clang lacks it ────────────
 if(KNOWHERE_WITH_OPENMP)
@@ -152,6 +195,23 @@ set(KNOWHERE_HNSW_SRCS
     ${KW_ROOT}/src/index/flat/flat.cc
     # FederVisitor.h is header-only; no .cc to compile
 )
+
+# GPU path: compile RAFT-backed GPU index implementations (brute_force/cagra/ivf_flat/ivf_pq).
+# The .cu files in src/index/gpu_raft/ and src/common/raft/integration/ require
+# CUDA nvcc + RAFT + RMM from FetchContent and link CUDA/cuBLAS/cuRAND.
+if(KNOWHERE_WITH_GPU)
+    list(APPEND KNOWHERE_HNSW_SRCS
+        ${KW_ROOT}/src/index/gpu_raft/gpu_raft_brute_force.cc
+        ${KW_ROOT}/src/index/gpu_raft/gpu_raft_cagra.cc
+        ${KW_ROOT}/src/index/gpu_raft/gpu_raft_ivf_flat.cc
+        ${KW_ROOT}/src/index/gpu_raft/gpu_raft_ivf_pq.cc
+        # Template instantiations compiled as .cu (nvcc)
+        ${KW_ROOT}/src/common/raft/integration/brute_force_index.cu
+        ${KW_ROOT}/src/common/raft/integration/cagra_index.cu
+        ${KW_ROOT}/src/common/raft/integration/ivf_flat_index.cu
+        ${KW_ROOT}/src/common/raft/integration/ivf_pq_index.cu
+    )
+endif()
 # Note: FederVisitor.h is header-only (no .cc companion)
 
 add_library(knowhere_hnsw OBJECT ${KNOWHERE_HNSW_SRCS})
@@ -163,6 +223,18 @@ target_include_directories(knowhere_hnsw PUBLIC
     ${KW_ROOT}/engines/hnsw_engine
     ${KW_ROOT}/engines/faiss_engine
 )
+if(KNOWHERE_WITH_GPU)
+    # RAFT is header-only but some internals need TINYTHRUST; pull raft/thirdparty into include path.
+    target_include_directories(knowhere_hnsw PUBLIC
+        $<TARGET_PROPERTY:raft,INTERFACE_INCLUDE_DIRECTORIES>
+        $<TARGET_PROPERTY:rmm,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+    # Link CUDA and cuRAND (required by RAFT's random number generation in CAGRA build).
+    target_link_libraries(knowhere_hnsw PUBLIC
+        CUDA::cudart CUDA::curand
+        raft
+    )
+endif()
 if(HAVE_OPENMP)
     target_compile_options(knowhere_hnsw PRIVATE -Xpreprocessor -fopenmp)
     target_link_libraries(knowhere_hnsw PUBLIC omp)
@@ -252,6 +324,13 @@ target_include_directories(knowhere PUBLIC
     ${KW_ROOT}/include
     ${KW_ROOT}/engines/hnsw_engine
 )
+if(KNOWHERE_WITH_GPU)
+    target_include_directories(knowhere PUBLIC
+        $<TARGET_PROPERTY:raft,INTERFACE_INCLUDE_DIRECTORIES>
+        $<TARGET_PROPERTY:rmm,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+    target_link_libraries(knowhere PUBLIC CUDA::cudart CUDA::curand raft)
+endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(knowhere PUBLIC Threads::Threads)

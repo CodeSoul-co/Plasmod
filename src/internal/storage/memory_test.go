@@ -279,11 +279,17 @@ func TestInMemoryAlgorithmStateStore_PutAndGet(t *testing.T) {
 func TestTieredObjectStore_ArchiveEdge(t *testing.T) {
 	hot := NewHotObjectCache(100)
 	warm := newMemoryObjectStore()
-	cold := NewInMemoryColdStore()
-	tiered := NewTieredObjectStore(hot, warm, cold)
-
 	warmEdges := newMemoryGraphEdgeStore()
-	warmEdges.PutEdge(schemas.Edge{EdgeID: "e_arc", SrcObjectID: "m1", DstObjectID: "m2", EdgeType: "derived_from"})
+	cold := NewInMemoryColdStore()
+
+	tiered := NewTieredObjectStore(hot, warm, warmEdges, cold)
+
+	warmEdges.PutEdge(schemas.Edge{
+		EdgeID:      "e_arc",
+		SrcObjectID: "m1",
+		DstObjectID: "m2",
+		EdgeType:    "derived_from",
+	})
 
 	tiered.ArchiveEdge(warmEdges, "e_arc")
 
@@ -299,7 +305,7 @@ func TestTieredObjectStore_ArchiveStateAndArtifact(t *testing.T) {
 	hot := NewHotObjectCache(100)
 	warm := newMemoryObjectStore()
 	cold := NewInMemoryColdStore()
-	tiered := NewTieredObjectStore(hot, warm, cold)
+	tiered := NewTieredObjectStore(hot, warm, newMemoryGraphEdgeStore(), cold)
 
 	st := schemas.State{StateID: "state_arch_1", SessionID: "sess_1", AgentID: "agent_1"}
 	art := schemas.Artifact{ArtifactID: "art_arch_1", SessionID: "sess_1", OwnerAgentID: "agent_1"}
@@ -321,7 +327,7 @@ func TestTieredObjectStore_GetStateAndArtifactActivated_FromCold(t *testing.T) {
 	hot := NewHotObjectCache(100)
 	warm := newMemoryObjectStore()
 	cold := NewInMemoryColdStore()
-	tiered := NewTieredObjectStore(hot, warm, cold)
+	tiered := NewTieredObjectStore(hot, warm, newMemoryGraphEdgeStore(), cold)
 
 	cold.PutState(schemas.State{StateID: "state_cold_1", AgentID: "agent_1", SessionID: "sess_1"})
 	cold.PutArtifact(schemas.Artifact{ArtifactID: "art_cold_1", SessionID: "sess_1", OwnerAgentID: "agent_1"})

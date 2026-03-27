@@ -535,4 +535,179 @@ Additional supporting docs already in the repo:
 - Cloud-native distributed orchestration
 
 For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md).
+
+---
+
+## Team Member Responsibilities
+
+### Member A — Full System E2E Testing & Integration
+
+**Scope:** End-to-end integration testing across the entire stack, including S3 cold path, Docker environment, and all four execution chains.
+
+**Deliverables:**
+- Working Docker compose / environment that brings up the full server with S3 cold storage
+- Test data sets (ingest events) covering: normal query, cold-tier recall, graph expansion, collaboration sharing
+- Query / retrieve results for each test case, with full intermediate traces:
+  - `ProofTrace` output from `QueryChain.Run`
+  - Applied governance filters
+  - Graph edge expansion (`Edges`, `Nodes`)
+  - Evidence fragment cache hit/miss log
+- Integration test script in `scripts/` or `integration_tests/python/`
+
+**Entry point:** [`src/internal/app/bootstrap.go`](src/internal/app/bootstrap.go) wires all components; start from `BuildServer()` and trace through each chain.
+
+**Key env vars to exercise:**
+```
+ANDB_STORAGE=disk
+ANDB_DATA_DIR=/path/to/data
+S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET
+ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
+```
+
+**Expected output format per test case:**
+```json
+{
+  "test_name": "...",
+  "query": { "raw": "...", "request": {} },
+  "response": { "objects": [], "edges": [], "proof_trace": [], "applied_filters": [] },
+  "chain_traces": { "main": [], "memory_pipeline": [], "query": [], "collaboration": [] }
+  ...
+}
+```
+
+---
+
+### Member B — Embedding Model Layer (`src/internal/dataplane/embedding/`)
+
+**Scope:** Extend the HTTP embedding module to support all major LLM embedding providers, plus local/CPU runtimes (ONNX, TensorRT, llama.cpp / GGUF).
+
+**Current status:** `src/internal/dataplane/embedding/` provides:
+- `TfidfEmbedder` — pure-Go, no network, already working
+- `HTTPEmbedder` — OpenAI v1 schema (OpenAI, ZhipuAI, Azure, Ollama)
+- `CohereEmbedder` — Cohere `/v2/embed`
+- Client pool with connection reuse
+
+**Required extensions:**
+
+| Provider | File to add/modify | Notes |
+|---|---|---|
+| Ollama (local) | Already covered by `HTTPEmbedder` | Set `ANDB_EMBEDDER_BASE_URL=http://localhost:11434/v1` |
+| Local ONNX model | `embedding/onnx.go` | `OnnxEmbedder`: load `.onnx` via `github.com/owulveryck/onnx-go`, run inference on CPU |
+| TensorRT | `embedding/tensorrt.go` | `TensorRTEmbedder`: CUDA context, engine cache, batch inference |
+| GGUF (llama.cpp) | `embedding/gguf.go` | `GGUFEmbedder`: load `.gguf` via `github.com/ggerganov/llama.cpp`, CPU/GPU hybrid |
+| Vertex AI | `embedding/vertexai.go` | Google Cloud Vertex AI Embeddings API |
+| HuggingFace Inference API | `embedding/huggingface.go` | `https://api-inference.huggingface.co/` |
+
+**Interface contract** — all embedders must satisfy:
+```go
+type Generator interface {
+    dataplane.EmbeddingGenerator  // Generate(text) ([]float32, error); Dim() int; Reset()
+    Close() error
+    Provider() string             // e.g. "onnx", "tensorrt", "gguf", "vertexai"
+}
+```
+
+**Algorithmic requirements:**
+- Batch inference: accept `[]string` input, emit `[][]float32` — must be used by `TieredDataPlane.Ingest` for bulk indexing
+- Dimension probing: validate output dimension on startup; return error on mismatch
+- Error propagation: `ErrProviderUnavailable` must wrap all network/runtime errors
+- Pooled resources: ONNX/TensorRT sessions should be pooled, not recreated per call
+
+**Env var convention:**
+```
+ANDB_EMBEDDER=onnx|tensorrt|gguf|vertexai|huggingface
+ANDB_EMBEDDER_MODEL_PATH=/path/to/model.onnx   # ONNX/TensorRT/GGUF local path
+ANDB_EMBEDDER_MAX_BATCH_SIZE=32                # inference batch size
+ANDB_EMBEDDER_DEVICE=cpu|cuda                  # execution provider
+```
+
+**Module layout target:**
+```
+src/internal/dataplane/embedding/
+├── embedding.go       # Generator interface, TfidfEmbedder, OpenAIEmbedder, CohereEmbedder, OpenAIConfig
+├── pool.go           # HTTP client pool
+├── onnx.go           # ONNX Runtime embedder
+├── tensorrt.go       # NVIDIA TensorRT embedder
+├── gguf.go           # llama.cpp / GGUF embedder
+├── vertexai.go       # Google Vertex AI embedder
+├── huggingface.go    # HuggingFace Inference API embedder
+└── embedding_test.go # Shared tests + provider-specific tests
+```
+
+---
+
+### Member C — DFS Retrieval Integration + Proof Chain + S3 Object Binding
+
+**Scope:** Deep integration of Dense Fragment Search (DFS) into the query pipeline, verification of proof chain semantics, and binding retrieval to canonical S3 objects (not metadata).
+
+**1. DFS integration into search** (`src/internal/dataplane/` and `src/internal/schemas/`)
+
+All tunable DFS parameters must be externalized into `schemas.AlgorithmConfig` (currently defined in [`src/internal/schemas/constants.go`](src/internal/schemas/constants.go)). Audit the full codebase for hardcoded magic numbers and add to `AlgorithmConfig`:
+
+| Current hardcoded | Suggested field | Default |
+|---|---|---|
+| `10000` evidence cache size | `EvidenceCacheSize` | ✅ done |
+| `10` token count threshold | `TokenCountThreshold` | ✅ done |
+| `0.1` token bonus | `TokenBonus` | ✅ done |
+| `0.1` causal ref bonus | `CausalRefBonus` | ✅ done |
+| `0.2` global visibility bonus | `GlobalVisibilityBonus` | ✅ done |
+| `1.0` salience cap | `SalienceCap` | ✅ done |
+| `0.5` hot tier threshold | `HotTierSalienceThreshold` | ✅ done |
+| `8` max proof depth | `MaxProofDepth` | ✅ done |
+| `256` default embedding dim | `EmbeddingDim` | **add** |
+| `60` RRF k constant | `RRFK` | **add** |
+| `16` HNSW M | `HNSWM` | **add** |
+| `256` HNSW efConstruction | `HNSEfConstruction` | **add** |
+| `64` HNSW efSearch | `HNSEfSearch` | **add** |
+| cold search scoring weights | `ColdSearchWeights` | **add** |
+| DFS relevance threshold | `DFSRelevanceThreshold` | **add** |
+...
+**DFS search path to implement:**
+```
+QueryRequest
+  ↓
+TieredDataPlane.Search (include_cold=true)
+  ↓
+ColdObjectStore.ColdSearch  ← lexical substring match (current, in-memory sim)
+  ↓
+[NEW] DFS scorer: dense vector similarity over cold-tier embeddings
+  ↓
+RRF fusion: cold_dfs_score + warm_lexical_score + warm_vector_score
+  ↓
+TopK → Assembler.Build → QueryResponse
+```
+
+**2. Verify proof chain connection semantics**
+
+Audit [`src/internal/worker/chain/chain.go`](src/internal/worker/chain/chain.go) and [`src/internal/worker/coordination/proof_trace.go`](src/internal/worker/coordination/proof_trace.go):
+
+- Every `ProofTrace` step must include the `EdgeID` and `EdgeType` it traversed — not just a string description
+- Derivation log entries must be queryable by `ObjectID` (for audit/replay)
+- The BFS proof trace must support cycle detection and depth cap (`MaxProofDepth` from `AlgorithmConfig`)
+- `DerivationLog.Append` must be called by `ObjectMaterializationWorker` for all non-trivial transformations (extraction, consolidation, summarization) — currently not wired in bootstrap
+
+**3. S3 object retrieval (not metadata)**
+
+Current cold tier (`src/internal/storage/`) writes canonical `Memory` objects to S3. Verify and fix:
+
+- `ColdSearch` must score by **canonical object content** (`.Content` field), not by metadata labels
+- `ArchiveColdRecord` in `TieredObjectStore` must persist a full `schemas.Memory` object to S3 (or reconstruct one from the archive record)
+- `GetMemoryActivated` cold path must **rehydrate the full Memory object** from S3, not return a placeholder
+- S3 object key convention: `memories/{tenant_id}/{workspace_id}/{memory_id}.json`
+- Verify `TieredObjectStore.ArchiveMemory` → `ColdObjectStore.PutMemory` → S3 round-trip: `GetMemory` retrieves identical object
+
+**Audit checklist:**
+```
+□ ColdObjectStore.ColdSearch uses m.Content, not metadata labels
+□ ArchiveColdRecord stores full Memory JSON in S3
+□ GetMemoryActivated cold path rehydrates full Memory from S3
+□ S3 object key = memories/{tenant_id}/{workspace_id}/{memory_id}.json
+□ ColdSearch scores by Content similarity, not metadata
+□ DerivationLog entries have ObjectID index for audit queries
+□ ProofTrace steps carry EdgeID + EdgeType (not just string)
+□ MaxProofDepth enforced by BFS in ProofTraceWorker
+□ DFS relevance threshold configurable via AlgorithmConfig
+□ All DFS/HNSW params externalized to AlgorithmConfig
+```
+
 ---

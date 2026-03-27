@@ -182,23 +182,36 @@ func (c *HotObjectCache) evictOne() {
 // Hot reads are served from HotObjectCache.
 // Warm reads fall through to the standard ObjectStore.
 // Cold reads use the ColdObjectStore (disk-backed or simulated).
+// hotThreshold controls the minimum salience required to promote a memory to the hot cache
+// (defaults to schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold).
 type TieredObjectStore struct {
-	hot  *HotObjectCache
-	warm ObjectStore
-	cold ColdObjectStore
+	hot          *HotObjectCache
+	warm         ObjectStore
+	warmEdge     GraphEdgeStore
+	cold         ColdObjectStore
+	hotThreshold float64
 }
 
-func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, cold ColdObjectStore) *TieredObjectStore {
+func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore) *TieredObjectStore {
+	return NewTieredObjectStoreWithThreshold(hot, warm, warmEdge, cold, schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold)
+}
+
+// NewTieredObjectStoreWithThreshold creates a TieredObjectStore with an explicit hot-tier
+// salience threshold. Use this when the default threshold (0.5) needs tuning.
+func NewTieredObjectStoreWithThreshold(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore, hotThreshold float64) *TieredObjectStore {
 	if hot == nil {
 		hot = NewHotObjectCache(0)
-	}
-	if warm == nil {
-		panic("TieredObjectStore: warm ObjectStore must not be nil")
 	}
 	if cold == nil {
 		cold = NewInMemoryColdStore()
 	}
-	return &TieredObjectStore{hot: hot, warm: warm, cold: cold}
+	return &TieredObjectStore{
+		hot:          hot,
+		warm:         warm,
+		warmEdge:     warmEdge,
+		cold:         cold,
+		hotThreshold: hotThreshold,
+	}
 }
 
 // GetMemoryActivated returns a Memory with tier-aware activation.
@@ -231,8 +244,15 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 
 // PutMemory writes to warm store and promotes to hot if salience >= threshold.
 func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
-	t.warm.PutMemory(m)
-	if salience >= 0.5 {
+	if t.warm != nil {
+		t.warm.PutMemory(m)
+	}
+	if t.warmEdge != nil {
+		for _, e := range schemas.BuildMemoryBaseEdges(m) {
+			t.warmEdge.PutEdge(e)
+		}
+	}
+	if salience >= t.hotThreshold {
 		t.hot.Put(m.MemoryID, "memory", m, salience)
 	}
 }
@@ -312,8 +332,8 @@ func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[s
 	m := schemas.Memory{
 		MemoryID:  memoryID,
 		Content:   text,
-		Scope:     attrs["visibility"],   // visibility maps to Memory.Scope (access boundary)
-		OwnerType: attrs["event_type"],   // event_type is the best proxy for owner_type in cold archival
+		Scope:     attrs["visibility"], // visibility maps to Memory.Scope (access boundary)
+		OwnerType: attrs["event_type"], // event_type is the best proxy for owner_type in cold archival
 		AgentID:   attrs["agent_id"],
 		SessionID: attrs["session_id"],
 		Version:   ts,

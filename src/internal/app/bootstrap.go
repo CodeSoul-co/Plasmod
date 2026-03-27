@@ -2,22 +2,27 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"andb/src/internal/access"
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
+	"andb/src/internal/dataplane/embedding"
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/evidence"
 	"andb/src/internal/materialization"
+	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker"
-	baseline "andb/src/internal/worker/cognitive/baseline"
 	cognitive "andb/src/internal/worker/cognitive"
+	baseline "andb/src/internal/worker/cognitive/baseline"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/ingestion"
@@ -85,17 +90,40 @@ func BuildServer() (*http.Server, func() error, error) {
 		coldStore = storage.NewInMemoryColdStore()
 		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
 	}
-	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), coldStore)
+	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), coldStore)
 
 	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
 	policyEngine := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
 
+	// ── Algorithm Config — all tunable worker parameters ─────────────────────
+	// Defaults are in schemas.DefaultAlgorithmConfig().  Environment variables
+	// override specific fields when set:
+	//   ANDB_EVIDENCE_CACHE_SIZE   (default 10000)
+	//   ANDB_MAX_PROOF_DEPTH       (default 8)
+	//   ANDB_HOT_TIER_THRESHOLD    (default 0.5)
+	algoCfg := schemas.DefaultAlgorithmConfig()
+	if sz := os.Getenv("ANDB_EVIDENCE_CACHE_SIZE"); sz != "" {
+		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
+			algoCfg.EvidenceCacheSize = n
+		}
+	}
+	if d := os.Getenv("ANDB_MAX_PROOF_DEPTH"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+			algoCfg.MaxProofDepth = n
+		}
+	}
+	if t := os.Getenv("ANDB_HOT_TIER_THRESHOLD"); t != "" {
+		if f, err := strconv.ParseFloat(t, 64); err == nil && f > 0 {
+			algoCfg.HotTierSalienceThreshold = f
+		}
+	}
+
 	// ── Materialization & Evidence ───────────────────────────────────────────
-	evCache := evidence.NewCache(10000)
+	evCache := evidence.NewCache(algoCfg.EvidenceCacheSize)
 	materializer := materialization.NewService()
-	preCompute := materialization.NewPreComputeService(evCache)
+	preCompute := materialization.NewPreComputeServiceWithConfig(evCache, algoCfg)
 	assembler := evidence.NewCachedAssembler(evCache).
 		WithEdgeStore(store.Edges()).
 		WithVersionStore(store.Versions()).
@@ -105,14 +133,88 @@ func BuildServer() (*http.Server, func() error, error) {
 	// ── Data Plane (Tiered: hot → warm → cold, hybrid vector search) ──────────────
 	// TieredDataPlane uses TieredObjectStore for cold queries and cold writes.
 	// Warm tier performs hybrid search: lexical (segmentstore.Index) + vector (CGO Knowhere/HNSW)
-	// via TF-IDF embedder + RRF fusion.  Gracefully degrades to lexical-only when
-	// CGO library is unavailable (auto-detected in VectorStore).
-	embedder := dataplane.NewTfidfEmbedder(dataplane.DefaultEmbeddingDim)
+	// via an EmbeddingGenerator + RRF fusion.
+	//
+	// Embedder selection (set ANDB_EMBEDDER):
+	//   tfidf  (default)  — pure-Go word-hashed TF-IDF, no external dependency
+	//   openai           — OpenAI-compatible HTTP API (Ollama, local server, Azure OpenAI)
+	//   zhipuai          — ZhipuAI / 智谱AI (api-key auth, OpenAI-compatible schema)
+	//   cohere           — Cohere /v2/embed API
+	//
+	// When ANDB_EMBEDDER is "openai" or "zhipuai", also set:
+	//   ANDB_EMBEDDER_BASE_URL   (defaults per provider)
+	//   ANDB_EMBEDDER_MODEL      (e.g. text-embedding-3-small, embedding-3)
+	//   ANDB_EMBEDDER_API_KEY
+	//   ANDB_EMBEDDER_DIM        (expected vector dimension; 0 = skip probe)
+	//   ANDB_EMBEDDER_TIMEOUT    (per-request timeout in seconds; default 30)
+	//   ANDB_EMBEDDER_BATCH_SIZE (inputs per HTTP request; default 100)
+	var embedder embedding.Generator
+	var embedderDim int
+	embedderType := os.Getenv("ANDB_EMBEDDER")
+	if embedderType == "" {
+		embedderType = "tfidf"
+	}
+	switch embedderType {
+	case "openai", "zhipuai":
+		baseURL := os.Getenv("ANDB_EMBEDDER_BASE_URL")
+		model := os.Getenv("ANDB_EMBEDDER_MODEL")
+		apiKey := os.Getenv("ANDB_EMBEDDER_API_KEY")
+		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+			if n, err := strconv.Atoi(dimStr); err == nil {
+				embedderDim = n
+			}
+		}
+		timeoutSec := 30
+		if ts := os.Getenv("ANDB_EMBEDDER_TIMEOUT"); ts != "" {
+			if n, err := strconv.Atoi(ts); err == nil {
+				timeoutSec = n
+			}
+		}
+		batchSize := 100
+		if bs := os.Getenv("ANDB_EMBEDDER_BATCH_SIZE"); bs != "" {
+			if n, err := strconv.Atoi(bs); err == nil {
+				batchSize = n
+			}
+		}
+		cfg := embedding.OpenAIConfig{
+			BaseURL:   baseURL,
+			Model:     model,
+			APIKey:    apiKey,
+			Timeout:   time.Duration(timeoutSec) * time.Second,
+			BatchSize: batchSize,
+		}
+		ctx := context.Background()
+		var err error
+		embedder, err = embedding.NewOpenAI(ctx, cfg, embedderDim)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, err)
+		}
+		log.Printf("[bootstrap] embedder: %s model=%s dim=%d", embedderType, model, embedderDim)
+	case "cohere":
+		model := os.Getenv("ANDB_EMBEDDER_MODEL")
+		if model == "" {
+			model = "embed-english-v3.0"
+		}
+		if embedderDim <= 0 {
+			return nil, nil, fmt.Errorf("ANDB_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
+		}
+		apiKey := os.Getenv("ANDB_EMBEDDER_API_KEY")
+		embedder, err = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", err)
+		}
+		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
+	default:
+		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
+		embedderDim = dataplane.DefaultEmbeddingDim
+		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
+	}
 	plane, err := dataplane.NewTieredDataPlaneWithEmbedder(tieredObjects, embedder)
 	if err != nil {
 		return nil, nil, err
 	}
-	log.Printf("[bootstrap] data plane: hybrid search enabled (dim=%d, TF-IDF embedder)", dataplane.DefaultEmbeddingDim)
+	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
+		embedder.Provider(), embedderDim)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
@@ -156,7 +258,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		store.Objects(),
 		store.Policies(),
 		policyDecLog,
-	))
+	).WithTieredObjects(tieredObjects))
 	nodeManager.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker(
 		"conflict-merge-1",
 		store.Objects(),
@@ -168,6 +270,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	nodeManager.RegisterObjectMaterialization(matworker.CreateInMemoryObjectMaterializationWorker(
 		"obj-mat-1",
 		store.Objects(),
+		store.Edges(),
 		store.Versions(),
 	))
 	nodeManager.RegisterStateMaterialization(matworker.CreateInMemoryStateMaterializationWorker(
