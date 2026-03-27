@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -16,6 +17,14 @@ import (
 	matworker "andb/src/internal/worker/materialization"
 	"andb/src/internal/worker/nodes"
 )
+
+type failingPlane struct{}
+
+func (f *failingPlane) Ingest(record dataplane.IngestRecord) error { return errors.New("ingest failed") }
+func (f *failingPlane) Search(input dataplane.SearchInput) dataplane.SearchOutput {
+	return dataplane.SearchOutput{}
+}
+func (f *failingPlane) Flush() error { return nil }
 
 func buildTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
@@ -114,6 +123,49 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 	nodesAny, ok := topology["nodes"]
 	if !ok || nodesAny == nil {
 		t.Fatalf("expected topology nodes")
+	}
+}
+
+func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+	plane := &failingPlane{}
+	policy := semantic.NewPolicyEngine()
+	planner := semantic.NewDefaultQueryPlanner()
+	materializer := materialization.NewService()
+	assembler := evidence.NewAssembler()
+	store := storage.NewMemoryRuntimeStorage()
+	nodeManager := nodes.CreateManager()
+	coord := coordinator.NewCoordinatorHub(
+		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
+		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
+		coordinator.NewPolicyCoordinator(policy, store.Policies()),
+		coordinator.NewVersionCoordinator(clock, store.Versions()),
+		coordinator.NewWorkerScheduler(),
+		coordinator.NewMemoryCoordinator(store.Objects()),
+		coordinator.NewIndexCoordinator(store.Segments(), store.Indexes()),
+		coordinator.NewShardCoordinator(4),
+		coordinator.NewQueryCoordinator(planner, policy),
+	)
+	evCache := evidence.NewCache(100)
+	preCompute := materialization.NewPreComputeService(evCache)
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), storage.NewInMemoryColdStore())
+	r := CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:     "evt_failfast_1",
+		AgentID:     "agent_1",
+		SessionID:   "session_1",
+		WorkspaceID: "w1",
+		Payload:     map[string]any{"text": "should not persist on plane failure"},
+	})
+	if err == nil {
+		t.Fatal("expected ingest error from failing plane")
+	}
+
+	if _, ok := store.Objects().GetMemory("mem_evt_failfast_1"); ok {
+		t.Fatal("memory should not be persisted when plane ingest fails")
 	}
 }
 

@@ -245,6 +245,46 @@ func (t *TieredObjectStore) ArchiveMemory(memoryID string) {
 	}
 }
 
+// GetStateActivated returns a State from warm first, then cold.
+// On cold hit, the state is promoted back to warm.
+func (t *TieredObjectStore) GetStateActivated(stateID string) (schemas.State, bool) {
+	if st, ok := t.warm.GetState(stateID); ok {
+		return st, true
+	}
+	if st, ok := t.cold.GetState(stateID); ok {
+		t.warm.PutState(st)
+		return st, true
+	}
+	return schemas.State{}, false
+}
+
+// ArchiveState moves a state object from warm to cold.
+func (t *TieredObjectStore) ArchiveState(stateID string) {
+	if st, ok := t.warm.GetState(stateID); ok {
+		t.cold.PutState(st)
+	}
+}
+
+// GetArtifactActivated returns an Artifact from warm first, then cold.
+// On cold hit, the artifact is promoted back to warm.
+func (t *TieredObjectStore) GetArtifactActivated(artifactID string) (schemas.Artifact, bool) {
+	if art, ok := t.warm.GetArtifact(artifactID); ok {
+		return art, true
+	}
+	if art, ok := t.cold.GetArtifact(artifactID); ok {
+		t.warm.PutArtifact(art)
+		return art, true
+	}
+	return schemas.Artifact{}, false
+}
+
+// ArchiveArtifact moves an artifact object from warm to cold.
+func (t *TieredObjectStore) ArchiveArtifact(artifactID string) {
+	if art, ok := t.warm.GetArtifact(artifactID); ok {
+		t.cold.PutArtifact(art)
+	}
+}
+
 // ArchiveEdge moves an edge from the warm GraphEdgeStore to the cold tier and
 // deletes it from warm.  This is typically called when both endpoints have been
 // archived, preventing dangling warm-tier edges (R6 / R7 fix).
@@ -287,8 +327,6 @@ func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[s
 // ColdObjectStore is the interface for the cold/disk tier.
 // In production this would be backed by a file-based or object storage engine.
 //
-// TODO(member-D): extend with PutArtifact/GetArtifact when artifact cold-tier
-// promotion is needed.
 type ColdObjectStore interface {
 	PutMemory(m schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
@@ -296,6 +334,8 @@ type ColdObjectStore interface {
 	GetAgent(id string) (schemas.Agent, bool)
 	PutState(s schemas.State)
 	GetState(id string) (schemas.State, bool)
+	PutArtifact(a schemas.Artifact)
+	GetArtifact(id string) (schemas.Artifact, bool)
 	// Edge cold-tier (R6): edges archived when their src/dst memory is promoted to cold.
 	PutEdge(e schemas.Edge)
 	GetEdge(id string) (schemas.Edge, bool)
@@ -314,6 +354,7 @@ type InMemoryColdStore struct {
 	memories map[string]schemas.Memory
 	agents   map[string]schemas.Agent
 	states   map[string]schemas.State
+	artifacts map[string]schemas.Artifact
 	edges    map[string]schemas.Edge
 }
 
@@ -322,6 +363,7 @@ func NewInMemoryColdStore() *InMemoryColdStore {
 		memories: map[string]schemas.Memory{},
 		agents:   map[string]schemas.Agent{},
 		states:   map[string]schemas.State{},
+		artifacts: map[string]schemas.Artifact{},
 		edges:    map[string]schemas.Edge{},
 	}
 }
@@ -363,6 +405,19 @@ func (s *InMemoryColdStore) GetState(id string) (schemas.State, bool) {
 	defer s.mu.RUnlock()
 	st, ok := s.states[id]
 	return st, ok
+}
+
+func (s *InMemoryColdStore) PutArtifact(art schemas.Artifact) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.artifacts[art.ArtifactID] = art
+}
+
+func (s *InMemoryColdStore) GetArtifact(id string) (schemas.Artifact, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	art, ok := s.artifacts[id]
+	return art, ok
 }
 
 func (s *InMemoryColdStore) PutEdge(e schemas.Edge) {

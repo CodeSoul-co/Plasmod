@@ -570,11 +570,11 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | **F19** | `NewTieredObjectStore` no nil guard — callers passing nil panicked | Integration | ✅ Fixed |
 | **F20** | `NewTieredDataPlane` / `WithEmbedder` no nil guard on `TieredObjectStore` | Integration | ✅ Fixed |
 | **F21** | `NewPreComputeService` no nil guard; `Compute`/`Recompute` panicked on nil cache | Integration | ✅ Fixed |
-| **A1** | `eventbackbone.DerivationLog` is in-memory only; no persistence to disk | Future | 🔲 Open |
+| **A1** | `eventbackbone.DerivationLog` is in-memory only; no persistence to disk | Integration | ✅ |
 | **F19** | `NewTieredObjectStore` accepted nil for hot/warm/cold without guard — callers passing nil would panic | Integration | ✅ Fixed |
 | **F20** | `NewTieredDataPlane` accepted nil `TieredObjectStore` without guard — closure panics on cold access | Integration | ✅ Fixed |
 | **F21** | `NewPreComputeService` accepted nil `evidence.Cache`; `Compute`/`Recompute` panicked on nil cache | Integration | ✅ Fixed |
-| **A2** | `TieredObjectStore` cold tier (`InMemoryColdStore`) does not implement State/Artifact cold archival | Future | 🔲 Open |
+| **A2** | `TieredObjectStore` cold tier (`InMemoryColdStore`) does not implement State/Artifact cold archival | Integration | ✅ Fixed |
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 
@@ -800,6 +800,14 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 
 **Scope merged:** S3-compatible object storage (MinIO) for admin export, snapshot export, and cold-tier archival.
 
+Recent storage/runtime hardening:
+- `Runtime.SubmitIngest` now fail-fast checks `plane.Ingest(record)` before canonical object writes to reduce partial-success inconsistency.
+- Runtime conflict-tracking map (`lastMem`) is now mutex-protected for concurrent ingest safety.
+- WAL supports file-backed persistence (`wal.log`) in disk mode via `FileWAL`, with restart reload.
+
+Recent cold-search optimisation:
+- `S3ColdStore.ColdSearch` now uses batched concurrent fetch, bounded top-candidate selection, and early-stop heuristics to reduce tail latency on large cold archives.
+
 #### Admin API Endpoints (`src/internal/access/gateway.go`)
 
 | Endpoint | Behaviour |
@@ -814,7 +822,7 @@ S3_PREFIX/snapshots/<collection_id>/manifests/<snapshot_id>/<segment_id>.avro
 S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 ```
 
-#### S3 Utility Layer (`src/internal/s3util/s3util.go`)
+#### S3 Utility Layer (`src/internal/storage/s3util.go`)
 
 | Function | Purpose |
 |---|---|
@@ -830,13 +838,13 @@ S3_PREFIX/segments/<collection_id>/<segment_id>/segment_data.json
 At startup, `bootstrap.go` selects the cold tier automatically:
 
 ```
-S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET 已设置
+S3_ENDPOINT + ACCESS_KEY + SECRET_KEY + BUCKET configured
   → S3ColdStore  (MinIO / AWS S3 backed)
-  → 日志: [bootstrap] cold store: S3 endpoint=... bucket=...
+  → log: [bootstrap] cold store: S3 endpoint=... bucket=...
 
-未设置
+not configured
   → InMemoryColdStore  (in-process simulation, default)
-  → 日志: [bootstrap] cold store: in-memory simulation
+  → log: [bootstrap] cold store: in-memory simulation
 ```
 
 `S3ColdStore` objects stored as:
@@ -873,6 +881,12 @@ S3_BUCKET      e.g. andb-integration
 S3_SECURE      false (default)
 S3_REGION      us-east-1 (default)
 S3_PREFIX      andb/integration_tests (default)
+S3_COLDSEARCH_MAX_KEYS           5000 (default)
+S3_COLDSEARCH_CONCURRENCY        8 (default)
+S3_COLDSEARCH_BATCH_SIZE         128 (default)
+S3_COLDSEARCH_BUFFER_FACTOR      3 (default)
+S3_COLDSEARCH_EARLY_STOP_SCORE   0.95 (default)
+S3_COLDSEARCH_NO_IMPROVE_PAGES   2 (default)
 ```
 
 #### S3 Module Review Checklist
@@ -884,8 +898,8 @@ S3_PREFIX      andb/integration_tests (default)
 | Cold archival `Scope`/`OwnerType` attribute fix | ✅ | `ArchiveColdRecord` now reads `attrs["visibility"]` as `Scope` and `attrs["event_type"]` as `OwnerType`; `buildAttributes` sets these keys |
 | `InMemoryColdStore.ColdSearch` | ✅ | Lexical substring search over cold memories, sorted by score+recency |
 | `S3ColdStore.ColdSearch` | ✅ | ListObjectsV2 + per-key GET + lexical scoring; `ListObjects` added to `s3util` |
-| Missing: S3 integration test in `integration_tests/` | 🔲 | `ANDB_RUN_S3_TESTS=true` test: ingest → archive → cold read round-trip |
-| Missing: `S3_*` config key standardisation | 🔲 | Some runtime modules still use `minio.*` keys |
+| S3 integration test in `integration_tests/` | ✅ | `integration_tests/s3_dataflow_test.go` covers ingest → archive/query capture → S3 round-trip (gated by `ANDB_RUN_S3_TESTS=true`) |
+| `S3_*` config key standardisation | ✅ | `storage.LoadFromEnv()` uses `S3_*` as canonical keys and supports `MINIO_*` alias fallback for compatibility |
 | `handleS3SnapshotExport` nil panic | ✅ Fixed | Full implementation in `src/internal/access/s3_snapshot_export_stub.go` using Avro manifest + JSON metadata + S3 round-trip verification; returns 501 only if S3 env vars absent |
 | `src/internal/s3util/` module removed | ✅ Fixed | S3 helpers (`LoadFromEnv`, SigV4 signing, etc.) moved to `src/internal/storage/s3util.go`; imports updated in gateway, bootstrap, and snapshot export; old `src/internal/s3util/` directory deleted |
 

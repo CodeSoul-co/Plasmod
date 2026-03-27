@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
@@ -37,7 +38,8 @@ type Runtime struct {
 	queryChain        *chain.QueryChain
 	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
 	// can fire synchronously in SubmitIngest (not only async via subscriber).
-	lastMem map[string]string
+	lastMem   map[string]string
+	lastMemMu sync.RWMutex
 }
 
 func CreateRuntime(
@@ -113,6 +115,13 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 
+	// Fail fast on retrieval-plane ingest before mutating canonical stores.
+	// This reduces partial-success windows (WAL only) where object writes succeed
+	// but retrieval ingest fails and query surfaces inconsistent state.
+	if err := r.plane.Ingest(record); err != nil {
+		return nil, err
+	}
+
 	// ── Synchronous object materialization ─────────────────────────────────
 	// State and Artifact objects are needed immediately for query correctness.
 	// Call the materialization workers here (not only in the async subscriber)
@@ -180,10 +189,15 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	// and any caller that reads edges immediately after ingest.
 	if mat.Memory.AgentID != "" && mat.Memory.SessionID != "" && mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) {
 		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
-		if prevID, hasPrev := r.lastMem[key]; hasPrev {
+		r.lastMemMu.RLock()
+		prevID, hasPrev := r.lastMem[key]
+		r.lastMemMu.RUnlock()
+		if hasPrev {
 			r.nodeManager.DispatchConflictMerge(mat.Memory.MemoryID, prevID, string(schemas.ObjectTypeMemory))
 		}
+		r.lastMemMu.Lock()
 		r.lastMem[key] = mat.Memory.MemoryID
+		r.lastMemMu.Unlock()
 	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
@@ -196,9 +210,6 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 	// ── Retrieval plane ───────────────────────────────────────────────────
 	r.nodeManager.DispatchIngest(record)
-	if err := r.plane.Ingest(record); err != nil {
-		return nil, err
-	}
 	return map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
