@@ -800,6 +800,11 @@ Member B owns the contract boundary between the Go retrieval engine and the rest
 
 **Scope merged:** S3-compatible object storage (MinIO) for admin export, snapshot export, and cold-tier archival.
 
+Recent P0 hardening in storage/runtime path:
+- `Runtime.SubmitIngest` now fail-fast checks `plane.Ingest(record)` before canonical object writes to reduce partial-success inconsistency.
+- Runtime conflict-tracking map (`lastMem`) is now mutex-protected for concurrent ingest safety.
+- WAL supports file-backed persistence (`wal.log`) in disk mode via `FileWAL`, with restart reload.
+
 #### Admin API Endpoints (`src/internal/access/gateway.go`)
 
 | Endpoint | Behaviour |

@@ -45,7 +45,6 @@ func BuildServer() (*http.Server, func() error, error) {
 	// ── Event Backbone ───────────────────────────────────────────────────────
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
-	wal := eventbackbone.NewInMemoryWAL(bus, clock)
 	watermark := eventbackbone.NewWatermarkPublisher(clock, bus)
 
 	// ── Storage Layer (memory / Badger / hybrid — see STORAGE_BACKEND.md) ────
@@ -58,6 +57,14 @@ func BuildServer() (*http.Server, func() error, error) {
 	}
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
+	var wal eventbackbone.WAL
+	if storageCfg != nil && storageCfg.WALPersistence {
+		wal = eventbackbone.NewFileWAL(filepath.Join(storageCfg.DataDir, "wal.log"), bus, clock)
+		log.Printf("[bootstrap] wal: file-backed (%s)", filepath.Join(storageCfg.DataDir, "wal.log"))
+	} else {
+		wal = eventbackbone.NewInMemoryWAL(bus, clock)
+		log.Printf("[bootstrap] wal: in-memory mode")
+	}
 	derivStore := eventbackbone.NewFileDerivationStore(filepath.Join(storageCfg.DataDir, "derivation.log"))
 	derivLog := eventbackbone.NewDerivationLogWithStore(clock, bus, derivStore)
 	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)

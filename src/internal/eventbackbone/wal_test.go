@@ -1,6 +1,7 @@
 package eventbackbone
 
 import (
+	"path/filepath"
 	"testing"
 
 	"andb/src/internal/schemas"
@@ -59,5 +60,32 @@ func TestInMemoryBus_PubSub(t *testing.T) {
 	msg := <-ch
 	if msg.Body != "hello" {
 		t.Errorf("Bus message body: want %q, got %v", "hello", msg.Body)
+	}
+}
+
+func TestFileWAL_AppendAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	bus := NewInMemoryBus()
+	clock := NewHybridClock()
+	w := NewFileWAL(path, bus, clock)
+
+	if _, err := w.Append(schemas.Event{EventID: "evt_1", EventType: "user_message"}); err != nil {
+		t.Fatalf("append 1: %v", err)
+	}
+	if _, err := w.Append(schemas.Event{EventID: "evt_2", EventType: "tool_call"}); err != nil {
+		t.Fatalf("append 2: %v", err)
+	}
+	if w.LatestLSN() == 0 {
+		t.Fatal("expected LatestLSN > 0")
+	}
+
+	// Re-open from same file and verify entries are restored.
+	w2 := NewFileWAL(path, NewInMemoryBus(), NewHybridClock())
+	all := w2.Scan(0)
+	if len(all) != 2 {
+		t.Fatalf("restored entries: want 2, got %d", len(all))
+	}
+	if all[0].Event.EventID != "evt_1" || all[1].Event.EventID != "evt_2" {
+		t.Fatalf("unexpected restored order/content: %#v", all)
 	}
 }
