@@ -571,6 +571,7 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
   "query": { "raw": "...", "request": {} },
   "response": { "objects": [], "edges": [], "proof_trace": [], "applied_filters": [] },
   "chain_traces": { "main": [], "memory_pipeline": [], "query": [], "collaboration": [] }
+  ...
 }
 ```
 
@@ -660,7 +661,7 @@ All tunable DFS parameters must be externalized into `schemas.AlgorithmConfig` (
 | `64` HNSW efSearch | `HNSEfSearch` | **add** |
 | cold search scoring weights | `ColdSearchWeights` | **add** |
 | DFS relevance threshold | `DFSRelevanceThreshold` | **add** |
-
+...
 **DFS search path to implement:**
 ```
 QueryRequest
