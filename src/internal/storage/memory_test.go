@@ -186,6 +186,24 @@ func TestInMemoryColdStore_EdgeRoundtrip(t *testing.T) {
 	}
 }
 
+func TestInMemoryColdStore_ArtifactRoundtrip(t *testing.T) {
+	cold := NewInMemoryColdStore()
+	art := schemas.Artifact{
+		ArtifactID:   "art_cold_1",
+		SessionID:    "sess_1",
+		OwnerAgentID: "agent_1",
+		URI:          "s3://bucket/a.bin",
+	}
+	cold.PutArtifact(art)
+	got, ok := cold.GetArtifact("art_cold_1")
+	if !ok {
+		t.Fatal("GetArtifact: expected to find art_cold_1")
+	}
+	if got.URI != "s3://bucket/a.bin" {
+		t.Fatalf("artifact URI: got %q", got.URI)
+	}
+}
+
 // PC: AuditStore
 func TestInMemoryAuditStore_AppendAndGet(t *testing.T) {
 	store := NewMemoryRuntimeStorage()
@@ -274,6 +292,54 @@ func TestTieredObjectStore_ArchiveEdge(t *testing.T) {
 	}
 	if _, ok := cold.GetEdge("e_arc"); !ok {
 		t.Error("ArchiveEdge: edge should exist in cold store")
+	}
+}
+
+func TestTieredObjectStore_ArchiveStateAndArtifact(t *testing.T) {
+	hot := NewHotObjectCache(100)
+	warm := newMemoryObjectStore()
+	cold := NewInMemoryColdStore()
+	tiered := NewTieredObjectStore(hot, warm, cold)
+
+	st := schemas.State{StateID: "state_arch_1", SessionID: "sess_1", AgentID: "agent_1"}
+	art := schemas.Artifact{ArtifactID: "art_arch_1", SessionID: "sess_1", OwnerAgentID: "agent_1"}
+	warm.PutState(st)
+	warm.PutArtifact(art)
+
+	tiered.ArchiveState(st.StateID)
+	tiered.ArchiveArtifact(art.ArtifactID)
+
+	if _, ok := cold.GetState(st.StateID); !ok {
+		t.Fatal("ArchiveState: expected state in cold store")
+	}
+	if _, ok := cold.GetArtifact(art.ArtifactID); !ok {
+		t.Fatal("ArchiveArtifact: expected artifact in cold store")
+	}
+}
+
+func TestTieredObjectStore_GetStateAndArtifactActivated_FromCold(t *testing.T) {
+	hot := NewHotObjectCache(100)
+	warm := newMemoryObjectStore()
+	cold := NewInMemoryColdStore()
+	tiered := NewTieredObjectStore(hot, warm, cold)
+
+	cold.PutState(schemas.State{StateID: "state_cold_1", AgentID: "agent_1", SessionID: "sess_1"})
+	cold.PutArtifact(schemas.Artifact{ArtifactID: "art_cold_1", SessionID: "sess_1", OwnerAgentID: "agent_1"})
+
+	st, ok := tiered.GetStateActivated("state_cold_1")
+	if !ok || st.StateID != "state_cold_1" {
+		t.Fatalf("GetStateActivated cold hit failed: ok=%v state=%+v", ok, st)
+	}
+	if _, ok := warm.GetState("state_cold_1"); !ok {
+		t.Fatal("GetStateActivated: expected state promoted to warm")
+	}
+
+	art, ok := tiered.GetArtifactActivated("art_cold_1")
+	if !ok || art.ArtifactID != "art_cold_1" {
+		t.Fatalf("GetArtifactActivated cold hit failed: ok=%v art=%+v", ok, art)
+	}
+	if _, ok := warm.GetArtifact("art_cold_1"); !ok {
+		t.Fatal("GetArtifactActivated: expected artifact promoted to warm")
 	}
 }
 

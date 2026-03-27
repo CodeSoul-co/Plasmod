@@ -574,7 +574,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | **F19** | `NewTieredObjectStore` accepted nil for hot/warm/cold without guard — callers passing nil would panic | Integration | ✅ Fixed |
 | **F20** | `NewTieredDataPlane` accepted nil `TieredObjectStore` without guard — closure panics on cold access | Integration | ✅ Fixed |
 | **F21** | `NewPreComputeService` accepted nil `evidence.Cache`; `Compute`/`Recompute` panicked on nil cache | Integration | ✅ Fixed |
-| **A2** | `TieredObjectStore` cold tier (`InMemoryColdStore`) does not implement State/Artifact cold archival | Future | 🔲 Open |
+| **A2** | `TieredObjectStore` cold tier (`InMemoryColdStore`) does not implement State/Artifact cold archival | Integration | ✅ Fixed |
 
 The following review checklist is intended for team members before merging `integration/all-features-test` → `main`.
 

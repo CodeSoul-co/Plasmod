@@ -54,6 +54,10 @@ func (s *S3ColdStore) stateKey(id string) string {
 	return fmt.Sprintf("%s/cold/states/%s.json", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) artifactKey(id string) string {
+	return fmt.Sprintf("%s/cold/artifacts/%s.json", s.cfg.Prefix, id)
+}
+
 func (s *S3ColdStore) edgeKey(id string) string {
 	return fmt.Sprintf("%s/cold/edges/%s.json", s.cfg.Prefix, id)
 }
@@ -146,6 +150,36 @@ func (s *S3ColdStore) GetState(id string) (schemas.State, bool) {
 		return schemas.State{}, false
 	}
 	return st, true
+}
+
+func (s *S3ColdStore) PutArtifact(art schemas.Artifact) {
+	s.doEnsureBucket()
+	data, err := json.Marshal(art)
+	if err != nil {
+		log.Printf("s3cold: marshal artifact %s: %v", art.ArtifactID, err)
+		return
+	}
+	if err := PutBytes(context.Background(), nil, s.cfg, s.artifactKey(art.ArtifactID), data, "application/json"); err != nil {
+		log.Printf("s3cold: put artifact %s: %v", art.ArtifactID, err)
+	}
+}
+
+func (s *S3ColdStore) GetArtifact(id string) (schemas.Artifact, bool) {
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.artifactKey(id))
+	if err != nil {
+		log.Printf("s3cold: get artifact %s: %v", id, err)
+		return schemas.Artifact{}, false
+	}
+	if data == nil {
+		log.Printf("s3cold: miss artifact key=%s", s.artifactKey(id))
+		return schemas.Artifact{}, false
+	}
+	var art schemas.Artifact
+	if err := json.Unmarshal(data, &art); err != nil {
+		log.Printf("s3cold: unmarshal artifact %s: %v", id, err)
+		return schemas.Artifact{}, false
+	}
+	return art, true
 }
 
 func (s *S3ColdStore) PutEdge(e schemas.Edge) {
