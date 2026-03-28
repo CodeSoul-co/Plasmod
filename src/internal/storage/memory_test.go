@@ -349,6 +349,89 @@ func TestTieredObjectStore_GetStateAndArtifactActivated_FromCold(t *testing.T) {
 	}
 }
 
+func TestTieredObjectStore_ArchiveColdRecord_PreservesCanonicalMemory(t *testing.T) {
+	hot := NewHotObjectCache(100)
+	warm := newMemoryObjectStore()
+	warmEdges := newMemoryGraphEdgeStore()
+	cold := NewInMemoryColdStore()
+
+	tiered := NewTieredObjectStore(hot, warm, warmEdges, cold)
+
+	orig := schemas.Memory{
+		MemoryID:       "mem_cold_roundtrip_1",
+		AgentID:        "agent_rt",
+		SessionID:      "session_rt",
+		Content:        "NVDA Q3 revenue reached $35.1B",
+		Summary:        "Q3 revenue summary",
+		MemoryType:     string(schemas.MemoryTypeSemantic),
+		SourceEventIDs: []string{"evt_rt_1", "evt_rt_2"},
+		ProvenanceRef:  "evt_rt_1",
+		Scope:          "workspace_shared",
+		OwnerType:      "tool_result",
+		Version:        42,
+		IsActive:       true,
+	}
+
+	warm.PutMemory(orig)
+
+	attrs := map[string]string{
+		"agent_id":   "agent_rt",
+		"session_id": "session_rt",
+		"visibility": "workspace_shared",
+		"event_type": "tool_result",
+	}
+
+	tiered.ArchiveColdRecord(orig.MemoryID, orig.Content, attrs, "ws_rt", 42)
+
+	// Force a cold-path reactivation by using a fresh warm store.
+	freshWarm := newMemoryObjectStore()
+	tieredColdRead := NewTieredObjectStore(hot, freshWarm, warmEdges, cold)
+
+	got, ok := tieredColdRead.GetMemoryActivated(orig.MemoryID, 0.8)
+	if !ok {
+		t.Fatalf("expected cold archived memory to be re-activated")
+	}
+
+	if got.MemoryID != orig.MemoryID {
+		t.Fatalf("MemoryID mismatch: want %q, got %q", orig.MemoryID, got.MemoryID)
+	}
+	if got.Content != orig.Content {
+		t.Errorf("Content mismatch: want %q, got %q", orig.Content, got.Content)
+	}
+	if got.Summary != orig.Summary {
+		t.Errorf("Summary mismatch: want %q, got %q", orig.Summary, got.Summary)
+	}
+	if got.MemoryType != orig.MemoryType {
+		t.Errorf("MemoryType mismatch: want %q, got %q", orig.MemoryType, got.MemoryType)
+	}
+	if got.ProvenanceRef != orig.ProvenanceRef {
+		t.Errorf("ProvenanceRef mismatch: want %q, got %q", orig.ProvenanceRef, got.ProvenanceRef)
+	}
+	if got.AgentID != orig.AgentID {
+		t.Errorf("AgentID mismatch: want %q, got %q", orig.AgentID, got.AgentID)
+	}
+	if got.SessionID != orig.SessionID {
+		t.Errorf("SessionID mismatch: want %q, got %q", orig.SessionID, got.SessionID)
+	}
+	if got.Scope != orig.Scope {
+		t.Errorf("Scope mismatch: want %q, got %q", orig.Scope, got.Scope)
+	}
+	if got.OwnerType != orig.OwnerType {
+		t.Errorf("OwnerType mismatch: want %q, got %q", orig.OwnerType, got.OwnerType)
+	}
+	if got.Version != orig.Version {
+		t.Errorf("Version mismatch: want %d, got %d", orig.Version, got.Version)
+	}
+	if len(got.SourceEventIDs) != len(orig.SourceEventIDs) {
+		t.Fatalf("SourceEventIDs length mismatch: want %d, got %d", len(orig.SourceEventIDs), len(got.SourceEventIDs))
+	}
+	for i := range orig.SourceEventIDs {
+		if got.SourceEventIDs[i] != orig.SourceEventIDs[i] {
+			t.Errorf("SourceEventIDs[%d] mismatch: want %q, got %q", i, orig.SourceEventIDs[i], got.SourceEventIDs[i])
+		}
+	}
+}
+
 func TestMemoryRuntimeStorage_PutMemoryWithBaseEdges(t *testing.T) {
 	store := NewMemoryRuntimeStorage()
 
