@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"andb/src/internal/dataplane/segmentstore"
+	"sort"
 )
 
 const defaultRRFK = 60
@@ -88,22 +89,7 @@ func (p *SegmentDataPlane) Ingest(record IngestRecord) error {
 //   - Lexical fallback mode: used when vecStore is unavailable, not yet built,
 //     or the embedder fails. Pure string match via segmentstore.Index.
 func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
-	// ── Vector search (primary) ───────────────────────────────────────────────
-	if p.vecStore != nil && p.vecStore.Ready() {
-		queryVec, err := p.embedder.Generate(input.QueryText)
-		if err == nil && len(queryVec) > 0 {
-			vecIDs, _, err := p.vecStore.Search(queryVec, input.TopK)
-			if err == nil && len(vecIDs) > 0 {
-				return SearchOutput{
-					ObjectIDs: vecIDs,
-					Tier:      "vector",
-				}
-			}
-		}
-		// Vector search returned empty or error — fall through to lexical.
-	}
-
-	// ── Lexical fallback (temporary — active while CGO library is unavailable) ──
+	// ── Lexical search (always available) ─────────────────────────────────────
 	lexResult := p.index.Search(segmentstore.SearchRequest{
 		Query:          input.QueryText,
 		TopK:           input.TopK,
@@ -113,15 +99,51 @@ func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
 		IncludeGrowing: input.IncludeGrowing,
 	})
 
-	ids := make([]string, 0, len(lexResult.Hits))
+	lexIDs := make([]string, 0, len(lexResult.Hits))
 	for _, hit := range lexResult.Hits {
-		ids = append(ids, hit.ObjectID)
+		lexIDs = append(lexIDs, hit.ObjectID)
 	}
-	return SearchOutput{
-		ObjectIDs:       ids,
+
+	lexOut := SearchOutput{
+		ObjectIDs:       lexIDs,
 		ScannedSegments: lexResult.ScannedShards,
 		PlannedSegments: p.plannedSegments(lexResult.ShardMetas),
 		Tier:            "lexical",
+	}
+
+	// ── Vector search (optional) ──────────────────────────────────────────────
+	vecIDs := []string{}
+	if p.vecStore != nil && p.vecStore.Ready() && p.embedder != nil {
+		queryVec, err := p.embedder.Generate(input.QueryText)
+		if err == nil && len(queryVec) > 0 {
+			if ids, _, err := p.vecStore.Search(queryVec, input.TopK); err == nil && len(ids) > 0 {
+				vecIDs = ids
+			}
+		}
+	}
+
+	// No vector results → lexical only
+	if len(vecIDs) == 0 {
+		return lexOut
+	}
+
+	// No lexical results → vector only
+	if len(lexIDs) == 0 {
+		return SearchOutput{
+			ObjectIDs:       vecIDs,
+			ScannedSegments: lexOut.ScannedSegments,
+			PlannedSegments: lexOut.PlannedSegments,
+			Tier:            "vector",
+		}
+	}
+
+	// Hybrid fusion via RRF
+	fused := fuseRRF(lexIDs, vecIDs, p.rrfK, input.TopK)
+	return SearchOutput{
+		ObjectIDs:       fused,
+		ScannedSegments: lexOut.ScannedSegments,
+		PlannedSegments: lexOut.PlannedSegments,
+		Tier:            "lexical+vector",
 	}
 }
 
@@ -137,6 +159,36 @@ func (p *SegmentDataPlane) plannedSegments(metas []segmentstore.ShardMeta) []Seg
 		})
 	}
 	return out
+}
+
+func fuseRRF(lexIDs, vecIDs []string, k int, topK int) []string {
+	if k <= 0 {
+		k = defaultRRFK
+	}
+
+	scores := map[string]float64{}
+	seenOrder := make([]string, 0, len(lexIDs)+len(vecIDs))
+
+	addRanked := func(ids []string) {
+		for rank, id := range ids {
+			if _, ok := scores[id]; !ok {
+				seenOrder = append(seenOrder, id)
+			}
+			scores[id] += 1.0 / float64(k+rank+1)
+		}
+	}
+
+	addRanked(lexIDs)
+	addRanked(vecIDs)
+
+	sort.SliceStable(seenOrder, func(i, j int) bool {
+		return scores[seenOrder[i]] > scores[seenOrder[j]]
+	})
+
+	if topK > 0 && len(seenOrder) > topK {
+		return seenOrder[:topK]
+	}
+	return seenOrder
 }
 
 // SetEmbedder enables vector search using the provided embedder.
