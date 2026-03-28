@@ -80,3 +80,6 @@ server
 RETRIEVAL_B.md
 ingest-storage-object-workers.md
 src/internal/platformpkg/UPSTREAM_README.md
+
+# SDK test artifacts
+sdk/tests/
