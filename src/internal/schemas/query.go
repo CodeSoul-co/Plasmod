@@ -36,15 +36,23 @@ type QueryRequest struct {
 	ResponseMode        string     `json:"response_mode"`
 }
 
+// EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
+type EvidenceCacheStats struct {
+	LookedUp int `json:"looked_up"`
+	Hits     int `json:"hits"`
+	Misses   int `json:"misses"`
+}
+
 type QueryResponse struct {
-	Objects        []string        `json:"objects"`
-	Nodes          []GraphNode     `json:"nodes,omitempty"`
-	Edges          []Edge          `json:"edges"`
-	Provenance     []string        `json:"provenance"`
-	Versions       []ObjectVersion `json:"versions"`
-	AppliedFilters []string        `json:"applied_filters"`
-	ProofTrace     []string        `json:"proof_trace"`
-	ChainTraces    ChainTraceSlots `json:"chain_traces"`
+	Objects         []string             `json:"objects"`
+	Nodes           []GraphNode          `json:"nodes,omitempty"`
+	Edges           []Edge               `json:"edges"`
+	Provenance      []string             `json:"provenance"`
+	Versions        []ObjectVersion      `json:"versions"`
+	AppliedFilters  []string             `json:"applied_filters"`
+	ProofTrace      []string             `json:"proof_trace"`
+	ChainTraces     ChainTraceSlots      `json:"chain_traces"`
+	EvidenceCache   *EvidenceCacheStats  `json:"evidence_cache,omitempty"`
 }
 
 type GraphExpandRequest struct {

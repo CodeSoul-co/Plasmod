@@ -99,4 +99,23 @@ func TestDataflowTrace(t *testing.T) {
 			t.Error("chain_traces.query is empty — expected QueryChain trace lines")
 		}
 	})
+
+	t.Run("evidence_cache stats present after ingest with salient fragment", func(t *testing.T) {
+		ec, ok := resp["evidence_cache"].(map[string]any)
+		if !ok {
+			t.Fatalf("evidence_cache: expected object, got %T", resp["evidence_cache"])
+		}
+		lu, _ := ec["looked_up"].(float64)
+		hits, _ := ec["hits"].(float64)
+		miss, _ := ec["misses"].(float64)
+		if lu < 1 {
+			t.Errorf("evidence_cache.looked_up: want >= 1, got %v", ec["looked_up"])
+		}
+		if hits < 1 {
+			t.Errorf("evidence_cache.hits: want >= 1 (fragment cached at ingest), got %v", ec["hits"])
+		}
+		if miss < 0 || hits+miss != lu {
+			t.Errorf("evidence_cache: hits+misses should equal looked_up; got hits=%v misses=%v looked_up=%v", hits, miss, lu)
+		}
+	})
 }

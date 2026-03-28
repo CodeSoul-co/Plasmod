@@ -90,9 +90,21 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 		trace = append(trace, "shard:"+seg.ID+":"+seg.State)
 	}
 
-	// merge pre-computed evidence fragments
+	// merge pre-computed evidence fragments + cache hit/miss stats for API consumers
+	var evStats *schemas.EvidenceCacheStats
 	if a.cache != nil && len(outputIDs) > 0 {
 		frags := a.cache.GetMany(outputIDs)
+		hits := 0
+		for _, f := range frags {
+			if strings.TrimSpace(f.ObjectID) != "" {
+				hits++
+			}
+		}
+		evStats = &schemas.EvidenceCacheStats{
+			LookedUp: len(outputIDs),
+			Hits:     hits,
+			Misses:   len(outputIDs) - hits,
+		}
 		trace = append(trace, a.assembleFromFragments(frags)...)
 	}
 
@@ -122,6 +134,7 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 		AppliedFilters: filters,
 		ProofTrace:     trace,
 		ChainTraces:    schemas.ChainTraceSlots{},
+		EvidenceCache:  evStats,
 	}
 }
 

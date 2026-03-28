@@ -136,19 +136,15 @@ def run_scenarios(base_url: str, fixtures_dir: Path) -> list[dict[str, Any]]:
             "ingest_acks": ingest_acks,
             "response": {
                 "objects": response.get("objects", []),
+                "nodes": response.get("nodes", []),
                 "edges": response.get("edges", []),
                 "proof_trace": response.get("proof_trace", []),
                 "applied_filters": response.get("applied_filters", []),
                 "provenance": response.get("provenance", []),
                 "versions": response.get("versions", []),
+                "evidence_cache": response.get("evidence_cache"),
             },
             "chain_traces": chain_traces,
-            "_meta": {
-                "evidence_cache_log_note": (
-                    "Evidence fragment cache hit/miss is not yet serialized on the HTTP response; "
-                    "see server logs / internal evidence.Cache for debugging."
-                ),
-            },
         }
         out.append(record)
     return out

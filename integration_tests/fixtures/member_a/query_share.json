@@ -1,0 +1,14 @@
+{
+  "query_text": "shared workspace collaboration seed phrase beta",
+  "query_scope": "workspace",
+  "session_id": "sess_share_a",
+  "agent_id": "agent_share_a",
+  "tenant_id": "t_member_a",
+  "workspace_id": "w_share_ma",
+  "top_k": 8,
+  "time_window": { "from": "2026-01-01T00:00:00Z", "to": "2027-01-01T00:00:00Z" },
+  "object_types": ["memory", "state", "artifact"],
+  "memory_types": ["semantic", "episodic", "procedural"],
+  "relation_constraints": [],
+  "response_mode": "structured_evidence"
+}

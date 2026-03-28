@@ -564,8 +564,13 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
   - `ProofTrace` output from `QueryChain.Run`
   - Applied governance filters
   - Graph edge expansion (`Edges`, `Nodes`)
-  - Evidence fragment cache hit/miss log
+  - Evidence fragment cache hit/miss counts on `QueryResponse.evidence_cache` (`looked_up`, `hits`, `misses`) when a fragment cache is wired
 - Integration test script in `scripts/` or `integration_tests/python/`
+
+**Implemented helpers (this repo):**
+- Fixture manifest + JSON under [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/); capture via [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py) (`nodes`, `evidence_cache`, `chain_traces` in output).
+- One-shot acceptance (MinIO in Docker + host-built server): [`scripts/e2e/run_acceptance_scenario_a.ps1`](scripts/e2e/run_acceptance_scenario_a.ps1).
+- Vector file sanity (no HTTP): `go test ./integration_tests/dataset/...` for `deep1B.ibin`.
 
 **Entry point:** [`src/internal/app/bootstrap.go`](src/internal/app/bootstrap.go) wires all components; start from `BuildServer()` and trace through each chain.
 

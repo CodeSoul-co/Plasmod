@@ -59,17 +59,14 @@ if (-not $ok) {
 Write-Host "[acceptance-a] healthz OK"
 
 $env:ANDB_BASE_URL = "http://127.0.0.1:8090"
-Write-Host "[acceptance-a] go test ./integration_tests/..."
-go test ./integration_tests/... -count=1 -timeout 120s -v
-
 $env:ANDB_RUN_S3_TESTS = "true"
 $env:S3_ENDPOINT = "127.0.0.1:9000"
 $env:S3_ACCESS_KEY = "minioadmin"
 $env:S3_SECRET_KEY = "minioadmin"
 $env:S3_BUCKET = "andb-integration"
 $env:S3_SECURE = "false"
-Write-Host "[acceptance-a] TestS3Dataflow..."
-go test ./integration_tests/... -run TestS3Dataflow -v -count=1
+Write-Host "[acceptance-a] go test ./integration_tests/... (includes TestS3Dataflow when MinIO up)"
+go test ./integration_tests/... -count=1 -timeout 120s -v
 
 $outDir = Join-Path $RepoRoot "out/member_a_fullstack_verify"
 Write-Host "[acceptance-a] member_a_capture -> $outDir"

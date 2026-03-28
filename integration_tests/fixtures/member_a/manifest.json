@@ -20,6 +20,20 @@
       "ingest_files": ["ingest_cold_seed.json"],
       "query_file": "query_cold.json",
       "notes": "Query text matches cold-seed content. Full cold recall via S3 requires memories archived to cold tier (TieredObjectStore); extend with admin/archive hooks when available."
+    },
+    {
+      "id": "collaboration_sharing",
+      "test_name": "Collaboration sharing — visibility=shared memory in workspace query",
+      "ingest_files": ["ingest_share.json"],
+      "query_file": "query_share.json",
+      "notes": "Exercises shared visibility + workspace-scoped retrieval (Member A collaboration sharing coverage)."
+    },
+    {
+      "id": "graph_workspace_multi_mem",
+      "test_name": "Graph expansion — two memories same workspace, expect multiple objects and edges",
+      "ingest_files": ["ingest_graph_1.json", "ingest_graph_2.json"],
+      "query_file": "query_graph.json",
+      "notes": "Two sessions in one workspace; query should return multiple mem_* IDs and non-empty edges/nodes for 1-hop expansion."
     }
   ]
 }
