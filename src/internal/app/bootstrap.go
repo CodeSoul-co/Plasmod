@@ -23,6 +23,7 @@ import (
 	"andb/src/internal/worker"
 	cognitive "andb/src/internal/worker/cognitive"
 	baseline "andb/src/internal/worker/cognitive/baseline"
+	"andb/src/internal/worker/cognitive/memorybank"
 	"andb/src/internal/worker/coordination"
 	"andb/src/internal/worker/indexing"
 	"andb/src/internal/worker/ingestion"
@@ -297,10 +298,19 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Algorithm Dispatch worker ─────────────────────────────────────────────
 	// Bridges MemoryManagementAlgorithm plugins into the cognitive pipeline.
-	// Uses a no-op default when no custom algorithm is configured.
+	// MemoryBank is the default active algorithm (loaded from configs/algorithm_memorybank.yaml).
+	// Baseline is available as a fallback registered with a different worker ID.
 	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
 		"algo-dispatch-1",
-		cognitive.NewDefaultAlgorithm(),
+		memorybank.NewDefault("memorybank_v1"),
+		store.Objects(),
+		store.AlgorithmStates(),
+		store.Audits(),
+	))
+	// Baseline algorithm registered as a second dispatch worker (fallback / comparison).
+	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
+		"algo-dispatch-baseline",
+		baseline.NewDefault(),
 		store.Objects(),
 		store.AlgorithmStates(),
 		store.Audits(),

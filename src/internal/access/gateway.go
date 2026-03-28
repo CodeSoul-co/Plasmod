@@ -54,6 +54,15 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 
 	// Proof trace queries
 	mux.HandleFunc("/v1/traces/", g.handleTraces)
+
+	// Agent SDK internal endpoints — algorithm dispatch bridge
+	mux.HandleFunc("/v1/internal/memory/recall", g.handleMemoryRecall)
+	mux.HandleFunc("/v1/internal/memory/ingest", g.handleMemoryIngest)
+	mux.HandleFunc("/v1/internal/memory/compress", g.handleMemoryCompress)
+	mux.HandleFunc("/v1/internal/memory/summarize", g.handleMemorySummarize)
+	mux.HandleFunc("/v1/internal/memory/decay", g.handleMemoryDecay)
+	mux.HandleFunc("/v1/internal/memory/share", g.handleMemoryShare)
+	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
 }
 
 func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -679,4 +688,163 @@ func (g *Gateway) handleShareContracts(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// ─── /v1/internal/memory/* — Agent SDK algorithm dispatch bridge ─────────────────
+
+// handleMemoryRecall combines search retrieval with algorithm-level Recall scoring.
+func (g *Gateway) handleMemoryRecall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Query      string `json:"query"`
+		Scope      string `json:"scope"`
+		TopK       int    `json:"top_k"`
+		AgentID    string `json:"agent_id"`
+		SessionID  string `json:"session_id"`
+		TenantID   string `json:"tenant_id"`
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.TopK <= 0 {
+		req.TopK = 10
+	}
+	view := g.runtime.DispatchRecall(req.Query, req.Scope, req.TopK,
+		req.AgentID, req.SessionID, req.TenantID, req.WorkspaceID)
+	writeJSON(w, view)
+}
+
+// handleMemoryIngest forwards memory IDs to the algorithm ingest pipeline.
+func (g *Gateway) handleMemoryIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		MemoryIDs []string `json:"memory_ids"`
+		AgentID   string   `json:"agent_id"`
+		SessionID string   `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	out := g.runtime.DispatchAlgorithm("ingest", req.MemoryIDs, "", "", req.AgentID, req.SessionID, nil)
+	writeJSON(w, out)
+}
+
+// handleMemoryCompress triggers memory consolidation via MemoryConsolidationWorker.
+func (g *Gateway) handleMemoryCompress(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	out := g.runtime.DispatchAlgorithm("compress", nil, "", "", req.AgentID, req.SessionID, nil)
+	writeJSON(w, out)
+}
+
+// handleMemorySummarize triggers memory summarization via SummarizationWorker.
+func (g *Gateway) handleMemorySummarize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+		MaxLevel  int    `json:"max_level"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	out := g.runtime.DispatchAlgorithm("summarize", nil, "", "", req.AgentID, req.SessionID, nil)
+	writeJSON(w, out)
+}
+
+// handleMemoryDecay applies forgetting decay via AlgorithmDispatchWorker.
+func (g *Gateway) handleMemoryDecay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	out := g.runtime.DispatchAlgorithm("decay", nil, "", time.Now().UTC().Format(time.RFC3339), req.AgentID, req.SessionID, nil)
+	writeJSON(w, out)
+}
+
+// handleMemoryShare broadcasts a memory to a target agent via CommunicationWorker.
+func (g *Gateway) handleMemoryShare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		MemoryID      string                 `json:"memory_id"`
+		FromAgentID   string                 `json:"from_agent_id"`
+		ToAgentID     string                 `json:"to_agent_id"`
+		ContractScope string                 `json:"contract_scope"` // "restricted_shared"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ToAgentID == req.FromAgentID {
+		writeJSON(w, map[string]string{"status": "skipped", "reason": "same_agent"})
+		return
+	}
+	sharedID, err := g.runtime.DispatchShare(req.FromAgentID, req.ToAgentID, req.MemoryID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":          "ok",
+		"shared_memory_id": sharedID,
+		"memory_id":       req.MemoryID,
+		"to_agent_id":     req.ToAgentID,
+	})
+}
+
+// handleMemoryConflictResolve resolves a memory conflict via ConflictMergeWorker.
+func (g *Gateway) handleMemoryConflictResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		LeftID  string `json:"left_id"`
+		RightID string `json:"right_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	winner := g.runtime.DispatchConflictResolve(req.LeftID, req.RightID)
+	writeJSON(w, map[string]string{
+		"status":    "ok",
+		"winner_id": winner,
+		"left_id":   req.LeftID,
+		"right_id":  req.RightID,
+	})
 }
