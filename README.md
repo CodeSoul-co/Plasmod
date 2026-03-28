@@ -246,6 +246,33 @@ ProofTraceWorker       (explainable trace assembly)
 QueryResponse{Objects, Edges, Provenance, ProofTrace}
 ```
 
+**Benchmark Results (2026-03-28):**
+
+| Test Layer | QPS | Avg Latency | Notes |
+|------------|-----|-------------|-------|
+| HNSW Direct (deep1B, L2) | 12,211 | 0.082 ms | C++ Knowhere, 10K vectors, 100-dim, self-recall@1=100% |
+| QueryChain E2E | 223 | 4.48 ms | Full pipeline: Search + Metadata + SafetyFilter + RRF + ProofTrace BFS |
+
+ProofTrace stages observed:
+```
+[0] planner
+[1] retrieval_search
+[2] policy_filter
+[3] [d=1] obj_A -[caused_by]-> obj_B (w=0.90)
+[4] [d=2] obj_B -[derived_from]-> obj_C (w=0.80)
+[5] derivation: evt_source(event) -[extraction]-> obj_A(memory)
+```
+
+Run benchmarks:
+```bash
+# HNSW direct retrieval (requires CGO + libandb_retrieval.dylib)
+CGO_LDFLAGS="-L$PWD/build -landb_retrieval -Wl,-rpath,$PWD/build -framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+go test -tags retrieval -v -run TestVectorStore_Deep1B_Recall ./src/internal/dataplane
+
+# QueryChain E2E
+go test -v -run TestQueryChain_E2E_Latency ./src/internal/worker/
+```
+
 #### 🟢 Collaboration Chain — multi-agent coordination with governed sharing
 
 Memory sharing in a multi-agent system is **not** copying a record to a shared namespace.  It is a **controlled projection** — the original Memory retains its provenance and owner; the target agent receives a scope-filtered, policy-conditioned view.
@@ -582,21 +609,49 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
 **Scope:** Extend the HTTP embedding module to support all major LLM embedding providers, plus local/CPU runtimes (ONNX, TensorRT, llama.cpp / GGUF).
 
 **Current status:** `src/internal/dataplane/embedding/` provides:
-- `TfidfEmbedder` — pure-Go, no network, already working
-- `HTTPEmbedder` — OpenAI v1 schema (OpenAI, ZhipuAI, Azure, Ollama)
-- `CohereEmbedder` — Cohere `/v2/embed`
-- Client pool with connection reuse
 
-**Required extensions:**
-
-| Provider | File to add/modify | Notes |
+| Provider | Implementation | Test Status |
 |---|---|---|
-| Ollama (local) | Already covered by `HTTPEmbedder` | Set `ANDB_EMBEDDER_BASE_URL=http://localhost:11434/v1` |
-| Local ONNX model | `embedding/onnx.go` | `OnnxEmbedder`: load `.onnx` via `github.com/owulveryck/onnx-go`, run inference on CPU |
-| TensorRT | `embedding/tensorrt.go` | `TensorRTEmbedder`: CUDA context, engine cache, batch inference |
-| GGUF (llama.cpp) | `embedding/gguf.go` | `GGUFEmbedder`: load `.gguf` via `github.com/ggerganov/llama.cpp`, CPU/GPU hybrid |
-| Vertex AI | `embedding/vertexai.go` | Google Cloud Vertex AI Embeddings API |
-| HuggingFace Inference API | `embedding/huggingface.go` | `https://api-inference.huggingface.co/` |
+| `TfidfEmbedder` | Pure-Go, no network | Tested |
+| `HTTPEmbedder` | OpenAI v1 schema (OpenAI, Azure, Ollama, ZhipuAI/GLM) | **ZhipuAI: PASSED (dim=2048)**, **Ollama: PASSED (dim=768)**, OpenAI/Azure: needs API key |
+| `CohereEmbedder` | Cohere `/v2/embed` | Tested (mock) |
+| `VertexAIEmbedder` | Google Cloud Vertex AI Embeddings API | Tested (mock) |
+| `HuggingFaceEmbedder` | HuggingFace Inference API | Tested (mock) |
+| `OnnxEmbedder` | ONNX Runtime via `onnxruntime_go` | Implemented, needs real model test |
+| `GGUFEmbedder` | llama.cpp via `go-llama.cpp`, Metal GPU | Implemented, needs real model test |
+| `TensorRTEmbedder` | NVIDIA TensorRT (Linux + CUDA only) | Stub |
+
+- Client pool with connection reuse
+- Batch inference support (`BatchGenerate`)
+- Dimension probing on startup
+
+**Provider-specific notes:**
+
+| Provider | Model | Dimension | Test Status | Notes |
+|----------|-------|-----------|-------------|-------|
+| ZhipuAI/GLM | `embedding-3` | 2048 | **PASSED** | Uses `https://open.bigmodel.cn/api/paas/v4` |
+| Ollama (local) | `nomic-embed-text` | 768 | **PASSED** | Requires `brew install ollama && ollama pull nomic-embed-text` |
+| OpenAI | `text-embedding-3-small` | 1536 | Needs API key | Standard OpenAI Embeddings API |
+| Azure OpenAI | (deployment) | varies | Needs API key | Set `AzureDeployment` in config |
+| ONNX | - | - | Needs model | Requires `ONNXRUNTIME_LIB_PATH` env var |
+| GGUF | - | - | Needs model | Requires `go-llama.cpp` C++ library built with Metal |
+| TensorRT | - | - | Stub | Linux + CUDA only |
+
+**Run provider tests:**
+```bash
+# ZhipuAI (requires API key)
+CGO_LDFLAGS="-framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+ANDB_ZHIPUAI_API_KEY=xxx go test -v -run TestProvider_ZhipuAI ./src/internal/dataplane/embedding/
+
+# Ollama (requires local installation)
+brew install ollama && brew services start ollama && ollama pull nomic-embed-text
+CGO_LDFLAGS="-framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+go test -v -run TestProvider_Ollama ./src/internal/dataplane/embedding/
+
+# OpenAI (requires API key)
+CGO_LDFLAGS="-framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+ANDB_OPENAI_API_KEY=sk-xxx go test -v -run TestProvider_OpenAI ./src/internal/dataplane/embedding/
+```
 
 **Interface contract** — all embedders must satisfy:
 ```go
@@ -615,10 +670,29 @@ type Generator interface {
 
 **Env var convention:**
 ```
-ANDB_EMBEDDER=onnx|tensorrt|gguf|vertexai|huggingface
-ANDB_EMBEDDER_MODEL_PATH=/path/to/model.onnx   # ONNX/TensorRT/GGUF local path
+# Provider selection
+ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere|vertexai|huggingface|onnx|gguf|tensorrt
+
+# API Keys (one per provider)
+ANDB_OPENAI_API_KEY=sk-xxx                     # OpenAI
+ANDB_ZHIPUAI_API_KEY=xxx                       # ZhipuAI/GLM
+ANDB_COHERE_API_KEY=xxx                        # Cohere
+ANDB_VERTEXAI_ACCESS_TOKEN=xxx                 # Google Vertex AI OAuth2 token (or use ADC)
+ANDB_HUGGINGFACE_API_KEY=hf_xxx                # HuggingFace
+
+# Provider-specific config
+ANDB_OPENAI_BASE_URL=https://api.openai.com/v1 # Override for Azure/Ollama
+ANDB_OPENAI_MODEL=text-embedding-3-small       # OpenAI model name
+ANDB_ZHIPUAI_MODEL=embedding-3                 # ZhipuAI model name
+ANDB_VERTEXAI_PROJECT=my-project               # Google Cloud project ID
+ANDB_VERTEXAI_LOCATION=us-central1             # Google Cloud region
+ANDB_HUGGINGFACE_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+# Local runtime config
+ANDB_EMBEDDER_MODEL_PATH=/path/to/model.onnx   # ONNX/GGUF local path
 ANDB_EMBEDDER_MAX_BATCH_SIZE=32                # inference batch size
-ANDB_EMBEDDER_DEVICE=cpu|cuda                  # execution provider
+ANDB_EMBEDDER_DEVICE=cpu|cuda|metal            # execution provider
+ONNXRUNTIME_LIB_PATH=/path/to/libonnxruntime.dylib  # ONNX Runtime library
 ```
 
 **Module layout target:**
