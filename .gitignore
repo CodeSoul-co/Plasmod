@@ -87,3 +87,7 @@ server
 RETRIEVAL_B.md
 ingest-storage-object-workers.md
 src/internal/platformpkg/UPSTREAM_README.md
+
+# Local TLS roots for Docker andb (PEM); keep directory via .gitkeep only
+docker/custom-ca/*
+!docker/custom-ca/.gitkeep
