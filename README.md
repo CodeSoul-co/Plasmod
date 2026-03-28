@@ -1,5 +1,5 @@
 # CogDB — Agent-Native Database for Multi-Agent Systems
-> **Branch:** `dev` (integration) · **Pass 8** (2026-03-27)
+> **Branch:** `dev` (integration) · **Pass 9** (2026-03-28)
 
 CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combines a tiered segment-oriented retrieval plane, an event backbone with an append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
 
@@ -13,16 +13,20 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
 - Supplemental canonical retrieval in `ExecuteQuery`: State/Artifact IDs fetched from ObjectStore alongside retrieval-plane results
 - Event store: `ObjectStore` supports Event CRUD; `QueryChain.Run` routes `evt_`/`art_` IDs to load Event/Artifact GraphNodes
-- Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index) → **cold** (archived tier), behind a unified `DataPlane` interface
+- Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index, hybrid when embedder set) → **cold** (S3 or in-mem), behind a unified `DataPlane` interface
+- **RRF fusion** across hot + warm + cold candidate lists for rank fusion
 - Dual storage backends: in-memory (default) and Badger-backed persistent storage (`ANDB_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
-- Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
+- Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time; `QueryResponse.EvidenceCache` reports hit/miss stats
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
-- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, and `chain_traces` (`main` / `memory_pipeline` / `query` / `collaboration` string slots; query path fills `query` from `QueryChain`) on every query
+- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, `ChainTraces`, `EvidenceCache`, and `chain_traces` (main/memory_pipeline/query/collaboration slots) on every query
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
-- 19 worker nodes registered: 3 data-plane + 16 domain workers (Ingest, ObjectMat, StateMat, ToolTrace, MemExtract, MemConsolidate, Summarize, ReflectionPolicy, IndexBuild, GraphRelation, ProofTrace, SubgraphExecutor, ConflictMerge, Communication, MicroBatch, AlgorithmDispatch)
+- `include_cold` query flag wired through planner and TieredDataPlane to force cold-tier merge even when hot satisfies TopK
+- Algorithm dispatch: `DispatchAlgorithm`, `DispatchRecall`, `DispatchShare`, `DispatchConflictResolve` on Runtime; pluggable `MemoryManagementAlgorithm` interface with `BaselineMemoryAlgorithm` (default) and `MemoryBankAlgorithm` (8-dimension governance model)
+- **MemoryBank governance**: 8 lifecycle states (candidate→active→reinforced→compressed→stale→quarantined→archived→deleted), conflict detection (value contradiction, preference reversal, factual disagreement, entity conflict), profile management
+- All algorithm parameters externalized to `configs/algorithm_memorybank.yaml` and `configs/algorithm_baseline.yaml`
 - Safe DLQ: panic recovery with overflow buffer (capacity 256) + structured `OverflowBuffer()` + `OverflowCount` metrics — panics are never silently lost
-- `AlgorithmDispatchWorker` wired with no-op default algorithm; pluggable via `MemoryManagementAlgorithm` interface
-- Module-level test coverage: 22 packages with `*_test.go`; 13 Go integration test files covering CRUD, chains, dataflow, topology, protocol
+- 10 embedding providers: `TfidfEmbedder` (pure-Go), `OpenAIEmbedder` (OpenAI/Azure/Ollama/ZhipuAI), `CohereEmbedder`, `VertexAIEmbedder`, `HuggingFaceEmbedder`, `OnnxEmbedder`, `GGUFEmbedder` (go-llama.cpp/Metal), `TensorRTEmbedder` (stub); ZhipuAI and Ollama real-API tests PASS
+- Module-level test coverage: 22 packages with `*_test.go`
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
 
@@ -106,7 +110,7 @@ The execution layer is organised as a **cognitive dataflow pipeline** decomposed
 | 1 | **Data Plane** — Storage & Index | `IndexBuildWorker`, `SegmentWorker` _(compaction)_, `VectorRetrievalExecutor` |
 | 2 | **Event / Log Layer** — WAL & Version Backbone | `IngestWorker`, `LogDispatchWorker` _(pub-sub)_, `TimeTick / TSO Worker` |
 | 3 | **Object Layer** — Canonical Objects | `ObjectMaterializationWorker`, `StateMaterializationWorker`, `ToolTraceWorker` |
-| 4 | **Cognitive Layer** — Memory Lifecycle | `MemoryExtractionWorker`, `MemoryConsolidationWorker`, `SummarizationWorker`, `ReflectionPolicyWorker` |
+| 4 | **Cognitive Layer** — Memory Lifecycle | `MemoryExtractionWorker`, `MemoryConsolidationWorker`, `SummarizationWorker`, `ReflectionPolicyWorker`, `BaselineMemoryAlgorithm`, `MemoryBankAlgorithm` |
 | 5 | **Structure Layer** — Graph & Tensor Structure | `GraphRelationWorker`, `EmbeddingBuilderWorker`, `TensorProjectionWorker` _(optional)_ |
 | 6 | **Policy Layer** — Governance & Constraints | `PolicyWorker`, `ConflictMergeWorker`, `AccessControlWorker` |
 | 7 | **Query / Reasoning Layer** — Retrieval & Reasoning | `QueryWorker`, `ProofTraceWorker`, `SubgraphExecutor`, `MicroBatchScheduler` |
@@ -398,7 +402,7 @@ make test
 
 ## Integration Tests
 
-The integration test suite lives under `integration_tests/` and is split into two complementary layers:
+The integration test suite lives under `integration_tests/` (gitignored — for local dev only) and is split into two complementary layers:
 
 | Layer | Location | What it tests |
 |---|---|---|
@@ -555,17 +559,22 @@ Additional supporting docs already in the repo:
 
 ### v1 — current
 
-- End-to-end event ingest and structured-evidence query
-- Tiered hot → warm → cold retrieval over canonical-object projections
-- 1-hop graph expansion in every `QueryResponse`
-- Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time
-- Go HTTP API with 14 routes, Python SDK, and integration test suite
+- End-to-end event ingest and structured-evidence query ✅
+- Tiered hot → warm → cold retrieval with RRF fusion ✅
+- 1-hop graph expansion in every `QueryResponse` ✅
+- Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time ✅
+- Go HTTP API with 14 routes, Python SDK, and integration test suite ✅
+- Pluggable memory governance algorithms (Baseline + MemoryBank) ✅
+- 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) ✅
+- `include_cold` query flag fully wired ✅
 
 ### v1.x — near-term
 
+- **DFS cold-tier search**: dense vector similarity over cold S3 embeddings (not just lexical cold search)
 - Benchmark comparison against simple top-k retrieval
 - Time-travel queries using WAL `Scan` replay
 - Multi-agent session isolation and scope enforcement
+- MemoryBank algorithm integration with Agent SDK endpoints
 
 ### v2+ — longer-term
 
@@ -649,13 +658,17 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
 
 | Provider | Model | Dimension | Test Status | Notes |
 |----------|-------|-----------|-------------|-------|
-| ZhipuAI/GLM | `embedding-3` | 2048 | **PASSED** | Uses `https://open.bigmodel.cn/api/paas/v4` |
-| Ollama (local) | `nomic-embed-text` | 768 | **PASSED** | Requires `brew install ollama && ollama pull nomic-embed-text` |
-| OpenAI | `text-embedding-3-small` | 1536 | Needs API key | Standard OpenAI Embeddings API |
-| Azure OpenAI | (deployment) | varies | Needs API key | Set `AzureDeployment` in config |
-| ONNX | - | - | Needs model | Requires `ONNXRUNTIME_LIB_PATH` env var |
-| GGUF | - | - | Needs model | Requires `go-llama.cpp` C++ library built with Metal |
-| TensorRT | - | - | Stub | Linux + CUDA only |
+| TF-IDF | — | configurable | **PASSED** | Pure-Go, default embedder |
+| ZhipuAI/GLM | `embedding-3` | 2048 | **PASSED (real API)** | Uses `https://open.bigmodel.cn/api/paas/v4` |
+| Ollama (local) | `nomic-embed-text` | 768 | **PASSED (real API)** | Requires `brew install ollama && ollama pull nomic-embed-text` |
+| OpenAI | `text-embedding-3-small` | 1536 | Implemented | Standard OpenAI Embeddings API; needs API key |
+| Azure OpenAI | (deployment) | varies | Implemented | Set `AzureDeployment` in config; needs API key |
+| Cohere | `embed-english-v3.0` | 1024 | Mock tested | Real API needs key |
+| Vertex AI | — | — | Mock tested | Google Cloud OAuth2; needs credentials |
+| HuggingFace | — | — | Mock tested | HF Inference API; needs key |
+| ONNX | — | configurable | Implemented | Needs `ONNXRUNTIME_LIB_PATH` + model file |
+| GGUF | — | configurable | Implemented | Needs `go-llama.cpp` C++ library built with Metal |
+| TensorRT | — | — | Stub | Linux + CUDA only |
 
 **Run provider tests:**
 ```bash
@@ -792,14 +805,14 @@ Current cold tier (`src/internal/storage/`) writes canonical `Memory` objects to
 
 **Audit checklist:**
 ```
-□ ColdObjectStore.ColdSearch uses m.Content, not metadata labels
-□ ArchiveColdRecord stores full Memory JSON in S3
-□ GetMemoryActivated cold path rehydrates full Memory from S3
-□ S3 object key = memories/{tenant_id}/{workspace_id}/{memory_id}.json
-□ ColdSearch scores by Content similarity, not metadata
+☑ ColdObjectStore.ColdSearch uses m.Content, not metadata labels
+☑ ArchiveColdRecord stores full Memory JSON in S3
+☑ GetMemoryActivated cold path rehydrates full Memory from S3
+☑ S3 object key = memories/{tenant_id}/{workspace_id}/{memory_id}.json
+☑ ColdSearch scores by Content similarity, not metadata
 □ DerivationLog entries have ObjectID index for audit queries
-□ ProofTrace steps carry EdgeID + EdgeType (not just string)
-□ MaxProofDepth enforced by BFS in ProofTraceWorker
+☑ ProofTrace steps carry EdgeID + EdgeType (not just string)
+☑ MaxProofDepth enforced by BFS in ProofTraceWorker
 □ DFS relevance threshold configurable via AlgorithmConfig
 □ All DFS/HNSW params externalized to AlgorithmConfig
 ```
