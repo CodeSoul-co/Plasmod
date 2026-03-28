@@ -3,6 +3,7 @@ package integration_test
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -128,4 +129,48 @@ func TestChainQuery_MaxDepth_Respected(t *testing.T) {
 		t.Skip("proof_trace not in response shape, skipping")
 	}
 	t.Logf("proof_trace with max_depth=1: %d entries", len(trace))
+}
+
+func chainTraceSlot(t *testing.T, resp map[string]any, slot string) []any {
+	t.Helper()
+	raw, ok := resp["chain_traces"].(map[string]any)
+	if !ok {
+		t.Fatalf("chain_traces missing or not object")
+	}
+	v, ok := raw[slot].([]any)
+	if !ok {
+		t.Fatalf("chain_traces.%s missing or not array: %T", slot, raw[slot])
+	}
+	return v
+}
+
+// TestChainQuery_ChainTracesFourSlots verifies all four chain trace arrays are
+// populated on query (read-path summaries for main/memory/collaboration + query chain).
+func TestChainQuery_ChainTracesFourSlots(t *testing.T) {
+	ev := chainQueryEvent(t, "four_slots")
+	_, ack := doJSON(t, http.MethodPost, "/v1/ingest/events", ev)
+	if ack["status"] != "accepted" {
+		t.Fatalf("ingest failed: %v", ack)
+	}
+
+	_, resp := doJSON(t, http.MethodPost, "/v1/query", chainQueryReq())
+	for _, slot := range []string{"main", "memory_pipeline", "query", "collaboration"} {
+		lines := chainTraceSlot(t, resp, slot)
+		if len(lines) == 0 {
+			t.Errorf("expected non-empty chain_traces.%s, got %v", slot, lines)
+		}
+	}
+	main0, _ := chainTraceSlot(t, resp, "main")[0].(string)
+	if main0 != "phase=query_path" {
+		t.Errorf("chain_traces.main[0]: got %q want phase=query_path", main0)
+	}
+	var collabJoined string
+	for _, line := range chainTraceSlot(t, resp, "collaboration") {
+		if s, ok := line.(string); ok {
+			collabJoined += s + "\n"
+		}
+	}
+	if !strings.Contains(collabJoined, "edges_in_response_total=") {
+		t.Errorf("collaboration trace should mention edges_in_response_total: %q", collabJoined)
+	}
 }

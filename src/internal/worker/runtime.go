@@ -252,6 +252,9 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
 
+	resp.ChainTraces.Main = formatQueryPathMainChainLines(req, result)
+	resp.ChainTraces.MemoryPipeline = formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs)
+
 	// ── Post-retrieval reasoning via QueryChain ───────────────────────────────
 	// QueryChain handles:
 	//   1. Pre-fetching Memory objects as GraphNodes for node population.
@@ -292,6 +295,8 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	} else {
 		resp.ChainTraces.Query = []string{"query_chain skipped=no_seed_object_ids"}
 	}
+
+	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
 
 	return resp
 }
@@ -382,6 +387,84 @@ func (r *Runtime) GetPolicyDecisions(objectID string) []string {
 			e.LSN, e.Decision, e.PolicyID, e.Reason)
 	}
 	return out
+}
+
+// formatQueryPathMainChainLines summarizes retrieval context on the read path.
+// MainChain itself runs on ingest only; we do not replay it during query.
+func formatQueryPathMainChainLines(req schemas.QueryRequest, result dataplane.SearchOutput) []string {
+	return []string{
+		"phase=query_path",
+		"main_chain not_reexecuted=runs_on_ingest",
+		fmt.Sprintf("retrieval_tier=%s", result.Tier),
+		fmt.Sprintf("retrieved_object_ids=%d", len(result.ObjectIDs)),
+		fmt.Sprintf("include_cold_requested=%t", req.IncludeCold),
+	}
+}
+
+// formatQueryPathMemoryPipelineLines summarizes memory seeds from retrieval.
+// MemoryPipelineChain runs on ingest / subscriber; query only reports store-backed stats.
+func formatQueryPathMemoryPipelineLines(store storage.RuntimeStorage, objectIDs []string) []string {
+	lines := []string{
+		"phase=query_path",
+		"memory_pipeline_chain not_reexecuted=runs_on_ingest_and_subscriber",
+	}
+	if store == nil {
+		lines = append(lines, "retrieved_memory_seeds=0", "object_store=nil")
+		return lines
+	}
+	nMem := 0
+	maxLevel := 0
+	nChecked := 0
+	const maxLevelLookups = 64
+	objs := store.Objects()
+	for _, id := range objectIDs {
+		if !strings.HasPrefix(id, schemas.IDPrefixMemory) {
+			continue
+		}
+		nMem++
+		if nChecked >= maxLevelLookups {
+			continue
+		}
+		nChecked++
+		if m, ok := objs.GetMemory(id); ok && m.Level > maxLevel {
+			maxLevel = m.Level
+		}
+	}
+	lines = append(lines, fmt.Sprintf("retrieved_memory_seeds=%d", nMem))
+	if nMem > 0 && nChecked > 0 {
+		lines = append(lines, fmt.Sprintf("sample_max_memory_level=%d", maxLevel))
+	}
+	if nMem > nChecked {
+		lines = append(lines, fmt.Sprintf("memory_level_stats_capped=%d", maxLevelLookups))
+	}
+	return lines
+}
+
+// formatQueryPathCollaborationLines summarizes collaboration-related edges present
+// in the assembled response (including subgraph merge). CollaborationChain runs on ingest.
+func formatQueryPathCollaborationLines(edges []schemas.Edge) []string {
+	lines := []string{
+		"phase=query_path",
+		"collaboration_chain not_reexecuted=runs_on_ingest_and_conflict_merge",
+	}
+	var nConflict, nSession, nAgent int
+	for _, e := range edges {
+		switch e.EdgeType {
+		case string(schemas.EdgeTypeConflictResolved):
+			nConflict++
+		case string(schemas.EdgeTypeBelongsToSession):
+			nSession++
+		case string(schemas.EdgeTypeOwnedByAgent):
+			nAgent++
+		}
+	}
+	lines = append(lines,
+		fmt.Sprintf("edges_in_response_total=%d", len(edges)),
+		fmt.Sprintf("edges_conflict_resolved=%d", nConflict),
+		fmt.Sprintf("edges_belongs_to_session=%d", nSession),
+		fmt.Sprintf("edges_owned_by_agent=%d", nAgent),
+	)
+	return lines
 }
 
 // formatQueryChainTraceLines turns QueryChain results into API-facing trace lines.

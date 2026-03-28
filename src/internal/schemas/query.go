@@ -11,8 +11,9 @@ const (
 )
 
 // ChainTraceSlots groups per-chain trace lines exposed on QueryResponse.
-// Main / memory_pipeline / collaboration run on ingest and are typically empty
-// on a standalone query unless future versions attach session-scoped replay.
+// On ingest, workers may attach full chain traces. On a standalone query,
+// main / memory_pipeline / collaboration carry read-path summaries (the write
+// chains are not re-executed); query is filled from QueryChain.
 type ChainTraceSlots struct {
 	Main             []string `json:"main"`
 	MemoryPipeline   []string `json:"memory_pipeline"`

@@ -259,7 +259,7 @@ Current `QueryResponse` fields:
 - `versions` as `[]ObjectVersion`
 - `applied_filters` as `[]string`
 - `proof_trace` as `[]string`
-- `chain_traces` as `{ "main", "memory_pipeline", "query", "collaboration" }` each `[]string` — ingest-time chains are usually empty on query; `query` is filled from `QueryChain` (proof/subgraph merge metadata)
+- `chain_traces` as `{ "main", "memory_pipeline", "query", "collaboration" }` each `[]string` — on query, `main` / `memory_pipeline` / `collaboration` hold **read-path summaries** (write chains are not re-run); `query` is filled from `QueryChain` (proof/subgraph merge metadata)
 - `evidence_cache` as optional `{ "looked_up", "hits", "misses" }` — counts for pre-computed `EvidenceFragment` lookups over returned object IDs (omitted when no cache or no IDs)
 
 Current implementation note:
