@@ -122,7 +122,7 @@ type SubgraphExecutorWorker interface {
 // 0 or negative = unlimited BFS up to an internal cap of 8).
 type ProofTraceWorker interface {
 	Info() NodeInfo
-	AssembleTrace(objectIDs []string, maxDepth int) []string
+	AssembleTrace(objectIDs []string, maxDepth int) []schemas.ProofStep
 }
 
 // ─── Ingestion & Materialization worker interfaces ────────────────────────────

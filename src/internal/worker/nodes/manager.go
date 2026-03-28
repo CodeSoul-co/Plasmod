@@ -44,24 +44,24 @@ type Manager struct {
 
 func CreateManager() *Manager {
 	return &Manager{
-		dataNodes:            []DataNode{},
-		indexNodes:           []IndexNode{},
-		queryNodes:           []QueryNode{},
-		memExtractionWorkers: []MemoryExtractionWorker{},
-		memConsolidWorkers:   []MemoryConsolidationWorker{},
-		reflectionWorkers:    []ReflectionPolicyWorker{},
-		conflictMergeWorkers: []ConflictMergeWorker{},
-		graphWorkers:         []GraphRelationWorker{},
-		proofTraceWorkers:    []ProofTraceWorker{},
-		ingestWorkers:        []IngestWorker{},
-		objMatWorkers:        []ObjectMaterializationWorker{},
-		stateMatWorkers:      []StateMaterializationWorker{},
-		toolTraceWorkers:     []ToolTraceWorker{},
-		indexBuildWorkers:    []IndexBuildWorker{},
-		commWorkers:          []CommunicationWorker{},
-		microBatchWorkers:    []MicroBatchScheduler{},
-		summarizationWorkers: []SummarizationWorker{},
-		subgraphWorkers:           []SubgraphExecutorWorker{},
+		dataNodes:                []DataNode{},
+		indexNodes:               []IndexNode{},
+		queryNodes:               []QueryNode{},
+		memExtractionWorkers:     []MemoryExtractionWorker{},
+		memConsolidWorkers:       []MemoryConsolidationWorker{},
+		reflectionWorkers:        []ReflectionPolicyWorker{},
+		conflictMergeWorkers:     []ConflictMergeWorker{},
+		graphWorkers:             []GraphRelationWorker{},
+		proofTraceWorkers:        []ProofTraceWorker{},
+		ingestWorkers:            []IngestWorker{},
+		objMatWorkers:            []ObjectMaterializationWorker{},
+		stateMatWorkers:          []StateMaterializationWorker{},
+		toolTraceWorkers:         []ToolTraceWorker{},
+		indexBuildWorkers:        []IndexBuildWorker{},
+		commWorkers:              []CommunicationWorker{},
+		microBatchWorkers:        []MicroBatchScheduler{},
+		summarizationWorkers:     []SummarizationWorker{},
+		subgraphWorkers:          []SubgraphExecutorWorker{},
 		algorithmDispatchWorkers: []AlgorithmDispatchWorker{},
 	}
 }
@@ -153,12 +153,12 @@ func (m *Manager) DispatchMemoryExtraction(eventID, agentID, sessionID, content 
 	}
 }
 
-// DispatchProofTrace collects trace steps from all registered proof-trace workers.
+// DispatchProofTrace collects structured proof steps from all registered proof-trace workers.
 // maxDepth controls BFS depth (0 = default cap of 8).
-func (m *Manager) DispatchProofTrace(objectIDs []string, maxDepth int) []string {
+func (m *Manager) DispatchProofTrace(objectIDs []string, maxDepth int) []schemas.ProofStep {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	trace := []string{}
+	trace := []schemas.ProofStep{}
 	for _, w := range m.proofTraceWorkers {
 		trace = append(trace, w.AssembleTrace(objectIDs, maxDepth)...)
 	}

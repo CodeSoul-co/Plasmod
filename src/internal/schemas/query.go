@@ -33,7 +33,7 @@ type QueryResponse struct {
 	Provenance     []string        `json:"provenance"`
 	Versions       []ObjectVersion `json:"versions"`
 	AppliedFilters []string        `json:"applied_filters"`
-	ProofTrace     []string        `json:"proof_trace"`
+	ProofTrace     []ProofStep     `json:"proof_trace"`
 }
 
 type GraphExpandRequest struct {
