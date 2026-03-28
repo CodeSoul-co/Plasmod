@@ -17,7 +17,7 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Dual storage backends: in-memory (default) and Badger-backed persistent storage (`ANDB_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
-- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, and `AppliedFilters` on every query
+- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, and `chain_traces` (`main` / `memory_pipeline` / `query` / `collaboration` string slots; query path fills `query` from `QueryChain`) on every query
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
 - 19 worker nodes registered: 3 data-plane + 16 domain workers (Ingest, ObjectMat, StateMat, ToolTrace, MemExtract, MemConsolidate, Summarize, ReflectionPolicy, IndexBuild, GraphRelation, ProofTrace, SubgraphExecutor, ConflictMerge, Communication, MicroBatch, AlgorithmDispatch)
 - Safe DLQ: panic recovery with overflow buffer (capacity 256) + structured `OverflowBuffer()` + `OverflowCount` metrics — panics are never silently lost
@@ -410,6 +410,21 @@ The integration test suite lives under `integration_tests/` and is split into tw
 - Go server is running: `make dev`
 - For Python SDK tests: `pip install -r requirements.txt && pip install -e ./sdk/python`
 
+### Full stack via Docker 
+
+Root [`docker-compose.yml`](docker-compose.yml) starts **MinIO** (S3 API on port 9000), creates bucket `andb-integration`, and runs the Go server with **`ANDB_STORAGE=disk`**, **`ANDB_DATA_DIR=/data`**, and **`S3_*` pointing at MinIO** (cold tier uses real S3). Server listens on **`0.0.0.0:8080`** inside the container and is published as **http://127.0.0.1:8080**.
+
+If `go mod` fails inside the `andb` container with TLS/x509 errors (corporate HTTPS inspection), add your CA as `.crt`/`.pem` under [`docker/custom-ca/`](docker/custom-ca/) (ignored by git) and optionally set **`GOPROXY`** / **`GOSUMDB`** in a repo-root `.env` for `docker compose`. The compose file wires an entrypoint that runs `update-ca-certificates` before `go run`.
+
+```bash
+docker compose up -d
+# optional: fixture-driven JSON captures (stdlib HTTP only; no SDK install required)
+python scripts/e2e/member_a_capture.py --out-dir ./out/member_a
+make integration-test   # still expects a server at ANDB_BASE_URL (same URL)
+```
+
+Fixture sets and manifest: [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/). Capture script: [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py). Convenience targets: `make docker-up`, `make docker-down`, `make member-a-capture`.
+
 ### Run all integration tests
 
 ```bash
@@ -578,8 +593,13 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
   - `ProofTrace` output from `QueryChain.Run`
   - Applied governance filters
   - Graph edge expansion (`Edges`, `Nodes`)
-  - Evidence fragment cache hit/miss log
+  - Evidence fragment cache hit/miss counts on `QueryResponse.evidence_cache` (`looked_up`, `hits`, `misses`) when a fragment cache is wired
 - Integration test script in `scripts/` or `integration_tests/python/`
+
+**Implemented helpers (this repo):**
+- Fixture manifest + JSON under [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/); capture via [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py) (`nodes`, `evidence_cache`, `chain_traces` in output).
+- One-shot acceptance (MinIO in Docker + host-built server): [`scripts/e2e/run_acceptance_scenario_a.ps1`](scripts/e2e/run_acceptance_scenario_a.ps1).
+- Vector file sanity (no HTTP): `go test ./integration_tests/dataset/...` for `deep1B.ibin`.
 
 **Entry point:** [`src/internal/app/bootstrap.go`](src/internal/app/bootstrap.go) wires all components; start from `BuildServer()` and trace through each chain.
 

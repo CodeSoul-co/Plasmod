@@ -1,0 +1,15 @@
+{
+  "tenant_id": "t_member_a",
+  "workspace_id": "w_member_a",
+  "agent_id": "agent_collab_ma",
+  "session_id": "sess_collab_ma",
+  "event_type": "agent_thought",
+  "logical_ts": 1,
+  "parent_event_id": "",
+  "causal_refs": [],
+  "payload": { "text": "collab member a first" },
+  "source": "member_a_fixtures",
+  "importance": 0.5,
+  "visibility": "private",
+  "version": 1
+}

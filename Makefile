@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -72,3 +72,14 @@ integration-test-s3:
 
 fmt:
 	gofmt -w $(shell find src -name '*.go')
+
+# Docker Compose: MinIO + ANDB with disk storage and S3 cold tier (see README Integration Tests).
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+
+# Requires a running server (e.g. `make dev` or `make docker-up`). Writes JSON per scenario under ./out/member_a/
+member-a-capture:
+	python scripts/e2e/member_a_capture.py --out-dir ./out/member_a

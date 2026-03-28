@@ -1,0 +1,15 @@
+{
+  "tenant_id": "t_member_a_cold",
+  "workspace_id": "w_member_a_cold",
+  "agent_id": "agent_cold_ma",
+  "session_id": "sess_cold_ma",
+  "event_type": "user_message",
+  "logical_ts": 1,
+  "parent_event_id": "",
+  "causal_refs": [],
+  "payload": { "text": "cold tier fixture seed text zeta-9" },
+  "source": "member_a_fixtures_cold",
+  "importance": 0.4,
+  "visibility": "private",
+  "version": 1
+}

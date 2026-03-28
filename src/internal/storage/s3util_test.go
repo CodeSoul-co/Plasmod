@@ -30,6 +30,7 @@ func TestLoadFromEnv_FallbackToMinioAliases(t *testing.T) {
 	t.Setenv("S3_SECRET_KEY", "")
 	t.Setenv("S3_BUCKET", "")
 	t.Setenv("S3_PREFIX", "")
+	t.Setenv("S3_SECURE", "")
 
 	t.Setenv("MINIO_ADDRESS", "127.0.0.1:9000")
 	t.Setenv("MINIO_ACCESS_KEY_ID", "minio_key")

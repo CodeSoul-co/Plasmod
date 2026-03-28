@@ -59,6 +59,13 @@ server.*.log
 # Local MinIO data (Docker volume)
 .minio-data/
 
+# Member A / local full-stack acceptance (Badger + WAL under ANDB_DATA_DIR)
+.acceptance-e2e-data/
+
+# Local server data / capture outputs (not for commit)
+.andb_data/
+out/
+
 # Old integration run artifacts (moved to scripts/dev/artifacts/)
 s3-integration-run-record-*.md
 s3-go-integration-output-*.txt
@@ -83,3 +90,7 @@ src/internal/platformpkg/UPSTREAM_README.md
 
 # SDK test artifacts
 sdk/tests/
+
+# Local TLS roots for Docker andb (PEM); keep directory via .gitkeep only
+docker/custom-ca/*
+!docker/custom-ca/.gitkeep

@@ -4,12 +4,12 @@ param(
 )
 
 function Test-DockerAvailable {
-  try {
-    $null = docker version --format '{{.Server.Version}}' 2>$null
-    return $true
-  } catch {
-    return $false
-  }
+  # docker.exe returns non-zero when the engine is down; PowerShell does not throw.
+  $prev = $global:LASTEXITCODE
+  $null = docker version --format '{{.Server.Version}}' 2>$null
+  $ok = ($global:LASTEXITCODE -eq 0)
+  if (-not $ok) { $global:LASTEXITCODE = $prev }
+  return $ok
 }
 
 function Get-CommandOrNull {

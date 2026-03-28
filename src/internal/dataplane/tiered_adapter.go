@@ -143,9 +143,18 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	hotOut := t.hotToOutput(hotResult)
 
 	// Early return only when hot fully satisfies the request and cold is not needed.
-	if len(hotOut.ObjectIDs) >= input.TopK && input.TopK > 0 && !input.IncludeCold {
+	if len(hotResult.Hits) >= input.TopK && input.TopK > 0 {
 		hotOut.Tier = "hot"
-		return hotOut
+		if !input.IncludeCold {
+			return hotOut
+		}
+		// Caller asked for cold tier: merge even when hot already satisfies TopK,
+		// otherwise archived hits would never be consulted on a full hot page.
+		coldIDs := t.coldSearch(input.QueryText, input.TopK)
+		coldOutput := SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
+		merged := mergeOutputs(hotOut, coldOutput, input.TopK)
+		merged.Tier = "hot+cold"
+		return merged
 	}
 
 	// Warm tier (lexical or lexical+vector depending on embedder/vector readiness).
@@ -242,4 +251,28 @@ func rrfFuseMany(lists [][]string, k int, topK int) []string {
 		return order[:topK]
 	}
 	return order
+}
+
+// mergeOutputs deduplicates and merges two SearchOutputs up to topK results.
+func mergeOutputs(a, b SearchOutput, topK int) SearchOutput {
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(a.ObjectIDs)+len(b.ObjectIDs))
+	for _, id := range a.ObjectIDs {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range b.ObjectIDs {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if topK > 0 && len(ids) > topK {
+		ids = ids[:topK]
+	}
+	segs := append(a.ScannedSegments, b.ScannedSegments...)
+	planned := append(a.PlannedSegments, b.PlannedSegments...)
+	return SearchOutput{ObjectIDs: ids, ScannedSegments: segs, PlannedSegments: planned}
 }

@@ -1,0 +1,15 @@
+{
+  "tenant_id": "t_member_a",
+  "workspace_id": "w_graph_ma",
+  "agent_id": "agent_graph",
+  "session_id": "sess_graph_2",
+  "event_type": "user_message",
+  "logical_ts": 1,
+  "parent_event_id": "",
+  "causal_refs": [],
+  "payload": { "text": "graph expansion fixture memory two gamma" },
+  "source": "member_a_fixtures_graph",
+  "importance": 0.61,
+  "visibility": "private",
+  "version": 1
+}
