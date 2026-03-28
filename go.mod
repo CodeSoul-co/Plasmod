@@ -32,3 +32,5 @@ require (
 )
 
 replace andb/retrievalplane => ./src/internal/dataplane/retrievalplane
+
+replace github.com/go-skynet/go-llama.cpp => /tmp/go-llama-cpp
