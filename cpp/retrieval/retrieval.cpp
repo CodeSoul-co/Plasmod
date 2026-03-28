@@ -15,6 +15,7 @@
 #include "andb/retrieval.h"
 #include "andb/segment_index.h"
 #include <algorithm>
+#include <cstdio>
 #include <vector>
 
 namespace andb {

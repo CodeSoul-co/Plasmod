@@ -19,6 +19,11 @@ func NewRetriever(dim, _, _, _, _ int) (*Retriever, error) {
 	return &Retriever{dim: dim}, nil
 }
 
+// NewRetrieverWithMetric returns a stub retriever (metric ignored).
+func NewRetrieverWithMetric(dim, _, _, _ int, _ string) (*Retriever, error) {
+	return &Retriever{dim: dim}, nil
+}
+
 // Build is a no-op on the stub retriever.
 func (r *Retriever) Build(_ []float32, _ int) error { return nil }
 

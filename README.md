@@ -246,6 +246,33 @@ ProofTraceWorker       (explainable trace assembly)
 QueryResponse{Objects, Edges, Provenance, ProofTrace}
 ```
 
+**Benchmark Results (2026-03-28):**
+
+| Test Layer | QPS | Avg Latency | Notes |
+|------------|-----|-------------|-------|
+| HNSW Direct (deep1B, L2) | 12,211 | 0.082 ms | C++ Knowhere, 10K vectors, 100-dim, self-recall@1=100% |
+| QueryChain E2E | 223 | 4.48 ms | Full pipeline: Search + Metadata + SafetyFilter + RRF + ProofTrace BFS |
+
+ProofTrace stages observed:
+```
+[0] planner
+[1] retrieval_search
+[2] policy_filter
+[3] [d=1] obj_A -[caused_by]-> obj_B (w=0.90)
+[4] [d=2] obj_B -[derived_from]-> obj_C (w=0.80)
+[5] derivation: evt_source(event) -[extraction]-> obj_A(memory)
+```
+
+Run benchmarks:
+```bash
+# HNSW direct retrieval (requires CGO + libandb_retrieval.dylib)
+CGO_LDFLAGS="-L$PWD/build -landb_retrieval -Wl,-rpath,$PWD/build -framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+go test -tags retrieval -v -run TestVectorStore_Deep1B_Recall ./src/internal/dataplane
+
+# QueryChain E2E
+go test -v -run TestQueryChain_E2E_Latency ./src/internal/worker/
+```
+
 #### 🟢 Collaboration Chain — multi-agent coordination with governed sharing
 
 Memory sharing in a multi-agent system is **not** copying a record to a shared namespace.  It is a **controlled projection** — the original Memory retains its provenance and owner; the target agent receives a scope-filtered, policy-conditioned view.
@@ -586,7 +613,7 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
 | Provider | Implementation | Test Status |
 |---|---|---|
 | `TfidfEmbedder` | Pure-Go, no network | Tested |
-| `HTTPEmbedder` | OpenAI v1 schema (OpenAI, Azure, Ollama, ZhipuAI/GLM) | ZhipuAI: **Tested (real API)**, others: mock |
+| `HTTPEmbedder` | OpenAI v1 schema (OpenAI, Azure, Ollama, ZhipuAI/GLM) | **ZhipuAI: PASSED (dim=2048)**, **Ollama: PASSED (dim=768)**, OpenAI/Azure: needs API key |
 | `CohereEmbedder` | Cohere `/v2/embed` | Tested (mock) |
 | `VertexAIEmbedder` | Google Cloud Vertex AI Embeddings API | Tested (mock) |
 | `HuggingFaceEmbedder` | HuggingFace Inference API | Tested (mock) |
@@ -600,15 +627,31 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
 
 **Provider-specific notes:**
 
-| Provider | Notes |
-|---|---|
-| OpenAI | Standard OpenAI Embeddings API |
-| Azure OpenAI | Set `AzureDeployment` in config |
-| Ollama (local) | Set `ANDB_OPENAI_BASE_URL=http://localhost:11434/v1` |
-| ZhipuAI/GLM | Uses `https://open.bigmodel.cn/api/paas/v4`, model: `embedding-3` |
-| ONNX | Requires `ONNXRUNTIME_LIB_PATH` env var |
-| GGUF | Requires `go-llama.cpp` C++ library built with Metal |
-| TensorRT | Linux + CUDA only, stub on other platforms |
+| Provider | Model | Dimension | Test Status | Notes |
+|----------|-------|-----------|-------------|-------|
+| ZhipuAI/GLM | `embedding-3` | 2048 | **PASSED** | Uses `https://open.bigmodel.cn/api/paas/v4` |
+| Ollama (local) | `nomic-embed-text` | 768 | **PASSED** | Requires `brew install ollama && ollama pull nomic-embed-text` |
+| OpenAI | `text-embedding-3-small` | 1536 | Needs API key | Standard OpenAI Embeddings API |
+| Azure OpenAI | (deployment) | varies | Needs API key | Set `AzureDeployment` in config |
+| ONNX | - | - | Needs model | Requires `ONNXRUNTIME_LIB_PATH` env var |
+| GGUF | - | - | Needs model | Requires `go-llama.cpp` C++ library built with Metal |
+| TensorRT | - | - | Stub | Linux + CUDA only |
+
+**Run provider tests:**
+```bash
+# ZhipuAI (requires API key)
+CGO_LDFLAGS="-framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+ANDB_ZHIPUAI_API_KEY=xxx go test -v -run TestProvider_ZhipuAI ./src/internal/dataplane/embedding/
+
+# Ollama (requires local installation)
+brew install ollama && brew services start ollama && ollama pull nomic-embed-text
+CGO_LDFLAGS="-framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+go test -v -run TestProvider_Ollama ./src/internal/dataplane/embedding/
+
+# OpenAI (requires API key)
+CGO_LDFLAGS="-framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
+ANDB_OPENAI_API_KEY=sk-xxx go test -v -run TestProvider_OpenAI ./src/internal/dataplane/embedding/
+```
 
 **Interface contract** — all embedders must satisfy:
 ```go

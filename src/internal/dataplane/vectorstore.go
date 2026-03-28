@@ -32,11 +32,12 @@ type VectorStore struct {
 
 // VectorStoreConfig carries optional tuning parameters for the HNSW index.
 type VectorStoreConfig struct {
-	Dim      int // embedding dimension (must match embedder.Dim())
-	HNSWM    int // M parameter (default 16 when 0)
-	EfCons   int // efConstruction (default 256 when 0)
-	EfSearch int // efSearch (default 64 when 0)
-	RRFK     int // RRF k (default 60 when 0)
+	Dim      int    // embedding dimension (must match embedder.Dim())
+	HNSWM    int    // M parameter (default 16 when 0)
+	EfCons   int    // efConstruction (default 256 when 0)
+	EfSearch int    // efSearch (default 64 when 0)
+	RRFK     int    // RRF k (default 60 when 0)
+	Metric   string // distance metric: "IP" (default), "L2", "COSINE"
 }
 
 // NewVectorStore creates a VectorStore. When the CGO library is not available,
@@ -75,8 +76,13 @@ func NewVectorStore(embedder EmbeddingGenerator, cfg VectorStoreConfig) (*Vector
 		rrfK = 60
 	}
 
-	// NewRetriever returns an error when CGO is disabled or the .dylib/.so is missing.
-	r, err := retrievalplane.NewRetriever(vs.dim, hnswM, efCons, efSearch, rrfK)
+	metric := cfg.Metric
+	if metric == "" {
+		metric = "IP"
+	}
+
+	// NewRetrieverWithMetric returns an error when CGO is disabled or the .dylib/.so is missing.
+	r, err := retrievalplane.NewRetrieverWithMetric(vs.dim, hnswM, efCons, rrfK, metric)
 	if err != nil {
 		// Graceful degradation — vector search silently skipped, lexical still works.
 		return vs, nil

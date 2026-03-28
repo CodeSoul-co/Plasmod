@@ -40,11 +40,21 @@ type Retriever struct {
 }
 
 // NewRetriever creates a Retriever with the given parameters.
-//   dim          : embedding dimension
-//   m, efConstr  : HNSW graph parameters (0 → defaults 16/256)
-//   rrfK         : Reciprocal Rank Fusion constant (0 → default 60)
-//   _ (unused)   : reserved for future use
+//
+//	dim          : embedding dimension
+//	m, efConstr  : HNSW graph parameters (0 → defaults 16/256)
+//	rrfK         : Reciprocal Rank Fusion constant (0 → default 60)
+//	_ (unused)   : reserved for future use
 func NewRetriever(dim, m, efConstr, rrfK, _ int) (*Retriever, error) {
+	return NewRetrieverWithMetric(dim, m, efConstr, rrfK, "IP")
+}
+
+// NewRetrieverWithMetric creates a Retriever with configurable distance metric.
+// Supported metrics: "IP" (inner product), "L2" (Euclidean), "COSINE"
+func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriever, error) {
+	if metric == "" {
+		metric = "IP"
+	}
 	ptr := C.andb_retriever_create()
 	if ptr == nil {
 		return nil, fmt.Errorf("andb_retriever_create: returned nil")
@@ -52,7 +62,7 @@ func NewRetriever(dim, m, efConstr, rrfK, _ int) (*Retriever, error) {
 	rc := C.andb_retriever_init(
 		ptr,
 		C.CString("HNSW"),
-		C.CString("IP"),
+		C.CString(metric),
 		C.int(dim),
 		C.CString("SPARSE_INVERTED_INDEX"),
 		C.int(60),
@@ -90,13 +100,13 @@ func (r *Retriever) Search(query []float32, topk int, filter []byte) ([]int64, [
 	if len(query) == 0 || topk <= 0 {
 		return nil, nil, fmt.Errorf("Search: invalid arguments")
 	}
-	outIDs   := make([]int64, topk)
+	outIDs := make([]int64, topk)
 	outDists := make([]float32, topk)
 
 	var filterPtr *C.uint8_t
 	var filterSize C.size_t
 	if len(filter) > 0 {
-		filterPtr  = (*C.uint8_t)(unsafe.Pointer(&filter[0]))
+		filterPtr = (*C.uint8_t)(unsafe.Pointer(&filter[0]))
 		filterSize = C.size_t(len(filter))
 	}
 
@@ -166,15 +176,15 @@ func (s *SegmentRetriever) Search(segmentID string, query []float32, nq, topk in
 // allowList[i/8] bit (i%8) == 1 means vector i is a valid candidate.
 func (s *SegmentRetriever) SearchWithFilter(
 	segmentID string,
-	query     []float32,
-	nq, topk  int,
+	query []float32,
+	nq, topk int,
 	allowList []byte,
 ) ([]int64, []float32, error) {
 	if len(query) == 0 || nq <= 0 || topk <= 0 {
 		return nil, nil, fmt.Errorf("SearchWithFilter: invalid args")
 	}
-	total   := nq * topk
-	outIDs  := make([]int64,   total)
+	total := nq * topk
+	outIDs := make([]int64, total)
 	outDists := make([]float32, total)
 
 	cs := C.CString(segmentID)

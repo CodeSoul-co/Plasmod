@@ -95,7 +95,9 @@ public:
         int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : kDefaultM;
         int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
 
-        build_cfg_[knowhere::meta::METRIC_TYPE]         = "IP";
+        // Use metric from config, default to IP if not specified
+        std::string metric = cfg_.metric_type.empty() ? "IP" : cfg_.metric_type;
+        build_cfg_[knowhere::meta::METRIC_TYPE]         = metric;
         build_cfg_[knowhere::indexparam::M]             = M;
         build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
         build_cfg_[knowhere::meta::DIM]                 = cfg_.dim;
