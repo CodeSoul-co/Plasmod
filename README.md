@@ -586,7 +586,7 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
 | Provider | Implementation | Test Status |
 |---|---|---|
 | `TfidfEmbedder` | Pure-Go, no network | Tested |
-| `HTTPEmbedder` | OpenAI v1 schema (OpenAI, Azure, Ollama, ZhipuAI/GLM) | Tested (mock) |
+| `HTTPEmbedder` | OpenAI v1 schema (OpenAI, Azure, Ollama, ZhipuAI/GLM) | ZhipuAI: **Tested (real API)**, others: mock |
 | `CohereEmbedder` | Cohere `/v2/embed` | Tested (mock) |
 | `VertexAIEmbedder` | Google Cloud Vertex AI Embeddings API | Tested (mock) |
 | `HuggingFaceEmbedder` | HuggingFace Inference API | Tested (mock) |

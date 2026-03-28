@@ -11,8 +11,9 @@ import (
 // and maintains alignment between Go ObjectIDs and the CGO layer's integer indices.
 //
 // Architecture:
-//   idArray[int_idx] = ObjectID  ↔  vectors[int_idx*dim:(int_idx+1)*dim] = embedding
-//                             ↔  CGO retriever internal ID (same as int_idx)
+//
+//	idArray[int_idx] = ObjectID  ↔  vectors[int_idx*dim:(int_idx+1)*dim] = embedding
+//	                          ↔  CGO retriever internal ID (same as int_idx)
 //
 // When the CGO library is unavailable (CGO_ENABLED=0 or library not built),
 // all methods are safe no-ops and Ready() returns false so the caller falls back
@@ -104,6 +105,23 @@ func (vs *VectorStore) AddText(id, text string) {
 
 	vec, err := vs.embedder.Generate(text)
 	if err != nil || len(vec) == 0 {
+		return
+	}
+
+	vs.mu.Lock()
+	vs.idArray = append(vs.idArray, id)
+	vs.vectors = append(vs.vectors, vec...)
+	vs.mu.Unlock()
+}
+
+// AddVector stores a precomputed embedding vector for the next Build call.
+// Use this when vectors are already computed (e.g. from deep1B.ibin benchmark data).
+// Thread-safe.
+func (vs *VectorStore) AddVector(id string, vec []float32) {
+	if id == "" || len(vec) == 0 {
+		return
+	}
+	if len(vec) != vs.dim {
 		return
 	}
 
