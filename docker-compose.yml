@@ -3,6 +3,11 @@
 #   docker compose up -d
 # Server: http://127.0.0.1:8080  MinIO API: http://127.0.0.1:9000  Console: http://127.0.0.1:9001
 #
+# If `andb` exits with TLS/x509 errors while downloading modules (corporate proxy), the
+# image cannot reach proxy.golang.org. Workaround: `go build -o bin/andb-server ./src/cmd/server`
+# on the host, then run only MinIO (`docker compose up -d minio minio-init`) and start the
+# binary on the host with the same ANDB_* / S3_* env vars as the `andb` service below.
+#
 # Run capture script against the composed server (after `pip install -r requirements.txt`):
 #   ANDB_BASE_URL=http://127.0.0.1:8080 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
 
@@ -39,7 +44,8 @@ services:
         mc mb local/andb-integration || true
 
   andb:
-    image: golang:1.22
+    # Must match go.mod toolchain (currently go 1.24+).
+    image: golang:1.24-bookworm
     working_dir: /workspace
     volumes:
       - ./:/workspace

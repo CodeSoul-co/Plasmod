@@ -59,6 +59,13 @@ server.*.log
 # Local MinIO data (Docker volume)
 .minio-data/
 
+# Member A / local full-stack acceptance (Badger + WAL under ANDB_DATA_DIR)
+.acceptance-e2e-data/
+
+# Local server data / capture outputs (not for commit)
+.andb_data/
+out/
+
 # Old integration run artifacts (moved to scripts/dev/artifacts/)
 s3-integration-run-record-*.md
 s3-go-integration-output-*.txt
