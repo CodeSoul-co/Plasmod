@@ -582,21 +582,33 @@ ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
 **Scope:** Extend the HTTP embedding module to support all major LLM embedding providers, plus local/CPU runtimes (ONNX, TensorRT, llama.cpp / GGUF).
 
 **Current status:** `src/internal/dataplane/embedding/` provides:
-- `TfidfEmbedder` — pure-Go, no network, already working
-- `HTTPEmbedder` — OpenAI v1 schema (OpenAI, ZhipuAI, Azure, Ollama)
-- `CohereEmbedder` — Cohere `/v2/embed`
-- Client pool with connection reuse
 
-**Required extensions:**
-
-| Provider | File to add/modify | Notes |
+| Provider | Implementation | Test Status |
 |---|---|---|
-| Ollama (local) | Already covered by `HTTPEmbedder` | Set `ANDB_EMBEDDER_BASE_URL=http://localhost:11434/v1` |
-| Local ONNX model | `embedding/onnx.go` | `OnnxEmbedder`: load `.onnx` via `github.com/owulveryck/onnx-go`, run inference on CPU |
-| TensorRT | `embedding/tensorrt.go` | `TensorRTEmbedder`: CUDA context, engine cache, batch inference |
-| GGUF (llama.cpp) | `embedding/gguf.go` | `GGUFEmbedder`: load `.gguf` via `github.com/ggerganov/llama.cpp`, CPU/GPU hybrid |
-| Vertex AI | `embedding/vertexai.go` | Google Cloud Vertex AI Embeddings API |
-| HuggingFace Inference API | `embedding/huggingface.go` | `https://api-inference.huggingface.co/` |
+| `TfidfEmbedder` | Pure-Go, no network | Tested |
+| `HTTPEmbedder` | OpenAI v1 schema (OpenAI, Azure, Ollama, ZhipuAI/GLM) | Tested (mock) |
+| `CohereEmbedder` | Cohere `/v2/embed` | Tested (mock) |
+| `VertexAIEmbedder` | Google Cloud Vertex AI Embeddings API | Tested (mock) |
+| `HuggingFaceEmbedder` | HuggingFace Inference API | Tested (mock) |
+| `OnnxEmbedder` | ONNX Runtime via `onnxruntime_go` | Implemented, needs real model test |
+| `GGUFEmbedder` | llama.cpp via `go-llama.cpp`, Metal GPU | Implemented, needs real model test |
+| `TensorRTEmbedder` | NVIDIA TensorRT (Linux + CUDA only) | Stub |
+
+- Client pool with connection reuse
+- Batch inference support (`BatchGenerate`)
+- Dimension probing on startup
+
+**Provider-specific notes:**
+
+| Provider | Notes |
+|---|---|
+| OpenAI | Standard OpenAI Embeddings API |
+| Azure OpenAI | Set `AzureDeployment` in config |
+| Ollama (local) | Set `ANDB_OPENAI_BASE_URL=http://localhost:11434/v1` |
+| ZhipuAI/GLM | Uses `https://open.bigmodel.cn/api/paas/v4`, model: `embedding-3` |
+| ONNX | Requires `ONNXRUNTIME_LIB_PATH` env var |
+| GGUF | Requires `go-llama.cpp` C++ library built with Metal |
+| TensorRT | Linux + CUDA only, stub on other platforms |
 
 **Interface contract** — all embedders must satisfy:
 ```go
@@ -615,10 +627,29 @@ type Generator interface {
 
 **Env var convention:**
 ```
-ANDB_EMBEDDER=onnx|tensorrt|gguf|vertexai|huggingface
-ANDB_EMBEDDER_MODEL_PATH=/path/to/model.onnx   # ONNX/TensorRT/GGUF local path
+# Provider selection
+ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere|vertexai|huggingface|onnx|gguf|tensorrt
+
+# API Keys (one per provider)
+ANDB_OPENAI_API_KEY=sk-xxx                     # OpenAI
+ANDB_ZHIPUAI_API_KEY=xxx                       # ZhipuAI/GLM
+ANDB_COHERE_API_KEY=xxx                        # Cohere
+ANDB_VERTEXAI_ACCESS_TOKEN=xxx                 # Google Vertex AI OAuth2 token (or use ADC)
+ANDB_HUGGINGFACE_API_KEY=hf_xxx                # HuggingFace
+
+# Provider-specific config
+ANDB_OPENAI_BASE_URL=https://api.openai.com/v1 # Override for Azure/Ollama
+ANDB_OPENAI_MODEL=text-embedding-3-small       # OpenAI model name
+ANDB_ZHIPUAI_MODEL=embedding-3                 # ZhipuAI model name
+ANDB_VERTEXAI_PROJECT=my-project               # Google Cloud project ID
+ANDB_VERTEXAI_LOCATION=us-central1             # Google Cloud region
+ANDB_HUGGINGFACE_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+# Local runtime config
+ANDB_EMBEDDER_MODEL_PATH=/path/to/model.onnx   # ONNX/GGUF local path
 ANDB_EMBEDDER_MAX_BATCH_SIZE=32                # inference batch size
-ANDB_EMBEDDER_DEVICE=cpu|cuda                  # execution provider
+ANDB_EMBEDDER_DEVICE=cpu|cuda|metal            # execution provider
+ONNXRUNTIME_LIB_PATH=/path/to/libonnxruntime.dylib  # ONNX Runtime library
 ```
 
 **Module layout target:**
