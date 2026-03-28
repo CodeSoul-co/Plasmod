@@ -1,0 +1,14 @@
+{
+  "query_text": "member a normal query seed phrase alpha",
+  "query_scope": "workspace",
+  "session_id": "sess_ma_normal",
+  "agent_id": "agent_ma",
+  "tenant_id": "t_member_a",
+  "workspace_id": "w_member_a",
+  "top_k": 5,
+  "time_window": { "from": "2026-01-01T00:00:00Z", "to": "2027-01-01T00:00:00Z" },
+  "object_types": ["memory", "state", "artifact"],
+  "memory_types": ["semantic", "episodic", "procedural"],
+  "relation_constraints": [],
+  "response_mode": "structured_evidence"
+}

@@ -121,6 +121,7 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 		Versions:       versions,
 		AppliedFilters: filters,
 		ProofTrace:     trace,
+		ChainTraces:    schemas.ChainTraceSlots{},
 	}
 }
 

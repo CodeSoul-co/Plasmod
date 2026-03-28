@@ -10,6 +10,16 @@ const (
 	ResponseModeObjectsOnly        = "objects_only"
 )
 
+// ChainTraceSlots groups per-chain trace lines exposed on QueryResponse.
+// Main / memory_pipeline / collaboration run on ingest and are typically empty
+// on a standalone query unless future versions attach session-scoped replay.
+type ChainTraceSlots struct {
+	Main             []string `json:"main"`
+	MemoryPipeline   []string `json:"memory_pipeline"`
+	Query            []string `json:"query"`
+	Collaboration    []string `json:"collaboration"`
+}
+
 type QueryRequest struct {
 	QueryText           string     `json:"query_text"`
 	QueryScope          string     `json:"query_scope"`
@@ -34,6 +44,7 @@ type QueryResponse struct {
 	Versions       []ObjectVersion `json:"versions"`
 	AppliedFilters []string        `json:"applied_filters"`
 	ProofTrace     []string        `json:"proof_trace"`
+	ChainTraces    ChainTraceSlots `json:"chain_traces"`
 }
 
 type GraphExpandRequest struct {

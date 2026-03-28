@@ -17,7 +17,7 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Dual storage backends: in-memory (default) and Badger-backed persistent storage (`ANDB_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
-- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, and `AppliedFilters` on every query
+- `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, and `chain_traces` (`main` / `memory_pipeline` / `query` / `collaboration` string slots; query path fills `query` from `QueryChain`) on every query
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
 - 19 worker nodes registered: 3 data-plane + 16 domain workers (Ingest, ObjectMat, StateMat, ToolTrace, MemExtract, MemConsolidate, Summarize, ReflectionPolicy, IndexBuild, GraphRelation, ProofTrace, SubgraphExecutor, ConflictMerge, Communication, MicroBatch, AlgorithmDispatch)
 - Safe DLQ: panic recovery with overflow buffer (capacity 256) + structured `OverflowBuffer()` + `OverflowCount` metrics — panics are never silently lost
@@ -382,6 +382,19 @@ The integration test suite lives under `integration_tests/` and is split into tw
 
 - Go server is running: `make dev`
 - For Python SDK tests: `pip install -r requirements.txt && pip install -e ./sdk/python`
+
+### Full stack via Docker 
+
+Root [`docker-compose.yml`](docker-compose.yml) starts **MinIO** (S3 API on port 9000), creates bucket `andb-integration`, and runs the Go server with **`ANDB_STORAGE=disk`**, **`ANDB_DATA_DIR=/data`**, and **`S3_*` pointing at MinIO** (cold tier uses real S3). Server listens on **`0.0.0.0:8080`** inside the container and is published as **http://127.0.0.1:8080**.
+
+```bash
+docker compose up -d
+# optional: fixture-driven JSON captures (stdlib HTTP only; no SDK install required)
+python scripts/e2e/member_a_capture.py --out-dir ./out/member_a
+make integration-test   # still expects a server at ANDB_BASE_URL (same URL)
+```
+
+Fixture sets and manifest: [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/). Capture script: [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py). Convenience targets: `make docker-up`, `make docker-down`, `make member-a-capture`.
 
 ### Run all integration tests
 

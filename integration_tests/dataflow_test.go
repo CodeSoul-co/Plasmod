@@ -85,4 +85,18 @@ func TestDataflowTrace(t *testing.T) {
 			t.Errorf("ack event_id: got %v, want %v", ack["event_id"], ev["event_id"])
 		}
 	})
+
+	t.Run("chain_traces.query is populated after ingest", func(t *testing.T) {
+		ct, ok := resp["chain_traces"].(map[string]any)
+		if !ok {
+			t.Fatalf("chain_traces: expected object, got %T", resp["chain_traces"])
+		}
+		q, ok := ct["query"].([]any)
+		if !ok {
+			t.Fatalf("chain_traces.query: expected array, got %T", ct["query"])
+		}
+		if len(q) == 0 {
+			t.Error("chain_traces.query is empty — expected QueryChain trace lines")
+		}
+	})
 }

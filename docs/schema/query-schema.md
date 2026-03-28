@@ -257,6 +257,7 @@ Current `QueryResponse` fields:
 - `versions` as `[]ObjectVersion`
 - `applied_filters` as `[]string`
 - `proof_trace` as `[]string`
+- `chain_traces` as `{ "main", "memory_pipeline", "query", "collaboration" }` each `[]string` — ingest-time chains are usually empty on query; `query` is filled from `QueryChain` (proof/subgraph merge metadata)
 
 Current implementation note:
 

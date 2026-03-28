@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -264,7 +265,6 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 			ObjectStore: r.storage.Objects(),
 			EdgeStore:   r.storage.Edges(),
 		})
-		_ = chainResult // chainResult.OK is advisory; non-fatal
 
 		if len(chainOut.ProofTrace) > 0 {
 			resp.ProofTrace = append(resp.ProofTrace, chainOut.ProofTrace...)
@@ -287,6 +287,9 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 				}
 			}
 		}
+		resp.ChainTraces.Query = formatQueryChainTraceLines(chainResult, chainOut)
+	} else {
+		resp.ChainTraces.Query = []string{"query_chain skipped=no_seed_object_ids"}
 	}
 
 	return resp
@@ -378,4 +381,31 @@ func (r *Runtime) GetPolicyDecisions(objectID string) []string {
 			e.LSN, e.Decision, e.PolicyID, e.Reason)
 	}
 	return out
+}
+
+// formatQueryChainTraceLines turns QueryChain results into API-facing trace lines.
+func formatQueryChainTraceLines(res chain.ChainResult, out chain.QueryChainOutput) []string {
+	lines := []string{
+		fmt.Sprintf("chain_name=%s ok=%t", res.ChainName, res.OK),
+	}
+	if res.Error != "" {
+		lines = append(lines, "error="+res.Error)
+	}
+	if len(res.Meta) > 0 {
+		keys := make([]string, 0, len(res.Meta))
+		for k := range res.Meta {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			lines = append(lines, fmt.Sprintf("meta.%s=%v", k, res.Meta[k]))
+		}
+	}
+	lines = append(lines,
+		fmt.Sprintf("query_proof_steps=%d", len(out.ProofTrace)),
+		fmt.Sprintf("subgraph_nodes=%d", len(out.Subgraph.Nodes)),
+		fmt.Sprintf("subgraph_edges=%d", len(out.Subgraph.Edges)),
+		fmt.Sprintf("merged_edges=%d", len(out.MergedEdges)),
+	)
+	return lines
 }

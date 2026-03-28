@@ -1,0 +1,15 @@
+{
+  "tenant_id": "t_member_a",
+  "workspace_id": "w_member_a",
+  "agent_id": "agent_ma",
+  "session_id": "sess_ma_normal",
+  "event_type": "user_message",
+  "logical_ts": 1,
+  "parent_event_id": "",
+  "causal_refs": [],
+  "payload": { "text": "member a normal query seed phrase alpha" },
+  "source": "member_a_fixtures",
+  "importance": 0.5,
+  "visibility": "private",
+  "version": 1
+}
