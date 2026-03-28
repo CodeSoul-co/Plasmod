@@ -335,9 +335,10 @@ func (ProofTraceInput) WorkerKind() WorkerKind { return WorkerKindProofTrace }
 //
 //	"[d=N] {src} -[{edgeType}]-> {dst} (w={weight:.2f})"
 //	"derivation: {srcID}({srcType}) -[{op}]-> {derivedID}({derivedType})"
+// ProofTraceOutput carries assembled structured proof steps and the BFS hop count.
 type ProofTraceOutput struct {
-	Steps    []string `json:"steps"`
-	HopCount int      `json:"hop_count"`
+	Steps    []ProofStep `json:"steps"`
+	HopCount int         `json:"hop_count"`
 }
 
 func (o ProofTraceOutput) IsEmpty() bool { return len(o.Steps) == 0 }

@@ -210,7 +210,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		embedderDim = dataplane.DefaultEmbeddingDim
 		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
 	}
-	plane, err := dataplane.NewTieredDataPlaneWithEmbedder(tieredObjects, embedder)
+	plane, err := dataplane.NewTieredDataPlaneWithEmbedderAndConfig(tieredObjects, embedder, algoCfg)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1,7 +1,10 @@
 package dataplane
 
 import (
+	"sort"
+
 	"andb/src/internal/dataplane/segmentstore"
+	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 )
 
@@ -27,25 +30,38 @@ type TieredDataPlane struct {
 	warm       *SegmentDataPlane
 	coldSearch func(query string, topK int) []string // delegates to TieredObjectStore.ColdSearch
 	coldWrite  func(memoryID, text string, attrs map[string]string, ns string, ts int64)
+	rrfK       int
+}
+
+func normalizeTieredRRFK(cfg schemas.AlgorithmConfig) int {
+	if cfg.RRFK > 0 {
+		return cfg.RRFK
+	}
+	return defaultRRFK
 }
 
 // NewTieredDataPlane constructs a TieredDataPlane backed by the given TieredObjectStore.
 // The warm tier performs only lexical search.  To enable hybrid (lexical+vector) warm
 // search, use NewTieredDataPlaneWithEmbedder instead.
 func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane {
+	return NewTieredDataPlaneWithConfig(tieredObjs, schemas.DefaultAlgorithmConfig())
+}
+
+func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg schemas.AlgorithmConfig) *TieredDataPlane {
 	if tieredObjs == nil {
 		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	objs := tieredObjs
 	return &TieredDataPlane{
 		hot:  segmentstore.NewIndex(),
-		warm: NewSegmentDataPlane(),
+		warm: NewSegmentDataPlaneWithConfig(cfg),
 		coldSearch: func(query string, topK int) []string {
 			return objs.ColdSearch(query, topK)
 		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
+		rrfK: normalizeTieredRRFK(cfg),
 	}
 }
 
@@ -54,13 +70,17 @@ func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane 
 // in the CGO Knowhere/HNSW retriever for dense vector search.
 // The VectorStore gracefully degrades to lexical-only when CGO is unavailable.
 func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator) (*TieredDataPlane, error) {
+	return NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs, embedder, schemas.DefaultAlgorithmConfig())
+}
+
+func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator, cfg schemas.AlgorithmConfig) (*TieredDataPlane, error) {
 	if tieredObjs == nil {
 		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	if embedder == nil {
-		return NewTieredDataPlane(tieredObjs), nil
+		return NewTieredDataPlaneWithConfig(tieredObjs, cfg), nil
 	}
-	warm, err := NewSegmentDataPlaneWithEmbedder(embedder)
+	warm, err := NewSegmentDataPlaneWithEmbedderAndConfig(embedder, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +93,7 @@ func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embed
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
+		rrfK: normalizeTieredRRFK(cfg),
 	}, nil
 }
 
@@ -119,31 +140,57 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		IncludeGrowing: true,
 	})
 
-	if len(hotResult.Hits) >= input.TopK && input.TopK > 0 {
-		out := t.hotToOutput(hotResult)
-		out.Tier = "hot"
-		return out
+	hotOut := t.hotToOutput(hotResult)
+
+	// Early return only when hot fully satisfies the request and cold is not needed.
+	if len(hotOut.ObjectIDs) >= input.TopK && input.TopK > 0 && !input.IncludeCold {
+		hotOut.Tier = "hot"
+		return hotOut
 	}
 
-	// warm fallback — merge with hot results (warm may be hybrid)
-	warmOutput := t.warm.Search(input)
-	merged := mergeOutputs(t.hotToOutput(hotResult), warmOutput, input.TopK)
-	if warmOutput.Tier == "lexical+vector" {
-		merged.Tier = "hot+warm"
-	} else {
-		merged.Tier = "hot+warm"
+	// Warm tier (lexical or lexical+vector depending on embedder/vector readiness).
+	warmOut := t.warm.Search(input)
+
+	// Collect candidate ranked lists for fusion.
+	candidateLists := [][]string{}
+	if len(hotOut.ObjectIDs) > 0 {
+		candidateLists = append(candidateLists, hotOut.ObjectIDs)
+	}
+	if len(warmOut.ObjectIDs) > 0 {
+		candidateLists = append(candidateLists, warmOut.ObjectIDs)
 	}
 
-	if !input.IncludeCold {
-		return merged
+	tierLabel := "hot+warm"
+
+	// Cold tier is consulted only when explicitly requested.
+	coldOut := SearchOutput{}
+	if input.IncludeCold {
+		coldIDs := t.coldSearch(input.QueryText, input.TopK)
+		coldOut = SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
+		if len(coldOut.ObjectIDs) > 0 {
+			candidateLists = append(candidateLists, coldOut.ObjectIDs)
+		}
+		tierLabel = "hot+warm+cold"
 	}
 
-	// cold fallback — delegate to TieredObjectStore.ColdSearch
-	coldIDs := t.coldSearch(input.QueryText, input.TopK)
-	coldOutput := SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
-	out := mergeOutputs(merged, coldOutput, input.TopK)
-	out.Tier = "hot+warm+cold"
-	return out
+	// Fuse ranked candidate lists using RRF.
+	fusedIDs := rrfFuseMany(candidateLists, t.rrfK, input.TopK)
+
+	// Merge trace metadata from all tiers.
+	scanned := append([]string{}, hotOut.ScannedSegments...)
+	scanned = append(scanned, warmOut.ScannedSegments...)
+	scanned = append(scanned, coldOut.ScannedSegments...)
+
+	planned := append([]SegmentTrace{}, hotOut.PlannedSegments...)
+	planned = append(planned, warmOut.PlannedSegments...)
+	planned = append(planned, coldOut.PlannedSegments...)
+
+	return SearchOutput{
+		ObjectIDs:       fusedIDs,
+		ScannedSegments: scanned,
+		PlannedSegments: planned,
+		Tier:            tierLabel,
+	}
 }
 
 func (t *TieredDataPlane) hotToOutput(r segmentstore.SearchResult) SearchOutput {
@@ -168,26 +215,31 @@ func (t *TieredDataPlane) hotToOutput(r segmentstore.SearchResult) SearchOutput 
 	}
 }
 
-// mergeOutputs deduplicates and merges two SearchOutputs up to topK results.
-func mergeOutputs(a, b SearchOutput, topK int) SearchOutput {
-	seen := map[string]bool{}
-	ids := make([]string, 0, len(a.ObjectIDs)+len(b.ObjectIDs))
-	for _, id := range a.ObjectIDs {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+// rrfFuseMany fuses multiple ranked candidate lists using Reciprocal Rank Fusion.
+// Each input list is assumed to be ranked from best to worst.
+func rrfFuseMany(lists [][]string, k int, topK int) []string {
+	if k <= 0 {
+		k = defaultRRFK
+	}
+
+	scores := map[string]float64{}
+	order := make([]string, 0)
+
+	for _, ids := range lists {
+		for rank, id := range ids {
+			if _, ok := scores[id]; !ok {
+				order = append(order, id)
+			}
+			scores[id] += 1.0 / float64(k+rank+1)
 		}
 	}
-	for _, id := range b.ObjectIDs {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
+
+	sort.SliceStable(order, func(i, j int) bool {
+		return scores[order[i]] > scores[order[j]]
+	})
+
+	if topK > 0 && len(order) > topK {
+		return order[:topK]
 	}
-	if topK > 0 && len(ids) > topK {
-		ids = ids[:topK]
-	}
-	segs := append(a.ScannedSegments, b.ScannedSegments...)
-	planned := append(a.PlannedSegments, b.PlannedSegments...)
-	return SearchOutput{ObjectIDs: ids, ScannedSegments: segs, PlannedSegments: planned}
+	return order
 }

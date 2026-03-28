@@ -235,15 +235,16 @@ func TestProofTraceWorker_AssembleTrace_SingleHop(t *testing.T) {
 	if len(trace) == 0 {
 		t.Error("expected at least one trace step")
 	}
+
 	found := false
 	for _, step := range trace {
-		if strings.Contains(step, "mem_A") {
+		if step.SourceID == "mem_A" || step.TargetID == "mem_A" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected trace to contain 'mem_A', got: %v", trace)
+		t.Fatalf("expected trace to contain mem_A in structured proof steps, got: %+v", trace)
 	}
 }
 
@@ -265,8 +266,8 @@ func TestProofTraceWorker_AssembleTrace_MaxDepth(t *testing.T) {
 	// maxDepth=2 should stop after 2 hops, not traverse the whole chain.
 	trace := w.AssembleTrace([]string{"A"}, 2)
 	for _, step := range trace {
-		if strings.Contains(step, "D") || strings.Contains(step, "E") {
-			t.Errorf("trace exceeded maxDepth=2: %v", trace)
+		if step.SourceID == "D" || step.TargetID == "D" || step.SourceID == "E" || step.TargetID == "E" {
+			t.Fatalf("trace exceeded maxDepth=2: %+v", trace)
 		}
 	}
 }
@@ -302,11 +303,11 @@ func TestCommunicationWorker_Broadcast_EndToEnd(t *testing.T) {
 	// Pre-store a memory in agentA's space.
 	store.Objects().PutMemory(schemas.Memory{
 		MemoryID:  "mem_src_e2e",
-		AgentID:  "agentA",
+		AgentID:   "agentA",
 		SessionID: "s1",
-		Content:  "shared content",
-		IsActive: true,
-		Version:  1,
+		Content:   "shared content",
+		IsActive:  true,
+		Version:   1,
 	})
 
 	// Dispatch via Manager (full pipeline path, not direct Broadcast call).

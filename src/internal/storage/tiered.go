@@ -327,8 +327,37 @@ func (t *TieredObjectStore) ColdSearch(query string, topK int) []string {
 // normal hot→warm→cold lifecycle.  The cold store writes the record as a
 // Memory object so it is queryable via ColdSearch.
 func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[string]string, ns string, ts int64) {
-	// Reconstruct a minimal Memory from the ingest record fields so the cold
-	// store holds canonical objects and ColdSearch can score them lexically.
+	// Prefer archiving the full canonical Memory from the warm tier so cold-path
+	// rehydration preserves all fields (summary, provenance, source events,
+	// memory type, confidence, etc.). Fall back to reconstructing a minimal
+	// Memory only when the warm tier does not currently hold the object.
+	if t.warm != nil {
+		if m, ok := t.warm.GetMemory(memoryID); ok {
+			m.IsActive = false
+			if m.Version == 0 {
+				m.Version = ts
+			}
+			if m.Content == "" {
+				m.Content = text
+			}
+			if m.AgentID == "" {
+				m.AgentID = attrs["agent_id"]
+			}
+			if m.SessionID == "" {
+				m.SessionID = attrs["session_id"]
+			}
+			if m.Scope == "" {
+				m.Scope = attrs["visibility"]
+			}
+			if m.OwnerType == "" {
+				m.OwnerType = attrs["event_type"]
+			}
+			t.cold.PutMemory(m)
+			return
+		}
+	}
+
+	// Fallback path: reconstruct the minimal canonical Memory from ingest data.
 	m := schemas.Memory{
 		MemoryID:  memoryID,
 		Content:   text,
@@ -346,7 +375,6 @@ func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[s
 
 // ColdObjectStore is the interface for the cold/disk tier.
 // In production this would be backed by a file-based or object storage engine.
-//
 type ColdObjectStore interface {
 	PutMemory(m schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
@@ -370,21 +398,21 @@ type ColdObjectStore interface {
 // It is functionally identical to the warm store but models the architectural
 // boundary.  A real implementation would replace this with a file/RocksDB backend.
 type InMemoryColdStore struct {
-	mu       sync.RWMutex
-	memories map[string]schemas.Memory
-	agents   map[string]schemas.Agent
-	states   map[string]schemas.State
+	mu        sync.RWMutex
+	memories  map[string]schemas.Memory
+	agents    map[string]schemas.Agent
+	states    map[string]schemas.State
 	artifacts map[string]schemas.Artifact
-	edges    map[string]schemas.Edge
+	edges     map[string]schemas.Edge
 }
 
 func NewInMemoryColdStore() *InMemoryColdStore {
 	return &InMemoryColdStore{
-		memories: map[string]schemas.Memory{},
-		agents:   map[string]schemas.Agent{},
-		states:   map[string]schemas.State{},
+		memories:  map[string]schemas.Memory{},
+		agents:    map[string]schemas.Agent{},
+		states:    map[string]schemas.State{},
 		artifacts: map[string]schemas.Artifact{},
-		edges:    map[string]schemas.Edge{},
+		edges:     map[string]schemas.Edge{},
 	}
 }
 

@@ -240,13 +240,28 @@ const (
 
 // Numeric defaults shared across worker implementations.
 const (
-	DefaultConfidence          float64 = 0.85
-	DefaultEdgeWeight          float64 = 1.0
-	DefaultCausalWeight        float64 = 0.8
-	DefaultBatchSize                   = 32
-	DefaultMaxProofDepth               = 8
-	DefaultEvidenceCacheSize            = 10000 // evidence.Cache default when size <= 0
+	DefaultConfidence        float64 = 0.85
+	DefaultEdgeWeight        float64 = 1.0
+	DefaultCausalWeight      float64 = 0.8
+	DefaultBatchSize                 = 32
+	DefaultMaxProofDepth             = 8
+	DefaultEvidenceCacheSize         = 10000 // evidence.Cache default when size <= 0
 )
+
+// ColdSearchWeights controls how cold-tier lexical / dense / recency signals
+// are combined before fusion into the final ranked list.
+type ColdSearchWeights struct {
+	Lexical float64 // lexical/content match weight
+	Dense   float64 // DFS / embedding similarity weight
+	Recency float64 // recency bonus weight
+}
+
+// AlgorithmConfig holds all tunable algorithm parameters.
+// All fields have sensible defaults via DefaultAlgorithmConfig().
+// Pass a customized instance to service constructors that accept it
+// (e.g. NewPreComputeServiceWithConfig) to override defaults.
+// ColdSearchWeights controls how cold-tier lexical / dense / recency signals
+// are combined before fusion into the final ranked list.
 
 // AlgorithmConfig holds all tunable algorithm parameters.
 // All fields have sensible defaults via DefaultAlgorithmConfig().
@@ -260,15 +275,30 @@ type AlgorithmConfig struct {
 	EvidenceCacheSize int // max entries in evidence fragment cache (default 10000)
 
 	// PreComputeService — salience scoring
-	TokenCountThreshold    int     // token count required for bonus (default 10)
-	TokenBonus             float64 // salience bonus when len(tokens) > TokenCountThreshold (default 0.1)
-	CausalRefBonus         float64 // salience bonus when CausalRefs non-empty (default 0.1)
-	GlobalVisibilityBonus   float64 // salience bonus for global-visibility objects (default 0.2)
-	SalienceCap            float64 // upper bound on salience score (default 1.0)
-	DefaultImportance      float64 // base salience when event.Importance == 0 (default 0.5)
+	TokenCountThreshold   int     // token count required for bonus (default 10)
+	TokenBonus            float64 // salience bonus when len(tokens) > TokenCountThreshold (default 0.1)
+	CausalRefBonus        float64 // salience bonus when CausalRefs non-empty (default 0.1)
+	GlobalVisibilityBonus float64 // salience bonus for global-visibility objects (default 0.2)
+	SalienceCap           float64 // upper bound on salience score (default 1.0)
+	DefaultImportance     float64 // base salience when event.Importance == 0 (default 0.5)
 
 	// TieredObjectStore
 	HotTierSalienceThreshold float64 // minimum salience to promote to hot cache (default 0.5)
+
+	// Embedding / hybrid retrieval
+	EmbeddingDim int // default embedding dimension (default 256)
+
+	// RRF fusion
+	RRFK int // reciprocal-rank-fusion k constant (default 60)
+
+	// HNSW / vector retrieval
+	HNSWM             int // HNSW M parameter (default 16)
+	HNSEfConstruction int // HNSW efConstruction (default 256)
+	HNSEfSearch       int // HNSW efSearch (default 64)
+
+	// DFS / cold-tier retrieval
+	DFSRelevanceThreshold float64           // minimum dense relevance to keep a cold-tier DFS hit (default 0.2)
+	ColdSearchWeights     ColdSearchWeights // weighting of lexical/dense/recency signals in cold tier
 }
 
 // DefaultAlgorithmConfig returns a AlgorithmConfig populated with all defaults.
@@ -280,10 +310,24 @@ func DefaultAlgorithmConfig() AlgorithmConfig {
 		TokenCountThreshold:      10,
 		TokenBonus:               0.1,
 		CausalRefBonus:           0.1,
-		GlobalVisibilityBonus:     0.2,
+		GlobalVisibilityBonus:    0.2,
 		SalienceCap:              1.0,
 		DefaultImportance:        0.5,
-		HotTierSalienceThreshold:  0.5,
+		HotTierSalienceThreshold: 0.5,
+
+		EmbeddingDim: 256,
+		RRFK:         60,
+
+		HNSWM:             16,
+		HNSEfConstruction: 256,
+		HNSEfSearch:       64,
+
+		DFSRelevanceThreshold: 0.2,
+		ColdSearchWeights: ColdSearchWeights{
+			Lexical: 0.5,
+			Dense:   0.4,
+			Recency: 0.1,
+		},
 	}
 }
 
