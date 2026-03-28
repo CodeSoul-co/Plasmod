@@ -591,49 +591,27 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ## Team Member Responsibilities
 
-### Member A — Full System E2E Testing & Integration
+### Member A — Event & Object Materialization
 
-**Scope:** End-to-end integration testing across the entire stack, including S3 cold path, Docker environment, and all four execution chains.
+**Scope:** Event Backbone, Canonical Object Materialization, Version — the primary write path.
 
 **Deliverables:**
-- Working Docker compose / environment that brings up the full server with S3 cold storage
-- Test data sets (ingest events) covering: normal query, cold-tier recall, graph expansion, collaboration sharing
-- Query / retrieve results for each test case, with full intermediate traces:
-  - `ProofTrace` output from `QueryChain.Run`
-  - Applied governance filters
-  - Graph edge expansion (`Edges`, `Nodes`)
-  - Evidence fragment cache hit/miss counts on `QueryResponse.evidence_cache` (`looked_up`, `hits`, `misses`) when a fragment cache is wired
-- Integration test script in `scripts/` or `integration_tests/python/`
+- Working `SubmitIngest` path: event → WAL → materialization → storage
+- Object materialization workers: `ObjectMaterializationWorker`, `StateMaterializationWorker`, `ToolTraceWorker` producing Memory/State/Artifact
+- Version support: `ObjectVersion` records on every materialization
+- `DerivationLog` entries for all non-trivial transformations (extraction, consolidation, summarization)
 
-**Implemented helpers (this repo):**
-- Fixture manifest + JSON under [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/); capture via [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py) (`nodes`, `evidence_cache`, `chain_traces` in output).
-- One-shot acceptance (MinIO in Docker + host-built server): [`scripts/e2e/run_acceptance_scenario_a.ps1`](scripts/e2e/run_acceptance_scenario_a.ps1).
-- Vector file sanity (no HTTP): `go test ./integration_tests/dataset/...` for `deep1B.ibin`.
+**Implemented:**
+- [`src/internal/eventbackbone/`](src/internal/eventbackbone/): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher
+- [`src/internal/materialization/`](src/internal/materialization/): `Service.MaterializeEvent` → `MaterializationResult{Record, Memory, Version, Edges}`, `PreComputeService`
+- [`src/internal/storage/`](src/internal/storage/): Object store, version store, edge store, `TieredObjectStore`
 
-**Entry point:** [`src/internal/app/bootstrap.go`](src/internal/app/bootstrap.go) wires all components; start from `BuildServer()` and trace through each chain.
-
-**Key env vars to exercise:**
-```
-ANDB_STORAGE=disk
-ANDB_DATA_DIR=/path/to/data
-S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET
-ANDB_EMBEDDER=tfidf|openai|zhipuai|cohere
-```
-
-**Expected output format per test case:**
-```json
-{
-  "test_name": "...",
-  "query": { "raw": "...", "request": {} },
-  "response": { "objects": [], "edges": [], "proof_trace": [], "applied_filters": [] },
-  "chain_traces": { "main": [], "memory_pipeline": [], "query": [], "collaboration": [] }
-  ...
-}
-```
+**Pending:**
+- `DerivationLog.Append` wired in bootstrap for all materialization workers
 
 ---
 
-### Member B — Embedding Model Layer (`src/internal/dataplane/embedding/`)
+### Member B — Retrieval & Indexing Layer
 
 **Scope:** Extend the HTTP embedding module to support all major LLM embedding providers, plus local/CPU runtimes (ONNX, TensorRT, llama.cpp / GGUF).
 
@@ -743,7 +721,7 @@ src/internal/dataplane/embedding/
 
 ---
 
-### Member C — DFS Retrieval Integration + Proof Chain + S3 Object Binding
+### Member C — Graph & Relation + S3 Object Binding
 
 **Scope:** Deep integration of Dense Fragment Search (DFS) into the query pipeline, verification of proof chain semantics, and binding retrieval to canonical S3 objects (not metadata).
 
@@ -818,3 +796,67 @@ Current cold tier (`src/internal/storage/`) writes canonical `Memory` objects to
 ```
 
 ---
+
+### Member D — API Gateway, Worker & Integration
+
+**Scope:** API Gateway, Worker framework, module integration, end-to-end demo.
+
+**Deliverables:**
+- HTTP server with all 14 routes wired to Runtime
+- Worker node registration and orchestration (`ExecutionOrchestrator`, priority queues, backpressure)
+- Algorithm dispatch: `DispatchAlgorithm`, `DispatchRecall`, `DispatchShare`, `DispatchConflictResolve` wired to Runtime
+- Memory management algorithm wiring: `AlgorithmDispatchWorker` + pluggable `MemoryManagementAlgorithm` (Baseline + MemoryBank)
+- Safe DLQ: panic recovery with overflow buffer + `DeadLetterChannel()` + `DLQStats()`
+- Docker compose with S3 cold storage end-to-end
+
+**Implemented:**
+- [`src/internal/access/gateway.go`](src/internal/access/gateway.go): 14 HTTP routes
+- [`src/internal/app/bootstrap.go`](src/internal/app/bootstrap.go): component wiring
+- [`src/internal/worker/runtime.go`](src/internal/worker/runtime.go): `SubmitIngest`, `ExecuteQuery`, algorithm dispatch methods
+- [`src/internal/worker/nodes/`](src/internal/worker/nodes/): worker node contracts and `Manager`
+- [`src/internal/worker/chain/`](src/internal/worker/chain/): 4 execution chains
+- [`src/internal/worker/orchestrator.go`](src/internal/worker/orchestrator.go): priority queues, backpressure
+- [`src/internal/worker/cognitive/algorithm_dispatcher.go`](src/internal/worker/cognitive/algorithm_dispatcher.go): algorithm plugin bridge
+
+**Pending:**
+- **MicroBatch 持久化 drain**: flush 的 payload 写入 DerivationLog 或发到 DLQ（[`src/internal/worker/coordination/microbatch.go`](src/internal/worker/coordination/microbatch.go)）
+
+---
+
+### Member E — Testing, Benchmark & Algorithm Verification
+
+**Scope:** Mock data, test scripts, batch retrieval experiments, baseline comparison, performance & correctness verification.
+
+**Deliverables:**
+- Mock data generators and fixture manifests
+- Go + Python integration test suites
+- Batch retrieval experiments and baseline comparison
+- Memory governance algorithm verification (MemoryBank, Baseline)
+- Benchmark harness: HNSW recall, QueryChain latency, cold-tier roundtrip
+
+**Implemented:**
+- [`integration_tests/`](integration_tests/) (gitignored): Go HTTP tests + Python SDK tests
+- [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py): fixture capture
+- [`src/internal/worker/cognitive/memorybank/algo_test.go`](src/internal/worker/cognitive/memorybank/algo_test.go): 33 tests covering all governance dimensions
+- HNSW deep1B benchmark: `TestVectorStore_Deep1B_Recall` (L2 distance, self-recall@1=100%)
+- QueryChain E2E benchmark: `TestQueryChain_E2E_Latency` (223 QPS, 4.48ms avg)
+
+**Algorithm verification (MemoryBank):**
+```bash
+# Run all algorithm tests
+go test ./src/internal/worker/cognitive/memorybank/ -v
+
+# Verify MemoryBank governance
+# - Ingest: admission scoring → candidate/active/quarantined
+# - Recall: governance filter (active/reinforced pass, candidate/stale filtered)
+# - Update: reinforcement + reaffirmation signal
+# - Decay: lifecycle transitions, quarantine preservation
+# - Compress: semantic compression with level promotion
+# - Conflict: preference reversal → quarantined
+# - Profile: stable traits, preferences, communication style extraction
+```
+
+**Pending:**
+- Verify `DispatchRecall` / `DispatchShare` / `DispatchConflictResolve` end-to-end
+- Verify `BaselineMemoryAlgorithm` vs `MemoryBankAlgorithm` swap-out without code changes
+- Cold-tier full roundtrip benchmark (S3 → rehydrate → query)

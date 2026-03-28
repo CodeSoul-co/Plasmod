@@ -7,3 +7,6 @@ integration_tests/
 
 # Member private docs
 devdocs/
+
+# Rule file
+rule

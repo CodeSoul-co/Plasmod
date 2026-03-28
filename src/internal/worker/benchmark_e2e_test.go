@@ -292,7 +292,7 @@ func TestQueryChain_ProofTrace_Stages(t *testing.T) {
 
 	t.Logf("=== ProofTrace Stages ===")
 	for i, step := range chainOut.ProofTrace {
-		t.Logf("  [%d] %s", i, step)
+		t.Logf("  [%d] %s", i, step.Description)
 	}
 	t.Logf("")
 	t.Logf("Total ProofTrace steps: %d", len(chainOut.ProofTrace))
