@@ -1,8 +1,10 @@
 package dataplane
 
 import (
-	"andb/src/internal/dataplane/segmentstore"
 	"sort"
+
+	"andb/src/internal/dataplane/segmentstore"
+	"andb/src/internal/schemas"
 )
 
 const defaultRRFK = 60
@@ -24,9 +26,13 @@ type SegmentDataPlane struct {
 // NewSegmentDataPlane creates a SegmentDataPlane that performs only lexical search.
 // Used when the CGO Knowhere library is unavailable.
 func NewSegmentDataPlane() *SegmentDataPlane {
+	return NewSegmentDataPlaneWithConfig(schemas.DefaultAlgorithmConfig())
+}
+
+func NewSegmentDataPlaneWithConfig(cfg schemas.AlgorithmConfig) *SegmentDataPlane {
 	return &SegmentDataPlane{
 		index: segmentstore.NewIndex(),
-		rrfK:  defaultRRFK,
+		rrfK:  normalizeRRFK(cfg),
 	}
 }
 
@@ -34,6 +40,10 @@ func NewSegmentDataPlane() *SegmentDataPlane {
 // The embedder generates float32 vectors for indexing and querying.
 // VectorStore wraps the CGO Knowhere retriever (gracefully degrades when unavailable).
 func NewSegmentDataPlaneWithEmbedder(embedder EmbeddingGenerator) (*SegmentDataPlane, error) {
+	return NewSegmentDataPlaneWithEmbedderAndConfig(embedder, schemas.DefaultAlgorithmConfig())
+}
+
+func NewSegmentDataPlaneWithEmbedderAndConfig(embedder EmbeddingGenerator, cfg schemas.AlgorithmConfig) (*SegmentDataPlane, error) {
 	if embedder == nil {
 		return nil, &errEmbedderNil{}
 	}
@@ -49,7 +59,7 @@ func NewSegmentDataPlaneWithEmbedder(embedder EmbeddingGenerator) (*SegmentDataP
 		index:    segmentstore.NewIndex(),
 		vecStore: vecStore,
 		embedder: embedder,
-		rrfK:     defaultRRFK,
+		rrfK:     normalizeRRFK(cfg),
 	}, nil
 }
 
@@ -65,6 +75,13 @@ func (p *SegmentDataPlane) Flush() error {
 		p.embedder.Reset()
 	}
 	return nil
+}
+
+func normalizeRRFK(cfg schemas.AlgorithmConfig) int {
+	if cfg.RRFK > 0 {
+		return cfg.RRFK
+	}
+	return defaultRRFK
 }
 
 // Ingest writes a record to the lexical index and, if an embedder is set,

@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"andb/src/internal/dataplane/segmentstore"
+	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 )
 
@@ -29,25 +30,38 @@ type TieredDataPlane struct {
 	warm       *SegmentDataPlane
 	coldSearch func(query string, topK int) []string // delegates to TieredObjectStore.ColdSearch
 	coldWrite  func(memoryID, text string, attrs map[string]string, ns string, ts int64)
+	rrfK       int
+}
+
+func normalizeTieredRRFK(cfg schemas.AlgorithmConfig) int {
+	if cfg.RRFK > 0 {
+		return cfg.RRFK
+	}
+	return defaultRRFK
 }
 
 // NewTieredDataPlane constructs a TieredDataPlane backed by the given TieredObjectStore.
 // The warm tier performs only lexical search.  To enable hybrid (lexical+vector) warm
 // search, use NewTieredDataPlaneWithEmbedder instead.
 func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane {
+	return NewTieredDataPlaneWithConfig(tieredObjs, schemas.DefaultAlgorithmConfig())
+}
+
+func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg schemas.AlgorithmConfig) *TieredDataPlane {
 	if tieredObjs == nil {
 		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	objs := tieredObjs
 	return &TieredDataPlane{
 		hot:  segmentstore.NewIndex(),
-		warm: NewSegmentDataPlane(),
+		warm: NewSegmentDataPlaneWithConfig(cfg),
 		coldSearch: func(query string, topK int) []string {
 			return objs.ColdSearch(query, topK)
 		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
+		rrfK: normalizeTieredRRFK(cfg),
 	}
 }
 
@@ -56,13 +70,17 @@ func NewTieredDataPlane(tieredObjs *storage.TieredObjectStore) *TieredDataPlane 
 // in the CGO Knowhere/HNSW retriever for dense vector search.
 // The VectorStore gracefully degrades to lexical-only when CGO is unavailable.
 func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator) (*TieredDataPlane, error) {
+	return NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs, embedder, schemas.DefaultAlgorithmConfig())
+}
+
+func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectStore, embedder EmbeddingGenerator, cfg schemas.AlgorithmConfig) (*TieredDataPlane, error) {
 	if tieredObjs == nil {
 		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	if embedder == nil {
-		return NewTieredDataPlane(tieredObjs), nil
+		return NewTieredDataPlaneWithConfig(tieredObjs, cfg), nil
 	}
-	warm, err := NewSegmentDataPlaneWithEmbedder(embedder)
+	warm, err := NewSegmentDataPlaneWithEmbedderAndConfig(embedder, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +93,7 @@ func NewTieredDataPlaneWithEmbedder(tieredObjs *storage.TieredObjectStore, embed
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
+		rrfK: normalizeTieredRRFK(cfg),
 	}, nil
 }
 
@@ -155,7 +174,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	}
 
 	// Fuse ranked candidate lists using RRF.
-	fusedIDs := rrfFuseMany(candidateLists, defaultRRFK, input.TopK)
+	fusedIDs := rrfFuseMany(candidateLists, t.rrfK, input.TopK)
 
 	// Merge trace metadata from all tiers.
 	scanned := append([]string{}, hotOut.ScannedSegments...)
