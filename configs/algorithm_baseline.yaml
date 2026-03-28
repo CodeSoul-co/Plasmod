@@ -1,0 +1,14 @@
+# Baseline Memory Management Algorithm Configuration
+# Establishes the YAML config pattern for all algorithm packages.
+#
+# Environment variable override:
+#   ANDB_ALGORITHM_BASELINE_CONFIG=/path/to/this/file
+
+baseline:
+  initial_strength:    1.0
+  decay_rate:         0.1
+  decay_threshold:    0.1
+  recall_boost:       1.1
+  max_strength:       5.0
+  compressed_level:    1
+  summarization_level: 2

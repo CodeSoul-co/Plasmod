@@ -19,11 +19,13 @@ package baseline
 import (
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"andb/src/internal/config"
 	"andb/src/internal/schemas"
 )
 
@@ -65,6 +67,55 @@ func DefaultConfig() Config {
 	}
 }
 
+// BaselineConfig mirrors the Config struct for YAML unmarshaling.
+type BaselineConfig struct {
+	InitialStrength    float64 `yaml:"initial_strength"`
+	DecayRate         float64 `yaml:"decay_rate"`
+	DecayThreshold    float64 `yaml:"decay_threshold"`
+	RecallBoost       float64 `yaml:"recall_boost"`
+	MaxStrength       float64 `yaml:"max_strength"`
+	CompressedLevel   int     `yaml:"compressed_level"`
+	SummarizationLevel int     `yaml:"summarization_level"`
+}
+
+// LoadFromYAML reads configs/algorithm_baseline.yaml and merges it with defaults.
+// If the file does not exist, returns defaults. Any missing YAML keys retain default values.
+// Environment variable ANDB_ALGORITHM_BASELINE_CONFIG overrides the path.
+func LoadFromYAML() (Config, error) {
+	defaults := DefaultConfig()
+	yc := BaselineConfig{
+		InitialStrength:    defaults.InitialStrength,
+		DecayRate:         defaults.DecayRate,
+		DecayThreshold:    defaults.DecayThreshold,
+		RecallBoost:       defaults.RecallBoost,
+		MaxStrength:       defaults.MaxStrength,
+		CompressedLevel:   defaults.CompressedLevel,
+		SummarizationLevel: defaults.SummarizationLevel,
+	}
+	path := os.Getenv("ANDB_ALGORITHM_BASELINE_CONFIG")
+	if path == "" {
+		path = "configs/algorithm_baseline.yaml"
+	}
+	if err := config.LoadYAML(path, &yc); err != nil {
+		return defaults, err
+	}
+	return Config{
+		InitialStrength:    yc.InitialStrength,
+		DecayRate:         yc.DecayRate,
+		DecayThreshold:    yc.DecayThreshold,
+		RecallBoost:       yc.RecallBoost,
+		MaxStrength:       yc.MaxStrength,
+		CompressedLevel:   yc.CompressedLevel,
+		SummarizationLevel: yc.SummarizationLevel,
+	}, nil
+}
+
+// NewDefault creates a BaselineMemoryAlgorithm loading configs/algorithm_baseline.yaml.
+func NewDefault() *BaselineMemoryAlgorithm {
+	cfg, _ := LoadFromYAML() // falls back to defaults on error
+	return New(cfg)
+}
+
 // ─── BaselineMemoryAlgorithm ──────────────────────────────────────────────────
 
 // BaselineMemoryAlgorithm implements schemas.MemoryManagementAlgorithm using a
@@ -90,9 +141,6 @@ type BaselineMemoryAlgorithm struct {
 func New(cfg Config) *BaselineMemoryAlgorithm {
 	return &BaselineMemoryAlgorithm{cfg: cfg, states: make(map[string]schemas.MemoryAlgorithmState)}
 }
-
-// NewDefault creates a BaselineMemoryAlgorithm with DefaultConfig.
-func NewDefault() *BaselineMemoryAlgorithm { return New(DefaultConfig()) }
 
 func (a *BaselineMemoryAlgorithm) AlgorithmID() string { return AlgorithmID }
 

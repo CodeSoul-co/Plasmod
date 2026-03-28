@@ -17,6 +17,7 @@ import (
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/nodes"
+	"time"
 )
 
 type Runtime struct {
@@ -378,4 +379,149 @@ func (r *Runtime) GetPolicyDecisions(objectID string) []string {
 			e.LSN, e.Decision, e.PolicyID, e.Reason)
 	}
 	return out
+}
+
+// ─── Algorithm dispatch (used by Agent SDK internal endpoints) ─────────────────
+
+// DispatchAlgorithm forwards an operation to all registered AlgorithmDispatchWorkers.
+// Supported operations: "ingest" | "decay" | "recall" | "compress" | "summarize" | "update".
+// Returns an empty output when no algorithm workers are registered.
+func (r *Runtime) DispatchAlgorithm(
+	operation string,
+	memoryIDs []string,
+	query, nowTS, agentID, sessionID string,
+	signals map[string]float64,
+) schemas.AlgorithmDispatchOutput {
+	if r.nodeManager == nil {
+		return schemas.AlgorithmDispatchOutput{Operation: operation}
+	}
+	return r.nodeManager.DispatchAlgorithmDispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
+}
+
+// DispatchRecall combines query retrieval with algorithm-level Recall scoring.
+// It builds a QueryRequest from the parameters, executes it, then passes the
+// top-ranked candidate IDs to AlgorithmDispatchWorker.Recall and returns a MemoryView.
+func (r *Runtime) DispatchRecall(
+	query, scope string,
+	topK int,
+	agentID, sessionID, tenantID, workspaceID string,
+) schemas.MemoryView {
+	now := time.Now().UTC()
+	req := schemas.QueryRequest{
+		QueryText:   query,
+		QueryScope:  scope,
+		SessionID:   sessionID,
+		AgentID:     agentID,
+		TenantID:    tenantID,
+		WorkspaceID: workspaceID,
+		TopK:        topK,
+		TimeWindow: schemas.TimeWindow{
+			From: "1970-01-01T00:00:00Z",
+			To:   now.Format(time.RFC3339),
+		},
+		ObjectTypes: []string{"memory"},
+		MemoryTypes: []string{"semantic", "episodic", "procedural"},
+		ResponseMode: schemas.ResponseModeStructuredEvidence,
+	}
+
+	resp := r.ExecuteQuery(req)
+	visibleRefs := resp.Objects
+	if len(visibleRefs) == 0 {
+		return schemas.MemoryView{
+			RequestID:     fmt.Sprintf("recall_%d", now.UnixNano()),
+			RequesterID:   agentID,
+			AgentID:       agentID,
+			ResolvedScope: scope,
+		}
+	}
+
+	// Forward the top candidates to algorithm-level Recall for scored re-ranking.
+	algoOut := schemas.AlgorithmDispatchOutput{}
+	if r.nodeManager != nil {
+		algoOut = r.nodeManager.DispatchAlgorithmDispatch(
+			"recall", visibleRefs, query,
+			now.Format(time.RFC3339), agentID, sessionID, nil,
+		)
+	}
+
+	// Use algorithm-ordered refs if available, otherwise fall back to search order.
+	orderedRefs := visibleRefs
+	if len(algoOut.ScoredRefs) > 0 {
+		orderedRefs = algoOut.ScoredRefs
+	}
+
+	// Collect full Memory payloads for the ordered refs.
+	payloads := make([]schemas.Memory, 0, len(orderedRefs))
+	for _, id := range orderedRefs {
+		if mem, ok := r.storage.Objects().GetMemory(id); ok {
+			payloads = append(payloads, mem)
+		}
+	}
+
+	var algoNotes []string
+	if len(algoOut.ScoredRefs) > 0 {
+		algoNotes = []string{fmt.Sprintf("algorithm_scored:%d", len(algoOut.ScoredRefs))}
+	} else {
+		algoNotes = []string{"search_fallback:no_algo_worker"}
+	}
+
+	return schemas.MemoryView{
+		RequestID:         fmt.Sprintf("recall_%d", now.UnixNano()),
+		RequesterID:       agentID,
+		AgentID:           agentID,
+		ResolvedScope:     scope,
+		VisibleMemoryRefs: orderedRefs,
+		Payloads:          payloads,
+		ProvenanceNotes:   []string{fmt.Sprintf("search_rank:%d_algo_rank:%d", len(visibleRefs), len(orderedRefs))},
+		AlgorithmNotes:    algoNotes,
+		ConstructionTrace: resp.ProofTrace,
+	}
+}
+
+// DispatchShare copies a memory to a target agent's namespace and fires
+// CommunicationWorker for any side-effects.
+func (r *Runtime) DispatchShare(fromAgentID, toAgentID, memoryID string) (string, error) {
+	mem, ok := r.storage.Objects().GetMemory(memoryID)
+	if !ok {
+		return "", fmt.Errorf("memory not found: %s", memoryID)
+	}
+	if fromAgentID == toAgentID {
+		return "", nil // no-op
+	}
+	sharedID := "shared_" + memoryID + "_to_" + toAgentID
+	shared := schemas.Memory{
+		MemoryID:      sharedID,
+		AgentID:       toAgentID,
+		SessionID:     mem.SessionID,
+		OwnerType:     "shared",
+		Scope:         "restricted_shared",
+		MemoryType:    mem.MemoryType,
+		Content:       mem.Content,
+		Level:         mem.Level,
+		SourceEventIDs: mem.SourceEventIDs,
+		Importance:    mem.Importance,
+		Confidence:    mem.Confidence,
+		IsActive:      mem.IsActive,
+		Version:       mem.Version,
+		ValidFrom:     time.Now().UTC().Format(time.RFC3339),
+		ProvenanceRef: fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID),
+	}
+	r.storage.Objects().PutMemory(shared)
+	if r.nodeManager != nil {
+		r.nodeManager.DispatchCommunication(fromAgentID, toAgentID, memoryID)
+	}
+	return sharedID, nil
+}
+
+// DispatchConflictResolve resolves a memory conflict and returns the winner ID.
+func (r *Runtime) DispatchConflictResolve(leftID, rightID string) string {
+	if r.nodeManager != nil {
+		return r.nodeManager.DispatchConflictMergeWithWinner(leftID, rightID, "memory")
+	}
+	return leftID
+}
+
+// Manager returns the underlying nodes.Manager. It may be nil.
+func (r *Runtime) Manager() *nodes.Manager {
+	return r.nodeManager
 }

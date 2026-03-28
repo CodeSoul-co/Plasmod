@@ -6,6 +6,7 @@ require (
 	andb/retrievalplane v0.0.0
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/hamba/avro/v2 v2.31.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (

@@ -9,6 +9,10 @@ const (
 	MemoryTypeProcedural MemoryType = "procedural"
 	MemoryTypeSocial     MemoryType = "social"
 	MemoryTypeReflective MemoryType = "reflective"
+	// MemoryBank memory types (additional semantic kinds)
+	MemoryTypeProfile               MemoryType = "profile"
+	MemoryTypeAffectiveState       MemoryType = "affective_state"
+	MemoryTypePreferenceConstraint MemoryType = "preference_constraint"
 )
 
 // EventType enumerates the well-known event kinds produced by agents.
@@ -192,6 +196,10 @@ const (
 	MemoryLifecycleQuarantined      MemoryLifecycle = "quarantined"
 	MemoryLifecycleHidden           MemoryLifecycle = "hidden"
 	MemoryLifecycleDeletedLogically MemoryLifecycle = "deleted_logically"
+	// MemoryBank lifecycle states
+	MemoryLifecycleCandidate  MemoryLifecycle = "candidate"
+	MemoryLifecycleReinforced MemoryLifecycle = "reinforced"
+	MemoryLifecycleStale      MemoryLifecycle = "stale"
 )
 
 // MemoryScope defines the circulation boundary of a memory object.
