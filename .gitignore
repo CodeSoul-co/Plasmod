@@ -6,5 +6,4 @@ integration_tests/
 .claude/
 
 # Member private docs
-devdocs/member-todo-README.md
-devdocs/arrange
+devdocs/
