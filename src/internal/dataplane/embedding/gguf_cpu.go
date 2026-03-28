@@ -3,11 +3,10 @@
 
 // Package embedding provides pluggable text-to-vector embedding generators.
 //
-// GGUFEmbedder CPU implementation using go-llama.cpp.
-// This version runs on CPU (Mac/Linux without CUDA).
-// Build with: go build -tags cuda (on Linux with CUDA) to enable GPU acceleration.
+// GGUFEmbedder CPU/Metal implementation using go-llama.cpp.
+// Build with: go build -tags cuda (on Linux with CUDA) to enable CUDA acceleration.
 //
-// Prerequisites:
+// Prerequisites (requires building go-llama.cpp C++ library first):
 //
 //	# Clone and build go-llama.cpp
 //	git clone --recurse-submodules https://github.com/go-skynet/go-llama.cpp
@@ -20,12 +19,15 @@
 //	# For CPU only:
 //	make libbinding.a
 //
-//	# Set paths
+//	# Set paths before building Go code
 //	export LIBRARY_PATH=/path/to/go-llama.cpp
 //	export C_INCLUDE_PATH=/path/to/go-llama.cpp
 //
-//	# Download embedding model
+//	# Download embedding model (e.g. nomic-embed-text)
 //	wget https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf
+//
+// Note: This file contains stub implementation. After building go-llama.cpp,
+// replace this with gguf_llama.go that imports the library.
 package embedding
 
 import (
@@ -35,6 +37,11 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	// llama "github.com/go-skynet/go-llama.cpp"
+	// Uncomment above after building go-llama.cpp:
+	//   git clone --recurse-submodules https://github.com/go-skynet/go-llama.cpp
+	//   cd go-llama.cpp && BUILD_TYPE=metal make libbinding.a
+	//   export LIBRARY_PATH=$PWD C_INCLUDE_PATH=$PWD
 )
 
 // GGUFConfig holds configuration for the GGUF/llama.cpp embedder.
@@ -48,18 +55,16 @@ type GGUFConfig struct {
 }
 
 // GGUFEmbedder implements Generator using llama.cpp for local GGUF model inference.
-// This is the CPU/Metal version (no CUDA).
+// This is a stub implementation - requires go-llama.cpp to be built first.
 type GGUFEmbedder struct {
 	cfg    GGUFConfig
 	dim    int
 	mu     sync.Mutex
 	closed bool
-	// Note: In production, this would hold the llama.cpp model handle
-	// For now, this is a stub that returns ErrProviderUnavailable
-	// until go-llama.cpp is properly linked
 }
 
-// NewGGUF creates a GGUF/llama.cpp embedder (CPU/Metal version).
+// NewGGUF creates a GGUF/llama.cpp embedder.
+// Returns ErrProviderUnavailable until go-llama.cpp is built and linked.
 func NewGGUF(_ context.Context, cfg GGUFConfig, dim int) (*GGUFEmbedder, error) {
 	if cfg.ModelPath == "" {
 		return nil, fmt.Errorf("GGUFConfig.ModelPath is required")
@@ -72,7 +77,7 @@ func NewGGUF(_ context.Context, cfg GGUFConfig, dim int) (*GGUFEmbedder, error) 
 	if cfg.Device == "" {
 		switch runtime.GOOS {
 		case "darwin":
-			cfg.Device = "metal" // Mac uses Metal for GPU
+			cfg.Device = "metal"
 		default:
 			cfg.Device = "cpu"
 		}
@@ -88,18 +93,12 @@ func NewGGUF(_ context.Context, cfg GGUFConfig, dim int) (*GGUFEmbedder, error) 
 		cfg.ContextSize = 512
 	}
 	if cfg.GPULayers == 0 && cfg.Device == "metal" {
-		cfg.GPULayers = 99 // Offload all layers to Metal GPU
+		cfg.GPULayers = 99
 	}
 
-	// Note: Full implementation requires go-llama.cpp library to be linked.
-	// Build with proper CGO flags:
-	//   LIBRARY_PATH=/path/to/go-llama.cpp C_INCLUDE_PATH=/path/to/go-llama.cpp go build
-	//
-	// For now, return error indicating library not linked.
-	// When go-llama.cpp is available, this would call:
-	//   model, err := llama.New(cfg.ModelPath, llama.EnableEmbeddings, llama.SetGPULayers(cfg.GPULayers))
-
-	return nil, fmt.Errorf("%w: GGUF requires go-llama.cpp library; see gguf_cpu.go for build instructions", ErrProviderUnavailable)
+	// Stub: go-llama.cpp requires building C++ library first
+	// See file header for build instructions
+	return nil, fmt.Errorf("%w: GGUF requires go-llama.cpp C++ library; see gguf_cpu.go header for build instructions", ErrProviderUnavailable)
 }
 
 // NewGGUFFromEnv creates a GGUF embedder using environment variables.
@@ -108,7 +107,7 @@ func NewGGUFFromEnv(ctx context.Context, dim int) (*GGUFEmbedder, error) {
 	device := os.Getenv("ANDB_EMBEDDER_DEVICE")
 
 	gpuLayers := 0
-	if device == "metal" {
+	if device == "metal" || (device == "" && runtime.GOOS == "darwin") {
 		gpuLayers = 99
 	}
 	if s := os.Getenv("ANDB_EMBEDDER_GPU_LAYERS"); s != "" {
