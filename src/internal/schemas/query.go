@@ -34,6 +34,8 @@ type QueryRequest struct {
 	EdgeTypes           []string   `json:"edge_types,omitempty"`
 	RelationConstraints []string   `json:"relation_constraints"`
 	ResponseMode        string     `json:"response_mode"`
+	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
+	IncludeCold bool `json:"include_cold,omitempty"`
 }
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.

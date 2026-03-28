@@ -47,6 +47,7 @@ Current `QueryRequest` fields:
 - `memory_types` (optional)
 - `relation_constraints`
 - `response_mode`
+- `include_cold` (optional bool) — when true, retrieval merges cold-tier `ColdSearch` results (archived memories) into the tiered search path.
 
 Current `TimeWindow` fields:
 

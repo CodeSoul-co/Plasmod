@@ -122,7 +122,16 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	if len(hotResult.Hits) >= input.TopK && input.TopK > 0 {
 		out := t.hotToOutput(hotResult)
 		out.Tier = "hot"
-		return out
+		if !input.IncludeCold {
+			return out
+		}
+		// Caller asked for cold tier: merge even when hot already satisfies TopK,
+		// otherwise archived hits would never be consulted on a full hot page.
+		coldIDs := t.coldSearch(input.QueryText, input.TopK)
+		coldOutput := SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
+		merged := mergeOutputs(out, coldOutput, input.TopK)
+		merged.Tier = "hot+cold"
+		return merged
 	}
 
 	// warm fallback — merge with hot results (warm may be hybrid)

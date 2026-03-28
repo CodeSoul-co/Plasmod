@@ -235,6 +235,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		TimeFromUnixTS: plan.TimeFromUnixTS,
 		TimeToUnixTS:   plan.TimeToUnixTS,
 		IncludeGrowing: plan.IncludeGrowing,
+		IncludeCold:    plan.IncludeCold,
 		ObjectTypes:    plan.ObjectTypes,
 		MemoryTypes:    plan.MemoryTypes,
 	}

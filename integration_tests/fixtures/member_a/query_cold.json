@@ -10,5 +10,6 @@
   "object_types": ["memory", "state", "artifact"],
   "memory_types": ["semantic", "episodic", "procedural"],
   "relation_constraints": [],
-  "response_mode": "structured_evidence"
+  "response_mode": "structured_evidence",
+  "include_cold": true
 }

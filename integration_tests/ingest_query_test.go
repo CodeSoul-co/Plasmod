@@ -3,6 +3,7 @@ package integration_test
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -198,6 +199,65 @@ func TestIngestWithoutWorkspaceID_Queryable(t *testing.T) {
 	}
 	assertKeys(t, resp, "objects", "provenance", "proof_trace")
 	t.Logf("no-workspace query: objects=%v proof_trace=%v", resp["objects"], resp["proof_trace"])
+}
+
+func proofTraceTierContainsCold(trace []any) bool {
+	for _, step := range trace {
+		s, ok := step.(string)
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(s, "tier:") && strings.Contains(s, "cold") {
+			return true
+		}
+	}
+	return false
+}
+
+func TestQueryIncludeCold_ProofTraceMentionsColdTier(t *testing.T) {
+	id := uniqID()
+	marker := fmt.Sprintf("cold_recall_marker_%s", id)
+	ev := sampleEvent(id)
+	ev["payload"] = map[string]any{"text": marker}
+	doJSON(t, http.MethodPost, "/v1/ingest/events", ev)
+
+	base := map[string]any{
+		"query_text":           marker,
+		"query_scope":          "workspace",
+		"session_id":           "sess_a",
+		"agent_id":             "agent_a",
+		"tenant_id":            "t_demo",
+		"workspace_id":         "w_demo",
+		"top_k":                5,
+		"time_window":          map[string]any{"from": "2026-01-01T00:00:00Z", "to": "2027-01-01T00:00:00Z"},
+		"object_types":         []string{"memory", "state", "artifact"},
+		"memory_types":         []string{"semantic", "episodic", "procedural"},
+		"relation_constraints": []string{},
+		"response_mode":        "structured_evidence",
+	}
+
+	_, without := doJSON(t, http.MethodPost, "/v1/query", base)
+	traceNo, ok := without["proof_trace"].([]any)
+	if !ok {
+		t.Fatalf("proof_trace missing or not array: %v", without["proof_trace"])
+	}
+	if proofTraceTierContainsCold(traceNo) {
+		t.Errorf("expected no cold tier without include_cold, proof_trace=%v", traceNo)
+	}
+
+	withCold := make(map[string]any, len(base)+1)
+	for k, v := range base {
+		withCold[k] = v
+	}
+	withCold["include_cold"] = true
+	_, with := doJSON(t, http.MethodPost, "/v1/query", withCold)
+	traceYes, ok := with["proof_trace"].([]any)
+	if !ok {
+		t.Fatalf("proof_trace missing or not array: %v", with["proof_trace"])
+	}
+	if !proofTraceTierContainsCold(traceYes) {
+		t.Errorf("expected tier line with cold when include_cold=true, proof_trace=%v", traceYes)
+	}
 }
 
 func TestIngestThenQuery_E2E(t *testing.T) {

@@ -16,10 +16,10 @@
     },
     {
       "id": "cold_recall_seed",
-      "test_name": "Cold-tier recall placeholder (fixtures for future forced-archive E2E)",
+      "test_name": "Cold-tier search merged into query (include_cold + ArchiveColdRecord mirror)",
       "ingest_files": ["ingest_cold_seed.json"],
       "query_file": "query_cold.json",
-      "notes": "Query text matches cold-seed content. Full cold recall via S3 requires memories archived to cold tier (TieredObjectStore); extend with admin/archive hooks when available."
+      "notes": "Ingest calls ArchiveColdRecord so cold store holds the same text; query uses include_cold so TieredDataPlane runs ColdSearch and proof_trace reports a tier label containing cold."
     },
     {
       "id": "collaboration_sharing",

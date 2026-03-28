@@ -24,6 +24,8 @@ type QueryPlan struct {
 	// MemoryTypes restricts results to specific memory sub-types
 	// ("episodic", "semantic", "procedural", …).  Empty means all.
 	MemoryTypes []string
+	// IncludeCold enables TieredDataPlane cold-tier search (archived memories).
+	IncludeCold bool
 }
 
 // ResponseMode selects the retrieval execution strategy (section 11).
@@ -79,6 +81,7 @@ func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 		ResponseMode:   mode,
 		ObjectTypes:    EffectiveObjectTypes(req.ObjectTypes),
 		MemoryTypes:    req.MemoryTypes,
+		IncludeCold:    req.IncludeCold,
 	}
 }
 
