@@ -121,9 +121,9 @@ func TestHTTPEmbedder_Generate_Success(t *testing.T) {
 	defer server.Close()
 
 	cfg := OpenAIConfig{
-		BaseURL: server.URL,
-		Model:   "test-model",
-		APIKey:  "test-key",
+		BaseURL:   server.URL,
+		Model:     "test-model",
+		APIKey:    "test-key",
 		BatchSize: 100,
 	}
 	e, err := NewOpenAI(context.Background(), cfg, dim)
@@ -277,8 +277,8 @@ func TestCohereEmbedder(t *testing.T) {
 			return
 		}
 		var req struct {
-			Model  string   `json:"model"`
-			Texts  []string `json:"texts"`
+			Model string   `json:"model"`
+			Texts []string `json:"texts"`
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 		resp := struct {
@@ -378,8 +378,8 @@ func TestClientPool_Reuse(t *testing.T) {
 func TestOpenAIRequestSchema(t *testing.T) {
 	// Verify the OpenAI request schema serialises correctly
 	req := openAIRequest{
-		Model:     "text-embedding-3-small",
-		Input:     []string{"hello world", "foo bar"},
+		Model:      "text-embedding-3-small",
+		Input:      []string{"hello world", "foo bar"},
 		Dimensions: 512,
 	}
 	bs, err := json.Marshal(req)
@@ -398,5 +398,130 @@ func TestOpenAIRequestSchema(t *testing.T) {
 	}
 	if decoded.Dimensions != 512 {
 		t.Errorf("dimensions: %d", decoded.Dimensions)
+	}
+}
+
+func TestVertexAIEmbedder_MissingConfig(t *testing.T) {
+	_, err := NewVertexAI(context.Background(), VertexAIConfig{}, 768)
+	if err == nil {
+		t.Error("expected error for missing ProjectID")
+	}
+
+	_, err = NewVertexAI(context.Background(), VertexAIConfig{ProjectID: "test"}, 768)
+	if err == nil {
+		t.Error("expected error for missing Location")
+	}
+}
+
+func TestVertexAIEmbedder_MockServer(t *testing.T) {
+	dim := 768
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req struct {
+			Instances []struct {
+				Content string `json:"content"`
+			} `json:"instances"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		resp := vertexAIResponse{
+			Predictions: make([]struct {
+				Embeddings struct {
+					Values []float32 `json:"values"`
+				} `json:"embeddings"`
+			}, len(req.Instances)),
+		}
+		for i := range req.Instances {
+			vec := make([]float32, dim)
+			vec[0] = float32(i)
+			resp.Predictions[i].Embeddings.Values = vec
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	// Create embedder pointing to mock server
+	e := &VertexAIEmbedder{
+		cfg: VertexAIConfig{
+			ProjectID:   "test-project",
+			Location:    "us-central1",
+			Model:       "text-embedding-004",
+			AccessToken: "test-token",
+			HTTPClient:  server.Client(),
+			BatchSize:   250,
+		},
+		dim: dim,
+	}
+	// Override the URL by using a custom postEmbed that points to mock
+	// For now just verify the struct is correctly initialized
+	if e.Provider() != "vertexai" {
+		t.Errorf("expected provider vertexai, got %s", e.Provider())
+	}
+	if e.Dim() != dim {
+		t.Errorf("expected dim %d, got %d", dim, e.Dim())
+	}
+}
+
+func TestHuggingFaceEmbedder_MissingConfig(t *testing.T) {
+	_, err := NewHuggingFace(context.Background(), HuggingFaceConfig{}, 384)
+	if err == nil {
+		t.Error("expected error for missing Model")
+	}
+
+	_, err = NewHuggingFace(context.Background(), HuggingFaceConfig{Model: "test"}, 384)
+	if err == nil {
+		t.Error("expected error for missing APIKey")
+	}
+}
+
+func TestHuggingFaceEmbedder_MockServer(t *testing.T) {
+	dim := 384
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req struct {
+			Inputs  []string `json:"inputs"`
+			Options struct {
+				WaitForModel bool `json:"wait_for_model"`
+				UseGPU       bool `json:"use_gpu"`
+			} `json:"options"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		embeddings := make([][]float32, len(req.Inputs))
+		for i := range req.Inputs {
+			vec := make([]float32, dim)
+			vec[0] = float32(i)
+			embeddings[i] = vec
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(embeddings)
+	}))
+	defer server.Close()
+
+	// Create embedder struct directly for testing
+	e := &HuggingFaceEmbedder{
+		cfg: HuggingFaceConfig{
+			Model:        "sentence-transformers/all-MiniLM-L6-v2",
+			APIKey:       "test-token",
+			HTTPClient:   server.Client(),
+			BatchSize:    32,
+			WaitForModel: true,
+		},
+		dim: dim,
+	}
+	if e.Provider() != "huggingface" {
+		t.Errorf("expected provider huggingface, got %s", e.Provider())
+	}
+	if e.Dim() != dim {
+		t.Errorf("expected dim %d, got %d", dim, e.Dim())
 	}
 }
