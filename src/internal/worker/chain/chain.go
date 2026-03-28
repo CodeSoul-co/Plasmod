@@ -206,7 +206,7 @@ type QueryChainInput struct {
 // QueryChainOutput carries the enriched reasoning results.
 type QueryChainOutput struct {
 	// ProofTrace contains multi-hop derivation chain explanations.
-	ProofTrace []string
+	ProofTrace []schemas.ProofStep
 	// Subgraph contains the expanded 1-hop graph neighbourhood.
 	Subgraph schemas.EvidenceSubgraph
 	// MergedEdges contains all unique edges from both the assembler and the

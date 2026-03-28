@@ -44,10 +44,10 @@ func OneHopExpand(seedID string, nodes []GraphNode, edges []Edge, edgeTypes []st
 		Nodes:   resultNodes,
 		Edges:   resultEdges,
 		ProofTrace: []ProofStep{
-			{Step: 1, Operation: "seed_lookup", Detail: "load seed node"},
-			{Step: 2, Operation: "edge_filter", Detail: "filter edges by edge types"},
-			{Step: 3, Operation: "one_hop_expand", Detail: "collect directly connected edges and nodes"},
-			{Step: 4, Operation: "subgraph_assemble", Detail: "assemble evidence subgraph"},
+			{StepType: "subgraph", Operation: "seed_lookup", Description: "load seed node"},
+			{StepType: "subgraph", Operation: "edge_filter", Description: "filter edges by edge types"},
+			{StepType: "subgraph", Operation: "one_hop_expand", Description: "collect directly connected edges and nodes"},
+			{StepType: "subgraph", Operation: "subgraph_assemble", Description: "assemble evidence subgraph"},
 		},
 	}
 }
@@ -89,10 +89,10 @@ func ExpandFromRequest(req GraphExpandRequest, nodes []GraphNode, edges []Edge) 
 		Nodes:   mergedNodes,
 		Edges:   mergedEdges,
 		ProofTrace: []ProofStep{
-			{Step: 1, Operation: "seed_lookup", Detail: "load seed nodes"},
-			{Step: 2, Operation: "edge_filter", Detail: "filter edges by edge types"},
-			{Step: 3, Operation: "multi_seed_expand", Detail: "collect directly connected edges and nodes for all seeds"},
-			{Step: 4, Operation: "subgraph_assemble", Detail: "merge and deduplicate evidence subgraph"},
+			{StepType: "subgraph", Operation: "seed_lookup", Description: "load seed nodes"},
+			{StepType: "subgraph", Operation: "edge_filter", Description: "filter edges by edge types"},
+			{StepType: "subgraph", Operation: "multi_seed_expand", Description: "collect directly connected edges and nodes for all seeds"},
+			{StepType: "subgraph", Operation: "subgraph_assemble", Description: "merge and deduplicate evidence subgraph"},
 		},
 	}
 

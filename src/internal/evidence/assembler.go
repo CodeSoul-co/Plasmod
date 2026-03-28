@@ -72,37 +72,80 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 	outputIDs := a.filterByObjectTypes(result.ObjectIDs, input.ObjectTypes, input.MemoryTypes)
 
 	// base trace steps (always present)
-	trace := []string{"planner", "retrieval_search", "policy_filter", "response"}
+	trace := []schemas.ProofStep{
+		{StepType: "planner", Operation: "planner", Description: "planner selected retrieval strategy"},
+		{StepType: "retrieval", Operation: "retrieval_search", Description: "execute retrieval search"},
+		{StepType: "policy", Operation: "policy_filter", Description: "apply policy filters"},
+		{StepType: "response", Operation: "response", Description: "assemble response"},
+	}
 
 	if len(input.ObjectTypes) > 0 {
-		trace = append(trace, fmt.Sprintf("object_type_filter:%s", strings.Join(input.ObjectTypes, ",")))
+		trace = append(trace, schemas.ProofStep{
+			StepType:    "filter",
+			Operation:   "object_type_filter",
+			Description: "object_type_filter:" + strings.Join(input.ObjectTypes, ","),
+		})
 	}
 	if len(input.MemoryTypes) > 0 {
-		trace = append(trace, fmt.Sprintf("memory_type_filter:%s", strings.Join(input.MemoryTypes, ",")))
+		trace = append(trace, schemas.ProofStep{
+			StepType:    "filter",
+			Operation:   "memory_type_filter",
+			Description: "memory_type_filter:" + strings.Join(input.MemoryTypes, ","),
+		})
 	}
 
 	// annotate which tier(s) were hit
 	if result.Tier != "" {
-		trace = append(trace, "tier:"+result.Tier)
+		trace = append(trace, schemas.ProofStep{
+			StepType:    "tier",
+			Operation:   "tier",
+			Description: "tier:" + result.Tier,
+		})
 	}
 
 	for _, seg := range result.PlannedSegments {
-		trace = append(trace, "shard:"+seg.ID+":"+seg.State)
+		trace = append(trace, schemas.ProofStep{
+			StepType:    "shard",
+			Operation:   "planned_segment",
+			Description: "shard:" + seg.ID + ":" + seg.State,
+		})
 	}
 
-	// merge pre-computed evidence fragments
+	// merge pre-computed evidence fragments + cache hit/miss stats for API consumers
+	var evStats *schemas.EvidenceCacheStats
 	if a.cache != nil && len(outputIDs) > 0 {
 		frags := a.cache.GetMany(outputIDs)
+		hits := 0
+		for _, f := range frags {
+			if strings.TrimSpace(f.ObjectID) != "" {
+				hits++
+			}
+		}
+		evStats = &schemas.EvidenceCacheStats{
+			LookedUp: len(outputIDs),
+			Hits:     hits,
+			Misses:   len(outputIDs) - hits,
+		}
 		trace = append(trace, a.assembleFromFragments(frags)...)
 	}
 
 	// delta evidence: scanned shards not already in trace
-	trace = append(trace, result.ScannedSegments...)
+	for _, seg := range result.ScannedSegments {
+		trace = append(trace, schemas.ProofStep{
+			StepType:    "scan",
+			Operation:   "scanned_segment",
+			Description: seg,
+		})
+	}
 
 	// 1-hop graph expansion: load all edges incident to retrieved objects
 	edges := a.expandEdges(outputIDs)
 	if len(edges) > 0 {
-		trace = append(trace, fmt.Sprintf("graph_expansion:edges=%d", len(edges)))
+		trace = append(trace, schemas.ProofStep{
+			StepType:    "graph",
+			Operation:   "graph_expansion",
+			Description: fmt.Sprintf("graph_expansion:edges=%d", len(edges)),
+		})
 	}
 
 	// governance annotations: TTL-expired / quarantined objects are flagged
@@ -121,6 +164,8 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 		Versions:       versions,
 		AppliedFilters: filters,
 		ProofTrace:     trace,
+		ChainTraces:    schemas.ChainTraceSlots{},
+		EvidenceCache:  evStats,
 	}
 }
 
@@ -177,16 +222,26 @@ func inferObjectTypeFromID(id string) string {
 // governanceAnnotations returns proof-trace steps that flag policy violations
 // (TTL-expired or quarantined) on the returned objects.  Objects are flagged
 // but NOT removed here; callers decide whether to act on the annotations.
-func (a *Assembler) governanceAnnotations(objectIDs []string) []string {
-	steps := []string{}
+func (a *Assembler) governanceAnnotations(objectIDs []string) []schemas.ProofStep {
+	steps := []schemas.ProofStep{}
 	for _, id := range objectIDs {
 		pols := a.policyStore.GetPolicies(id)
 		for _, pol := range pols {
 			if pol.QuarantineFlag {
-				steps = append(steps, fmt.Sprintf("governance:quarantined:%s", id))
+				steps = append(steps, schemas.ProofStep{
+					StepType:    "governance",
+					Operation:   "quarantined",
+					TargetID:    id,
+					Description: fmt.Sprintf("governance:quarantined:%s", id),
+				})
 			}
 			if pol.VerifiedState == string(schemas.VerifiedStateRetracted) {
-				steps = append(steps, fmt.Sprintf("governance:retracted:%s", id))
+				steps = append(steps, schemas.ProofStep{
+					StepType:    "governance",
+					Operation:   "retracted",
+					TargetID:    id,
+					Description: fmt.Sprintf("governance:retracted:%s", id),
+				})
 			}
 		}
 	}
@@ -262,19 +317,34 @@ func (a *Assembler) expandEdges(objectIDs []string) []schemas.Edge {
 
 // assembleFromFragments converts pre-computed EvidenceFragments into proof-trace
 // steps.  Called only when cache is available (hot path).
-func (a *Assembler) assembleFromFragments(frags []EvidenceFragment) []string {
-	steps := []string{}
+func (a *Assembler) assembleFromFragments(frags []EvidenceFragment) []schemas.ProofStep {
+	steps := []schemas.ProofStep{}
 	for _, f := range frags {
 		if f.ObjectID == "" {
 			continue
 		}
-		steps = append(steps, fmt.Sprintf("fragment:%s:level=%d:salience=%.2f",
-			f.ObjectID, f.Level, f.SalienceScore))
+		steps = append(steps, schemas.ProofStep{
+			StepType:    "fragment",
+			Operation:   "fragment_cache",
+			SourceID:    f.ObjectID,
+			Description: fmt.Sprintf("fragment:%s:level=%d:salience=%.2f", f.ObjectID, f.Level, f.SalienceScore),
+		})
 		for _, rel := range f.RelatedIDs {
-			steps = append(steps, fmt.Sprintf("edge:%s->%s", f.ObjectID, rel))
+			steps = append(steps, schemas.ProofStep{
+				StepType:    "fragment_edge",
+				Operation:   "related_id",
+				SourceID:    f.ObjectID,
+				TargetID:    rel,
+				Description: fmt.Sprintf("edge:%s->%s", f.ObjectID, rel),
+			})
 		}
 		for _, filter := range f.PolicyFilters {
-			steps = append(steps, "policy:"+filter)
+			steps = append(steps, schemas.ProofStep{
+				StepType:    "policy",
+				Operation:   "fragment_policy_filter",
+				SourceID:    f.ObjectID,
+				Description: "policy:" + filter,
+			})
 		}
 	}
 	return steps

@@ -10,6 +10,17 @@ const (
 	ResponseModeObjectsOnly        = "objects_only"
 )
 
+// ChainTraceSlots groups per-chain trace lines exposed on QueryResponse.
+// On ingest, workers may attach full chain traces. On a standalone query,
+// main / memory_pipeline / collaboration carry read-path summaries (the write
+// chains are not re-executed); query is filled from QueryChain.
+type ChainTraceSlots struct {
+	Main             []string `json:"main"`
+	MemoryPipeline   []string `json:"memory_pipeline"`
+	Query            []string `json:"query"`
+	Collaboration    []string `json:"collaboration"`
+}
+
 type QueryRequest struct {
 	QueryText           string     `json:"query_text"`
 	QueryScope          string     `json:"query_scope"`
@@ -24,6 +35,15 @@ type QueryRequest struct {
 	EdgeTypes           []string   `json:"edge_types,omitempty"`
 	RelationConstraints []string   `json:"relation_constraints"`
 	ResponseMode        string     `json:"response_mode"`
+	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
+	IncludeCold bool `json:"include_cold,omitempty"`
+}
+
+// EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
+type EvidenceCacheStats struct {
+	LookedUp int `json:"looked_up"`
+	Hits     int `json:"hits"`
+	Misses   int `json:"misses"`
 }
 
 type QueryResponse struct {
@@ -33,7 +53,9 @@ type QueryResponse struct {
 	Provenance     []string        `json:"provenance"`
 	Versions       []ObjectVersion `json:"versions"`
 	AppliedFilters []string        `json:"applied_filters"`
-	ProofTrace     []string        `json:"proof_trace"`
+	ProofTrace     []ProofStep     `json:"proof_trace"`
+	ChainTraces    ChainTraceSlots `json:"chain_traces"`
+	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
 }
 
 type GraphExpandRequest struct {

@@ -47,6 +47,7 @@ Current `QueryRequest` fields:
 - `memory_types` (optional)
 - `relation_constraints`
 - `response_mode`
+- `include_cold` (optional bool) — when true, retrieval merges cold-tier `ColdSearch` results (archived memories) into the tiered search path.
 
 Current `TimeWindow` fields:
 
@@ -252,11 +253,14 @@ This is the contract that differentiates ANDB.
 Current `QueryResponse` fields:
 
 - `objects` as `[]string`
+- `nodes` as `[]GraphNode` (optional; populated after `QueryChain` subgraph work when applicable)
 - `edges` as `[]Edge`
 - `provenance` as `[]string`
 - `versions` as `[]ObjectVersion`
 - `applied_filters` as `[]string`
 - `proof_trace` as `[]string`
+- `chain_traces` as `{ "main", "memory_pipeline", "query", "collaboration" }` each `[]string` — on query, `main` / `memory_pipeline` / `collaboration` hold **read-path summaries** (write chains are not re-run); `query` is filled from `QueryChain` (proof/subgraph merge metadata)
+- `evidence_cache` as optional `{ "looked_up", "hits", "misses" }` — counts for pre-computed `EvidenceFragment` lookups over returned object IDs (omitted when no cache or no IDs)
 
 Current implementation note:
 

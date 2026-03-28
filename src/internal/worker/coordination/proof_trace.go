@@ -59,13 +59,14 @@ func (w *InMemoryProofTraceWorker) Info() nodes.NodeInfo {
 
 // AssembleTrace performs a BFS over the graph starting from objectIDs.
 // maxDepth <= 0 uses the default cap of 8.
-func (w *InMemoryProofTraceWorker) AssembleTrace(objectIDs []string, maxDepth int) []string {
+func (w *InMemoryProofTraceWorker) AssembleTrace(objectIDs []string, maxDepth int) []schemas.ProofStep {
 	if maxDepth <= 0 {
 		maxDepth = defaultMaxDepth
 	}
 
-	trace := []string{}
-	seen := map[string]bool{}
+	trace := []schemas.ProofStep{}
+	seenNode := map[string]bool{}
+	seenStep := map[string]bool{}
 
 	// BFS frontier: (nodeID, currentDepth)
 	type item struct {
@@ -75,7 +76,7 @@ func (w *InMemoryProofTraceWorker) AssembleTrace(objectIDs []string, maxDepth in
 	queue := make([]item, 0, len(objectIDs))
 	for _, id := range objectIDs {
 		queue = append(queue, item{id, 0})
-		seen[id] = true
+		seenNode[id] = true
 	}
 
 	for len(queue) > 0 {
@@ -87,14 +88,25 @@ func (w *InMemoryProofTraceWorker) AssembleTrace(objectIDs []string, maxDepth in
 		}
 
 		for _, e := range w.store.EdgesFrom(cur.id) {
-			step := fmt.Sprintf("[d=%d] %s -[%s]-> %s (w=%.2f)",
-				cur.depth+1, e.SrcObjectID, e.EdgeType, e.DstObjectID, e.Weight)
-			if !seen[step] {
-				trace = append(trace, step)
-				seen[step] = true
+			stepKey := e.EdgeID
+			if stepKey == "" {
+				stepKey = e.SrcObjectID + "|" + e.EdgeType + "|" + e.DstObjectID
 			}
-			if !seen[e.DstObjectID] {
-				seen[e.DstObjectID] = true
+			if !seenStep[stepKey] {
+				trace = append(trace, schemas.ProofStep{
+					StepType:    "edge",
+					Depth:       cur.depth + 1,
+					SourceID:    e.SrcObjectID,
+					EdgeID:      e.EdgeID,
+					EdgeType:    e.EdgeType,
+					TargetID:    e.DstObjectID,
+					Weight:      e.Weight,
+					Description: fmt.Sprintf("[d=%d] %s -[%s]-> %s (w=%.2f)", cur.depth+1, e.SrcObjectID, e.EdgeType, e.DstObjectID, e.Weight),
+				})
+				seenStep[stepKey] = true
+			}
+			if !seenNode[e.DstObjectID] {
+				seenNode[e.DstObjectID] = true
 				queue = append(queue, item{e.DstObjectID, cur.depth + 1})
 			}
 		}
@@ -104,13 +116,19 @@ func (w *InMemoryProofTraceWorker) AssembleTrace(objectIDs []string, maxDepth in
 	if w.derivLog != nil {
 		for _, id := range objectIDs {
 			for _, entry := range w.derivLog.ForDerived(id) {
-				step := fmt.Sprintf("derivation: %s(%s) -[%s]-> %s(%s)",
-					entry.SourceID, entry.SourceType,
-					entry.Operation,
-					entry.DerivedID, entry.DerivedType)
-				if !seen[step] {
-					trace = append(trace, step)
-					seen[step] = true
+				stepKey := "derivation|" + entry.SourceID + "|" + entry.Operation + "|" + entry.DerivedID
+				if !seenStep[stepKey] {
+					trace = append(trace, schemas.ProofStep{
+						StepType:    "derivation",
+						SourceID:    entry.SourceID,
+						SourceType:  entry.SourceType,
+						EdgeType:    entry.Operation,
+						TargetID:    entry.DerivedID,
+						TargetType:  entry.DerivedType,
+						Operation:   entry.Operation,
+						Description: fmt.Sprintf("derivation: %s(%s) -[%s]-> %s(%s)", entry.SourceID, entry.SourceType, entry.Operation, entry.DerivedID, entry.DerivedType),
+					})
+					seenStep[stepKey] = true
 				}
 			}
 		}

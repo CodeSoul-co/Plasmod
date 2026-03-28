@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"andb/src/internal/dataplane"
@@ -59,7 +60,7 @@ type Generator interface {
 // Use dataplane.NewTfidfEmbedder directly when no HTTP client pooling is needed.
 type TfidfEmbedder struct{ *dataplane.TfidfEmbedder }
 
-func (e *TfidfEmbedder) Close() error { return nil }
+func (e *TfidfEmbedder) Close() error     { return nil }
 func (e *TfidfEmbedder) Provider() string { return "tfidf" }
 
 // NewTfidf is a convenience constructor compatible with the Generator interface.
@@ -80,14 +81,14 @@ func NewTfidf(dim int) *TfidfEmbedder {
 // Azure OpenAI note: set Model to your deployment name and optionally set
 // AzureDeployment so the URL is constructed as {BaseURL}/deployments/{Deployment}/embeddings.
 type OpenAIConfig struct {
-	BaseURL   string // e.g. "https://api.openai.com/v1" or "https://open.bigmodel.cn/api/paas/v4"
-	Model     string // e.g. "text-embedding-3-small", "embedding-3"
-	APIKey    string // API key; read from env or secret manager
-	OrgID     string // optional, for OpenAI Organisation
-	APIType   string // optional, "azure" triggers Azure AD path
-	AzureDeployment string // required when APIType=="azure"
-	HTTPClient *http.Client // optional; nil → default
-	Timeout   time.Duration // per-request timeout; 0 → 30s default
+	BaseURL         string        // e.g. "https://api.openai.com/v1" or "https://open.bigmodel.cn/api/paas/v4"
+	Model           string        // e.g. "text-embedding-3-small", "embedding-3"
+	APIKey          string        // API key; read from env or secret manager
+	OrgID           string        // optional, for OpenAI Organisation
+	APIType         string        // optional, "azure" triggers Azure AD path
+	AzureDeployment string        // required when APIType=="azure"
+	HTTPClient      *http.Client  // optional; nil → default
+	Timeout         time.Duration // per-request timeout; 0 → 30s default
 	// Dimensions controls output vector size (OpenAI 3 only; ignored by other backends).
 	// Set to 0 to use the model's default (full) dimensions.
 	Dimensions int
@@ -338,8 +339,8 @@ func (e *CohereEmbedder) Generate(text string) ([]float32, error) {
 // BatchGenerate sends a request to Cohere's v2/embed endpoint.
 func (e *CohereEmbedder) BatchGenerate(ctx context.Context, texts []string) ([][]float32, error) {
 	reqBody := map[string]any{
-		"model": e.model,
-		"texts": texts,
+		"model":      e.model,
+		"texts":      texts,
 		"input_type": "search_document",
 	}
 	var resp struct {
@@ -383,10 +384,10 @@ type openAIResponse struct {
 		Index     int       `json:"index"`
 		Embedding []float32 `json:"embedding"`
 	} `json:"data"`
-	Model  string `json:"model"`
-	Usage  struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		TotalTokens     int `json:"total_tokens"`
+	Model string `json:"model"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
 }
 
@@ -400,4 +401,84 @@ func parseOpenAIResponse(resp openAIResponse, expect int) ([][]float32, error) {
 		out[d.Index] = d.Embedding
 	}
 	return out, nil
+}
+
+// ─── Factory from environment variables ──────────────────────────────────────
+
+// NewFromEnv creates an embedder based on ANDB_EMBEDDER environment variable.
+// Supported values: tfidf, openai, zhipuai, cohere, vertexai, huggingface, onnx, gguf, tensorrt
+//
+// Each provider reads its own environment variables:
+//   - openai:      ANDB_OPENAI_API_KEY, ANDB_OPENAI_BASE_URL, ANDB_OPENAI_MODEL
+//   - zhipuai:     ANDB_ZHIPUAI_API_KEY, ANDB_ZHIPUAI_MODEL
+//   - cohere:      ANDB_COHERE_API_KEY
+//   - vertexai:    ANDB_VERTEXAI_API_KEY, ANDB_VERTEXAI_PROJECT, ANDB_VERTEXAI_LOCATION
+//   - huggingface: ANDB_HUGGINGFACE_API_KEY, ANDB_HUGGINGFACE_MODEL
+//   - onnx:        ANDB_EMBEDDER_MODEL_PATH, ONNXRUNTIME_LIB_PATH
+//   - gguf:        ANDB_EMBEDDER_MODEL_PATH, ANDB_EMBEDDER_DEVICE
+//   - tensorrt:    ANDB_EMBEDDER_MODEL_PATH
+func NewFromEnv(ctx context.Context, dim int) (Generator, error) {
+	provider := os.Getenv("ANDB_EMBEDDER")
+	if provider == "" {
+		provider = "tfidf"
+	}
+
+	switch provider {
+	case "tfidf":
+		return NewTfidf(dim), nil
+
+	case "openai":
+		baseURL := os.Getenv("ANDB_OPENAI_BASE_URL")
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		model := os.Getenv("ANDB_OPENAI_MODEL")
+		if model == "" {
+			model = "text-embedding-3-small"
+		}
+		return NewOpenAI(ctx, OpenAIConfig{
+			BaseURL: baseURL,
+			Model:   model,
+			APIKey:  os.Getenv("ANDB_OPENAI_API_KEY"),
+		}, dim)
+
+	case "zhipuai":
+		model := os.Getenv("ANDB_ZHIPUAI_MODEL")
+		if model == "" {
+			model = "embedding-3"
+		}
+		return NewZhipuAI(ctx, os.Getenv("ANDB_ZHIPUAI_API_KEY"), model, dim)
+
+	case "cohere":
+		return NewCohere(ctx, os.Getenv("ANDB_COHERE_API_KEY"), "embed-multilingual-v3.0", dim)
+
+	case "vertexai":
+		return NewVertexAI(ctx, VertexAIConfig{
+			ProjectID:   os.Getenv("ANDB_VERTEXAI_PROJECT"),
+			Location:    os.Getenv("ANDB_VERTEXAI_LOCATION"),
+			AccessToken: os.Getenv("ANDB_VERTEXAI_ACCESS_TOKEN"),
+		}, dim)
+
+	case "huggingface":
+		model := os.Getenv("ANDB_HUGGINGFACE_MODEL")
+		if model == "" {
+			model = "sentence-transformers/all-MiniLM-L6-v2"
+		}
+		return NewHuggingFace(ctx, HuggingFaceConfig{
+			APIKey: os.Getenv("ANDB_HUGGINGFACE_API_KEY"),
+			Model:  model,
+		}, dim)
+
+	case "onnx":
+		return NewOnnxFromEnv(ctx, dim)
+
+	case "gguf":
+		return NewGGUFFromEnv(ctx, dim)
+
+	case "tensorrt":
+		return NewTensorRTFromEnv(ctx, dim)
+
+	default:
+		return nil, fmt.Errorf("unknown embedding provider: %s", provider)
+	}
 }

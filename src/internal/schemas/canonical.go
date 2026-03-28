@@ -228,9 +228,17 @@ type GraphNode struct {
 }
 
 type ProofStep struct {
-	Step      int    `json:"step"`
-	Operation string `json:"operation"`
-	Detail    string `json:"detail"`
+	StepType    string  `json:"step_type"`       // "edge" | "derivation"
+	Depth       int     `json:"depth,omitempty"` // BFS hop depth for edge traversal
+	SourceID    string  `json:"source_id"`
+	SourceType  string  `json:"source_type,omitempty"`
+	EdgeID      string  `json:"edge_id,omitempty"`
+	EdgeType    string  `json:"edge_type,omitempty"`
+	TargetID    string  `json:"target_id"`
+	TargetType  string  `json:"target_type,omitempty"`
+	Weight      float64 `json:"weight,omitempty"`
+	Operation   string  `json:"operation,omitempty"`   // derivation op
+	Description string  `json:"description,omitempty"` // human-readable trace text
 }
 
 type EvidenceSubgraph struct {

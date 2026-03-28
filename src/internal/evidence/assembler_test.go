@@ -30,12 +30,12 @@ func TestAssembler_Build_Basic(t *testing.T) {
 
 	tierFound := false
 	for _, step := range resp.ProofTrace {
-		if step == "tier:warm" {
+		if step.StepType == "tier" && step.Description == "tier:warm" {
 			tierFound = true
 		}
 	}
 	if !tierFound {
-		t.Error("Build: ProofTrace should contain 'tier:warm'")
+		t.Errorf("Build: ProofTrace should contain structured tier:warm step, got: %+v", resp.ProofTrace)
 	}
 }
 
@@ -58,12 +58,12 @@ func TestCachedAssembler_FragmentMerge(t *testing.T) {
 
 	fragFound := false
 	for _, step := range resp.ProofTrace {
-		if len(step) > 9 && step[:9] == "fragment:" {
+		if step.StepType == "fragment" && step.Operation == "fragment_cache" {
 			fragFound = true
 		}
 	}
 	if !fragFound {
-		t.Error("CachedAssembler: expected fragment step in ProofTrace after cache hit")
+		t.Errorf("CachedAssembler: expected structured fragment step in ProofTrace after cache hit, got: %+v", resp.ProofTrace)
 	}
 }
 
@@ -128,15 +128,15 @@ func TestAssembler_ObjectTypesFilter(t *testing.T) {
 			t.Errorf("ObjectTypesFilter: unexpected non-memory object in result: %s", id)
 		}
 	}
-	// object_type_filter token should appear in proof trace
+
 	filterFound := false
 	for _, step := range resp.ProofTrace {
-		if len(step) > 18 && step[:19] == "object_type_filter:" {
+		if step.StepType == "filter" && step.Operation == "object_type_filter" {
 			filterFound = true
 		}
 	}
 	if !filterFound {
-		t.Errorf("ObjectTypesFilter: expected 'object_type_filter:' in ProofTrace, got: %v", resp.ProofTrace)
+		t.Errorf("ObjectTypesFilter: expected structured object_type_filter step in ProofTrace, got: %+v", resp.ProofTrace)
 	}
 }
 
