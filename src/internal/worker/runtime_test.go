@@ -49,7 +49,7 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
 	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
 	nodeManager.RegisterStateMaterialization(
-		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions()))
+		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions(), nil))
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
 		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),

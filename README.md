@@ -606,8 +606,8 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 - [`src/internal/materialization/`](src/internal/materialization/): `Service.MaterializeEvent` → `MaterializationResult{Record, Memory, Version, Edges}`, `PreComputeService`
 - [`src/internal/storage/`](src/internal/storage/): Object store, version store, edge store, `TieredObjectStore`
 
-**Pending:**
-- `DerivationLog.Append` wired in bootstrap for all materialization workers
+**Implemented (derivation audit):**
+- `DerivationLog` is passed from [`src/internal/app/bootstrap.go`](src/internal/app/bootstrap.go) into `ObjectMaterializationWorker`, `StateMaterializationWorker`, baseline `MemoryExtraction` / `MemoryConsolidation` / `Summarization`, and (unchanged) `ToolTraceWorker` / `ProofTraceWorker`. Each worker calls `Append` after persisting the derived object where applicable.
 
 ---
 
