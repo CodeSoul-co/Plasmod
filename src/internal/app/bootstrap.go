@@ -250,8 +250,8 @@ func BuildServer() (*http.Server, func() error, error) {
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-hot", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-hot", store.Indexes()))
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
-	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
-	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects(), derivLog))
+	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects(), derivLog))
 	nodeManager.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
 	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), derivLog))
 	nodeManager.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
@@ -273,11 +273,13 @@ func BuildServer() (*http.Server, func() error, error) {
 		store.Objects(),
 		store.Edges(),
 		store.Versions(),
+		derivLog,
 	))
 	nodeManager.RegisterStateMaterialization(matworker.CreateInMemoryStateMaterializationWorker(
 		"state-mat-1",
 		store.Objects(),
 		store.Versions(),
+		derivLog,
 	))
 	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog))
 
@@ -294,7 +296,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	nodeManager.RegisterMicroBatch(coordination.CreateInMemoryMicroBatchScheduler("micro-batch-1", 64))
 
 	// ── Cognitive Compression workers ─────────────────────────────────────────
-	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects(), derivLog))
 
 	// ── Algorithm Dispatch worker ─────────────────────────────────────────────
 	// Bridges MemoryManagementAlgorithm plugins into the cognitive pipeline.
