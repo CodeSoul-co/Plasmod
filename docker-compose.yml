@@ -49,14 +49,12 @@ services:
         mc mb local/andb-integration || true
 
   andb:
-    # Must match go.mod toolchain (currently go 1.24+).
-    image: golang:1.24-bookworm
-    working_dir: /workspace
-    entrypoint: ["/bin/sh", "/workspace/scripts/docker/andb-entrypoint.sh"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cogdb:latest
     volumes:
-      - ./:/workspace
       - andb_data:/data
-      - ./docker/custom-ca:/andb-custom-ca:ro
     ports:
       - "8080:8080"
     environment:
@@ -71,9 +69,12 @@ services:
       S3_SECURE: "false"
       S3_REGION: us-east-1
       S3_PREFIX: andb/docker
-      GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
-      GOSUMDB: ${GOSUMDB:-sum.golang.org}
-    command: ["go", "run", "./src/cmd/server"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
     depends_on:
       minio-init:
         condition: service_completed_successfully
