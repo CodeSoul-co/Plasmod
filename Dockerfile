@@ -1,4 +1,4 @@
-﻿#
+#
 # Multi-stage build for CogDB / ANDB API server (README Member A task 1).
 #   docker build -t cogdb:latest .
 #
@@ -52,6 +52,7 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
