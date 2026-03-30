@@ -17,10 +17,10 @@ Tool versions are pinned in [`.tool-versions`](.tool-versions) at the repo root.
 |------|---------|-------------|---------|
 | **Go** | 1.24.0 | 1.24.0 | Main server — required |
 | **Python** | 3.11 | 3.11.9 | SDK / test scripts — required |
-| **Node.js** | 18 LTS | 20 LTS | Node SDK `sdk/nodejs/` — optional |
-| **gcc / g++** | 11 | 11.4 | C++ retrieval library build — optional |
-| **cmake** | 3.20 | 3.25+ | C++ retrieval library `make cpp` — optional |
-| **CUDA Toolkit** | 11.5 | match driver | GPU inference: ONNX / GGUF / TensorRT — optional |
+| **Node.js** | 18 LTS | 20 LTS | Node SDK `sdk/nodejs/` — required |
+| **gcc / g++** | 11 | 11.4 | C++ retrieval library build — required |
+| **cmake** | 3.20 | 3.25+ | C++ retrieval library `make cpp` — required |
+| **CUDA Toolkit** | 11.5 | match driver | GPU inference: ONNX / GGUF / TensorRT — required |
 
 > **Current server environment:** Python 3.10 present (upgrade to 3.11 required), CUDA Toolkit 11.5 / Driver 580.126.09 (CUDA 13.0), gcc/g++ 11.4, make 4.3. Go, Node.js, and cmake are not yet installed.
 
