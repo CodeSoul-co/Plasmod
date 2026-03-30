@@ -598,46 +598,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 #### Tasks
 
-**1. Dockerfile for Go server**
-- Create `Dockerfile` (Go 1.24-bookworm multi-stage build)
-- Stage 1: `golang:1.24-bookworm` compile `bin/andb-server`
-- Stage 2: `debian:bookworm-slim` run server binary (no shell, direct exec)
-- Install `libc6-dev` (required by `onnxruntime_go` if ONNX CPU is used)
-- No CUDA in base Dockerfile (Member B handles GPU image separately)
-- Build: `docker build -t cogdb:latest .`
-
-**2. Update `docker-compose.yml` for server migration**
-- Replace `golang:1.24-bookworm` container (running `go run` at start) with `Dockerfile`-built image
-- Add `bin/andb-server` artifact mount OR `COPY` into image
-- Keep MinIO + `minio-init` services unchanged
-- Add healthcheck for `andb` service: `curl -f http://localhost:8080/healthz`
-- Test: `docker compose up -d && curl http://localhost:8080/healthz`
-
-**3. Docker GPU passthrough (NVIDIA)**
-- Add `deploy.resources.reservations.devices` for NVIDIA GPU to `andb` service
-- Set `ANDB_EMBEDDER=onnx` / `ANDB_EMBEDDER_DEVICE=cuda` env var
-- Verify GPU is visible inside container: `nvidia-smi` check
-- See Docker GPU guide: https://docs.docker.com/compose/gpu-support/
-
-**4. S3/MinIO full E2E integration test**
-- With `docker compose up -d`, run ingest query cycle against MinIO cold tier
-- Verify `TieredObjectStore.ArchiveMemory` -> `S3ColdStore.PutMemory` -> S3 -> `GetMemory` round-trip
-- Verify cold-tier rehydration: archived memory re-activated via `GetMemoryActivated`
-- Test `include_cold=true` query flag with MinIO-backed cold tier
-- Capture proof traces and evidence cache stats in test output
-
-**5. Full Go unit test suite in Docker**
-- `docker compose exec andb go test ./src/internal/... -count=1 -timeout 120s`
-- All packages must pass (except `app` and `embedding` which may fail due to missing `go-llama.cpp` path)
-- Document expected failures and root causes in `docs/server-migration.md`
-
-**6. Environment variable matrix**
-- Document all env vars for each scenario in `docs/server-migration.md`:
-  - `ANDB_STORAGE=disk|inmemory`
-  - `ANDB_DATA_DIR=/data`
-  - `ANDB_EMBEDDER=tfidf|openai|zhipuai|onnx|gguf|tensorrt`
-  - `ANDB_EMBEDDER_DEVICE=cpu|cuda|metal`
-  - `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE`, `S3_REGION`, `S3_PREFIX`
 
 #### Verification Checklist
 
