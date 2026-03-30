@@ -1,4 +1,22 @@
 
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Go build output
+bin/
+*.so
+*.dylib
+
+# C++ build output
+cpp/build/
+
+# Local env file
+.env
+
 # Integration test artifacts (local dev, not for push)
 integration_tests/
 
