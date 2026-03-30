@@ -600,7 +600,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 
 #### Verification Checklist
-
+This part needs to be completed in a Linux environment and requires subsequent verification.
 ```
 [ ] docker build -t cogdb:latest . succeeds (no errors)
 [ ] docker compose up -d andb + minio starts cleanly
