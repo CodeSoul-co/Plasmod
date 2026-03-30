@@ -1,0 +1,22 @@
+# Git and local artifacts
+.git
+.github
+
+# Generated / local data (not needed to compile server)
+out
+.andb_data
+.acceptance-e2e-data
+.minio-data
+*.exe
+__pycache__
+.pytest_cache
+*.egg-info
+
+# Large / irrelevant for Go build
+cpp/build
+integration_tests/fixtures/**/yfcc*.fbin
+**/*.fbin
+
+# Docs and tooling (optional; uncomment to shrink context further)
+# docs
+# scripts
