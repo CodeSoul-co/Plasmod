@@ -559,14 +559,14 @@ Additional supporting docs already in the repo:
 
 ### v1 — current
 
-- End-to-end event ingest and structured-evidence query ✅
-- Tiered hot → warm → cold retrieval with RRF fusion ✅
-- 1-hop graph expansion in every `QueryResponse` ✅
-- Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time ✅
-- Go HTTP API with 14 routes, Python SDK, and integration test suite ✅
-- Pluggable memory governance algorithms (Baseline + MemoryBank) ✅
-- 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) ✅
-- `include_cold` query flag fully wired ✅
+- End-to-end event ingest and structured-evidence query 
+- Tiered hot → warm → cold retrieval with RRF fusion 
+- 1-hop graph expansion in every `QueryResponse` 
+- Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time 
+- Go HTTP API with 14 routes, Python SDK, and integration test suite 
+- Pluggable memory governance algorithms (Baseline + MemoryBank) 
+- 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) 
+- `include_cold` query flag fully wired 
 
 ### v1.x — near-term
 
