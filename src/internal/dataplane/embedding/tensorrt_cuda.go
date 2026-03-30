@@ -28,6 +28,7 @@ package embedding
 #cgo CFLAGS: -I/usr/local/cuda/include -I/usr/local/TensorRT/include
 
 #include <stdlib.h>
+#include <string.h>
 #include <cuda_runtime.h>
 
 // CUDA memory management helpers
@@ -54,6 +55,30 @@ static int cuda_set_device(int device) {
 static int cuda_device_synchronize() {
     return cudaDeviceSynchronize();
 }
+
+// TensorRT engine management
+// Real implementation provided by cpp/tensorrt_bridge.cpp
+// Linked via libandb_tensorrt.so
+
+typedef struct {
+    void* runtime;
+    void* engine;
+    void* context;
+    void* stream;
+    int numBindings;
+} TRTEngine;
+
+// Load TensorRT engine from file
+// Implementation in cpp/tensorrt_bridge.cpp
+extern TRTEngine* trt_load_engine(const char* engine_path);
+
+// Execute TensorRT inference
+// Implementation in cpp/tensorrt_bridge.cpp
+extern int trt_execute_inference(TRTEngine* engine, void** bindings);
+
+// Free TensorRT engine resources
+// Implementation in cpp/tensorrt_bridge.cpp
+extern void trt_free_engine(TRTEngine* engine);
 */
 import "C"
 
@@ -82,6 +107,9 @@ type TensorRTEmbedder struct {
 	dim    int
 	mu     sync.Mutex
 	closed bool
+
+	// TensorRT engine handle
+	engine unsafe.Pointer // *C.TRTEngine
 
 	// GPU memory buffers
 	inputIDsGPU      unsafe.Pointer
@@ -287,6 +315,12 @@ func (e *TensorRTEmbedder) Close() error {
 		return nil
 	}
 	e.closed = true
+
+	// Free TensorRT engine
+	if e.engine != nil {
+		C.trt_free_engine((*C.TRTEngine)(e.engine))
+		e.engine = nil
+	}
 
 	// Free GPU memory
 	if e.inputIDsGPU != nil {
