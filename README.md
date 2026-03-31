@@ -1001,3 +1001,72 @@ Docker (Member A)                    GPU libs (Member B)                Cold tie
 ```
 
 All three members must verify their components work together: Docker starts with GPU passthrough, ONNX/GGUF embeddings are generated on GPU, cold memories are stored in S3 with embeddings, and queries return cold results via DFS similarity.
+
+---
+
+## Integration Review Notes (2026-03-31, dev merge of A + B + C)
+
+Issues found and resolved when merging `feature/schema-a`, `feature/retrieval-b`, and `feature/graph-c` into `dev`.
+
+### Bug: `gguf_cpu.go` unconditional import of `go-llama.cpp` (Member B)
+
+**File:** `src/internal/dataplane/embedding/gguf_cpu.go`
+
+**Problem:** Build tag was `//go:build !cuda`, meaning the file compiled on every standard build. It imported `github.com/go-skynet/go-llama.cpp`, which requires a locally built C++ library. Without the library present the build fails:
+
+```
+src/internal/dataplane/embedding/gguf_cpu.go:41:2: no required module provides package github.com/go-skynet/go-llama.cpp
+```
+
+**Fix:**
+- Changed build tag to `//go:build !cuda && gguf` — file only compiles when the `gguf` tag is explicitly passed.
+- Added `src/internal/dataplane/embedding/gguf_stub.go` (`//go:build !cuda && !gguf`) that provides a stub `GGUFEmbedder` returning `ErrProviderUnavailable`, following the same pattern as `tensorrt_stub.go`.
+- Ran `go mod tidy` to remove the broken `replace github.com/go-skynet/go-llama.cpp => /tmp/go-llama-cpp` local-path directive.
+
+**Build matrix after fix:**
+
+| Build tags | GGUF implementation used |
+|---|---|
+| _(none)_ | `gguf_stub.go` — stub, `ErrProviderUnavailable` |
+| `-tags gguf` | `gguf_cpu.go` — CPU/Metal via `go-llama.cpp` |
+| `-tags cuda` | `gguf_cuda.go` — CUDA via `go-llama.cpp` (CUBLAS) |
+
+---
+
+### Merge conflict: `tiered_adapter.go` (Member B × Member C)
+
+**File:** `src/internal/dataplane/tiered_adapter.go`
+
+**Problem:** Both `feature/retrieval-b` and `feature/graph-c` inserted a new method immediately after `Ingest()`, causing a content conflict:
+
+- Member B added `BatchIngest()` — batch hot+warm ingest using `BatchEmbeddingGenerator`.
+- Member C added `resolveColdIDs()` — cold-tier ID resolution preferring vector over lexical.
+
+**Fix:** Both methods are independent and required. Conflict resolved by keeping both in order:
+1. `BatchIngest()` (batch write path)
+2. `resolveColdIDs()` (cold search helper used by `Search()`)
+
+---
+
+### Member C — partial implementation status
+
+Member C's checklist items that remain open after merge:
+
+```
+[ ] HNSW cold index loads from S3 and produces correct scores
+[ ] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
+[ ] EvidenceCache reports cold_hits and cold_misses
+[ ] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
+[ ] End-to-end: archive 10K memories -> query include_cold=true -> correct results
+[ ] ColdSearch latency < 500ms for 10K archived memories
+```
+
+Items verified by the merged code:
+
+```
+[x] S3ColdStore.PutMemoryEmbedding / GetMemoryEmbedding store float32 embeddings as .npy
+[x] S3ColdStore.DeleteMemoryEmbedding removes embedding on memory reactivation
+[x] include_cold=true routes through resolveColdIDs -> ColdVectorSearch (dot-product ranked)
+[x] RRF fusion: cold candidates merged with hot+warm via rrfFuseMany
+[x] InMemoryColdStore.ColdVectorSearch: dot-product scoring over in-memory embedding map
+```
