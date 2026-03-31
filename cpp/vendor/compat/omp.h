@@ -29,10 +29,8 @@ inline int  omp_test_lock(omp_lock_t* l)    { return l->m.try_lock() ? 1 : 0; }
 // Parallel region pragmas are ignored by non-OMP compilers already.
 
 #else
-// Real OpenMP is available — just forward to the system header.
-#  if defined(__APPLE__)
-#    include_next <omp.h>
-#  else
-#    include <omp.h>
-#  endif
+// Real OpenMP is available — delegate to the next omp.h in the include path.
+// include_next skips this file and finds the real system omp.h (works on both
+// GCC and Clang, macOS and Linux, without triggering #pragma once recursion).
+#  include_next <omp.h>
 #endif

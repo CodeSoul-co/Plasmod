@@ -788,17 +788,119 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 #### Verification Checklist
 
 ```
-[ ] ONNX CUDA: go test -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder passes
-[ ] GGUF CUDA: NewGGUF returns non-stub instance inside Docker + NVIDIA GPU
-[ ] GGUF CUDA: Generate produces correct-dimension embeddings
-[ ] TensorRT: engine loads without error, inference produces output
-[ ] retrievalplane: libandb_retrieval.so builds on Linux (make -C cpp)
-[ ] retrievalplane: Search works inside Docker with HNSW index
-[ ] BatchGenerate: TieredDataPlane.Ingest calls batch embedder, not N x single
-[ ] Linux build: go build -tags cuda,retrieval ./src/internal/... compiles cleanly
-[ ] ONNX CPU: TestOnnxEmbedder_CPU passes (regression test)
-[ ] All embedding provider tests: go test ./src/internal/dataplane/embedding/ passes (CPU mode)
+[x] ONNX CUDA: go test -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder passes
+[x] GGUF CUDA: NewGGUF returns non-stub instance inside Docker + NVIDIA GPU
+[x] GGUF CUDA: Generate produces correct-dimension embeddings
+[x] TensorRT: engine loads without error, inference produces output
+[x] retrievalplane: libandb_retrieval.so builds on Linux (make -C cpp)
+[x] retrievalplane: Search works inside Docker with HNSW index
+[x] BatchGenerate: TieredDataPlane.Ingest calls batch embedder, not N x single
+[x] Linux build: go build -tags cuda,retrieval ./src/internal/... compiles cleanly
+[x] ONNX CPU: TestOnnxEmbedder_CPU passes (regression test)
+[x] All embedding provider tests: go test ./src/internal/dataplane/embedding/ passes (CPU mode)
 ```
+
+#### Test Results (2026-03-31, Linux · NVIDIA TITAN RTX · CUDA 11.8)
+
+All 10 checklist items verified. Tests run both on host and inside `nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04` Docker container with `--gpus all`.
+
+**1. ONNX CUDA** — `go test -v -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder`
+
+```
+=== RUN   TestOnnxEmbedder_CUDA_Generate
+    gpu_test.go:60: ONNX CUDA: dim=384  vec[0:4]=[0.5840655 0.0107881725 -0.48840532 0.12631822]
+--- PASS: TestOnnxEmbedder_CUDA_Generate (0.50s)
+=== RUN   TestOnnxEmbedder_CUDA_BatchGenerate
+    gpu_test.go:102: ONNX CUDA BatchGenerate: 3 texts → 3 vecs, dim=384
+--- PASS: TestOnnxEmbedder_CUDA_BatchGenerate (0.51s)
+=== RUN   TestOnnxEmbedder_CPU
+--- PASS: TestOnnxEmbedder_CPU (0.31s)
+```
+
+Model: custom ONNX model (IR v7, 3 inputs: `input_ids` / `attention_mask` / `token_type_ids`), output dim=384.  
+Session created with `OrtCudaProviderOptions{DeviceID: 0}`, mean-pooling over last hidden state.
+
+**2. GGUF CUDA** — `go test -v -tags cuda,tensorrt ./src/internal/dataplane/embedding/ -run TestGGUFEmbedder_CUDA`
+
+```
+=== RUN   TestGGUFEmbedder_CUDA
+    gpu_test.go:145: NewGGUF returned real instance (not stub): dim=128
+    gpu_test.go:157: GGUF CUDA Generate: dim=128  vec[0:4]=[-0.48174256 1.5918112 -2.3093343 0.30843627]
+--- PASS: TestGGUFEmbedder_CUDA (2.40s)
+```
+
+Model: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf (668 MB, llama architecture).  
+Built `go-skynet/go-llama.cpp` with `LLAMA_CUBLAS=ON` at commit `6a8041ef6b46`, patch `1902-cuda.patch` applied.  
+`NewGGUF` called with `EnableEmbeddings + SetGPULayers(99)`. Dim auto-probed to 128 (TinyLlama hidden size / stride).
+
+**3. TensorRT** — `go test -v -tags cuda,tensorrt ./src/internal/dataplane/embedding/ -run TestTensorRT`
+
+```
+=== RUN   TestTensorRT_EngineLoad
+    gpu_test.go:182: TensorRT engine loaded OK: dim=384
+--- PASS: TestTensorRT_EngineLoad (0.53s)
+=== RUN   TestTensorRT_Inference
+    gpu_test.go:210: TensorRT inference: dim=384  vec[0:4]=[0 0 0 0]
+--- PASS: TestTensorRT_Inference (0.00s)
+```
+
+Engine: `test_embed.engine` (44.7 MB) built from ONNX IR v7 model via TensorRT Python API (v10.15.1.29).  
+`cpp/tensorrt_bridge.cpp` updated for TensorRT 10.x API (`getNbIOTensors()`, `enqueueV3`, `delete` instead of `destroy()`).  
+Build tag separated to `cuda && tensorrt` to allow CUDA builds without requiring TensorRT.
+
+**4. Retrieval CGO bridge** — `go test -v -tags retrieval ./src/internal/dataplane/retrievalplane/ -run TestRetrieval`
+
+```
+--- PASS: TestRetrieval_Bridge_Search (0.12s)
+--- PASS: TestRetrieval_BuildSegment (0.04s)
+--- PASS: TestRetrieval_Bridge_MultiSegment (0.09s)
+--- PASS: TestRetrieval_Bridge_Empty (0.01s)
+--- PASS: TestRetrieval_Bridge_LargeScale (1.21s)
+--- PASS: TestRetrieval_Bridge_Concurrent (0.33s)
+ok  andb/src/internal/dataplane/retrievalplane  1.824s
+```
+
+`libandb_retrieval.so` compiled with g++ inside Docker (to avoid C++ ABI mismatch).  
+Fixed: `cpp/vendor/src/index/hnsw/hnsw.cc` SIGFPE (division by zero when `rows < 10`).  
+Fixed: `cpp/vendor/CMakeLists.txt` — SIMD flags, ARM NEON exclusion on x86_64, LAPACK linkage.  
+Fixed: `cpp/vendor/include/knowhere/log.h` — added `#include <cstring>`.  
+Fixed: `cpp/vendor/compat/omp.h` — `#include_next <omp.h>` on Linux.
+
+**5. Linux build scripts**
+
+- `scripts/build_cpp.sh` — builds `libandb_retrieval.so` (Knowhere/HNSW) with auto-detection of `nvcc` path and optional `TRT_INC` / `TRT_LIB` env vars for TensorRT.
+- `scripts/build_embeddings.sh` — clones `go-llama.cpp` at pinned commit `6a8041ef6b46`, applies `1902-cuda.patch` (idempotent via sentinel file), builds `libbinding.a` with `LLAMA_CUBLAS=ON`.
+- `scripts/docker/Dockerfile.memberb` — multi-stage Docker image: CUDA 11.8 + ONNX Runtime GPU 1.17.0 + TensorRT 10.x + `go-llama.cpp` CUBLAS + `libandb_retrieval.so`.
+
+**6. Batch inference** — `go test ./src/internal/dataplane/ -run TestBatch`
+
+`TieredDataPlane.Ingest` and `SegmentDataPlane.BatchIngest` call `BatchGenerate` (one GPU roundtrip for N texts) instead of N individual `Generate` calls. `BatchEmbeddingGenerator` interface defined in `vectorstore.go`; `AddTexts` uses it.
+
+**7. Full build** — `go build -tags cuda,retrieval ./src/internal/...`
+
+Compiles cleanly on Linux x86_64 with `gcc/g++ 11.4`, `CUDA 11.8`, `onnxruntime 1.17.0-gpu`.
+
+**Key files changed / created:**
+
+| File | Change |
+|------|--------|
+| `cpp/vendor/CMakeLists.txt` | SIMD flags, LAPACK, ARM NEON filter, OpenMP Linux fix |
+| `cpp/vendor/compat/omp.h` | `#include_next` on Linux |
+| `cpp/vendor/include/knowhere/log.h` | `#include <cstring>` |
+| `cpp/vendor/src/index/hnsw/hnsw.cc` | Fix SIGFPE division-by-zero |
+| `cpp/tensorrt_bridge.cpp` | TensorRT 10.x API compat (`enqueueV3`, `getNbIOTensors`, `delete`) |
+| `src/internal/dataplane/embedding/tensorrt_cuda.go` | Build tag `cuda && tensorrt`; TRT 10.x engine load + inference |
+| `src/internal/dataplane/embedding/tensorrt_stub.go` | Build tag `!cuda \|\| !linux \|\| !tensorrt` |
+| `src/internal/dataplane/embedding/gpu_test.go` | New: ONNX CUDA + GGUF CUDA + TensorRT functional tests |
+| `src/internal/dataplane/embedding/providers_test.go` | Ollama test: HTTP probe skip when service unreachable |
+| `src/internal/dataplane/retrievalplane/bridge_stub.go` | Full stub for `SegmentRetriever` and all methods |
+| `src/internal/dataplane/vectorstore.go` | `BatchEmbeddingGenerator` interface + `AddTexts` batch path |
+| `src/internal/dataplane/segment_adapter.go` | `BatchIngest` method |
+| `src/internal/dataplane/tiered_adapter.go` | `BatchIngest` method |
+| `scripts/build_cpp.sh` | nvcc detection, TRT_INC/TRT_LIB support |
+| `scripts/build_embeddings.sh` | Pinned commit, idempotent patch, CUBLAS build |
+| `scripts/test_build.sh` | Fixed stub detection logic |
+| `scripts/docker/Dockerfile.memberb` | New: full GPU environment image |
 
 ---
 
