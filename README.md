@@ -151,6 +151,8 @@ cp .env.example .env
 ## What is implemented
 
 - Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
+- Admin dataset cleanup endpoint: `POST /v1/admin/dataset/delete` supports delete-by-filename (with `workspace_id` and `dry_run`) to soft-delete uploaded dataset memories instead of one-click global purge
+  - Minimal body: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}`
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
