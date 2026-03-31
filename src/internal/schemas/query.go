@@ -37,6 +37,12 @@ type QueryRequest struct {
 	ResponseMode        string     `json:"response_mode"`
 	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
 	IncludeCold bool `json:"include_cold,omitempty"`
+	// TargetEmbeddingFamily routes query to a specific embedding family namespace.
+	// When set, runtime should reject cross-family execution.
+	TargetEmbeddingFamily string `json:"target_embedding_family,omitempty"`
+	// TargetDim routes query to a specific embedding dimension.
+	// When set (>0), runtime should reject cross-dimension execution.
+	TargetDim int `json:"target_dim,omitempty"`
 }
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
