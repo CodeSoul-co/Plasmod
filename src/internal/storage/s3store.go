@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -59,6 +61,10 @@ func (s *S3ColdStore) doEnsureBucket() {
 	})
 }
 
+func (s *S3ColdStore) memoryEmbeddingKey(id string) string {
+	return fmt.Sprintf("%s/cold/embeddings/%s.npy", s.cfg.Prefix, id)
+}
+
 func (s *S3ColdStore) memoryKey(id string) string {
 	return fmt.Sprintf("%s/cold/memories/%s.json", s.cfg.Prefix, id)
 }
@@ -107,6 +113,40 @@ func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
 		return schemas.Memory{}, false
 	}
 	return m, true
+}
+
+func (s *S3ColdStore) PutMemoryEmbedding(memoryID string, vec []float32) error {
+	s.doEnsureBucket()
+
+	data, err := float32SliceToBytes(vec)
+	if err != nil {
+		return err
+	}
+
+	return PutBytes(
+		context.Background(),
+		nil,
+		s.cfg,
+		s.memoryEmbeddingKey(memoryID),
+		data,
+		"application/octet-stream",
+	)
+}
+
+func (s *S3ColdStore) GetMemoryEmbedding(memoryID string) ([]float32, bool, error) {
+	data, err := GetBytes(context.Background(), nil, s.cfg, s.memoryEmbeddingKey(memoryID))
+	if err != nil {
+		return nil, false, err
+	}
+	if data == nil {
+		return nil, false, nil
+	}
+
+	vec, err := bytesToFloat32Slice(data)
+	if err != nil {
+		return nil, false, err
+	}
+	return vec, true, nil
 }
 
 func (s *S3ColdStore) PutAgent(a schemas.Agent) {
@@ -337,6 +377,41 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 		out = append(out, r.id)
 	}
 	return out
+}
+
+func (s *S3ColdStore) DeleteMemoryEmbedding(memoryID string) error {
+	return DeleteObject(context.Background(), nil, s.cfg, s.memoryEmbeddingKey(memoryID))
+}
+
+func float32SliceToBytes(vec []float32) ([]byte, error) {
+	if len(vec) == 0 {
+		return []byte{}, nil
+	}
+	var buf bytes.Buffer
+	for _, v := range vec {
+		if err := binary.Write(&buf, binary.LittleEndian, v); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func bytesToFloat32Slice(data []byte) ([]float32, error) {
+	if len(data) == 0 {
+		return []float32{}, nil
+	}
+	if len(data)%4 != 0 {
+		return nil, fmt.Errorf("invalid float32 byte length: %d", len(data))
+	}
+
+	vec := make([]float32, len(data)/4)
+	reader := bytes.NewReader(data)
+	for i := range vec {
+		if err := binary.Read(reader, binary.LittleEndian, &vec[i]); err != nil {
+			return nil, err
+		}
+	}
+	return vec, nil
 }
 
 func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
