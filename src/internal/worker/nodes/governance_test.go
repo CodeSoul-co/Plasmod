@@ -298,7 +298,7 @@ func TestManager_DispatchMemoryConsolidation(t *testing.T) {
 	seedMemory(st.Objects(), "mem_c2", "agentC", "sessC", 2, true)
 
 	m := nodes.CreateManager()
-	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("consol-1", st.Objects()))
+	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("consol-1", st.Objects(), nil))
 	m.DispatchMemoryConsolidation("agentC", "sessC")
 
 	// Consolidation should produce a level-1 summary memory.

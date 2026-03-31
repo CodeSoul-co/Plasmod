@@ -3,15 +3,14 @@
 #   docker compose up -d
 # Server: http://127.0.0.1:8080  MinIO API: http://127.0.0.1:9000  Console: http://127.0.0.1:9001
 #
-# Corporate TLS (HTTPS MITM) and `go mod download`:
-# - Drop your org root / proxy CA as PEM (.crt or .pem) under docker/custom-ca/ (gitignored).
-#   The andb entrypoint runs update-ca-certificates before `go run`.
-# - Optionally set GOPROXY / GOSUMDB in a repo-root .env file, e.g.
-#     GOPROXY=https://goproxy.io,direct
-# If modules still cannot be fetched, build on the host and run only MinIO:
-#   go build -o bin/andb-server ./src/cmd/server
-#   docker compose up -d minio minio-init
-#   # then run the binary with the same ANDB_* / S3_* env as below
+# Intranet mirror support:
+# - Put build args in repo-root `.env` to avoid public internet pulls, e.g.
+#     BASE_REGISTRY=registry.company.local/library/
+#     APT_MIRROR=http://apt-mirror.company.local/debian
+#     GO_LLAMACPP_REPO=https://git.company.local/mirror/go-llama.cpp.git
+#     GOPROXY=https://goproxy.company.local,direct
+#     GOSUMDB=off
+# - Keep these empty to use upstream defaults.
 #
 # Run capture script against the composed server (after `pip install -r requirements.txt`):
 #   ANDB_BASE_URL=http://127.0.0.1:8080 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
@@ -49,21 +48,26 @@ services:
         mc mb local/andb-integration || true
 
   andb:
-    # Must match go.mod toolchain (currently go 1.24+).
-    image: golang:1.24-bookworm
-    working_dir: /workspace
-    entrypoint: ["/bin/sh", "/workspace/scripts/docker/andb-entrypoint.sh"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-}
+        APT_MIRROR: ${APT_MIRROR:-}
+        GO_LLAMACPP_REPO: ${GO_LLAMACPP_REPO:-https://github.com/go-skynet/go-llama.cpp.git}
+        GOPROXY: ${GOPROXY:-}
+        GOSUMDB: ${GOSUMDB:-}
+    image: cogdb:latest
     volumes:
-      - ./:/workspace
       - andb_data:/data
-      - ./docker/custom-ca:/andb-custom-ca:ro
     ports:
       - "8080:8080"
     environment:
       ANDB_HTTP_ADDR: 0.0.0.0:8080
       ANDB_STORAGE: disk
       ANDB_DATA_DIR: /data
-      ANDB_EMBEDDER: tfidf
+      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-onnx}
+      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cuda}
       S3_ENDPOINT: minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
@@ -71,9 +75,21 @@ services:
       S3_SECURE: "false"
       S3_REGION: us-east-1
       S3_PREFIX: andb/docker
-      GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
-      GOSUMDB: ${GOSUMDB:-sum.golang.org}
-    command: ["go", "run", "./src/cmd/server"]
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${ANDB_GPU_COUNT:-1}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
     depends_on:
       minio-init:
         condition: service_completed_successfully

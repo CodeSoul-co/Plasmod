@@ -19,6 +19,7 @@
 #endif
 
 #include <cstdarg>
+#include <cstring>
 #include <memory>
 
 // CogDB: glog replaced with lightweight std::cerr macros (no system dep).

@@ -1,5 +1,5 @@
-//go:build !cuda || !linux
-// +build !cuda !linux
+//go:build !cuda || !linux || !tensorrt
+// +build !cuda !linux !tensorrt
 
 // Package embedding provides pluggable text-to-vector embedding generators.
 //

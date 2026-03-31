@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture setup
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -23,6 +23,11 @@ else ifeq ($(shell [ -f $(CPP_LIB_SO) ] && echo yes),yes)
   RETRIEVAL_TAG := -tags retrieval
   CGO_LDFLAGS := -L$(shell pwd)/cpp/build -landb_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
 endif
+
+setup:
+	go mod download
+	bash scripts/setup_env.sh
+	cd sdk/nodejs && npm install
 
 dev:
 	go run $(RETRIEVAL_TAG) ./src/cmd/server

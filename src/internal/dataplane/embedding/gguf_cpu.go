@@ -1,5 +1,5 @@
-//go:build !cuda
-// +build !cuda
+//go:build !cuda && gguf
+// +build !cuda,gguf
 
 // Package embedding provides pluggable text-to-vector embedding generators.
 //

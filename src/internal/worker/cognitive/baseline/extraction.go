@@ -3,6 +3,7 @@ package baseline
 import (
 	"fmt"
 
+	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
@@ -12,12 +13,13 @@ import (
 // event payload.  This is the baseline algorithm's extraction pipeline step;
 // other algorithms may implement this pattern differently.
 type InMemoryMemoryExtractionWorker struct {
-	id    string
-	store storage.ObjectStore
+	id       string
+	store    storage.ObjectStore
+	derivLog eventbackbone.DerivationLogger
 }
 
-func CreateInMemoryMemoryExtractionWorker(id string, store storage.ObjectStore) *InMemoryMemoryExtractionWorker {
-	return &InMemoryMemoryExtractionWorker{id: id, store: store}
+func CreateInMemoryMemoryExtractionWorker(id string, store storage.ObjectStore, derivLog eventbackbone.DerivationLogger) *InMemoryMemoryExtractionWorker {
+	return &InMemoryMemoryExtractionWorker{id: id, store: store, derivLog: derivLog}
 }
 
 func (w *InMemoryMemoryExtractionWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
@@ -41,8 +43,9 @@ func (w *InMemoryMemoryExtractionWorker) Info() nodes.NodeInfo {
 }
 
 func (w *InMemoryMemoryExtractionWorker) Extract(eventID, agentID, sessionID, content string) error {
+	memID := schemas.IDPrefixMemory + eventID
 	w.store.PutMemory(schemas.Memory{
-		MemoryID:       fmt.Sprintf("mem_%s", eventID),
+		MemoryID:       memID,
 		MemoryType:     string(schemas.MemoryTypeEpisodic),
 		AgentID:        agentID,
 		SessionID:      sessionID,
@@ -53,5 +56,8 @@ func (w *InMemoryMemoryExtractionWorker) Extract(eventID, agentID, sessionID, co
 		LifecycleState: string(schemas.MemoryLifecycleActive),
 		Version:        1,
 	})
+	if w.derivLog != nil {
+		w.derivLog.Append(eventID, "event", memID, "memory", "extraction")
+	}
 	return nil
 }

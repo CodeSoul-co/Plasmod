@@ -110,7 +110,19 @@ if(KNOWHERE_WITH_OPENMP)
         find_package(OpenMP)
         if(OpenMP_CXX_FOUND)
             set(HAVE_OPENMP TRUE)
-            message(STATUS "OpenMP found — parallel HNSW enabled")
+            # Add OpenMP flags globally for all targets
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+            # Find GCC's OpenMP include directory
+            execute_process(
+                COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=include
+                OUTPUT_VARIABLE GCC_INCLUDE_DIR
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            if(EXISTS "${GCC_INCLUDE_DIR}/omp.h")
+                include_directories(BEFORE "${GCC_INCLUDE_DIR}")
+                message(STATUS "OpenMP: using GCC omp.h at ${GCC_INCLUDE_DIR}")
+            endif()
+            message(STATUS "OpenMP found — parallel HNSW enabled (flags: ${OpenMP_CXX_FLAGS})")
         else()
             set(HAVE_OPENMP FALSE)
             message(STATUS "OpenMP not found — single-threaded fallback")
@@ -165,8 +177,16 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     list(APPEND KNOWHERE_COMMON_SRCS
         ${KW_ROOT}/src/simd/distances_sse.cc
-        ${KW_ROOT}/src/simd/distances_avx.cc)
-    message(STATUS "SIMD: SSE/AVX enabled (x86_64)")
+        ${KW_ROOT}/src/simd/distances_avx.cc
+        ${KW_ROOT}/src/simd/distances_avx512.cc)
+    message(STATUS "SIMD: SSE/AVX/AVX512 enabled (x86_64)")
+    # Per-file SIMD flags — each file uses a different ISA extension level.
+    set_source_files_properties(${KW_ROOT}/src/simd/distances_sse.cc
+        PROPERTIES COMPILE_FLAGS "-msse4.1 -msse4.2")
+    set_source_files_properties(${KW_ROOT}/src/simd/distances_avx.cc
+        PROPERTIES COMPILE_FLAGS "-mavx2 -mfma -mf16c")
+    set_source_files_properties(${KW_ROOT}/src/simd/distances_avx512.cc
+        PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx2 -mfma -mf16c")
 else()
     message(STATUS "SIMD: no platform SIMD, reference only")
 endif()
@@ -181,8 +201,12 @@ target_include_directories(knowhere_common PUBLIC
     ${KW_ROOT}/engines/faiss_engine
 )
 if(HAVE_OPENMP)
-    target_compile_options(knowhere_common PRIVATE -Xpreprocessor -fopenmp)
-    target_link_libraries(knowhere_common PUBLIC omp)
+    if(APPLE)
+        target_compile_options(knowhere_common PRIVATE -Xpreprocessor -fopenmp)
+        target_link_libraries(knowhere_common PUBLIC omp)
+    else()
+        target_link_libraries(knowhere_common PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # ── HNSW index library ───────────────────────────────────────────────────────
@@ -236,8 +260,12 @@ if(KNOWHERE_WITH_GPU)
     )
 endif()
 if(HAVE_OPENMP)
-    target_compile_options(knowhere_hnsw PRIVATE -Xpreprocessor -fopenmp)
-    target_link_libraries(knowhere_hnsw PUBLIC omp)
+    if(APPLE)
+        target_compile_options(knowhere_hnsw PRIVATE -Xpreprocessor -fopenmp)
+        target_link_libraries(knowhere_hnsw PUBLIC omp)
+    else()
+        target_link_libraries(knowhere_hnsw PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 # ── Main shared library: knowhere ────────────────────────────────────────────
@@ -257,6 +285,7 @@ if(APPLE)
     set(BLA_VENDOR Apple)
 else()
     find_package(BLAS REQUIRED)
+    find_package(LAPACK)   # optional — provides dgetrf/dgetri used by faiss PCA
     set(FAISS_BLAS_FLAGS "")
 endif()
 
@@ -278,18 +307,44 @@ list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*faiss_c_api.*")
 list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*/impl/RHNSW\.cpp$")
 # Exclude distances_fused — optional SIMD-fused paths; uses newer faiss templates
 list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*/distances_fused/.*")
-# Exclude x86-only AVX/AVX512 SIMD files on ARM64 (Apple Silicon)
+# Exclude platform-specific SIMD files that don't apply to the current arch
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
     list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*_avx\.cpp$")
     list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*_avx2\.cpp$")
     list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*_avx512\.cpp$")
     list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*distances_avx.*")
     message(STATUS "faiss_slim: excluded AVX/AVX512 files (ARM64 build)")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    # Exclude ARM NEON files on x86_64 (arm_neon.h not available)
+    list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*_neon\.cpp$")
+    list(FILTER FAISS_ALL_CPP EXCLUDE REGEX ".*_neon2\.cpp$")
+    message(STATUS "faiss_slim: excluded ARM NEON files (x86_64 build)")
 endif()
 
 set(FAISS_SLIM_SRCS ${FAISS_ALL_CPP})
 list(LENGTH FAISS_SLIM_SRCS FAISS_SRC_COUNT)
 message(STATUS "faiss_slim: compiling ${FAISS_SRC_COUNT} source files (CPU only)")
+
+# Per-file SIMD flags for faiss AVX/AVX2/AVX512 sources.
+# These files use platform-specific intrinsics that require explicit -m<arch> flags;
+# the default compile flags do not enable them.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    foreach(_src ${FAISS_SLIM_SRCS})
+        if(_src MATCHES "_avx512\\.cpp$")
+            # AVX-512 files also pull in AVX2/F16C headers via include chains
+            set_source_files_properties(${_src} PROPERTIES COMPILE_FLAGS
+                "-mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx2 -mfma -mf16c")
+        elseif(_src MATCHES "_avx2\\.cpp$" OR _src MATCHES "partitioning_avx2\\.cpp$")
+            set_source_files_properties(${_src} PROPERTIES COMPILE_FLAGS
+                "-mavx2 -mfma -mf16c")
+        elseif(_src MATCHES "_avx\\.cpp$")
+            # ScalarQuantizerDC_avx.cpp uses AVX2 + F16C intrinsics despite the _avx suffix
+            set_source_files_properties(${_src} PROPERTIES COMPILE_FLAGS
+                "-mavx2 -mfma -mf16c")
+        endif()
+    endforeach()
+    message(STATUS "faiss_slim: per-file AVX2/AVX512 SIMD flags applied")
+endif()
 
 add_library(faiss_slim OBJECT ${FAISS_SLIM_SRCS})
 target_compile_definitions(faiss_slim PRIVATE FINTEGER=int)
@@ -300,8 +355,12 @@ target_include_directories(faiss_slim PUBLIC
     ${KW_ROOT}/engines/hnsw_engine
 )
 if(HAVE_OPENMP)
-    target_compile_options(faiss_slim PRIVATE -Xpreprocessor -fopenmp)
-    target_link_libraries(faiss_slim PUBLIC omp)
+    if(APPLE)
+        target_compile_options(faiss_slim PRIVATE -Xpreprocessor -fopenmp)
+        target_link_libraries(faiss_slim PUBLIC omp)
+    else()
+        target_link_libraries(faiss_slim PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
 list(APPEND KNOWHERE_ALL_OBJECTS $<TARGET_OBJECTS:faiss_slim>)
@@ -336,15 +395,25 @@ find_package(Threads REQUIRED)
 target_link_libraries(knowhere PUBLIC Threads::Threads)
 
 if(HAVE_OPENMP)
-    target_compile_options(knowhere PUBLIC -Xpreprocessor -fopenmp)
-    target_link_libraries(knowhere PUBLIC omp)
+    if(APPLE)
+        target_compile_options(knowhere PUBLIC -Xpreprocessor -fopenmp)
+        target_link_libraries(knowhere PUBLIC omp)
+    else()
+        target_link_libraries(knowhere PUBLIC OpenMP::OpenMP_CXX)
+    endif()
 endif()
 
-# Link faiss BLAS (Accelerate on macOS, system BLAS on Linux)
+# Link faiss BLAS + LAPACK (Accelerate on macOS, system libs on Linux)
 if(APPLE)
     target_link_libraries(knowhere PUBLIC "-framework Accelerate")
 elseif(BLAS_FOUND)
     target_link_libraries(knowhere PUBLIC ${BLAS_LIBRARIES})
+    if(LAPACK_FOUND)
+        target_link_libraries(knowhere PUBLIC ${LAPACK_LIBRARIES})
+    else()
+        # fallback: explicitly link liblapack (faiss PCA/transform paths need it)
+        target_link_libraries(knowhere PUBLIC lapack)
+    endif()
 endif()
 
 if(KNOWHERE_WITH_FAISS)

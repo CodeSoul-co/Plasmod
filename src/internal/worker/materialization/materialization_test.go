@@ -15,7 +15,7 @@ import (
 // Runtime.SubmitIngest via TieredObjectStore.PutMemory, not by this worker.
 func TestObjectMatWorker_Materialize_DefaultToMemory(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions(), nil)
 
 	ev := schemas.Event{
 		EventID:   "evt1",
@@ -41,6 +41,7 @@ func TestObjectMatWorker_Materialize_ToolCallToArtifact(t *testing.T) {
 		store.Objects(),
 		store.Edges(),
 		store.Versions(),
+		nil,
 	)
 
 	ev := schemas.Event{
@@ -97,7 +98,7 @@ func TestObjectMatWorker_Materialize_ToolCallToArtifact(t *testing.T) {
 
 func TestObjectMatWorker_Run_TypedDispatch(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions(), nil)
 
 	out, err := w.Run(schemas.ObjectMaterializationInput{
 		Event: schemas.Event{EventID: "evt4", AgentID: "a1", SessionID: "s1"},
@@ -119,7 +120,7 @@ func TestObjectMatWorker_Run_TypedDispatch(t *testing.T) {
 
 func TestObjectMatWorker_Run_WrongInputType(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions())
+	w := CreateInMemoryObjectMaterializationWorker("test-obj", store.Objects(), store.Edges(), store.Versions(), nil)
 	_, err := w.Run(schemas.IngestInput{})
 	if err == nil {
 		t.Error("expected error for wrong input type")
@@ -130,7 +131,7 @@ func TestObjectMatWorker_Run_WrongInputType(t *testing.T) {
 
 func TestStateMatWorker_Apply_StateUpdateEvent(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryStateMaterializationWorker("test-state", store.Objects(), store.Versions())
+	w := CreateInMemoryStateMaterializationWorker("test-state", store.Objects(), store.Versions(), nil)
 
 	ev := schemas.Event{
 		EventID:   "evt_state1",
@@ -156,7 +157,7 @@ func TestStateMatWorker_Apply_StateUpdateEvent(t *testing.T) {
 
 func TestStateMatWorker_Apply_NonStateEvent_NoOp(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	w := CreateInMemoryStateMaterializationWorker("test-state", store.Objects(), store.Versions())
+	w := CreateInMemoryStateMaterializationWorker("test-state", store.Objects(), store.Versions(), nil)
 
 	ev := schemas.Event{EventID: "evtX", EventType: "agent_thought"}
 	if err := w.Apply(ev); err != nil {

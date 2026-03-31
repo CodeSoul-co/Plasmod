@@ -149,6 +149,8 @@ func BuildServer() (*http.Server, func() error, error) {
 	//   ANDB_EMBEDDER_DIM        (expected vector dimension; 0 = skip probe)
 	//   ANDB_EMBEDDER_TIMEOUT    (per-request timeout in seconds; default 30)
 	//   ANDB_EMBEDDER_BATCH_SIZE (inputs per HTTP request; default 100)
+	// Optional:
+	//   ANDB_EMBEDDING_FAMILY    (override family label used in segment metadata)
 	var embedder embedding.Generator
 	var embedderDim int
 	embedderType := os.Getenv("ANDB_EMBEDDER")
@@ -214,8 +216,10 @@ func BuildServer() (*http.Server, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	embeddingFamily := storage.ResolveEmbeddingFamily(nil)
 	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
 		embedder.Provider(), embedderDim)
+	log.Printf("[bootstrap] embedding family: %s", embeddingFamily)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
@@ -250,8 +254,8 @@ func BuildServer() (*http.Server, func() error, error) {
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-hot", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-hot", store.Indexes()))
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
-	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
-	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects(), derivLog))
+	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects(), derivLog))
 	nodeManager.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
 	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), derivLog))
 	nodeManager.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
@@ -273,11 +277,13 @@ func BuildServer() (*http.Server, func() error, error) {
 		store.Objects(),
 		store.Edges(),
 		store.Versions(),
+		derivLog,
 	))
 	nodeManager.RegisterStateMaterialization(matworker.CreateInMemoryStateMaterializationWorker(
 		"state-mat-1",
 		store.Objects(),
 		store.Versions(),
+		derivLog,
 	))
 	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog))
 
@@ -294,7 +300,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	nodeManager.RegisterMicroBatch(coordination.CreateInMemoryMicroBatchScheduler("micro-batch-1", 64))
 
 	// ── Cognitive Compression workers ─────────────────────────────────────────
-	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects(), derivLog))
 
 	// ── Algorithm Dispatch worker ─────────────────────────────────────────────
 	// Bridges MemoryManagementAlgorithm plugins into the cognitive pipeline.

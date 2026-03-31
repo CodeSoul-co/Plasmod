@@ -99,6 +99,34 @@ func (p *SegmentDataPlane) Ingest(record IngestRecord) error {
 	return nil
 }
 
+// BatchIngest writes multiple records to the lexical index and, if an embedder
+// is set, generates all embeddings via a single BatchGenerate call instead of
+// N individual Generate calls.
+func (p *SegmentDataPlane) BatchIngest(records []IngestRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	for i := range records {
+		if records[i].Namespace == "" {
+			records[i].Namespace = "default"
+		}
+		p.index.InsertObject(records[i].ObjectID, records[i].Text, records[i].Attributes, records[i].Namespace, records[i].EventUnixTS)
+	}
+
+	if p.vecStore == nil || p.embedder == nil {
+		return nil
+	}
+
+	ids := make([]string, len(records))
+	texts := make([]string, len(records))
+	for i, r := range records {
+		ids[i] = r.ObjectID
+		texts[i] = r.Text
+	}
+	p.vecStore.AddTexts(ids, texts)
+	return nil
+}
+
 // Search is the primary retrieval entry point.
 //
 //   - Vector mode (CGO Knowhere/HNSW): used when vecStore is ready.

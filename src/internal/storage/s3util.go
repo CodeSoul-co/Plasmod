@@ -12,8 +12,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -299,6 +299,24 @@ func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, object
 		return nil, fmt.Errorf("s3 get read: %w", err)
 	}
 	return data, nil
+}
+
+func DeleteObject(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string) error {
+	objectKey = strings.TrimLeft(objectKey, "/")
+	deleteURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+
+	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodDelete, deleteURL, nil, "")
+	if err != nil {
+		return fmt.Errorf("s3 delete do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// S3/MinIO for DELETE usually successfully return 204 No Content or 200 OK
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("s3 delete status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // ListObjects returns the object keys under the given prefix using S3 ListObjectsV2.
