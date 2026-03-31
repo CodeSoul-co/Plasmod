@@ -268,6 +268,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+	result.ObjectIDs = r.filterInactiveMemories(result.ObjectIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
 	// State and Artifact objects are stored directly in ObjectStore, not in the
@@ -275,6 +276,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// canonical store so they appear in the response alongside memory results.
 	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
 	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	result.ObjectIDs = r.filterInactiveMemories(result.ObjectIDs)
 
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
@@ -327,6 +329,22 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 
 	return resp
+}
+
+func (r *Runtime) filterInactiveMemories(ids []string) []string {
+	if r.storage == nil {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.HasPrefix(id, schemas.IDPrefixMemory) || strings.HasPrefix(id, schemas.IDPrefixSummary) || strings.HasPrefix(id, schemas.IDPrefixShared) {
+			if mem, ok := r.storage.Objects().GetMemory(id); ok && !mem.IsActive {
+				continue
+			}
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 func currentEmbeddingDim() int {

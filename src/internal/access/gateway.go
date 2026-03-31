@@ -37,6 +37,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/storage", g.handleStorage)
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
+	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
@@ -126,6 +127,78 @@ func (g *Gateway) handleStorage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(g.storageCfg)
+}
+
+// handleDatasetDelete soft-deletes uploaded dataset memories by filename marker.
+// It only targets memories whose content contains "dataset=<filename>".
+func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		FileName    string `json:"file_name"`
+		WorkspaceID string `json:"workspace_id,omitempty"`
+		DryRun      bool   `json:"dry_run,omitempty"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.FileName = strings.TrimSpace(req.FileName)
+	if req.FileName == "" {
+		http.Error(w, "file_name is required", http.StatusBadRequest)
+		return
+	}
+	marker := "dataset=" + req.FileName
+	now := time.Now().UTC().Format(time.RFC3339)
+	mems := g.store.Objects().ListMemories("", "")
+	matched := 0
+	updated := 0
+	ids := make([]string, 0)
+	for _, m := range mems {
+		if req.WorkspaceID != "" && m.Scope != req.WorkspaceID {
+			continue
+		}
+		if !strings.Contains(m.Content, marker) {
+			continue
+		}
+		matched++
+		ids = append(ids, m.MemoryID)
+		if req.DryRun || !m.IsActive {
+			continue
+		}
+		m.IsActive = false
+		if m.ValidTo == "" {
+			m.ValidTo = now
+		}
+		g.store.Objects().PutMemory(m)
+		if g.store.Policies() != nil {
+			g.store.Policies().AppendPolicy(schemas.PolicyRecord{
+				PolicyID:         "policy_delete_" + m.MemoryID,
+				ObjectID:         m.MemoryID,
+				ObjectType:       string(schemas.ObjectTypeMemory),
+				PolicyVersion:    time.Now().UnixNano(),
+				Context:          "dataset delete by filename",
+				VerifiedState:    string(schemas.VerifiedStateRetracted),
+				QuarantineFlag:   true,
+				VisibilityPolicy: m.Scope,
+				PolicyReason:     "dataset filename matched delete request",
+				PolicySource:     "admin_api",
+			})
+		}
+		updated++
+	}
+	writeJSON(w, map[string]any{
+		"status":      "ok",
+		"file_name":   req.FileName,
+		"workspace_id": req.WorkspaceID,
+		"dry_run":     req.DryRun,
+		"matched":     matched,
+		"deleted":     updated,
+		"memory_ids":  ids,
+	})
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────
