@@ -429,6 +429,7 @@ type ColdObjectStore interface {
 	// This is used by TieredDataPlane when IncludeCold=true in SearchInput.
 	// Returns memory IDs matching the query text, sorted by recency (newest first).
 	ColdSearch(query string, topK int) []string
+	ColdVectorSearch(queryVec []float32, topK int) []string
 }
 
 // InMemoryColdStore is the in-process simulation of the cold tier.
@@ -606,6 +607,72 @@ func (s *InMemoryColdStore) ColdSearch(query string, topK int) []string {
 	}
 
 	// sort by score desc, then by ts desc (newest first)
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		return results[i].ts > results[j].ts
+	})
+
+	out := make([]string, 0, min(topK, len(results)))
+	for i := range results {
+		if i >= topK {
+			break
+		}
+		out = append(out, results[i].id)
+	}
+	return out
+}
+
+func dotProduct(a, b []float32) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += float64(a[i] * b[i])
+	}
+	return sum
+}
+
+func (s *InMemoryColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if topK <= 0 || len(queryVec) == 0 {
+		return nil
+	}
+
+	type scored struct {
+		id    string
+		score float64
+		ts    int64
+	}
+
+	results := make([]scored, 0, len(s.embeddings))
+	for memoryID, emb := range s.embeddings {
+		score := dotProduct(queryVec, emb)
+		if score <= 0 {
+			continue
+		}
+
+		var ts int64
+		if m, ok := s.memories[memoryID]; ok {
+			ts = m.Version
+		}
+
+		results = append(results, scored{
+			id:    memoryID,
+			score: score,
+			ts:    ts,
+		})
+	}
+
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].score != results[j].score {
 			return results[i].score > results[j].score
