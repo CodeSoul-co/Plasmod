@@ -355,6 +355,10 @@ func (t *TieredObjectStore) ColdSearch(query string, topK int) []string {
 	return t.cold.ColdSearch(query, topK)
 }
 
+func (t *TieredObjectStore) ColdVectorSearch(queryVec []float32, topK int) []string {
+	return t.cold.ColdVectorSearch(queryVec, topK)
+}
+
 // ArchiveColdRecord persists an ingest record directly to the cold tier.
 // This is called by TieredDataPlane when an object is explicitly archived
 // (e.g. on TTL expiry or manual tier migration) rather than through the

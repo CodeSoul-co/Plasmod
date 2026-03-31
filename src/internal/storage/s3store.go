@@ -414,6 +414,15 @@ func bytesToFloat32Slice(data []byte) ([]float32, error) {
 	return vec, nil
 }
 
+func memoryIDFromEmbeddingKey(key string) string {
+	key = strings.TrimSuffix(key, ".npy")
+	parts := strings.Split(key, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
 func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
 	cfg := s3ColdSearchConfig{
 		maxKeys:        5000,
@@ -537,4 +546,74 @@ func shouldEarlyStop(
 		}
 	}
 	return high >= topK && noImprovePages >= noImprovePagesThreshold
+}
+
+func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
+	if topK <= 0 || len(queryVec) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
+
+	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+
+	type scored struct {
+		id    string
+		score float64
+		ts    int64
+	}
+
+	results := make([]scored, 0, len(keys))
+	for _, key := range keys {
+		data, err := GetBytes(ctx, nil, s.cfg, key)
+		if err != nil || data == nil {
+			continue
+		}
+
+		vec, err := bytesToFloat32Slice(data)
+		if err != nil {
+			continue
+		}
+
+		score := dotProduct(queryVec, vec)
+		if score <= 0 {
+			continue
+		}
+
+		memoryID := memoryIDFromEmbeddingKey(key)
+		if memoryID == "" {
+			continue
+		}
+
+		var ts int64
+		if m, ok := s.GetMemory(memoryID); ok {
+			ts = m.Version
+		}
+
+		results = append(results, scored{
+			id:    memoryID,
+			score: score,
+			ts:    ts,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		return results[i].ts > results[j].ts
+	})
+
+	out := make([]string, 0, min(topK, len(results)))
+	for i := range results {
+		if i >= topK {
+			break
+		}
+		out = append(out, results[i].id)
+	}
+	return out
 }
