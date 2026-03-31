@@ -737,29 +737,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ### Member A — Docker Environment, Storage, E2E Test Verification
 
-**Scope:** Build the Linux server test environment: Docker, S3/MinIO cold tier, full E2E integration pipeline. Verify all components work end-to-end on Linux.
-
-#### Tasks
-
-
-#### Verification Checklist
-This part needs to be completed in a Linux environment and requires subsequent verification.
-
-Current runbook status: CPU-only path verified on compose stack; GPU-specific checks remain pending.
-
-```
-[√] docker build -t cogdb:latest . succeeds (no errors) (Built successfully with GOPROXY and GOSUMDB build args.)
-[√] docker compose up -d andb + minio starts cleanly (Verified on CPU-only compose path.)
-[√] GET /healthz returns 200 (Verified via in-container curl to localhost:8080/healthz.)
-[√] POST /v1/ingest with event returns 200 with LSN (Ingest response returned status accepted and lsn.)
-[√] GET /v1/query returns structured response with proof_trace (Query response contained structured fields and proof_trace.)
-[√] TieredObjectStore archives memory to S3 (verify via mc ls) (MinIO recursive listing showed archived cold memory objects.)
-[√] ColdSearch returns archived memories (include_cold=true) (Query with include_cold=true returned archived memory IDs.)
-[√] GetMemoryActivated rehydrates full Memory from S3 (Validated by storage unit test for cold reactivation round-trip.)
-[√] go test ./src/internal/... inside container passes (excluding known failures) (Containerized tests passed except known app/embedding go-llama.cpp path failures.)
-[ ] GPU visible inside container (nvidia-smi)
-```
-
 ---
 
 ### Member B — GPU/CUDA Acceleration, Embedding Provider Library Implementation
