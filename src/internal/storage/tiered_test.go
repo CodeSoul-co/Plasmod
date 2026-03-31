@@ -111,3 +111,24 @@ func TestTieredObjectStore_GetMemoryActivated_DeletesColdEmbedding(t *testing.T)
 		t.Fatal("expected cold embedding to be deleted after reactivation")
 	}
 }
+
+func TestInMemoryColdStore_ColdVectorSearch(t *testing.T) {
+	cold := NewInMemoryColdStore()
+
+	cold.PutMemory(schemas.Memory{MemoryID: "m1", Version: 1})
+	cold.PutMemory(schemas.Memory{MemoryID: "m2", Version: 2})
+	cold.PutMemory(schemas.Memory{MemoryID: "m3", Version: 3})
+
+	_ = cold.PutMemoryEmbedding("m1", []float32{1, 0})
+	_ = cold.PutMemoryEmbedding("m2", []float32{0, 1})
+	_ = cold.PutMemoryEmbedding("m3", []float32{0.5, 0.5})
+
+	got := cold.ColdVectorSearch([]float32{1, 0}, 3)
+	if len(got) == 0 {
+		t.Fatal("expected at least one vector search result")
+	}
+
+	if got[0] != "m1" {
+		t.Fatalf("expected m1 ranked first, got %+v", got)
+	}
+}

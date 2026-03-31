@@ -26,11 +26,13 @@ import (
 // The cold tier is backed by TieredObjectStore, which routes reads/writes through
 // the storage.ColdObjectStore interface (S3ColdStore or InMemoryColdStore).
 type TieredDataPlane struct {
-	hot        *segmentstore.Index
-	warm       *SegmentDataPlane
-	coldSearch func(query string, topK int) []string // delegates to TieredObjectStore.ColdSearch
-	coldWrite  func(memoryID, text string, attrs map[string]string, ns string, ts int64)
-	rrfK       int
+	hot              *segmentstore.Index
+	warm             *SegmentDataPlane
+	embedder         EmbeddingGenerator
+	coldSearch       func(query string, topK int) []string
+	coldVectorSearch func(queryVec []float32, topK int) []string
+	coldWrite        func(memoryID, text string, attrs map[string]string, ns string, ts int64)
+	rrfK             int
 }
 
 func normalizeTieredRRFK(cfg schemas.AlgorithmConfig) int {
@@ -53,10 +55,14 @@ func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg sch
 	}
 	objs := tieredObjs
 	return &TieredDataPlane{
-		hot:  segmentstore.NewIndex(),
-		warm: NewSegmentDataPlaneWithConfig(cfg),
+		hot:      segmentstore.NewIndex(),
+		warm:     NewSegmentDataPlaneWithConfig(cfg),
+		embedder: nil,
 		coldSearch: func(query string, topK int) []string {
 			return objs.ColdSearch(query, topK)
+		},
+		coldVectorSearch: func(queryVec []float32, topK int) []string {
+			return objs.ColdVectorSearch(queryVec, topK)
 		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
@@ -85,10 +91,14 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 		return nil, err
 	}
 	return &TieredDataPlane{
-		hot:  segmentstore.NewIndex(),
-		warm: warm,
+		hot:      segmentstore.NewIndex(),
+		warm:     warm,
+		embedder: embedder,
 		coldSearch: func(query string, topK int) []string {
 			return tieredObjs.ColdSearch(query, topK)
+		},
+		coldVectorSearch: func(queryVec []float32, topK int) []string {
+			return tieredObjs.ColdVectorSearch(queryVec, topK)
 		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
@@ -126,6 +136,19 @@ func (t *TieredDataPlane) Ingest(record IngestRecord) error {
 	return nil
 }
 
+func (t *TieredDataPlane) resolveColdIDs(input SearchInput) []string {
+	if t.embedder != nil && t.coldVectorSearch != nil {
+		queryVec, err := t.embedder.Generate(input.QueryText)
+		if err == nil && len(queryVec) > 0 {
+			return t.coldVectorSearch(queryVec, input.TopK)
+		}
+	}
+	if t.coldSearch != nil {
+		return t.coldSearch(input.QueryText, input.TopK)
+	}
+	return nil
+}
+
 // Search executes the tiered search:
 //  1. Hot index — fast, bounded (lexical only)
 //  2. Warm plane — full in-memory (lexical, or hybrid if embedder is set)
@@ -150,7 +173,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		}
 		// Caller asked for cold tier: merge even when hot already satisfies TopK,
 		// otherwise archived hits would never be consulted on a full hot page.
-		coldIDs := t.coldSearch(input.QueryText, input.TopK)
+		coldIDs := t.resolveColdIDs(input)
 		coldOutput := SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
 		merged := mergeOutputs(hotOut, coldOutput, input.TopK)
 		merged.Tier = "hot+cold"
@@ -174,7 +197,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	// Cold tier is consulted only when explicitly requested.
 	coldOut := SearchOutput{}
 	if input.IncludeCold {
-		coldIDs := t.coldSearch(input.QueryText, input.TopK)
+		coldIDs := t.resolveColdIDs(input)
 		coldOut = SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
 		if len(coldOut.ObjectIDs) > 0 {
 			candidateLists = append(candidateLists, coldOut.ObjectIDs)
