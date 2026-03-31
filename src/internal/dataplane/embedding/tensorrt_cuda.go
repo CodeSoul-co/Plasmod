@@ -1,5 +1,5 @@
-//go:build cuda && linux
-// +build cuda,linux
+//go:build cuda && tensorrt && linux
+// +build cuda,tensorrt,linux
 
 // Package embedding provides pluggable text-to-vector embedding generators.
 //
@@ -24,8 +24,8 @@
 package embedding
 
 /*
-#cgo LDFLAGS: -lcudart -lnvinfer -lnvinfer_plugin
-#cgo CFLAGS: -I/usr/local/cuda/include -I/usr/local/TensorRT/include
+#cgo LDFLAGS: -L/tmp -ltensorrt_bridge -lcudart -lnvinfer -lnvinfer_plugin -lstdc++
+#cgo CFLAGS: -I/usr/local/cuda/include -I/usr/local/TensorRT/include -I/home/lixin/libs/tensorrt-headers
 
 #include <stdlib.h>
 #include <string.h>
