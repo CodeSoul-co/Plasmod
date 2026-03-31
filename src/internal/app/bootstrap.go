@@ -149,6 +149,8 @@ func BuildServer() (*http.Server, func() error, error) {
 	//   ANDB_EMBEDDER_DIM        (expected vector dimension; 0 = skip probe)
 	//   ANDB_EMBEDDER_TIMEOUT    (per-request timeout in seconds; default 30)
 	//   ANDB_EMBEDDER_BATCH_SIZE (inputs per HTTP request; default 100)
+	// Optional:
+	//   ANDB_EMBEDDING_FAMILY    (override family label used in segment metadata)
 	var embedder embedding.Generator
 	var embedderDim int
 	embedderType := os.Getenv("ANDB_EMBEDDER")
@@ -214,8 +216,10 @@ func BuildServer() (*http.Server, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	embeddingFamily := storage.ResolveEmbeddingFamily(nil)
 	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
 		embedder.Provider(), embedderDim)
+	log.Printf("[bootstrap] embedding family: %s", embeddingFamily)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(

@@ -1,6 +1,8 @@
 package coordinator
 
 import (
+	"strconv"
+
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 )
@@ -20,9 +22,17 @@ func NewIndexCoordinator(segStore storage.SegmentStore, idxStore storage.IndexSt
 // RegisterSegment records a newly created or sealed retrieval segment.
 func (c *IndexCoordinator) RegisterSegment(seg schemas.RetrievalSegment) {
 	c.segStore.Upsert(storage.SegmentRecord{
-		SegmentID: seg.SegmentID,
-		Namespace: seg.Namespace,
-		RowCount:  seg.RowCount,
+		SegmentID:       seg.SegmentID,
+		ObjectType:      seg.ObjectType,
+		Namespace:       seg.Namespace,
+		TimeBucket:      seg.TimeBucket,
+		EmbeddingFamily: seg.EmbeddingFamily,
+		StorageRef:      seg.StorageRef,
+		IndexRef:        seg.IndexRef,
+		RowCount:        seg.RowCount,
+		MinTS:           strconv.FormatInt(seg.MinTS, 10),
+		MaxTS:           strconv.FormatInt(seg.MaxTS, 10),
+		Tier:            seg.Tier,
 	})
 }
 
