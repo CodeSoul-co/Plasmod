@@ -5,6 +5,149 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 
 > **Core thesis:** agent memory, state, event, artifact, and relation should be modeled as first-class database objects, and query results should return structured evidence rather than only top-k text fragments.
 
+---
+
+## Environment Setup
+
+Tool versions are pinned in [`.tool-versions`](.tool-versions) at the repo root. [asdf](https://asdf-vm.com/) is recommended for a consistent environment across collaborators; manual installation instructions are provided below as an alternative.
+
+### Requirements
+
+| Tool | Minimum | Recommended | Purpose |
+|------|---------|-------------|---------|
+| **Go** | 1.24.0 | 1.24.0 | Main server — required |
+| **Python** | 3.11 | 3.11.9 | SDK / test scripts — required |
+| **Node.js** | 18 LTS | 20 LTS | Node SDK `sdk/nodejs/` — required |
+| **gcc / g++** | 11 | 11.4 | C++ retrieval library build — required |
+| **cmake** | 3.20 | 3.25+ | C++ retrieval library `make cpp` — required |
+| **CUDA Toolkit** | 11.5 | match driver | GPU inference: ONNX / GGUF / TensorRT — required |
+
+> **Current server environment:** Python 3.10 present (upgrade to 3.11 required), CUDA Toolkit 11.5 / Driver 580.126.09 (CUDA 13.0), gcc/g++ 11.4, make 4.3. Go, Node.js, and cmake are not yet installed.
+
+---
+
+### Option A: asdf version manager (recommended)
+
+Gives every collaborator an identical toolchain with a single command.
+
+```bash
+# 1. Install asdf (skip if already installed)
+git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.14.0
+echo '. "$HOME/.asdf/asdf.sh"' >> ~/.bashrc && source ~/.bashrc
+
+# 2. Add language plugins
+asdf plugin add golang https://github.com/asdf-community/asdf-golang.git
+asdf plugin add python
+asdf plugin add nodejs
+
+# 3. Install all versions declared in .tool-versions
+asdf install
+
+# 4. Verify
+go version         # go version go1.24.0 linux/amd64
+python3 --version  # Python 3.11.x
+node --version     # v20.x.x
+```
+
+---
+
+### Option B: Manual installation
+
+#### Go 1.24.0
+
+```bash
+curl -LO https://go.dev/dl/go1.24.0.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc && source ~/.bashrc
+go version
+```
+
+#### Python 3.11 (Ubuntu 22.04)
+
+```bash
+sudo apt update && sudo apt install -y python3.11 python3.11-venv python3.11-dev
+# Optionally set python3 to point to 3.11
+sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 2
+python3 --version  # Python 3.11.x
+```
+
+#### Node.js 20 LTS (optional — Node SDK)
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+node --version  # v20.x.x
+```
+
+#### cmake 3.20+ (optional — C++ retrieval library)
+
+```bash
+sudo apt install -y cmake
+cmake --version
+# If the system version is below 3.20, download a prebuilt binary from https://cmake.org/download/
+```
+
+---
+
+### Python virtual environment
+
+Run the one-shot setup script (creates `.venv`, installs all dependencies and the Python SDK):
+
+```bash
+bash scripts/setup_env.sh
+```
+
+Or manually:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+pip install -e ./sdk/python
+
+# Verify
+python -c "import andb_sdk; print('SDK ready')"
+```
+
+> `.venv/` is listed in `.gitignore` and will not be committed.
+
+---
+
+### CUDA (optional — GPU inference)
+
+The server has NVIDIA Driver 580.126.09 (CUDA 13.0) and CUDA Toolkit 11.5 (`nvcc`) installed. To enable GPU inference, set the following in `.env`:
+
+```env
+ANDB_EMBEDDER=onnx            # or gguf / tensorrt
+ANDB_EMBEDDER_DEVICE=cuda
+ONNXRUNTIME_LIB_PATH=/path/to/libonnxruntime.so
+```
+
+Verify GPU availability:
+
+```bash
+nvidia-smi
+nvcc --version
+```
+
+GGUF CUDA additionally requires building `go-llama.cpp` with `LLAMA_CUBLAS=ON` — see [Member B tasks](#member-b--gpucuda-acceleration-embedding-provider-library-implementation).
+
+---
+
+### Environment variables
+
+Copy the example file and edit as needed:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` documents every available variable (embedder selection, API keys, S3/MinIO endpoints, server listen address, etc.).
+
+---
+
 ## What is implemented
 
 - Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
