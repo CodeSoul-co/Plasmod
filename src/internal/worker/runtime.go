@@ -238,8 +238,10 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	if reject, reason := shouldRejectByEmbeddingRoute(req); reject {
 		return schemas.QueryResponse{
-			Objects:        []string{},
-			AppliedFilters: []string{reason},
+			Objects:           []string{},
+			AppliedFilters:    []string{reason},
+			RouteRejected:     true,
+			RouteRejectReason: reason,
 			ChainTraces: schemas.ChainTraceSlots{
 				Main:           []string{"query_route_rejected=true"},
 				MemoryPipeline: []string{},

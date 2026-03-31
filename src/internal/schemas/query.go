@@ -62,6 +62,10 @@ type QueryResponse struct {
 	ProofTrace     []ProofStep     `json:"proof_trace"`
 	ChainTraces    ChainTraceSlots `json:"chain_traces"`
 	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
+	// RouteRejected indicates query was rejected by embedding family/dim routing guards.
+	RouteRejected bool `json:"route_rejected,omitempty"`
+	// RouteRejectReason provides machine-readable rejection reason.
+	RouteRejectReason string `json:"route_reject_reason,omitempty"`
 }
 
 type GraphExpandRequest struct {
