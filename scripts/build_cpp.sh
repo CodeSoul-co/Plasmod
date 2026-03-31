@@ -48,16 +48,35 @@ CMAKE_ARGS=(
 
 if [ "$ANDB_WITH_GPU" = "ON" ]; then
     CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$CMAKE_CUDA_ARCHITECTURES")
-    
-    # Check for CUDA toolkit
-    if ! command -v nvcc &> /dev/null; then
+
+    # Locate nvcc — may live in /usr/bin on Ubuntu even without full CUDA Toolkit
+    NVCC_BIN=""
+    for candidate in nvcc /usr/bin/nvcc /usr/local/cuda/bin/nvcc; do
+        if command -v "$candidate" &>/dev/null; then
+            NVCC_BIN="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$NVCC_BIN" ]; then
         echo "ERROR: nvcc not found. CUDA Toolkit is required for GPU build."
-        echo "Install CUDA Toolkit or set ANDB_WITH_GPU=OFF for CPU-only build."
+        echo "  Install: apt-get install nvidia-cuda-toolkit"
+        echo "  Or set:  ANDB_WITH_GPU=OFF for CPU-only build."
         exit 1
     fi
-    
-    NVCC_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9.]*\).*/\1/')
-    echo "Found CUDA Toolkit: $NVCC_VERSION"
+
+    NVCC_VERSION=$("$NVCC_BIN" --version | grep "release" | sed 's/.*release \([0-9.]*\).*/\1/')
+    echo "Found CUDA Toolkit: $NVCC_VERSION  ($NVCC_BIN)"
+
+    # TensorRT headers (optional, needed for tensorrt_bridge.cpp)
+    TRT_INC="${TRT_INC:-/home/lixin/libs/tensorrt-headers}"
+    TRT_LIB="${TRT_LIB:-/home/lixin/.local/lib/python3.10/site-packages/tensorrt_libs}"
+    if [ -d "$TRT_INC" ]; then
+        CMAKE_ARGS+=(-DTENSORRT_INCLUDE_DIR="$TRT_INC" -DTENSORRT_LIBRARY_DIR="$TRT_LIB")
+        echo "TensorRT headers: $TRT_INC"
+    else
+        echo "NOTE: TRT_INC not found ($TRT_INC); TensorRT support will be skipped."
+    fi
 fi
 
 echo ""

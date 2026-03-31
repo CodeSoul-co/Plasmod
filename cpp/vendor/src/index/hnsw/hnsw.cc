@@ -134,7 +134,7 @@ class HnswIndexNode : public IndexNode {
         bool shuffle_build = hnsw_cfg.shuffle_build.value();
 
         std::atomic<uint64_t> counter{0};
-        uint64_t one_tenth_row = rows / 10;
+        uint64_t one_tenth_row = std::max(rows / 10, (int64_t)1); // guard against SIGFPE when rows < 10
 
         std::vector<int> shuffle_batch_ids;
         constexpr int64_t batch_size = 8192;  // same with diskann

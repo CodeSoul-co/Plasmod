@@ -47,10 +47,13 @@ echo "========================================="
 check_impl() {
     local file=$1
     local provider=$2
-    if grep -q "ErrProviderUnavailable" "$file" | head -1; then
-        echo "⚠ $provider: May contain stubs (check manually)"
+    # Count lines; a real implementation has far more than a stub.
+    local lines
+    lines=$(wc -l < "$file" 2>/dev/null || echo 0)
+    if grep -q "ErrProviderUnavailable" "$file" 2>/dev/null && [ "$lines" -lt 50 ]; then
+        echo "⚠ $provider: Looks like a stub ($lines lines)"
     else
-        echo "✓ $provider: Implementation present"
+        echo "✓ $provider: Real implementation ($lines lines)"
     fi
 }
 

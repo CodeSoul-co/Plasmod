@@ -126,6 +126,23 @@ func (t *TieredDataPlane) Ingest(record IngestRecord) error {
 	return nil
 }
 
+// BatchIngest writes multiple records to both hot and warm tiers.
+// For the warm tier, embeddings are computed via a single BatchGenerate call
+// when the embedder supports it, rather than N individual Generate calls.
+func (t *TieredDataPlane) BatchIngest(records []IngestRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	for _, r := range records {
+		ns := r.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		t.hot.InsertObject(r.ObjectID, r.Text, r.Attributes, ns, r.EventUnixTS)
+	}
+	return t.warm.BatchIngest(records)
+}
+
 // Search executes the tiered search:
 //  1. Hot index — fast, bounded (lexical only)
 //  2. Warm plane — full in-memory (lexical, or hybrid if embedder is set)
