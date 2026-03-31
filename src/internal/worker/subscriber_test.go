@@ -32,8 +32,8 @@ func buildSubscriberRuntime(t *testing.T) (
 	store := storage.NewMemoryRuntimeStorage()
 
 	m := nodes.CreateManager()
-	m.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
-	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
+	m.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects(), nil))
+	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects(), nil))
 	m.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("gr-1", store.Edges()))
 	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges(), nil))
 	m.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(
@@ -243,8 +243,8 @@ func TestMicroBatch_FlushIntegration(t *testing.T) {
 	mbSched := coordination.CreateInMemoryMicroBatchScheduler("mb-1", 32)
 	mgr.RegisterMicroBatch(mbSched)
 	mgr.RegisterConflictMerge(coordination.CreateInMemoryConflictMergeWorker("cm-1", store.Objects(), store.Edges()))
-	mgr.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects()))
-	mgr.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects()))
+	mgr.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("me-1", store.Objects(), nil))
+	mgr.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mc-1", store.Objects(), nil))
 	mgr.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("gr-1", store.Edges()))
 	mgr.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("pt-1", store.Edges(), nil))
 	mgr.RegisterReflectionPolicy(baseline.CreateInMemoryReflectionPolicyWorker(

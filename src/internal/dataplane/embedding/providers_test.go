@@ -2,7 +2,9 @@ package embedding
 
 import (
 	"context"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -117,13 +119,23 @@ func TestProvider_Ollama(t *testing.T) {
 		model = "nomic-embed-text"
 	}
 
+	// Skip if Ollama is not reachable (connection refused / timeout).
+	probe, err := http.Get(strings.TrimSuffix(baseURL, "/v1") + "/api/tags")
+	if err != nil || probe.StatusCode >= 500 {
+		if probe != nil {
+			probe.Body.Close()
+		}
+		t.Skipf("Ollama not reachable at %s: %v", baseURL, err)
+	}
+	probe.Body.Close()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	embedder, err := NewOpenAI(ctx, OpenAIConfig{
 		BaseURL: baseURL,
 		Model:   model,
-		APIKey:  "ollama", // Ollama doesn't require a real key
+		APIKey:  "ollama",
 	}, 0)
 	if err != nil {
 		t.Skipf("Ollama not available at %s: %v", baseURL, err)

@@ -31,9 +31,9 @@ func buildManager(t *testing.T) (*nodes.Manager, storage.RuntimeStorage) {
 
 	mgr.RegisterIngest(ingestion.CreateInMemoryIngestWorker("ingest-1"))
 	mgr.RegisterObjectMaterialization(
-		matworker.CreateInMemoryObjectMaterializationWorker("obj-mat-1", store.Objects(), store.Edges(), store.Versions()))
+		matworker.CreateInMemoryObjectMaterializationWorker("obj-mat-1", store.Objects(), store.Edges(), store.Versions(), derivLog))
 	mgr.RegisterStateMaterialization(
-		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions()))
+		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions(), derivLog))
 	mgr.RegisterToolTrace(
 		matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog))
 	mgr.RegisterIndexBuild(
@@ -43,11 +43,11 @@ func buildManager(t *testing.T) (*nodes.Manager, storage.RuntimeStorage) {
 	mgr.RegisterSubgraphExecutor(
 		indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
 	mgr.RegisterMemoryExtraction(
-		baseline.CreateInMemoryMemoryExtractionWorker("mem-ext-1", store.Objects()))
+		baseline.CreateInMemoryMemoryExtractionWorker("mem-ext-1", store.Objects(), derivLog))
 	mgr.RegisterMemoryConsolidation(
-		baseline.CreateInMemoryMemoryConsolidationWorker("mem-consol-1", store.Objects()))
+		baseline.CreateInMemoryMemoryConsolidationWorker("mem-consol-1", store.Objects(), derivLog))
 	mgr.RegisterSummarization(
-		baseline.CreateInMemorySummarizationWorker("sum-1", store.Objects()))
+		baseline.CreateInMemorySummarizationWorker("sum-1", store.Objects(), derivLog))
 	mgr.RegisterReflectionPolicy(
 		baseline.CreateInMemoryReflectionPolicyWorker("reflect-1", store.Objects(), store.Policies(), policyLog))
 	mgr.RegisterConflictMerge(

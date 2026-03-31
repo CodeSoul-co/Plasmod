@@ -1,4 +1,22 @@
 
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Go build output
+bin/
+*.so
+*.dylib
+
+# C++ build output
+cpp/build/
+
+# Local env file
+.env
+
 # Integration test artifacts (local dev, not for push)
 integration_tests/
 
@@ -10,3 +28,8 @@ devdocs/
 
 # Rule file
 rule
+代码阅读顺序.md
+方案.md
+分工情况.md
+系统分层架构图.md
+多维度数据集入库与检索规范（参考Milvus-Manu）.md

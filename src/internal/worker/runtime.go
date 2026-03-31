@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -16,9 +18,9 @@ import (
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
+	"time"
 	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/nodes"
-	"time"
 )
 
 type Runtime struct {
@@ -107,6 +109,9 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.nodeManager.DispatchIngestValidation(ev); err != nil {
 		return nil, err
 	}
+	if err := validateEmbeddingIngestPayload(ev); err != nil {
+		return nil, err
+	}
 	entry, err := r.wal.Append(ev)
 	if err != nil {
 		return nil, err
@@ -116,6 +121,13 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
+	if record.Attributes == nil {
+		record.Attributes = map[string]string{}
+	}
+	record.Attributes["embedding_family"] = storage.ResolveEmbeddingFamily(record.Attributes)
+	if dim := currentEmbeddingDim(); dim > 0 {
+		record.Attributes["embedding_dim"] = strconv.Itoa(dim)
+	}
 
 	// Fail fast on retrieval-plane ingest before mutating canonical stores.
 	// This reduces partial-success windows (WAL only) where object writes succeed
@@ -227,6 +239,20 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
+	if reject, reason := shouldRejectByEmbeddingRoute(req); reject {
+		return schemas.QueryResponse{
+			Objects:           []string{},
+			AppliedFilters:    []string{reason},
+			RouteRejected:     true,
+			RouteRejectReason: reason,
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           []string{"query_route_rejected=true"},
+				MemoryPipeline: []string{},
+				Query:          []string{reason},
+				Collaboration:  []string{},
+			},
+		}
+	}
 	plan := r.planner.Build(req)
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
@@ -298,8 +324,159 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
+	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 
 	return resp
+}
+
+func currentEmbeddingDim() int {
+	if dimStr := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER_DIM")); dimStr != "" {
+		if dim, err := strconv.Atoi(dimStr); err == nil && dim > 0 {
+			return dim
+		}
+	}
+	embedder := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER"))
+	if embedder == "" || embedder == "tfidf" {
+		return dataplane.DefaultEmbeddingDim
+	}
+	return 0
+}
+
+func shouldRejectByEmbeddingRoute(req schemas.QueryRequest) (bool, string) {
+	currFamily := storage.ResolveEmbeddingFamily(nil)
+	if req.TargetEmbeddingFamily != "" && req.TargetEmbeddingFamily != currFamily {
+		return true, fmt.Sprintf("embedding_family_mismatch requested=%s runtime=%s", req.TargetEmbeddingFamily, currFamily)
+	}
+	if req.TargetDim > 0 {
+		currDim := currentEmbeddingDim()
+		if currDim <= 0 {
+			return true, fmt.Sprintf("embedding_dim_unknown requested=%d runtime=unknown", req.TargetDim)
+		}
+		if req.TargetDim != currDim {
+			return true, fmt.Sprintf("embedding_dim_mismatch requested=%d runtime=%d", req.TargetDim, currDim)
+		}
+	}
+	return false, ""
+}
+
+func (r *Runtime) attachEmbeddingProvenance(
+	resp schemas.QueryResponse,
+	req schemas.QueryRequest,
+	currentIDs []string,
+) schemas.QueryResponse {
+	currFamily := storage.ResolveEmbeddingFamily(nil)
+	currDim := currentEmbeddingDim()
+
+	// Always stamp runtime embedding route info for downstream auditing.
+	resp.Provenance = append(resp.Provenance,
+		fmt.Sprintf("embedding_runtime_family=%s", currFamily),
+		fmt.Sprintf("embedding_runtime_dim=%d", currDim),
+	)
+
+	// Cross-dim fusion hook (RRF at result layer): currently fuses available
+	// local candidate lists and is forward-compatible with multi-runtime fanout.
+	//
+	// Trigger condition:
+	// - No explicit hard pin to one target family/dim (route-locked requests).
+	if req.TargetEmbeddingFamily == "" && req.TargetDim == 0 {
+		candidateLists := [][]string{}
+		if len(currentIDs) > 0 {
+			candidateLists = append(candidateLists, currentIDs)
+		}
+		if len(candidateLists) > 0 {
+			fused := rrfFuseStringLists(candidateLists, 60, req.TopK)
+			if len(fused) > 0 {
+				resp.Objects = fused
+			}
+		}
+		resp.Provenance = append(resp.Provenance,
+			"cross_dim_fusion=rrf_result_layer",
+			fmt.Sprintf("cross_dim_candidates=%d", len(candidateLists)),
+		)
+	}
+	return resp
+}
+
+func rrfFuseStringLists(lists [][]string, k int, topK int) []string {
+	if k <= 0 {
+		k = 60
+	}
+	scores := map[string]float64{}
+	order := make([]string, 0)
+	for _, ids := range lists {
+		for rank, id := range ids {
+			if _, ok := scores[id]; !ok {
+				order = append(order, id)
+			}
+			scores[id] += 1.0 / float64(k+rank+1)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return scores[order[i]] > scores[order[j]]
+	})
+	if topK > 0 && len(order) > topK {
+		return order[:topK]
+	}
+	return order
+}
+
+func validateEmbeddingIngestPayload(ev schemas.Event) error {
+	if ev.Payload == nil {
+		return nil
+	}
+	runtimeDim := currentEmbeddingDim()
+	if runtimeDim <= 0 {
+		return nil
+	}
+	if payloadDim, ok := payloadEmbeddingDim(ev.Payload); ok && payloadDim != runtimeDim {
+		return fmt.Errorf("embedding_dim_mismatch payload=%d runtime=%d", payloadDim, runtimeDim)
+	}
+	if vecLen, ok := payloadVectorLen(ev.Payload); ok && vecLen != runtimeDim {
+		return fmt.Errorf("embedding_vector_len_mismatch payload=%d runtime=%d", vecLen, runtimeDim)
+	}
+	return nil
+}
+
+func payloadEmbeddingDim(payload map[string]any) (int, bool) {
+	raw, ok := payload["embedding_dim"]
+	if !ok {
+		raw, ok = payload["dim"]
+		if !ok {
+			return 0, false
+		}
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func payloadVectorLen(payload map[string]any) (int, bool) {
+	raw, ok := payload["embedding"]
+	if !ok {
+		raw, ok = payload["vector"]
+		if !ok {
+			return 0, false
+		}
+	}
+	switch v := raw.(type) {
+	case []float32:
+		return len(v), true
+	case []float64:
+		return len(v), true
+	case []any:
+		return len(v), true
+	}
+	return 0, false
 }
 
 // fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical

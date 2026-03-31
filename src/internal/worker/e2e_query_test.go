@@ -375,10 +375,11 @@ func TestE2E_MemoryPipelineChain(t *testing.T) {
 	bus := eventbackbone.NewInMemoryBus()
 	store := storage.NewMemoryRuntimeStorage()
 
+	derivLog := eventbackbone.NewDerivationLog(clock, bus)
 	nodeManager := nodes.CreateManager()
-	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("extract-1", store.Objects()))
-	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("consolidate-1", store.Objects()))
-	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects()))
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("extract-1", store.Objects(), derivLog))
+	nodeManager.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("consolidate-1", store.Objects(), derivLog))
+	nodeManager.RegisterSummarization(baseline.CreateInMemorySummarizationWorker("summarize-1", store.Objects(), derivLog))
 
 	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
 	hot := storage.NewHotObjectCache(100)

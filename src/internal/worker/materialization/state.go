@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
@@ -16,6 +17,7 @@ type InMemoryStateMaterializationWorker struct {
 	id       string
 	objStore storage.ObjectStore
 	verStore storage.SnapshotVersionStore
+	derivLog eventbackbone.DerivationLogger
 
 	mu        sync.Mutex
 	stateKeys map[string]string // "agentID:sessionID:stateKey" → stateID
@@ -25,11 +27,13 @@ func CreateInMemoryStateMaterializationWorker(
 	id string,
 	objStore storage.ObjectStore,
 	verStore storage.SnapshotVersionStore,
+	derivLog eventbackbone.DerivationLogger,
 ) *InMemoryStateMaterializationWorker {
 	return &InMemoryStateMaterializationWorker{
 		id:        id,
 		objStore:  objStore,
 		verStore:  verStore,
+		derivLog:  derivLog,
 		stateKeys: make(map[string]string),
 	}
 }
@@ -106,6 +110,9 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 		CheckpointTS:       now,
 		Version:            version,
 	})
+	if w.derivLog != nil {
+		w.derivLog.Append(ev.EventID, "event", stateID, "state", "state_apply")
+	}
 	return nil
 }
 

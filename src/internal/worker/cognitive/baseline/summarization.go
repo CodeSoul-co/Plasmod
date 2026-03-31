@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
@@ -16,10 +17,11 @@ import (
 type InMemorySummarizationWorker struct {
 	id       string
 	objStore storage.ObjectStore
+	derivLog eventbackbone.DerivationLogger
 }
 
-func CreateInMemorySummarizationWorker(id string, objStore storage.ObjectStore) *InMemorySummarizationWorker {
-	return &InMemorySummarizationWorker{id: id, objStore: objStore}
+func CreateInMemorySummarizationWorker(id string, objStore storage.ObjectStore, derivLog eventbackbone.DerivationLogger) *InMemorySummarizationWorker {
+	return &InMemorySummarizationWorker{id: id, objStore: objStore, derivLog: derivLog}
 }
 
 func (w *InMemorySummarizationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
@@ -87,8 +89,9 @@ func (w *InMemorySummarizationWorker) Summarize(agentID, sessionID string, maxLe
 			memType = string(schemas.MemoryTypeProcedural)
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
+		newID := fmt.Sprintf("%sl%d_%s_%s_%d", schemas.IDPrefixSummary, level, agentID, sessionID, time.Now().UnixNano())
 		w.objStore.PutMemory(schemas.Memory{
-			MemoryID:       fmt.Sprintf("%sl%d_%s_%s_%d", schemas.IDPrefixSummary, level, agentID, sessionID, time.Now().UnixNano()),
+			MemoryID:       newID,
 			MemoryType:     memType,
 			AgentID:        agentID,
 			SessionID:      sessionID,
@@ -103,6 +106,11 @@ func (w *InMemorySummarizationWorker) Summarize(agentID, sessionID string, maxLe
 			ValidFrom:      now,
 			Version:        1,
 		})
+		if w.derivLog != nil {
+			for _, sid := range srcIDs {
+				w.derivLog.Append(sid, "memory", newID, "memory", "summarization")
+			}
+		}
 	}
 	return nil
 }

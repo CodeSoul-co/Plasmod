@@ -26,8 +26,9 @@ func (n *InMemoryDataNode) Info() NodeInfo {
 
 func (n *InMemoryDataNode) HandleIngest(record dataplane.IngestRecord) {
 	n.store.Upsert(storage.SegmentRecord{
-		SegmentID: record.ObjectID,
-		Namespace: record.Namespace,
-		RowCount:  1,
+		SegmentID:       record.ObjectID,
+		Namespace:       record.Namespace,
+		EmbeddingFamily: storage.ResolveEmbeddingFamily(record.Attributes),
+		RowCount:        1,
 	})
 }

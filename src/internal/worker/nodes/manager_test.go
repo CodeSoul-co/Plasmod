@@ -18,8 +18,8 @@ func TestManager_RegisterAndTopology(t *testing.T) {
 	m.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
 	m.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
 	m.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", nil))
-	m.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects()))
-	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects()))
+	m.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("mem-extract-1", store.Objects(), nil))
+	m.RegisterMemoryConsolidation(baseline.CreateInMemoryMemoryConsolidationWorker("mem-consolidate-1", store.Objects(), nil))
 	m.RegisterGraphRelation(indexing.CreateInMemoryGraphRelationWorker("graph-1", store.Edges()))
 	m.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-1", store.Edges(), nil))
 

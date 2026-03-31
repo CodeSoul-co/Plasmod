@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
@@ -20,6 +21,7 @@ type InMemoryObjectMaterializationWorker struct {
 	objStore storage.ObjectStore
 	edgStore storage.GraphEdgeStore
 	verStore storage.SnapshotVersionStore
+	derivLog eventbackbone.DerivationLogger
 }
 
 func CreateInMemoryObjectMaterializationWorker(
@@ -27,12 +29,14 @@ func CreateInMemoryObjectMaterializationWorker(
 	objStore storage.ObjectStore,
 	edgStore storage.GraphEdgeStore,
 	verStore storage.SnapshotVersionStore,
+	derivLog eventbackbone.DerivationLogger,
 ) *InMemoryObjectMaterializationWorker {
 	return &InMemoryObjectMaterializationWorker{
 		id:       id,
 		objStore: objStore,
 		edgStore: edgStore,
 		verStore: verStore,
+		derivLog: derivLog,
 	}
 }
 
@@ -114,6 +118,9 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			MutationEventID: ev.EventID,
 			ValidFrom:       now,
 		})
+		if w.derivLog != nil {
+			w.derivLog.Append(ev.EventID, "event", artifact.ArtifactID, "artifact", "object_materialization")
+		}
 
 		// State objects are created exclusively by InMemoryStateMaterializationWorker
 		// (DispatchStateMaterialization) to avoid duplicate State storage.

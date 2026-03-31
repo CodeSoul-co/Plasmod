@@ -3,6 +3,7 @@ package baseline
 import (
 	"fmt"
 
+	"andb/src/internal/eventbackbone"
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
 	"andb/src/internal/worker/nodes"
@@ -12,12 +13,13 @@ import (
 // agent/session and produces a level-1 summary record.
 // This is the baseline algorithm's consolidation pipeline step.
 type InMemoryMemoryConsolidationWorker struct {
-	id    string
-	store storage.ObjectStore
+	id       string
+	store    storage.ObjectStore
+	derivLog eventbackbone.DerivationLogger
 }
 
-func CreateInMemoryMemoryConsolidationWorker(id string, store storage.ObjectStore) *InMemoryMemoryConsolidationWorker {
-	return &InMemoryMemoryConsolidationWorker{id: id, store: store}
+func CreateInMemoryMemoryConsolidationWorker(id string, store storage.ObjectStore, derivLog eventbackbone.DerivationLogger) *InMemoryMemoryConsolidationWorker {
+	return &InMemoryMemoryConsolidationWorker{id: id, store: store, derivLog: derivLog}
 }
 
 func (w *InMemoryMemoryConsolidationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
@@ -67,8 +69,9 @@ func (w *InMemoryMemoryConsolidationWorker) Consolidate(agentID, sessionID strin
 	if len(sourceIDs) == 0 {
 		return nil
 	}
+	summaryID := schemas.IDPrefixSummary + agentID + "_" + sessionID
 	w.store.PutMemory(schemas.Memory{
-		MemoryID:       schemas.IDPrefixSummary + agentID + "_" + sessionID,
+		MemoryID:       summaryID,
 		MemoryType:     string(schemas.MemoryTypeSemantic),
 		AgentID:        agentID,
 		SessionID:      sessionID,
@@ -80,5 +83,10 @@ func (w *InMemoryMemoryConsolidationWorker) Consolidate(agentID, sessionID strin
 		LifecycleState: string(schemas.MemoryLifecycleActive),
 		Version:        1,
 	})
+	if w.derivLog != nil {
+		for _, sid := range sourceIDs {
+			w.derivLog.Append(sid, "memory", summaryID, "memory", "consolidation")
+		}
+	}
 	return nil
 }

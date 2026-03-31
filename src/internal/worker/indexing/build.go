@@ -58,14 +58,15 @@ func (w *InMemoryIndexBuildWorker) IndexObject(objectID, objectType, namespace, 
 	now := time.Now()
 	bucket := now.Format(schemas.TimeBucketFormat)
 	w.segStore.Upsert(storage.SegmentRecord{
-		SegmentID:  schemas.IDPrefixSegment + namespace + "_" + bucket,
-		ObjectType: objectType,
-		Namespace:  namespace,
-		TimeBucket: bucket,
-		StorageRef: objectID,
-		RowCount:   1,
-		Tier:       string(schemas.TierHot),
-		UpdatedAt:  now,
+		SegmentID:       schemas.IDPrefixSegment + namespace + "_" + bucket,
+		ObjectType:      objectType,
+		Namespace:       namespace,
+		TimeBucket:      bucket,
+		EmbeddingFamily: storage.ResolveEmbeddingFamily(nil),
+		StorageRef:      objectID,
+		RowCount:        1,
+		Tier:            string(schemas.TierHot),
+		UpdatedAt:       now,
 	})
 	count := 1
 	for _, rec := range w.idxStore.List() {

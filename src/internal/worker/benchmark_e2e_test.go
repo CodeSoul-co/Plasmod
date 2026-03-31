@@ -136,7 +136,7 @@ func TestQueryChain_E2E_Latency(t *testing.T) {
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
-	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("extract-1", store.Objects()))
+	nodeManager.RegisterMemoryExtraction(baseline.CreateInMemoryMemoryExtractionWorker("extract-1", store.Objects(), derivLog))
 	nodeManager.RegisterGraphRelation(nil)
 	nodeManager.RegisterProofTrace(coordination.CreateInMemoryProofTraceWorker("proof-latency", store.Edges(), derivLog))
 	nodeManager.RegisterIndexBuild(nil)

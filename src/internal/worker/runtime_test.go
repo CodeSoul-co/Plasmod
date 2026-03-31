@@ -3,6 +3,7 @@ package worker
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"andb/src/internal/coordinator"
@@ -49,7 +50,7 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
 	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
 	nodeManager.RegisterStateMaterialization(
-		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions()))
+		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions(), nil))
 	coord := coordinator.NewCoordinatorHub(
 		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
 		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
@@ -179,6 +180,44 @@ func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
 	}
 }
 
+func TestRuntime_SubmitIngest_RejectsEmbeddingDimMismatch(t *testing.T) {
+	r := buildTestRuntime(t)
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:   "evt_dim_mismatch_1",
+		AgentID:   "agent_dim",
+		SessionID: "session_dim",
+		Payload: map[string]any{
+			"text":          "embedding dim mismatch",
+			"embedding_dim": 128, // runtime default tfidf dim is 256
+		},
+	})
+	if err == nil {
+		t.Fatal("expected embedding_dim_mismatch error")
+	}
+	if !strings.Contains(err.Error(), "embedding_dim_mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRuntime_SubmitIngest_RejectsEmbeddingVectorLengthMismatch(t *testing.T) {
+	r := buildTestRuntime(t)
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:   "evt_vec_mismatch_1",
+		AgentID:   "agent_vec",
+		SessionID: "session_vec",
+		Payload: map[string]any{
+			"text":   "embedding vector mismatch",
+			"vector": []any{0.1, 0.2, 0.3},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected embedding_vector_len_mismatch error")
+	}
+	if !strings.Contains(err.Error(), "embedding_vector_len_mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestRuntime_SubgraphExpand_NodesPopulated is a regression test for the
 // SubgraphExecutorWorker nodes pre-fetch gap.
 //
@@ -217,6 +256,40 @@ func TestRuntime_SubgraphExpand_NodesPopulated(t *testing.T) {
 	if len(resp.Edges) == 0 {
 		t.Fatalf("expected non-empty resp.Edges: materialization derives session/agent edges, " +
 			"SubgraphExecutorWorker should surface them via preNodes+preEdges")
+	}
+}
+
+func TestRuntime_QueryResponse_ContainsEmbeddingProvenance(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:   "evt_prov_1",
+		AgentID:   "agent_prov",
+		SessionID: "session_prov",
+		Payload:   map[string]any{"text": "provenance test text"},
+	})
+	if err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText: "provenance test text",
+		TopK:      5,
+		SessionID: "session_prov",
+	})
+
+	if len(resp.Provenance) == 0 {
+		t.Fatal("expected provenance entries")
+	}
+	joined := strings.Join(resp.Provenance, " ")
+	if !strings.Contains(joined, "embedding_runtime_family=") {
+		t.Fatalf("expected embedding_runtime_family in provenance, got: %v", resp.Provenance)
+	}
+	if !strings.Contains(joined, "embedding_runtime_dim=") {
+		t.Fatalf("expected embedding_runtime_dim in provenance, got: %v", resp.Provenance)
+	}
+	if !strings.Contains(joined, "cross_dim_fusion=rrf_result_layer") {
+		t.Fatalf("expected cross_dim_fusion provenance marker, got: %v", resp.Provenance)
 	}
 }
 
