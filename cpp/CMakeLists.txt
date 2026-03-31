@@ -105,6 +105,37 @@ endif()
 message(STATUS "andb_retrieval: links against vendor/knowhere (CMake target: knowhere)")
 
 # =============================================================================
+# TensorRT Bridge (optional)
+# =============================================================================
+if(ANDB_WITH_TENSORRT)
+    if(NOT ANDB_WITH_GPU)
+        message(FATAL_ERROR "TensorRT requires GPU support. Enable -DANDB_WITH_GPU=ON")
+    endif()
+    
+    # Find TensorRT
+    find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+        HINTS /usr/local/TensorRT/include /usr/include/x86_64-linux-gnu)
+    find_library(TENSORRT_LIBRARY nvinfer
+        HINTS /usr/local/TensorRT/lib /usr/lib/x86_64-linux-gnu)
+    
+    if(TENSORRT_INCLUDE_DIR AND TENSORRT_LIBRARY)
+        message(STATUS "TensorRT found: ${TENSORRT_LIBRARY}")
+        
+        add_library(andb_tensorrt SHARED tensorrt_bridge.cpp)
+        target_include_directories(andb_tensorrt PUBLIC ${TENSORRT_INCLUDE_DIR})
+        target_link_libraries(andb_tensorrt PUBLIC ${TENSORRT_LIBRARY} CUDA::cudart)
+        
+        install(TARGETS andb_tensorrt
+            LIBRARY DESTINATION lib
+            ARCHIVE DESTINATION lib)
+        
+        message(STATUS "TensorRT bridge: libandb_tensorrt.so")
+    else()
+        message(WARNING "TensorRT not found. Install TensorRT or disable -DANDB_WITH_TENSORRT=OFF")
+    endif()
+endif()
+
+# =============================================================================
 # Unit Tests
 # =============================================================================
 if(ANDB_WITH_TESTS)
