@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -16,9 +18,9 @@ import (
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
+	"time"
 	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/nodes"
-	"time"
 )
 
 type Runtime struct {
@@ -116,6 +118,13 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
+	if record.Attributes == nil {
+		record.Attributes = map[string]string{}
+	}
+	record.Attributes["embedding_family"] = storage.ResolveEmbeddingFamily(record.Attributes)
+	if dim := currentEmbeddingDim(); dim > 0 {
+		record.Attributes["embedding_dim"] = strconv.Itoa(dim)
+	}
 
 	// Fail fast on retrieval-plane ingest before mutating canonical stores.
 	// This reduces partial-success windows (WAL only) where object writes succeed
@@ -227,6 +236,18 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
+	if reject, reason := shouldRejectByEmbeddingRoute(req); reject {
+		return schemas.QueryResponse{
+			Objects:        []string{},
+			AppliedFilters: []string{reason},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           []string{"query_route_rejected=true"},
+				MemoryPipeline: []string{},
+				Query:          []string{reason},
+				Collaboration:  []string{},
+			},
+		}
+	}
 	plan := r.planner.Build(req)
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
@@ -300,6 +321,36 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
 
 	return resp
+}
+
+func currentEmbeddingDim() int {
+	if dimStr := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER_DIM")); dimStr != "" {
+		if dim, err := strconv.Atoi(dimStr); err == nil && dim > 0 {
+			return dim
+		}
+	}
+	embedder := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER"))
+	if embedder == "" || embedder == "tfidf" {
+		return dataplane.DefaultEmbeddingDim
+	}
+	return 0
+}
+
+func shouldRejectByEmbeddingRoute(req schemas.QueryRequest) (bool, string) {
+	currFamily := storage.ResolveEmbeddingFamily(nil)
+	if req.TargetEmbeddingFamily != "" && req.TargetEmbeddingFamily != currFamily {
+		return true, fmt.Sprintf("embedding_family_mismatch requested=%s runtime=%s", req.TargetEmbeddingFamily, currFamily)
+	}
+	if req.TargetDim > 0 {
+		currDim := currentEmbeddingDim()
+		if currDim <= 0 {
+			return true, fmt.Sprintf("embedding_dim_unknown requested=%d runtime=unknown", req.TargetDim)
+		}
+		if req.TargetDim != currDim {
+			return true, fmt.Sprintf("embedding_dim_mismatch requested=%d runtime=%d", req.TargetDim, currDim)
+		}
+	}
+	return false, ""
 }
 
 // fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical
