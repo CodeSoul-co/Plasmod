@@ -38,6 +38,7 @@ var ortInitMu sync.Mutex
 type OnnxConfig struct {
 	ModelPath    string   // Path to .onnx model file (required)
 	LibraryPath  string   // Path to onnxruntime shared library (auto-detect if empty)
+	VocabPath    string   // Path to BERT vocab.txt; empty = FNV hash fallback
 	Device       string   // "cuda" (default in cuda build)
 	MaxBatchSize int      // Maximum batch size for inference (default: 32)
 	MaxSeqLength int      // Maximum sequence length (default: 128)
@@ -51,11 +52,12 @@ type OnnxConfig struct {
 // OnnxEmbedder implements Generator using ONNX Runtime for local inference.
 // This is the CUDA version for Linux with NVIDIA GPU.
 type OnnxEmbedder struct {
-	cfg     OnnxConfig
-	dim     int
-	session *ort.AdvancedSession
-	mu      sync.Mutex
-	closed  bool
+	cfg       OnnxConfig
+	dim       int
+	session   *ort.AdvancedSession
+	tokenizer *bertTokenizer
+	mu        sync.Mutex
+	closed    bool
 
 	// Pre-allocated tensors for reuse
 	inputIDs   *ort.Tensor[int64]
@@ -185,10 +187,20 @@ func NewOnnx(_ context.Context, cfg OnnxConfig, dim int) (*OnnxEmbedder, error) 
 		return nil, fmt.Errorf("failed to create ONNX session: %w", err)
 	}
 
+	tok, err := newBertTokenizer(cfg.VocabPath)
+	if err != nil {
+		inputIDs.Destroy()
+		attnMask.Destroy()
+		tokenTypes.Destroy()
+		output.Destroy()
+		return nil, fmt.Errorf("failed to load vocab: %w", err)
+	}
+
 	return &OnnxEmbedder{
 		cfg:        cfg,
 		dim:        dim,
 		session:    session,
+		tokenizer:  tok,
 		inputIDs:   inputIDs,
 		attnMask:   attnMask,
 		tokenTypes: tokenTypes,
@@ -196,55 +208,32 @@ func NewOnnx(_ context.Context, cfg OnnxConfig, dim int) (*OnnxEmbedder, error) 
 	}, nil
 }
 
-// NewOnnxFromEnv creates an ONNX embedder using environment variables.
+// NewOnnxFromEnv creates an ONNX (CUDA) embedder from environment variables.
+//
+//	ANDB_EMBEDDER_MODEL_PATH  — path to the .onnx model file (required)
+//	ONNXRUNTIME_LIB_PATH      — path to libonnxruntime GPU build
+//	ANDB_EMBEDDER_DEVICE       — "cuda" (default) or "cpu"
+//	CUDA_VISIBLE_DEVICES       — first digit used as CUDA device ID
+//	ANDB_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
 func NewOnnxFromEnv(ctx context.Context, dim int) (*OnnxEmbedder, error) {
-	modelPath := os.Getenv("ANDB_EMBEDDER_MODEL_PATH")
-	libraryPath := os.Getenv("ONNXRUNTIME_LIB_PATH")
 	device := os.Getenv("ANDB_EMBEDDER_DEVICE")
 	if device == "" {
 		device = "cuda"
 	}
-
 	deviceID := 0
 	if s := os.Getenv("CUDA_VISIBLE_DEVICES"); s != "" {
 		if v, err := strconv.Atoi(s[:1]); err == nil {
 			deviceID = v
 		}
 	}
-
 	return NewOnnx(ctx, OnnxConfig{
-		ModelPath:    modelPath,
-		LibraryPath:  libraryPath,
+		ModelPath:    os.Getenv("ANDB_EMBEDDER_MODEL_PATH"),
+		LibraryPath:  os.Getenv("ONNXRUNTIME_LIB_PATH"),
+		VocabPath:    os.Getenv(vocabPathEnv),
 		Device:       device,
 		UseCUDA:      true,
 		CUDADeviceID: deviceID,
 	}, dim)
-}
-
-// simpleTokenize converts text to token IDs using a basic approach.
-// For production, use a proper tokenizer (e.g. github.com/pkoukk/tiktoken-go).
-func simpleTokenize(text string, maxLen int) ([]int64, []int64) {
-	ids := make([]int64, maxLen)
-	mask := make([]int64, maxLen)
-
-	ids[0] = 101 // [CLS]
-	mask[0] = 1
-	pos := 1
-
-	for _, r := range text {
-		if pos >= maxLen-1 {
-			break
-		}
-		// Simple hash to vocab range (not real tokenization)
-		ids[pos] = int64(r%30000 + 1000)
-		mask[pos] = 1
-		pos++
-	}
-
-	ids[pos] = 102 // [SEP]
-	mask[pos] = 1
-
-	return ids, mask
 }
 
 // Generate implements dataplane.EmbeddingGenerator.
@@ -277,8 +266,8 @@ func (e *OnnxEmbedder) BatchGenerate(ctx context.Context, texts []string) ([][]f
 		default:
 		}
 
-		// Tokenize
-		ids, mask := simpleTokenize(text, e.cfg.MaxSeqLength)
+		// Tokenize using BERT WordPiece (or FNV fallback when no vocab file)
+		ids, mask := e.tokenizer.tokenize(text, e.cfg.MaxSeqLength)
 
 		// Copy to tensors
 		copy(e.inputIDs.GetData(), ids)
