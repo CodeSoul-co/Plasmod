@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -21,8 +20,6 @@ type Gateway struct {
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
 }
-
-var datasetFileRE = regexp.MustCompile(`(?:^|\s)dataset=([^\s]+)`)
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
 // GET /v1/admin/storage returns the resolved backend configuration.
@@ -215,6 +212,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) matchesDatasetFile(m schemas.Memory, fileName string) bool {
+	fileName = storage.NormalizeDatasetFileName(fileName)
 	tag := "dataset_file:" + fileName
 	for _, t := range m.PolicyTags {
 		if t == tag {
@@ -228,19 +226,11 @@ func (g *Gateway) matchesDatasetFile(m schemas.Memory, fileName string) bool {
 			continue
 		}
 		txt, _ := ev.Payload[schemas.PayloadKeyText].(string)
-		if extractDatasetFileNameFromText(txt) == fileName {
+		if storage.ExtractDatasetFileNameFromText(txt) == fileName {
 			return true
 		}
 	}
 	return false
-}
-
-func extractDatasetFileNameFromText(text string) string {
-	m := datasetFileRE.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────
