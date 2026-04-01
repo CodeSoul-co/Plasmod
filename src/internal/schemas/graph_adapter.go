@@ -19,6 +19,7 @@ func MemoryToGraphNode(m Memory) GraphNode {
 		"provenance_ref":   m.ProvenanceRef,
 		"version":          m.Version,
 		"is_active":        m.IsActive,
+		"join_key":         "mem:" + m.MemoryID,
 	}
 
 	label := m.Summary
@@ -55,6 +56,7 @@ func EventToGraphNode(e Event) GraphNode {
 		"importance":      e.Importance,
 		"visibility":      e.Visibility,
 		"version":         e.Version,
+		"join_key":        "evt:" + e.EventID,
 	}
 
 	label := e.EventType
@@ -82,6 +84,7 @@ func ArtifactToGraphNode(a Artifact) GraphNode {
 		"hash":                 a.Hash,
 		"produced_by_event_id": a.ProducedByEventID,
 		"version":              a.Version,
+		"join_key":             "art:" + a.ArtifactID,
 	}
 
 	label := a.ArtifactType

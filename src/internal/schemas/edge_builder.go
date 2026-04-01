@@ -15,6 +15,10 @@ func BuildMemoryBaseEdges(m Memory) []Edge {
 			DstType:       string(ObjectTypeSession),
 			Weight:        DefaultEdgeWeight,
 			ProvenanceRef: m.ProvenanceRef,
+			Properties: map[string]any{
+				"src_join_key": "mem:" + m.MemoryID,
+				"dst_join_key": "sess:" + m.SessionID,
+			},
 		})
 	}
 
@@ -28,6 +32,10 @@ func BuildMemoryBaseEdges(m Memory) []Edge {
 			DstType:       string(ObjectTypeAgent),
 			Weight:        DefaultEdgeWeight,
 			ProvenanceRef: m.ProvenanceRef,
+			Properties: map[string]any{
+				"src_join_key": "mem:" + m.MemoryID,
+				"dst_join_key": "agent:" + m.AgentID,
+			},
 		})
 	}
 
@@ -44,6 +52,10 @@ func BuildMemoryBaseEdges(m Memory) []Edge {
 			DstType:       string(ObjectTypeEvent),
 			Weight:        DefaultEdgeWeight,
 			ProvenanceRef: m.ProvenanceRef,
+			Properties: map[string]any{
+				"src_join_key": "mem:" + m.MemoryID,
+				"dst_join_key": "evt:" + eid,
+			},
 		})
 	}
 

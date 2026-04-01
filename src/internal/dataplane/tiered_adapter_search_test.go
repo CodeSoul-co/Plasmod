@@ -31,3 +31,243 @@ func TestTieredDataPlane_Search_IncludeColdWhenHotSatisfiesTopK(t *testing.T) {
 	}
 	// Merged list is truncated to TopK, so cold IDs may not appear when hot already fills the page.
 }
+
+type fakeQueryEmbedder struct {
+	vec []float32
+	err error
+}
+
+func (f *fakeQueryEmbedder) Generate(text string) ([]float32, error) {
+	return f.vec, f.err
+}
+
+func (f *fakeQueryEmbedder) Dim() int {
+	return len(f.vec)
+}
+
+func (f *fakeQueryEmbedder) Reset() {}
+
+func TestTieredDataPlane_Search_IncludeColdUsesVectorSearch(t *testing.T) {
+	embedder := &fakeQueryEmbedder{
+		vec: []float32{1, 0},
+	}
+
+	cold := storage.NewInMemoryColdStore()
+	cold.PutMemory(schemas.Memory{MemoryID: "m1", Content: "alpha", Version: 1})
+	cold.PutMemory(schemas.Memory{MemoryID: "m2", Content: "beta", Version: 2})
+
+	if err := cold.PutMemoryEmbedding("m1", []float32{1, 0}); err != nil {
+		t.Fatalf("PutMemoryEmbedding m1 failed: %v", err)
+	}
+	if err := cold.PutMemoryEmbedding("m2", []float32{0, 1}); err != nil {
+		t.Fatalf("PutMemoryEmbedding m2 failed: %v", err)
+	}
+
+	tieredObjs := storage.NewTieredObjectStoreWithEmbedder(
+		storage.NewHotObjectCache(100),
+		nil,
+		nil,
+		cold,
+		embedder,
+		schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold,
+	)
+
+	dp, err := NewTieredDataPlaneWithEmbedderAndConfig(
+		tieredObjs,
+		embedder,
+		schemas.DefaultAlgorithmConfig(),
+	)
+	if err != nil {
+		t.Fatalf("NewTieredDataPlaneWithEmbedderAndConfig failed: %v", err)
+	}
+
+	out := dp.Search(SearchInput{
+		QueryText:      "q",
+		TopK:           2,
+		IncludeCold:    true,
+		Namespace:      "",
+		TimeFromUnixTS: 0,
+		TimeToUnixTS:   0,
+	})
+
+	if len(out.ObjectIDs) == 0 {
+		t.Fatal("expected cold vector search to return at least one result")
+	}
+
+	if out.ObjectIDs[0] != "m1" {
+		t.Fatalf("expected m1 ranked first, got %+v", out.ObjectIDs)
+	}
+}
+
+func TestTieredDataPlane_Search_IncludeColdFallsBackToLexicalWhenNoEmbedder(t *testing.T) {
+	cold := storage.NewInMemoryColdStore()
+	cold.PutMemory(schemas.Memory{
+		MemoryID: "mem_cold_lexical",
+		Content:  "unique lexical marker",
+		Version:  1,
+	})
+
+	objs := storage.NewTieredObjectStore(
+		storage.NewHotObjectCache(100),
+		nil,
+		nil,
+		cold,
+	)
+
+	p := NewTieredDataPlane(objs)
+
+	out := p.Search(SearchInput{
+		QueryText:   "unique lexical marker",
+		TopK:        1,
+		IncludeCold: true,
+	})
+
+	if len(out.ObjectIDs) == 0 {
+		t.Fatal("expected lexical cold search to return at least one result")
+	}
+	if out.ObjectIDs[0] != "mem_cold_lexical" {
+		t.Fatalf("expected mem_cold_lexical, got %+v", out.ObjectIDs)
+	}
+}
+
+func TestTieredDataPlane_Search_IncludeColdWhenHotSatisfiesTopK_UsesVectorSearch(t *testing.T) {
+	embedder := &fakeQueryEmbedder{
+		vec: []float32{1, 0},
+	}
+
+	cold := storage.NewInMemoryColdStore()
+	cold.PutMemory(schemas.Memory{
+		MemoryID: "mem_only_cold_vec",
+		Content:  "cold vector target",
+		Version:  1,
+	})
+	if err := cold.PutMemoryEmbedding("mem_only_cold_vec", []float32{1, 0}); err != nil {
+		t.Fatalf("PutMemoryEmbedding failed: %v", err)
+	}
+
+	tieredObjs := storage.NewTieredObjectStoreWithEmbedder(
+		storage.NewHotObjectCache(100),
+		nil,
+		nil,
+		cold,
+		embedder,
+		schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold,
+	)
+
+	dp, err := NewTieredDataPlaneWithEmbedderAndConfig(
+		tieredObjs,
+		embedder,
+		schemas.DefaultAlgorithmConfig(),
+	)
+	if err != nil {
+		t.Fatalf("NewTieredDataPlaneWithEmbedderAndConfig failed: %v", err)
+	}
+
+	// 让 hot tier 先满足 TopK
+	dp.hot.InsertObject("mem_hot_1", "q hot one", nil, "", 1)
+	dp.hot.InsertObject("mem_hot_2", "q hot two", nil, "", 2)
+
+	out := dp.Search(SearchInput{
+		QueryText:   "q",
+		TopK:        2,
+		IncludeCold: true,
+	})
+
+	if out.Tier != "hot+cold" {
+		t.Fatalf("tier: got %q, want hot+cold", out.Tier)
+	}
+
+	// Because mergeOutputs truncates to TopK, the cold ID may not appear in the final ObjectIDs,
+	//so we don't force an assertion that the cold ID will definitely appear; we only verify that the fast-path has not been broken.
+	if len(out.ObjectIDs) != 2 {
+		t.Fatalf("expected merged result length 2, got %d (%+v)", len(out.ObjectIDs), out.ObjectIDs)
+	}
+}
+
+// HNSW is earlier than Vector
+func TestTieredDataPlane_resolveColdIDs_PrefersHNSWOverVector(t *testing.T) {
+	tp := &TieredDataPlane{
+		embedder: mockEmbedder{
+			vec: []float32{1, 2, 3},
+		},
+		coldHNSWSearch: func(queryVec []float32, topK int) []string {
+			return []string{"mem_hnsw"}
+		},
+		coldVectorSearch: func(queryVec []float32, topK int) []string {
+			return []string{"mem_vector"}
+		},
+		coldSearch: func(query string, topK int) []string {
+			return []string{"mem_lexical"}
+		},
+	}
+
+	got := tp.resolveColdIDs(SearchInput{
+		QueryText: "hello",
+		TopK:      5,
+	})
+
+	if len(got) != 1 || got[0] != "mem_hnsw" {
+		t.Fatalf("expected HNSW result [mem_hnsw], got %v", got)
+	}
+}
+
+// when HNSW no results,return Vector
+func TestTieredDataPlane_resolveColdIDs_FallsBackToVectorWhenHNSWEmpty(t *testing.T) {
+	tp := &TieredDataPlane{
+		embedder: mockEmbedder{
+			vec: []float32{1, 2, 3},
+		},
+		coldHNSWSearch: func(queryVec []float32, topK int) []string {
+			return nil
+		},
+		coldVectorSearch: func(queryVec []float32, topK int) []string {
+			return []string{"mem_vector"}
+		},
+		coldSearch: func(query string, topK int) []string {
+			return []string{"mem_lexical"}
+		},
+	}
+
+	got := tp.resolveColdIDs(SearchInput{
+		QueryText: "hello",
+		TopK:      5,
+	})
+
+	if len(got) != 1 || got[0] != "mem_vector" {
+		t.Fatalf("expected vector fallback [mem_vector], got %v", got)
+	}
+}
+
+// no embedder→return lexical
+func TestTieredDataPlane_resolveColdIDs_FallsBackToLexicalWithoutEmbedder(t *testing.T) {
+	tp := &TieredDataPlane{
+		embedder: nil,
+		coldSearch: func(query string, topK int) []string {
+			return []string{"mem_lexical"}
+		},
+	}
+
+	got := tp.resolveColdIDs(SearchInput{
+		QueryText: "hello",
+		TopK:      5,
+	})
+
+	if len(got) != 1 || got[0] != "mem_lexical" {
+		t.Fatalf("expected lexical fallback [mem_lexical], got %v", got)
+	}
+}
+
+type mockEmbedder struct {
+	vec []float32
+	err error
+}
+
+func (m mockEmbedder) Generate(text string) ([]float32, error) {
+	return m.vec, m.err
+}
+
+func (m mockEmbedder) Dim() int {
+	return len(m.vec)
+}
+
+func (m mockEmbedder) Reset() {}

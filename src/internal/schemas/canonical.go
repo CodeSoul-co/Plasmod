@@ -105,19 +105,17 @@ type Artifact struct {
 }
 
 type Edge struct {
-	EdgeID        string  `json:"edge_id"`
-	SrcObjectID   string  `json:"src_object_id"`
-	SrcType       string  `json:"src_type"`
-	EdgeType      string  `json:"edge_type"`
-	DstObjectID   string  `json:"dst_object_id"`
-	DstType       string  `json:"dst_type"`
-	Weight        float64 `json:"weight"`
-	ProvenanceRef string  `json:"provenance_ref"`
-	CreatedTS     string  `json:"created_ts"`
-	// ExpiresAt is an optional RFC-3339 timestamp after which the edge is
-	// considered expired and eligible for pruning via GraphEdgeStore.PruneExpiredEdges.
-	// Empty string means the edge never expires.
-	ExpiresAt string `json:"expires_at,omitempty"`
+	EdgeID        string         `json:"edge_id"`
+	SrcObjectID   string         `json:"src_object_id"`
+	SrcType       string         `json:"src_type"`
+	EdgeType      string         `json:"edge_type"`
+	DstObjectID   string         `json:"dst_object_id"`
+	DstType       string         `json:"dst_type"`
+	Weight        float64        `json:"weight"`
+	ProvenanceRef string         `json:"provenance_ref"`
+	CreatedTS     string         `json:"created_ts"`
+	Properties    map[string]any `json:"properties,omitempty"`
+	ExpiresAt     string         `json:"expires_at,omitempty"`
 }
 
 type ObjectVersion struct {
