@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture setup
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -24,14 +24,42 @@ else ifeq ($(shell [ -f $(CPP_LIB_SO) ] && echo yes),yes)
   CGO_LDFLAGS := -L$(shell pwd)/cpp/build -landb_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
 endif
 
+setup:
+	go mod download
+	bash scripts/setup_env.sh
+	cd sdk/nodejs && npm install
+
 dev:
-	go run $(RETRIEVAL_TAG) ./src/cmd/server
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go run $(RETRIEVAL_TAG) ./src/cmd/server'
 
 build:
-	go build $(RETRIEVAL_TAG) ./src/cmd/server
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/andb ./src/cmd/server'
 
 cpp:
-	cmake -S cpp -B cpp/build && cmake --build cpp/build
+	cmake -S cpp -B cpp/build && cmake --build cpp/build --parallel $(shell nproc)
+
+cpp-gpu:
+	cmake -S cpp -B cpp/build -DANDB_WITH_GPU=ON && cmake --build cpp/build --parallel $(shell nproc)
+
+tensorrt:
+	cmake -S cpp -B cpp/build_trt -DANDB_WITH_TENSORRT=ON -DANDB_WITH_GPU=OFF
+	cmake --build cpp/build_trt --target andb_tensorrt --parallel $(shell nproc)
+	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
+	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
+	go build -tags cuda,tensorrt,linux ./src/...
+
+tensorrt-dev:
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; \
+	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
+	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
+	go run -tags cuda,tensorrt,linux ./src/cmd/server'
+
+gguf:
+	$(MAKE) -C libs/go-llama.cpp -j$(shell nproc)
+	go build -tags gguf ./src/...
+
+gguf-dev:
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go run -tags gguf ./src/cmd/server'
 
 # cpp-with-knowhere builds the full C++ stack including Knowhere HNSW.
 # Requires: libomp, folly, prometheus-cpp, opentelemetry-cpp installed via Homebrew.

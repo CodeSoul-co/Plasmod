@@ -30,8 +30,8 @@ const (
 )
 
 // BuildRuntimeFromEnv constructs RuntimeStorage from process environment.
-// Default mode is "memory" (all stores in-process).  Set ANDB_STORAGE=disk to
-// enable Badger-backed persistent storage under ANDB_DATA_DIR (default .andb_data).
+// Default mode is "disk" (Badger-backed persistent storage under ANDB_DATA_DIR).
+// Set ANDB_STORAGE=memory to opt into ephemeral in-process mode (tests / CI).
 func BuildRuntimeFromEnv() (*RuntimeBundle, error) {
 	return buildRuntime(os.Getenv)
 }
@@ -39,7 +39,7 @@ func BuildRuntimeFromEnv() (*RuntimeBundle, error) {
 func buildRuntime(get func(string) string) (*RuntimeBundle, error) {
 	mode := strings.TrimSpace(strings.ToLower(get(EnvStorage)))
 	if mode == "" {
-		mode = backendMemory
+		mode = backendDisk
 	}
 	dataDir := get(EnvDataDir)
 	if dataDir == "" {
