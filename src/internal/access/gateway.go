@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ type Gateway struct {
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
 }
+
+var datasetFileRE = regexp.MustCompile(`(?:^|\s)dataset=([^\s]+)`)
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
 // GET /v1/admin/storage returns the resolved backend configuration.
@@ -151,22 +154,27 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file_name is required", http.StatusBadRequest)
 		return
 	}
-	marker := "dataset=" + req.FileName
 	now := time.Now().UTC().Format(time.RFC3339)
 	mems := g.store.Objects().ListMemories("", "")
 	matched := 0
 	updated := 0
-	ids := make([]string, 0)
+	alreadyInactive := 0
+	matchedIDs := make([]string, 0)
+	deletedIDs := make([]string, 0)
 	for _, m := range mems {
 		if req.WorkspaceID != "" && m.Scope != req.WorkspaceID {
 			continue
 		}
-		if !strings.Contains(m.Content, marker) {
+		if !g.matchesDatasetFile(m, req.FileName) {
 			continue
 		}
 		matched++
-		ids = append(ids, m.MemoryID)
-		if req.DryRun || !m.IsActive {
+		matchedIDs = append(matchedIDs, m.MemoryID)
+		if !m.IsActive {
+			alreadyInactive++
+			continue
+		}
+		if req.DryRun {
 			continue
 		}
 		m.IsActive = false
@@ -189,16 +197,50 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		updated++
+		deletedIDs = append(deletedIDs, m.MemoryID)
 	}
 	writeJSON(w, map[string]any{
-		"status":      "ok",
-		"file_name":   req.FileName,
+		"status":       "ok",
+		"file_name":    req.FileName,
 		"workspace_id": req.WorkspaceID,
-		"dry_run":     req.DryRun,
-		"matched":     matched,
-		"deleted":     updated,
-		"memory_ids":  ids,
+		"dry_run":      req.DryRun,
+		"matched":      matched,
+		"deleted":      updated,
+		"inactive":     alreadyInactive,
+		"matched_memory_ids": matchedIDs,
+		"deleted_memory_ids": deletedIDs,
+		// Backward-compat alias: keep "memory_ids" as deleted ids.
+		"memory_ids": deletedIDs,
 	})
+}
+
+func (g *Gateway) matchesDatasetFile(m schemas.Memory, fileName string) bool {
+	tag := "dataset_file:" + fileName
+	for _, t := range m.PolicyTags {
+		if t == tag {
+			return true
+		}
+	}
+	// Backward compatibility: infer from source event payload text marker.
+	for _, eid := range m.SourceEventIDs {
+		ev, ok := g.store.Objects().GetEvent(eid)
+		if !ok {
+			continue
+		}
+		txt, _ := ev.Payload[schemas.PayloadKeyText].(string)
+		if extractDatasetFileNameFromText(txt) == fileName {
+			return true
+		}
+	}
+	return false
+}
+
+func extractDatasetFileNameFromText(text string) string {
+	m := datasetFileRE.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────
