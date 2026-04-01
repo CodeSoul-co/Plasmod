@@ -16,6 +16,7 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/evidence"
 	"andb/src/internal/materialization"
+	"andb/src/internal/retrieval"
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
@@ -288,6 +289,34 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	result.ObjectIDs = r.filterInactiveMemories(result.ObjectIDs)
 
+	// ── Candidate seed enrichment via Retriever ───────────────────────────────
+	// Retriever enriches raw ObjectIDs with Memory metadata, applies the safety
+	// filter (7 governance rules), reranks via RRF × importance × freshness ×
+	// confidence, and marks high-quality candidates as seeds.
+	// Seeds are passed to QueryChain for targeted graph expansion rather than
+	// sending every retrieved object into the graph traversal.
+	retriever := retrieval.New(r.plane, r.storage.Objects())
+	retriever.SeedThreshold = retrieval.DefaultSeedThreshold
+	retriever.SeedAbsoluteFloor = retrieval.DefaultSeedAbsoluteFloor
+
+	retReq := retrieval.DefaultRetrievalRequest(req.QueryText, plan.TopK)
+	retReq.AgentID = req.AgentID
+	retReq.SessionID = req.SessionID
+	retReq.WorkspaceID = req.WorkspaceID
+	retReq.TenantID = req.TenantID
+	retReq.Scope = req.QueryScope
+	retReq.ObjectTypes = plan.ObjectTypes
+	retReq.MemoryTypes = req.MemoryTypes
+	retReq.ForGraph = true // request TopK×2 candidates to give graph expansion more seeds
+	candidateList := retriever.EnrichAndRank(result.ObjectIDs, retReq)
+
+	// Update result with ranked object IDs from the enriched candidate list.
+	rankedIDs := make([]string, len(candidateList.Candidates))
+	for i, c := range candidateList.Candidates {
+		rankedIDs[i] = c.ObjectID
+	}
+	result.ObjectIDs = rankedIDs
+
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
 	// State and Artifact objects are stored directly in ObjectStore, not in the
 	// retrieval plane.  When query requests these types, fetch them from the
@@ -309,9 +338,19 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
-	if len(result.ObjectIDs) > 0 {
+	//
+	// Graph expansion uses SeedIDs (top-scoring candidates) rather than all
+	// retrieved IDs to keep the subgraph focused on high-quality seed objects.
+	graphSeedIDs := candidateList.SeedIDs
+	if len(graphSeedIDs) == 0 {
+		// Fallback: if no seeds were marked (e.g. all scores below floor),
+		// use the top-N ranked object IDs to ensure graph expansion still runs.
+		graphSeedIDs = result.ObjectIDs
+	}
+
+	if len(graphSeedIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:   result.ObjectIDs,
+			ObjectIDs:   graphSeedIDs,
 			MaxDepth:    0, // default cap of 8
 			ObjectStore: r.storage.Objects(),
 			EdgeStore:   r.storage.Edges(),
@@ -341,6 +380,12 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		resp.ChainTraces.Query = formatQueryChainTraceLines(chainResult, chainOut)
 	} else {
 		resp.ChainTraces.Query = []string{"query_chain skipped=no_seed_object_ids"}
+	}
+
+	// Attach seed provenance so callers can see which objects drove graph expansion.
+	if len(candidateList.SeedIDs) > 0 {
+		resp.Provenance = append(resp.Provenance,
+			fmt.Sprintf("retrieval_seeds=%d graph_expansion_via=seed_ids", len(candidateList.SeedIDs)))
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
