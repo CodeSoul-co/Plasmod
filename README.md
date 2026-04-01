@@ -964,6 +964,45 @@ Compiles cleanly on Linux x86_64 with `gcc/g++ 11.4`, `CUDA 11.8`, `onnxruntime 
 
 ---
 
+#### Week 3 Results (2026-04-01) — Candidate Seed → Graph Expansion
+
+**Task:** 候选种子支持 graph 扩展 — candidate seed 接口接入 relation 层。
+
+**Changes:**
+
+| File | Change |
+|------|--------|
+| `src/internal/retrieval/retriever.go` | New: native Go `Retriever` — RRF reranking × importance × freshness × confidence; `markSeeds()` relative normalisation (top 50%); `ForGraph` mode (TopK×2); safety filter 7 rules |
+| `src/internal/retrieval/candidate.go` | New: `CandidateList.SeedIDs []string`; `Candidate.IsSeed / SeedScore` — candidate seed interface |
+| `src/internal/worker/runtime.go` | Wire `Retriever.EnrichAndRank()` into `ExecuteQuery`; pass `SeedIDs` to `QueryChain` for graph expansion |
+| `src/internal/worker/runtime_test.go` | New: `TestRuntime_SeedDrivesGraphExpansion` functional test |
+
+**Functional test output** — `go test -v -run TestRuntime_SeedDrivesGraphExpansion ./src/internal/worker/`
+
+```
+=== RUN   TestRuntime_SeedDrivesGraphExpansion
+    runtime_test.go:554: resp.Objects (2): [mem_evt_seed_1 mem_evt_seed_3]
+    runtime_test.go:570: PASS: seed provenance = "retrieval_seeds=2 graph_expansion_via=seed_ids
+                          embedding_runtime_family=tfidf embedding_runtime_dim=256 cross_dim_fusion=rrf_result_layer"
+    runtime_test.go:577: resp.Nodes (2):
+    runtime_test.go:579:   node id=mem_evt_seed_1 type=memory
+    runtime_test.go:579:   node id=mem_evt_seed_3 type=memory
+    runtime_test.go:593: resp.Edges (14): map[belongs_to_session:4 caused_by:2 derived_from:2 owned_by_agent:4 projected_from:2]
+    runtime_test.go:599: ProofTrace (8 stages): planner → retrieval_search → policy_filter → response → ...
+    runtime_test.go:606: ChainTraces.Query: subgraph_nodes=2 subgraph_edges=14 merged_edges=14
+--- PASS: TestRuntime_SeedDrivesGraphExpansion (0.00s)
+PASS
+```
+
+Seed pipeline verified end-to-end:
+- 3 events ingested; high-importance events (`evt_seed_1` imp=0.9, `evt_seed_3` imp=0.8) became seeds
+- `retrieval_seeds=2` confirms Retriever marked 2 seeds (not all candidates)
+- `resp.Nodes` populated from seeds only — focused graph expansion
+- `resp.Edges` (14): `belongs_to_session` + `owned_by_agent` + `derived_from` + `caused_by` + `projected_from`
+- `QueryChain` ran (not skipped) — subgraph and proof trace assembled
+
+---
+
 ### Member C — S3 Cold Tier, DFS Search, Graph Hot/Cold Integration
 
 **Scope:** Implement DFS (Dense Fragment Search) over cold S3 embeddings, complete cold-tier graph integration, and wire S3 storage into the full hot->cold query pipeline.
