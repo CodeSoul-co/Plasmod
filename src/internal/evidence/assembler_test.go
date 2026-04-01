@@ -218,3 +218,74 @@ func TestEvidenceCache_Invalidate(t *testing.T) {
 		t.Error("Cache.Get after Invalidate: should return false")
 	}
 }
+
+func TestAssembler_Build_ColdTierEvidenceCacheStatsAndTrace(t *testing.T) {
+	cache := NewCache(100)
+	a := NewCachedAssembler(cache)
+
+	// one cache hit, one cache miss
+	cache.Put(EvidenceFragment{
+		ObjectID:      "mem_1",
+		SalienceScore: 0.9,
+		Level:         1,
+	})
+
+	input := dataplane.SearchInput{TopK: 5}
+	result := dataplane.SearchOutput{
+		ObjectIDs: []string{"mem_1", "mem_2"},
+		Tier:      "hot+warm+cold",
+	}
+
+	resp := a.Build(input, result, nil)
+
+	if resp.EvidenceCache == nil {
+		t.Fatal("expected EvidenceCache stats to be non-nil")
+	}
+
+	if resp.EvidenceCache.LookedUp != 2 {
+		t.Fatalf("expected LookedUp=2, got %d", resp.EvidenceCache.LookedUp)
+	}
+	if resp.EvidenceCache.Hits != 1 {
+		t.Fatalf("expected Hits=1, got %d", resp.EvidenceCache.Hits)
+	}
+	if resp.EvidenceCache.Misses != 1 {
+		t.Fatalf("expected Misses=1, got %d", resp.EvidenceCache.Misses)
+	}
+
+	if resp.EvidenceCache.ColdHits != 1 {
+		t.Fatalf("expected ColdHits=1, got %d", resp.EvidenceCache.ColdHits)
+	}
+	if resp.EvidenceCache.ColdMisses != 1 {
+		t.Fatalf("expected ColdMisses=1, got %d", resp.EvidenceCache.ColdMisses)
+	}
+
+	// provenance should include cold_tier
+	coldProvFound := false
+	for _, p := range resp.Provenance {
+		if p == "cold_tier" {
+			coldProvFound = true
+			break
+		}
+	}
+	if !coldProvFound {
+		t.Fatalf("expected provenance to include cold_tier, got %v", resp.Provenance)
+	}
+
+	// proof trace should include cold-tier steps
+	foundFetch := false
+	foundRerank := false
+	for _, step := range resp.ProofTrace {
+		if step.Operation == "cold_embedding_fetch" {
+			foundFetch = true
+		}
+		if step.Operation == "cold_rerank" {
+			foundRerank = true
+		}
+	}
+	if !foundFetch {
+		t.Fatalf("expected proof trace to include cold_embedding_fetch, got %+v", resp.ProofTrace)
+	}
+	if !foundRerank {
+		t.Fatalf("expected proof trace to include cold_rerank, got %+v", resp.ProofTrace)
+	}
+}

@@ -424,14 +424,23 @@ func memoryIDFromEmbeddingKey(key string) string {
 }
 
 func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
+	algoCfg := schemas.DefaultAlgorithmConfig()
+
 	cfg := s3ColdSearchConfig{
-		maxKeys:        5000,
+		maxKeys:        algoCfg.ColdMaxCandidates,
 		concurrency:    8,
-		batchSize:      128,
+		batchSize:      algoCfg.ColdBatchSize,
 		bufferFactor:   3,
 		earlyStopScore: 0.95,
 		noImprovePages: 2,
 	}
+	if cfg.maxKeys <= 0 {
+		cfg.maxKeys = 1000
+	}
+	if cfg.batchSize <= 0 {
+		cfg.batchSize = 128
+	}
+
 	if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxKeys); v > 0 {
 		cfg.maxKeys = v
 	}
