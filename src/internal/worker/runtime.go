@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,8 +45,6 @@ type Runtime struct {
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
 }
-
-var datasetMarkerRE = regexp.MustCompile(`(?:^|\s)dataset=([^\s]+)`)
 
 func CreateRuntime(
 	wal eventbackbone.WAL,
@@ -125,7 +122,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 	if txt, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
-		if file := extractDatasetFileName(txt); file != "" {
+		if file := storage.ExtractDatasetFileNameFromText(txt); file != "" {
 			tag := "dataset_file:" + file
 			exists := false
 			for _, t := range mat.Memory.PolicyTags {
@@ -153,6 +150,8 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.plane.Ingest(record); err != nil {
 		return nil, err
 	}
+	// Ensure SourceEventIDs can be resolved for delete compatibility path.
+	r.storage.PutEventWithBaseEdges(ev)
 
 	// ── Synchronous object materialization ─────────────────────────────────
 	// State and Artifact objects are needed immediately for query correctness.
@@ -454,14 +453,6 @@ func rrfFuseStringLists(lists [][]string, k int, topK int) []string {
 		return order[:topK]
 	}
 	return order
-}
-
-func extractDatasetFileName(text string) string {
-	m := datasetMarkerRE.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
 }
 
 func validateEmbeddingIngestPayload(ev schemas.Event) error {
