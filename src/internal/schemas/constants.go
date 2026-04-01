@@ -10,7 +10,7 @@ const (
 	MemoryTypeSocial     MemoryType = "social"
 	MemoryTypeReflective MemoryType = "reflective"
 	// MemoryBank memory types (additional semantic kinds)
-	MemoryTypeProfile               MemoryType = "profile"
+	MemoryTypeProfile              MemoryType = "profile"
 	MemoryTypeAffectiveState       MemoryType = "affective_state"
 	MemoryTypePreferenceConstraint MemoryType = "preference_constraint"
 )
@@ -263,10 +263,6 @@ type ColdSearchWeights struct {
 // ColdSearchWeights controls how cold-tier lexical / dense / recency signals
 // are combined before fusion into the final ranked list.
 
-// AlgorithmConfig holds all tunable algorithm parameters.
-// All fields have sensible defaults via DefaultAlgorithmConfig().
-// Pass a customized instance to service constructors that accept it
-// (e.g. NewPreComputeServiceWithConfig) to override defaults.
 type AlgorithmConfig struct {
 	// ProofTrace
 	MaxProofDepth int // BFS depth cap in proof trace (default 8)
@@ -299,6 +295,8 @@ type AlgorithmConfig struct {
 	// DFS / cold-tier retrieval
 	DFSRelevanceThreshold float64           // minimum dense relevance to keep a cold-tier DFS hit (default 0.2)
 	ColdSearchWeights     ColdSearchWeights // weighting of lexical/dense/recency signals in cold tier
+	ColdBatchSize         int
+	ColdMaxCandidates     int
 }
 
 // DefaultAlgorithmConfig returns a AlgorithmConfig populated with all defaults.
@@ -328,6 +326,8 @@ func DefaultAlgorithmConfig() AlgorithmConfig {
 			Dense:   0.4,
 			Recency: 0.1,
 		},
+		ColdBatchSize:     128,
+		ColdMaxCandidates: 1000,
 	}
 }
 

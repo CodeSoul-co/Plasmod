@@ -25,18 +25,42 @@ func TestBuildMemoryBaseEdges(t *testing.T) {
 			if e.SrcType != string(ObjectTypeMemory) || e.DstType != string(ObjectTypeSession) {
 				t.Fatalf("unexpected session edge types: %+v", e)
 			}
+			if e.Properties["src_join_key"] != "mem:mem_1" {
+				t.Fatalf("expected src_join_key mem:mem_1, got %v", e.Properties["src_join_key"])
+			}
+			if e.Properties["dst_join_key"] != "sess:sess_1" {
+				t.Fatalf("expected dst_join_key sess:sess_1, got %v", e.Properties["dst_join_key"])
+			}
 		case e.EdgeType == string(EdgeTypeOwnedByAgent) && e.DstObjectID == "agent_1":
 			hasAgent = true
 			if e.SrcType != string(ObjectTypeMemory) || e.DstType != string(ObjectTypeAgent) {
 				t.Fatalf("unexpected agent edge types: %+v", e)
+			}
+			if e.Properties["src_join_key"] != "mem:mem_1" {
+				t.Fatalf("expected src_join_key mem:mem_1, got %v", e.Properties["src_join_key"])
+			}
+			if e.Properties["dst_join_key"] != "agent:agent_1" {
+				t.Fatalf("expected dst_join_key agent:agent_1, got %v", e.Properties["dst_join_key"])
 			}
 		case e.EdgeType == string(EdgeTypeDerivedFrom) && e.DstObjectID == "evt_1":
 			hasEvt1 = true
 			if e.ProvenanceRef != "evt_1" {
 				t.Fatalf("expected provenance_ref evt_1, got %s", e.ProvenanceRef)
 			}
+			if e.Properties["src_join_key"] != "mem:mem_1" {
+				t.Fatalf("expected src_join_key mem:mem_1, got %v", e.Properties["src_join_key"])
+			}
+			if e.Properties["dst_join_key"] != "evt:evt_1" {
+				t.Fatalf("expected dst_join_key evt:evt_1, got %v", e.Properties["dst_join_key"])
+			}
 		case e.EdgeType == string(EdgeTypeDerivedFrom) && e.DstObjectID == "evt_2":
 			hasEvt2 = true
+			if e.Properties["src_join_key"] != "mem:mem_1" {
+				t.Fatalf("expected src_join_key mem:mem_1, got %v", e.Properties["src_join_key"])
+			}
+			if e.Properties["dst_join_key"] != "evt:evt_2" {
+				t.Fatalf("expected dst_join_key evt:evt_2, got %v", e.Properties["dst_join_key"])
+			}
 		}
 	}
 

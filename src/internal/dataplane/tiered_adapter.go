@@ -31,6 +31,7 @@ type TieredDataPlane struct {
 	embedder         EmbeddingGenerator
 	coldSearch       func(query string, topK int) []string
 	coldVectorSearch func(queryVec []float32, topK int) []string
+	coldHNSWSearch   func(queryVec []float32, topK int) []string
 	coldWrite        func(memoryID, text string, attrs map[string]string, ns string, ts int64)
 	rrfK             int
 }
@@ -64,6 +65,7 @@ func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg sch
 		coldVectorSearch: func(queryVec []float32, topK int) []string {
 			return objs.ColdVectorSearch(queryVec, topK)
 		},
+		coldHNSWSearch: nil,
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
@@ -100,6 +102,7 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 		coldVectorSearch: func(queryVec []float32, topK int) []string {
 			return tieredObjs.ColdVectorSearch(queryVec, topK)
 		},
+		coldHNSWSearch: nil,
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
@@ -154,10 +157,18 @@ func (t *TieredDataPlane) BatchIngest(records []IngestRecord) error {
 }
 
 func (t *TieredDataPlane) resolveColdIDs(input SearchInput) []string {
-	if t.embedder != nil && t.coldVectorSearch != nil {
+	if t.embedder != nil {
 		queryVec, err := t.embedder.Generate(input.QueryText)
 		if err == nil && len(queryVec) > 0 {
-			return t.coldVectorSearch(queryVec, input.TopK)
+			if t.coldHNSWSearch != nil {
+				ids := t.coldHNSWSearch(queryVec, input.TopK)
+				if len(ids) > 0 {
+					return ids
+				}
+			}
+			if t.coldVectorSearch != nil {
+				return t.coldVectorSearch(queryVec, input.TopK)
+			}
 		}
 	}
 	if t.coldSearch != nil {
