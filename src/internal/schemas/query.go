@@ -15,10 +15,10 @@ const (
 // main / memory_pipeline / collaboration carry read-path summaries (the write
 // chains are not re-executed); query is filled from QueryChain.
 type ChainTraceSlots struct {
-	Main             []string `json:"main"`
-	MemoryPipeline   []string `json:"memory_pipeline"`
-	Query            []string `json:"query"`
-	Collaboration    []string `json:"collaboration"`
+	Main           []string `json:"main"`
+	MemoryPipeline []string `json:"memory_pipeline"`
+	Query          []string `json:"query"`
+	Collaboration  []string `json:"collaboration"`
 }
 
 type QueryRequest struct {
@@ -47,20 +47,22 @@ type QueryRequest struct {
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
 type EvidenceCacheStats struct {
-	LookedUp int `json:"looked_up"`
-	Hits     int `json:"hits"`
-	Misses   int `json:"misses"`
+	LookedUp   int `json:"looked_up"`
+	Hits       int `json:"hits"`
+	Misses     int `json:"misses"`
+	ColdHits   int `json:"cold_hits,omitempty"`
+	ColdMisses int `json:"cold_misses,omitempty"`
 }
 
 type QueryResponse struct {
-	Objects        []string        `json:"objects"`
-	Nodes          []GraphNode     `json:"nodes,omitempty"`
-	Edges          []Edge          `json:"edges"`
-	Provenance     []string        `json:"provenance"`
-	Versions       []ObjectVersion `json:"versions"`
-	AppliedFilters []string        `json:"applied_filters"`
-	ProofTrace     []ProofStep     `json:"proof_trace"`
-	ChainTraces    ChainTraceSlots `json:"chain_traces"`
+	Objects        []string            `json:"objects"`
+	Nodes          []GraphNode         `json:"nodes,omitempty"`
+	Edges          []Edge              `json:"edges"`
+	Provenance     []string            `json:"provenance"`
+	Versions       []ObjectVersion     `json:"versions"`
+	AppliedFilters []string            `json:"applied_filters"`
+	ProofTrace     []ProofStep         `json:"proof_trace"`
+	ChainTraces    ChainTraceSlots     `json:"chain_traces"`
 	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
 	// RouteRejected indicates query was rejected by embedding family/dim routing guards.
 	RouteRejected bool `json:"route_rejected,omitempty"`
