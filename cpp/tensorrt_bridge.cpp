@@ -164,4 +164,50 @@ void trt_free_engine(TRTEngine* trt) {
     std::cout << "[TensorRT] Engine resources freed" << std::endl;
 }
 
+// Set dynamic input shapes for all input tensors (batch_size × seq_len).
+// Must be called before trt_execute_inference when using dynamic-shape engines.
+int trt_set_input_shapes(TRTEngine* trt, int batch_size, int seq_len) {
+    if (!trt || !trt->context || !trt->engine) return -1;
+#if NV_TENSORRT_MAJOR >= 10
+    int n = trt->engine->getNbIOTensors();
+    for (int i = 0; i < n; ++i) {
+        const char* name = trt->engine->getIOTensorName(i);
+        if (trt->engine->getTensorIOMode(name) != nvinfer1::TensorIOMode::kINPUT)
+            continue;
+        // Only call setInputShape when the tensor has dynamic dimensions.
+        // Static engines already have fixed dims and don't accept shape overrides.
+        nvinfer1::Dims engineDims = trt->engine->getTensorShape(name);
+        bool hasDynamic = false;
+        for (int d = 0; d < engineDims.nbDims; ++d) {
+            if (engineDims.d[d] < 0) { hasDynamic = true; break; }
+        }
+        if (!hasDynamic) continue; // static dims — skip
+        nvinfer1::Dims2 dims{batch_size, seq_len};
+        if (!trt->context->setInputShape(name, dims)) {
+            std::cerr << "[TensorRT] setInputShape failed for tensor: " << name << std::endl;
+            return -1;
+        }
+    }
+#endif
+    return 0;
+}
+
+// Return the number of input tensors in the engine.
+// Go uses this at init time to build the correct bindings array.
+int trt_get_num_inputs(TRTEngine* trt) {
+    if (!trt || !trt->engine) return -1;
+    int count = 0;
+#if NV_TENSORRT_MAJOR >= 10
+    int n = trt->engine->getNbIOTensors();
+    for (int i = 0; i < n; ++i) {
+        const char* name = trt->engine->getIOTensorName(i);
+        if (trt->engine->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT)
+            ++count;
+    }
+#else
+    count = trt->engine->getNbBindings() / 2; // rough approximation for TRT 8
+#endif
+    return count;
+}
+
 } // extern "C"
