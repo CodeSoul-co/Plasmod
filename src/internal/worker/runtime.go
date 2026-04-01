@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,8 @@ type Runtime struct {
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
 }
+
+var datasetMarkerRE = regexp.MustCompile(`(?:^|\s)dataset=([^\s]+)`)
 
 func CreateRuntime(
 	wal eventbackbone.WAL,
@@ -121,6 +124,21 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
+	if txt, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
+		if file := extractDatasetFileName(txt); file != "" {
+			tag := "dataset_file:" + file
+			exists := false
+			for _, t := range mat.Memory.PolicyTags {
+				if t == tag {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				mat.Memory.PolicyTags = append(mat.Memory.PolicyTags, tag)
+			}
+		}
+	}
 	if record.Attributes == nil {
 		record.Attributes = map[string]string{}
 	}
@@ -436,6 +454,14 @@ func rrfFuseStringLists(lists [][]string, k int, topK int) []string {
 		return order[:topK]
 	}
 	return order
+}
+
+func extractDatasetFileName(text string) string {
+	m := datasetMarkerRE.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
 }
 
 func validateEmbeddingIngestPayload(ev schemas.Event) error {
