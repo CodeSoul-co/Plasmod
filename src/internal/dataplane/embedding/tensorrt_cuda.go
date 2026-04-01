@@ -24,11 +24,10 @@
 package embedding
 
 /*
-#cgo LDFLAGS: -L/tmp -ltensorrt_bridge -lcudart -lnvinfer -lnvinfer_plugin -lstdc++
-#cgo CFLAGS: -I/usr/local/cuda/include -I/usr/local/TensorRT/include -I/home/lixin/libs/tensorrt-headers
+#cgo CFLAGS: -I${SRCDIR}/../../../../cpp -I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu
+#cgo LDFLAGS: -L${SRCDIR}/../../../../cpp/build -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,${SRCDIR}/../../../../cpp/build
 
 #include <stdlib.h>
-#include <string.h>
 #include <cuda_runtime.h>
 
 // CUDA memory management helpers
@@ -65,7 +64,7 @@ typedef struct {
     void* engine;
     void* context;
     void* stream;
-    int numBindings;
+    int   numIOTensors;
 } TRTEngine;
 
 // Load TensorRT engine from file
@@ -79,6 +78,14 @@ extern int trt_execute_inference(TRTEngine* engine, void** bindings);
 // Free TensorRT engine resources
 // Implementation in cpp/tensorrt_bridge.cpp
 extern void trt_free_engine(TRTEngine* engine);
+
+// Set dynamic input shapes (batch_size × seq_len) before inference
+// Implementation in cpp/tensorrt_bridge.cpp
+extern int trt_set_input_shapes(TRTEngine* engine, int batch_size, int seq_len);
+
+// Return the number of input tensors (used to build bindings at runtime)
+// Implementation in cpp/tensorrt_bridge.cpp
+extern int trt_get_num_inputs(TRTEngine* engine);
 */
 import "C"
 
@@ -94,6 +101,7 @@ import (
 // TensorRTConfig holds configuration for the TensorRT embedder.
 type TensorRTConfig struct {
 	EnginePath    string // Path to .trt/.engine file (required)
+	VocabPath     string // Path to BERT vocab.txt; empty = FNV hash fallback
 	MaxBatchSize  int    // Maximum batch size for inference (default: 32)
 	DeviceID      int    // CUDA device ID (default: 0)
 	FP16          bool   // Use FP16 precision (default: true for speed)
@@ -103,10 +111,12 @@ type TensorRTConfig struct {
 
 // TensorRTEmbedder implements Generator using NVIDIA TensorRT for GPU inference.
 type TensorRTEmbedder struct {
-	cfg    TensorRTConfig
-	dim    int
-	mu     sync.Mutex
-	closed bool
+	cfg       TensorRTConfig
+	dim       int
+	tokenizer *bertTokenizer
+	numInputs int // queried from engine at init: 2 for test engine, 3 for real BERT
+	mu        sync.Mutex
+	closed    bool
 
 	// TensorRT engine handle
 	engine unsafe.Pointer // *C.TRTEngine
@@ -114,6 +124,7 @@ type TensorRTEmbedder struct {
 	// GPU memory buffers
 	inputIDsGPU      unsafe.Pointer
 	attentionMaskGPU unsafe.Pointer
+	tokenTypeIDsGPU  unsafe.Pointer // BERT segment IDs (always 0)
 	outputGPU        unsafe.Pointer
 
 	// Host buffers
@@ -146,11 +157,13 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 	}
 
 	// Allocate GPU memory for input/output buffers
-	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4 // int32
-	outputSize := cfg.MaxBatchSize * dim * 4             // float32
-	if dim == 0 {
-		outputSize = cfg.MaxBatchSize * 1024 * 4 // Assume max 1024 dim for probing
+	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4           // int32
+	effDim := dim
+	if effDim == 0 {
+		effDim = 1024 // probe: assume at most 1024 dim
 	}
+	// Real BERT output is [batch, seq_len, dim]; allocate full 3D buffer.
+	outputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * effDim * 4 // float32
 
 	var inputIDsGPU, attentionMaskGPU, outputGPU unsafe.Pointer
 
@@ -169,37 +182,74 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 		return nil, fmt.Errorf("failed to allocate GPU memory for output: error code %d", ret)
 	}
 
+	var tokenTypeIDsGPU unsafe.Pointer
+	if ret := C.cuda_malloc(&tokenTypeIDsGPU, C.size_t(inputSize)); ret != 0 {
+		C.cuda_free(inputIDsGPU)
+		C.cuda_free(attentionMaskGPU)
+		C.cuda_free(outputGPU)
+		return nil, fmt.Errorf("failed to allocate GPU memory for token_type_ids: error code %d", ret)
+	}
+	// token_type_ids are all 0 for single-sentence BERT — zero once at init
+	zeros := make([]int32, cfg.MaxBatchSize*cfg.MaxSeqLength)
+	C.cuda_memcpy_h2d(tokenTypeIDsGPU, unsafe.Pointer(&zeros[0]), C.size_t(inputSize))
+
+	tok, err := newBertTokenizer(cfg.VocabPath)
+	if err != nil {
+		C.cuda_free(inputIDsGPU)
+		C.cuda_free(attentionMaskGPU)
+		C.cuda_free(outputGPU)
+		return nil, fmt.Errorf("failed to load vocab: %w", err)
+	}
+
+	// Load TensorRT engine from the serialised .engine/.trt file.
+	cEnginePath := C.CString(cfg.EnginePath)
+	defer C.free(unsafe.Pointer(cEnginePath))
+	trtEngine := C.trt_load_engine(cEnginePath)
+	if trtEngine == nil {
+		C.cuda_free(inputIDsGPU)
+		C.cuda_free(attentionMaskGPU)
+		C.cuda_free(outputGPU)
+		return nil, fmt.Errorf("failed to load TensorRT engine: %s", cfg.EnginePath)
+	}
+
+	numInputs := int(C.trt_get_num_inputs(trtEngine))
+	if numInputs <= 0 {
+		numInputs = 2 // safe fallback
+	}
+
 	e := &TensorRTEmbedder{
 		cfg:               cfg,
 		dim:               dim,
+		tokenizer:         tok,
+		numInputs:         numInputs,
+		engine:            unsafe.Pointer(trtEngine),
 		inputIDsGPU:       inputIDsGPU,
 		attentionMaskGPU:  attentionMaskGPU,
+		tokenTypeIDsGPU:   tokenTypeIDsGPU,
 		outputGPU:         outputGPU,
 		inputIDsHost:      make([]int32, cfg.MaxBatchSize*cfg.MaxSeqLength),
 		attentionMaskHost: make([]int32, cfg.MaxBatchSize*cfg.MaxSeqLength),
-		outputHost:        make([]float32, cfg.MaxBatchSize*1024),
+		outputHost:        make([]float32, cfg.MaxBatchSize*cfg.MaxSeqLength*effDim),
 	}
-
-	// Note: Full TensorRT engine loading requires nvinfer C++ API bindings.
-	// The current implementation provides CUDA memory management foundation.
-	// Production use should add engine deserialization and execution context.
 
 	return e, nil
 }
 
-// NewTensorRTFromEnv creates a TensorRT embedder using environment variables.
+// NewTensorRTFromEnv creates a TensorRT embedder from environment variables.
+//
+//	ANDB_EMBEDDER_MODEL_PATH  — path to the .engine/.trt file (required)
+//	CUDA_VISIBLE_DEVICES       — first digit used as CUDA device ID
+//	ANDB_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
 func NewTensorRTFromEnv(ctx context.Context, dim int) (*TensorRTEmbedder, error) {
-	enginePath := os.Getenv("ANDB_EMBEDDER_MODEL_PATH")
-
 	deviceID := 0
 	if devices := os.Getenv("CUDA_VISIBLE_DEVICES"); devices != "" {
 		if v, err := strconv.Atoi(devices[:1]); err == nil {
 			deviceID = v
 		}
 	}
-
 	return NewTensorRT(ctx, TensorRTConfig{
-		EnginePath: enginePath,
+		EnginePath: os.Getenv("ANDB_EMBEDDER_MODEL_PATH"),
+		VocabPath:  os.Getenv(vocabPathEnv),
 		DeviceID:   deviceID,
 		FP16:       true,
 	}, dim)
@@ -235,16 +285,11 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 	seqLen := e.cfg.MaxSeqLength
 
 	for i, text := range texts {
-		tokens := simpleTokenizeTRT(text, seqLen)
+		ids64, mask64 := e.tokenizer.tokenize(text, seqLen)
 		for j := 0; j < seqLen; j++ {
 			idx := i*seqLen + j
-			if j < len(tokens) {
-				e.inputIDsHost[idx] = int32(tokens[j])
-				e.attentionMaskHost[idx] = 1
-			} else {
-				e.inputIDsHost[idx] = 0 // Padding
-				e.attentionMaskHost[idx] = 0
-			}
+			e.inputIDsHost[idx] = int32(ids64[j])
+			e.attentionMaskHost[idx] = int32(mask64[j])
 		}
 	}
 
@@ -257,44 +302,54 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 		return nil, fmt.Errorf("failed to copy attention_mask to GPU: error code %d", ret)
 	}
 
-	// TensorRT inference execution would happen here:
-	// context->enqueueV2(bindings, stream, nullptr)
-
-	// Synchronize
-	if ret := C.cuda_device_synchronize(); ret != 0 {
-		return nil, fmt.Errorf("CUDA synchronization failed: error code %d", ret)
+	// For dynamic-shape engines, set actual input dimensions before inference.
+	if ret := C.trt_set_input_shapes((*C.TRTEngine)(e.engine), C.int(batchSize), C.int(seqLen)); ret != 0 {
+		return nil, fmt.Errorf("TensorRT setInputShape failed for batch=%d seq=%d", batchSize, seqLen)
 	}
 
-	// Copy output from GPU
-	outputSize := C.size_t(batchSize * e.dim * 4)
+	// Build bindings array: inputs first, then output.
+	// numInputs is queried from the engine at init (2 or 3 for BERT models).
+	var bindings [4]unsafe.Pointer
+	switch e.numInputs {
+	case 3: // real BERT: input_ids, attention_mask, token_type_ids, output
+		bindings = [4]unsafe.Pointer{e.inputIDsGPU, e.attentionMaskGPU, e.tokenTypeIDsGPU, e.outputGPU}
+	default: // 2-input (test engine or future 2-input models): input_ids, attention_mask, output
+		bindings = [4]unsafe.Pointer{e.inputIDsGPU, e.attentionMaskGPU, e.outputGPU, nil}
+	}
+	if ret := C.trt_execute_inference((*C.TRTEngine)(e.engine), &bindings[0]); ret != 0 {
+		return nil, fmt.Errorf("TensorRT inference failed: error code %d", ret)
+	}
+
+	// Copy output from GPU: layout is [batchSize, seqLen, dim]
+	outputSize := C.size_t(batchSize * seqLen * e.dim * 4)
 	if ret := C.cuda_memcpy_d2h(unsafe.Pointer(&e.outputHost[0]), e.outputGPU, outputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy output from GPU: error code %d", ret)
 	}
 
-	// Extract embeddings
+	// Mean-pool over seq dimension (weighted by attention_mask) → [batchSize, dim]
 	results := make([][]float32, batchSize)
 	for i := 0; i < batchSize; i++ {
-		results[i] = make([]float32, e.dim)
-		copy(results[i], e.outputHost[i*e.dim:(i+1)*e.dim])
+		emb := make([]float32, e.dim)
+		var tokenCount float32
+		for j := 0; j < seqLen; j++ {
+			if e.attentionMaskHost[i*seqLen+j] == 0 {
+				continue
+			}
+			tokenCount++
+			base := (i*seqLen + j) * e.dim
+			for d := 0; d < e.dim; d++ {
+				emb[d] += e.outputHost[base+d]
+			}
+		}
+		if tokenCount > 0 {
+			for d := 0; d < e.dim; d++ {
+				emb[d] /= tokenCount
+			}
+		}
+		results[i] = emb
 	}
 
 	return results, nil
-}
-
-// simpleTokenizeTRT performs basic tokenization for TensorRT.
-func simpleTokenizeTRT(text string, maxLen int) []int {
-	tokens := make([]int, 0, maxLen)
-	tokens = append(tokens, 101) // [CLS]
-
-	for _, r := range text {
-		if len(tokens) >= maxLen-1 {
-			break
-		}
-		tokens = append(tokens, int(r)%30000+1000)
-	}
-
-	tokens = append(tokens, 102) // [SEP]
-	return tokens
 }
 
 // Dim implements dataplane.EmbeddingGenerator.
@@ -330,6 +385,10 @@ func (e *TensorRTEmbedder) Close() error {
 	if e.attentionMaskGPU != nil {
 		C.cuda_free(e.attentionMaskGPU)
 		e.attentionMaskGPU = nil
+	}
+	if e.tokenTypeIDsGPU != nil {
+		C.cuda_free(e.tokenTypeIDsGPU)
+		e.tokenTypeIDsGPU = nil
 	}
 	if e.outputGPU != nil {
 		C.cuda_free(e.outputGPU)

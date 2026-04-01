@@ -196,6 +196,11 @@ func BuildServer() (*http.Server, func() error, error) {
 		if model == "" {
 			model = "embed-english-v3.0"
 		}
+		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+			if n, err := strconv.Atoi(dimStr); err == nil {
+				embedderDim = n
+			}
+		}
 		if embedderDim <= 0 {
 			return nil, nil, fmt.Errorf("ANDB_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
 		}
@@ -205,6 +210,85 @@ func BuildServer() (*http.Server, func() error, error) {
 			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", err)
 		}
 		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
+	case "huggingface":
+		model := os.Getenv("ANDB_EMBEDDER_MODEL")
+		if model == "" {
+			model = "sentence-transformers/all-MiniLM-L6-v2"
+		}
+		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+			if n, err := strconv.Atoi(dimStr); err == nil {
+				embedderDim = n
+			}
+		}
+		apiKey := os.Getenv("ANDB_EMBEDDER_API_KEY")
+		timeoutSec := 60
+		if ts := os.Getenv("ANDB_EMBEDDER_TIMEOUT"); ts != "" {
+			if n, err := strconv.Atoi(ts); err == nil {
+				timeoutSec = n
+			}
+		}
+		hfEmbedder, hfErr := embedding.NewHuggingFace(context.Background(), embedding.HuggingFaceConfig{
+			Model:        model,
+			APIKey:       apiKey,
+			Timeout:      time.Duration(timeoutSec) * time.Second,
+			WaitForModel: true,
+		}, embedderDim)
+		if hfErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize HuggingFace embedder: %w", hfErr)
+		}
+		embedder = hfEmbedder
+		if embedderDim <= 0 {
+			embedderDim = hfEmbedder.Dim()
+		}
+		log.Printf("[bootstrap] embedder: huggingface model=%s dim=%d", model, embedderDim)
+	case "vertexai":
+		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+			if n, err := strconv.Atoi(dimStr); err == nil {
+				embedderDim = n
+			}
+		}
+		vaEmbedder, vaErr := embedding.NewVertexAIFromEnv(context.Background(), embedderDim)
+		if vaErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize VertexAI embedder: %w", vaErr)
+		}
+		embedder = vaEmbedder
+		if embedderDim <= 0 {
+			embedderDim = vaEmbedder.Dim()
+		}
+		log.Printf("[bootstrap] embedder: vertexai project=%s dim=%d",
+			os.Getenv("GOOGLE_CLOUD_PROJECT"), embedderDim)
+	case "onnx":
+		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+			if n, err := strconv.Atoi(dimStr); err == nil {
+				embedderDim = n
+			}
+		}
+		onnxEmbedder, onnxErr := embedding.NewOnnxFromEnv(context.Background(), embedderDim)
+		if onnxErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
+		}
+		embedder = onnxEmbedder
+		if embedderDim <= 0 {
+			embedderDim = onnxEmbedder.Dim()
+		}
+		log.Printf("[bootstrap] embedder: onnx model=%s dim=%d",
+			os.Getenv("ANDB_EMBEDDER_MODEL_PATH"), embedderDim)
+	case "tensorrt":
+		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+			if n, err := strconv.Atoi(dimStr); err == nil {
+				embedderDim = n
+			}
+		}
+		trtEmbedder, trtErr := embedding.NewTensorRTFromEnv(context.Background(), embedderDim)
+		if trtErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize TensorRT embedder: %w", trtErr)
+		}
+		embedder = trtEmbedder
+		if embedderDim <= 0 {
+			embedderDim = trtEmbedder.Dim()
+		}
+		log.Printf("[bootstrap] embedder: tensorrt engine=%s dim=%d",
+			os.Getenv("ANDB_EMBEDDER_MODEL_PATH"), embedderDim)
 	default:
 		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
 		embedderDim = dataplane.DefaultEmbeddingDim

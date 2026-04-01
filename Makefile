@@ -25,13 +25,36 @@ else ifeq ($(shell [ -f $(CPP_LIB_SO) ] && echo yes),yes)
 endif
 
 dev:
-	go run $(RETRIEVAL_TAG) ./src/cmd/server
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go run $(RETRIEVAL_TAG) ./src/cmd/server'
 
 build:
-	go build $(RETRIEVAL_TAG) ./src/cmd/server
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/andb ./src/cmd/server'
 
 cpp:
-	cmake -S cpp -B cpp/build && cmake --build cpp/build
+	cmake -S cpp -B cpp/build && cmake --build cpp/build --parallel $(shell nproc)
+
+cpp-gpu:
+	cmake -S cpp -B cpp/build -DANDB_WITH_GPU=ON && cmake --build cpp/build --parallel $(shell nproc)
+
+tensorrt:
+	cmake -S cpp -B cpp/build_trt -DANDB_WITH_TENSORRT=ON -DANDB_WITH_GPU=OFF
+	cmake --build cpp/build_trt --target andb_tensorrt --parallel $(shell nproc)
+	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
+	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
+	go build -tags cuda,tensorrt,linux ./src/...
+
+tensorrt-dev:
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; \
+	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
+	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
+	go run -tags cuda,tensorrt,linux ./src/cmd/server'
+
+gguf:
+	$(MAKE) -C libs/go-llama.cpp -j$(shell nproc)
+	go build -tags gguf ./src/...
+
+gguf-dev:
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go run -tags gguf ./src/cmd/server'
 
 # cpp-with-knowhere builds the full C++ stack including Knowhere HNSW.
 # Requires: libomp, folly, prometheus-cpp, opentelemetry-cpp installed via Homebrew.
