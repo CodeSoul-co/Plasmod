@@ -151,7 +151,7 @@ func (vs *VectorStore) AddTexts(ids, texts []string) {
 		for i, t := range texts {
 			v, err := vs.embedder.Generate(t)
 			if err != nil || len(v) == 0 {
-				return
+				continue
 			}
 			vecs[i] = v
 		}
