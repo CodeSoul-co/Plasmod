@@ -1,0 +1,128 @@
+# Member B — GPU-accelerated embedding + retrieval environment
+#
+# Builds a complete runtime image with:
+#   - CUDA 11.8 + cuBLAS
+#   - ONNX Runtime 1.17.0 (GPU build)
+#   - TensorRT 10.x (via pip)
+#   - go-llama.cpp libbinding.a (CUBLAS)
+#   - libandb_retrieval.so (Knowhere/HNSW, CPU build)
+#   - Go 1.22 with build tags: cuda, retrieval
+#
+# Build:
+#   docker build -f scripts/docker/Dockerfile.memberb -t andb-memberb:latest .
+#
+# Run tests (requires NVIDIA Container Toolkit on host):
+#   docker run --gpus all --rm andb-memberb:latest \
+#     go test -tags cuda,retrieval ./src/internal/...
+#
+# nvidia-container-toolkit on host (one-time, needs root):
+#   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+#     | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+#   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+#     | sed 's#deb https://#deb [signed-by=...]#g' \
+#     > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+#   apt-get update && apt-get install -y nvidia-container-toolkit
+#   nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
+
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GONOSUMDB=*
+ENV CGO_ENABLED=1
+
+# ── System dependencies ────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git wget curl \
+        libgomp1 liblapack-dev libblas-dev \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Go 1.22 ───────────────────────────────────────────────────────────────
+RUN wget -q https://go.dev/dl/go1.22.4.linux-amd64.tar.gz -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+ENV PATH=/usr/local/go/bin:$PATH
+ENV GOPATH=/go
+ENV GOROOT=/usr/local/go
+
+# ── ONNX Runtime GPU 1.17.0 ───────────────────────────────────────────────
+RUN wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.17.0/onnxruntime-linux-x64-gpu-1.17.0.tgz" \
+        -O /tmp/ort.tgz \
+    && tar xzf /tmp/ort.tgz -C /usr/local --strip-components=1 \
+    && rm /tmp/ort.tgz
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+# ── TensorRT 10.x (pip) + symlinks ────────────────────────────────────────
+RUN pip3 install --no-cache-dir tensorrt
+RUN TRT_LIBDIR=$(python3 -c "import tensorrt_libs, os; print(os.path.dirname(tensorrt_libs.__file__))") \
+    && ln -sf "$TRT_LIBDIR/libnvinfer.so.10"        "$TRT_LIBDIR/libnvinfer.so" \
+    && ln -sf "$TRT_LIBDIR/libnvinfer_plugin.so.10" "$TRT_LIBDIR/libnvinfer_plugin.so" \
+    && echo "$TRT_LIBDIR" >> /etc/ld.so.conf.d/tensorrt.conf \
+    && ldconfig
+
+# TensorRT headers for C++ compilation
+RUN mkdir -p /usr/local/include/tensorrt && \
+    for f in NvInfer.h NvInferRuntime.h NvInferRuntimeBase.h NvInferRuntimeCommon.h \
+             NvInferRuntimePlugin.h NvInferLegacyDims.h NvInferPlugin.h \
+             NvInferPluginBase.h NvInferPluginUtils.h NvInferImpl.h NvInferVersion.h; do \
+        wget -q "https://github.com/NVIDIA/TensorRT/raw/release/10.7/include/$f" \
+             -O "/usr/local/include/tensorrt/$f" || true; \
+    done
+
+# ── go-llama.cpp with CUBLAS ───────────────────────────────────────────────
+RUN git clone --depth=1 --recurse-submodules \
+        https://github.com/go-skynet/go-llama.cpp /tmp/go-llama-cpp \
+    && cd /tmp/go-llama-cpp \
+    && git fetch --depth=1 origin 6a8041ef6b46 \
+    && git checkout 6a8041ef6b46 \
+    && git submodule update --init --recursive \
+    && cd llama.cpp && patch -p1 < ../patches/1902-cuda.patch && cd .. \
+    && touch prepare \
+    && CGO_LDFLAGS="-lcublas -lcudart" BUILD_TYPE=cublas LLAMA_CUBLAS=ON \
+       make libbinding.a -j"$(nproc)"
+
+ENV LIBRARY_PATH=/tmp/go-llama-cpp:$LIBRARY_PATH
+ENV C_INCLUDE_PATH=/tmp/go-llama-cpp:$C_INCLUDE_PATH
+
+# ── libandb_retrieval.so (CPU build — GPU build requires network for RAFT) ─
+WORKDIR /workspace
+COPY cpp/ cpp/
+COPY cpp/vendor/ cpp/vendor/
+RUN mkdir -p cpp/build && cd cpp/build \
+    && cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DANDB_WITH_GPU=OFF \
+        -DANDB_WITH_TESTS=OFF \
+        -DANDB_KNOWHERE_FAISS=OFF \
+        -DANDB_KNOWHERE_DISKANN=OFF \
+    && make -j"$(nproc)" \
+    && echo "libandb_retrieval.so built successfully"
+
+ENV LD_LIBRARY_PATH=/workspace/cpp/build:$LD_LIBRARY_PATH
+
+# ── Go source + dependencies ───────────────────────────────────────────────
+COPY go.mod go.sum ./
+COPY src/ src/
+
+RUN cd /workspace && go mod download
+
+# ── Build verification ─────────────────────────────────────────────────────
+RUN cd /workspace && \
+    ORT_LIB=/usr/local/lib \
+    TRT_LIB=$(python3 -c "import tensorrt_libs, os; print(os.path.dirname(tensorrt_libs.__file__))") \
+    TRT_INC=/usr/local/include/tensorrt \
+    CGO_LDFLAGS="-L/usr/local/lib -L$TRT_LIB -L/usr/lib/x86_64-linux-gnu -L/tmp/go-llama-cpp -lcublas -lcudart" \
+    CGO_CFLAGS="-I/usr/local/include -I$TRT_INC" \
+    go build -tags "cuda,retrieval,tensorrt" ./src/internal/... \
+    && echo "Full build (cuda+retrieval+tensorrt) OK"
+
+# ── Default command: run all tests ─────────────────────────────────────────
+CMD ["bash", "-c", \
+    "ORT_LIB=/usr/local/lib \
+     TRT_LIB=$(python3 -c 'import tensorrt_libs, os; print(os.path.dirname(tensorrt_libs.__file__))') \
+     TRT_INC=/usr/local/include/tensorrt \
+     CGO_LDFLAGS=\"-L/usr/local/lib -L$TRT_LIB -L/usr/lib/x86_64-linux-gnu -L/tmp/go-llama-cpp -lcublas -lcudart\" \
+     CGO_CFLAGS=\"-I/usr/local/include -I$TRT_INC\" \
+     LD_LIBRARY_PATH=/usr/local/lib:/workspace/cpp/build:$TRT_LIB:/usr/lib/x86_64-linux-gnu \
+     go test -v -tags cuda,retrieval,tensorrt -count=1 -timeout 300s ./src/internal/..."]

@@ -105,6 +105,53 @@ endif()
 message(STATUS "andb_retrieval: links against vendor/knowhere (CMake target: knowhere)")
 
 # =============================================================================
+# TensorRT Bridge (optional — standalone, does NOT require ANDB_WITH_GPU/RAFT)
+# Requires: CUDA toolkit + libnvinfer-dev
+# Build: cmake -S cpp -B cpp/build -DANDB_WITH_TENSORRT=ON && cmake --build cpp/build --target andb_tensorrt
+# =============================================================================
+if(ANDB_WITH_TENSORRT)
+    find_package(CUDAToolkit QUIET)
+    if(NOT CUDAToolkit_FOUND)
+        message(FATAL_ERROR "TensorRT bridge requires CUDA Toolkit. Install cuda-toolkit and retry.")
+    endif()
+
+    # Find TensorRT headers and runtime library
+    find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+        HINTS
+            /usr/include/x86_64-linux-gnu
+            /usr/local/TensorRT/include
+            /usr/include)
+    find_library(TENSORRT_LIBRARY nvinfer
+        HINTS
+            /usr/lib/x86_64-linux-gnu
+            /usr/local/TensorRT/lib)
+
+    if(TENSORRT_INCLUDE_DIR AND TENSORRT_LIBRARY)
+        message(STATUS "TensorRT found: ${TENSORRT_LIBRARY}")
+        message(STATUS "TensorRT headers: ${TENSORRT_INCLUDE_DIR}")
+
+        add_library(andb_tensorrt SHARED tensorrt_bridge.cpp)
+        target_include_directories(andb_tensorrt PUBLIC
+            ${TENSORRT_INCLUDE_DIR}
+            ${CUDAToolkit_INCLUDE_DIRS})
+        target_link_libraries(andb_tensorrt PUBLIC
+            ${TENSORRT_LIBRARY}
+            CUDA::cudart)
+        set_target_properties(andb_tensorrt PROPERTIES
+            CXX_STANDARD 17
+            POSITION_INDEPENDENT_CODE ON)
+
+        install(TARGETS andb_tensorrt
+            LIBRARY DESTINATION lib
+            ARCHIVE DESTINATION lib)
+
+        message(STATUS "TensorRT bridge: libandb_tensorrt.so")
+    else()
+        message(WARNING "TensorRT not found (TENSORRT_INCLUDE_DIR=${TENSORRT_INCLUDE_DIR}, TENSORRT_LIBRARY=${TENSORRT_LIBRARY}). Install libnvinfer-dev.")
+    endif()
+endif()
+
+# =============================================================================
 # Unit Tests
 # =============================================================================
 if(ANDB_WITH_TESTS)

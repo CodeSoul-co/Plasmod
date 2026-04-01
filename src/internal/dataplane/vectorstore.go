@@ -1,11 +1,21 @@
 package dataplane
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
 	"andb/retrievalplane"
 )
+
+// BatchEmbeddingGenerator is an optional extension of EmbeddingGenerator.
+// Implementations that support parallel/batched GPU inference should satisfy this
+// interface.  VectorStore.AddTexts will prefer BatchGenerate over N×Generate when
+// available.
+type BatchEmbeddingGenerator interface {
+	EmbeddingGenerator
+	BatchGenerate(ctx context.Context, texts []string) ([][]float32, error)
+}
 
 // VectorStore wraps the CGO Knowhere/HNSW retriever (retrievalplane.Retriever)
 // and maintains alignment between Go ObjectIDs and the CGO layer's integer indices.
@@ -117,6 +127,44 @@ func (vs *VectorStore) AddText(id, text string) {
 	vs.mu.Lock()
 	vs.idArray = append(vs.idArray, id)
 	vs.vectors = append(vs.vectors, vec...)
+	vs.mu.Unlock()
+}
+
+// AddTexts generates embeddings for a batch of (id, text) pairs and stores
+// them for the next Build call.  When the embedder satisfies
+// BatchEmbeddingGenerator, a single BatchGenerate RPC is issued; otherwise
+// individual Generate calls are made.  Thread-safe.
+func (vs *VectorStore) AddTexts(ids, texts []string) {
+	if len(ids) == 0 || len(ids) != len(texts) {
+		return
+	}
+
+	var vecs [][]float32
+	if bg, ok := vs.embedder.(BatchEmbeddingGenerator); ok {
+		var err error
+		vecs, err = bg.BatchGenerate(context.Background(), texts)
+		if err != nil || len(vecs) != len(ids) {
+			return
+		}
+	} else {
+		vecs = make([][]float32, len(texts))
+		for i, t := range texts {
+			v, err := vs.embedder.Generate(t)
+			if err != nil || len(v) == 0 {
+				continue
+			}
+			vecs[i] = v
+		}
+	}
+
+	vs.mu.Lock()
+	for i, id := range ids {
+		if id == "" || len(vecs[i]) == 0 {
+			continue
+		}
+		vs.idArray = append(vs.idArray, id)
+		vs.vectors = append(vs.vectors, vecs[i]...)
+	}
 	vs.mu.Unlock()
 }
 

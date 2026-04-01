@@ -184,11 +184,16 @@ func (c *HotObjectCache) evictOne() {
 // Cold reads use the ColdObjectStore (disk-backed or simulated).
 // hotThreshold controls the minimum salience required to promote a memory to the hot cache
 // (defaults to schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold).
+type MemoryEmbedder interface {
+	Generate(text string) ([]float32, error)
+}
+
 type TieredObjectStore struct {
 	hot          *HotObjectCache
 	warm         ObjectStore
 	warmEdge     GraphEdgeStore
 	cold         ColdObjectStore
+	embedder     MemoryEmbedder
 	hotThreshold float64
 }
 
@@ -196,9 +201,14 @@ func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphE
 	return NewTieredObjectStoreWithThreshold(hot, warm, warmEdge, cold, schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold)
 }
 
-// NewTieredObjectStoreWithThreshold creates a TieredObjectStore with an explicit hot-tier
-// salience threshold. Use this when the default threshold (0.5) needs tuning.
-func NewTieredObjectStoreWithThreshold(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore, hotThreshold float64) *TieredObjectStore {
+func NewTieredObjectStoreWithEmbedder(
+	hot *HotObjectCache,
+	warm ObjectStore,
+	warmEdge GraphEdgeStore,
+	cold ColdObjectStore,
+	embedder MemoryEmbedder,
+	hotThreshold float64,
+) *TieredObjectStore {
 	if hot == nil {
 		hot = NewHotObjectCache(0)
 	}
@@ -210,8 +220,15 @@ func NewTieredObjectStoreWithThreshold(hot *HotObjectCache, warm ObjectStore, wa
 		warm:         warm,
 		warmEdge:     warmEdge,
 		cold:         cold,
+		embedder:     embedder,
 		hotThreshold: hotThreshold,
 	}
+}
+
+// NewTieredObjectStoreWithThreshold creates a TieredObjectStore with an explicit hot-tier
+// salience threshold. Use this when the default threshold (0.5) needs tuning.
+func NewTieredObjectStoreWithThreshold(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore, hotThreshold float64) *TieredObjectStore {
+	return NewTieredObjectStoreWithEmbedder(hot, warm, warmEdge, cold, nil, hotThreshold)
 }
 
 // GetMemoryActivated returns a Memory with tier-aware activation.
@@ -236,6 +253,7 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 	if m, ok := t.cold.GetMemory(memoryID); ok {
 		t.warm.PutMemory(m)
 		t.hot.Put(memoryID, "memory", m, salience*0.5)
+		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		return m, true
 	}
 
@@ -259,8 +277,24 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 
 // ArchiveMemory moves a memory from warm to cold (e.g. on TTL expiry).
 func (t *TieredObjectStore) ArchiveMemory(memoryID string) {
+	if t.warm == nil {
+		return
+	}
 	if m, ok := t.warm.GetMemory(memoryID); ok {
 		t.cold.PutMemory(m)
+
+		if t.embedder != nil {
+			textForEmbedding := m.Content
+			if strings.TrimSpace(textForEmbedding) == "" {
+				textForEmbedding = m.Summary
+			}
+			if strings.TrimSpace(textForEmbedding) != "" {
+				if vec, err := t.embedder.Generate(textForEmbedding); err == nil && len(vec) > 0 {
+					_ = t.cold.PutMemoryEmbedding(memoryID, vec)
+				}
+			}
+		}
+
 		t.hot.Evict(memoryID)
 	}
 }
@@ -319,6 +353,10 @@ func (t *TieredObjectStore) ArchiveEdge(warmEdges GraphEdgeStore, edgeID string)
 // the topK memory IDs most relevant to the query text from the cold tier.
 func (t *TieredObjectStore) ColdSearch(query string, topK int) []string {
 	return t.cold.ColdSearch(query, topK)
+}
+
+func (t *TieredObjectStore) ColdVectorSearch(queryVec []float32, topK int) []string {
+	return t.cold.ColdVectorSearch(queryVec, topK)
 }
 
 // ArchiveColdRecord persists an ingest record directly to the cold tier.
@@ -382,6 +420,9 @@ type ColdObjectStore interface {
 	GetAgent(id string) (schemas.Agent, bool)
 	PutState(s schemas.State)
 	GetState(id string) (schemas.State, bool)
+	PutMemoryEmbedding(memoryID string, vec []float32) error
+	GetMemoryEmbedding(memoryID string) ([]float32, bool, error)
+	DeleteMemoryEmbedding(memoryID string) error
 	PutArtifact(a schemas.Artifact)
 	GetArtifact(id string) (schemas.Artifact, bool)
 	// Edge cold-tier (R6): edges archived when their src/dst memory is promoted to cold.
@@ -392,27 +433,30 @@ type ColdObjectStore interface {
 	// This is used by TieredDataPlane when IncludeCold=true in SearchInput.
 	// Returns memory IDs matching the query text, sorted by recency (newest first).
 	ColdSearch(query string, topK int) []string
+	ColdVectorSearch(queryVec []float32, topK int) []string
 }
 
 // InMemoryColdStore is the in-process simulation of the cold tier.
 // It is functionally identical to the warm store but models the architectural
 // boundary.  A real implementation would replace this with a file/RocksDB backend.
 type InMemoryColdStore struct {
-	mu        sync.RWMutex
-	memories  map[string]schemas.Memory
-	agents    map[string]schemas.Agent
-	states    map[string]schemas.State
-	artifacts map[string]schemas.Artifact
-	edges     map[string]schemas.Edge
+	mu         sync.RWMutex
+	memories   map[string]schemas.Memory
+	agents     map[string]schemas.Agent
+	states     map[string]schemas.State
+	artifacts  map[string]schemas.Artifact
+	embeddings map[string][]float32
+	edges      map[string]schemas.Edge
 }
 
 func NewInMemoryColdStore() *InMemoryColdStore {
 	return &InMemoryColdStore{
-		memories:  map[string]schemas.Memory{},
-		agents:    map[string]schemas.Agent{},
-		states:    map[string]schemas.State{},
-		artifacts: map[string]schemas.Artifact{},
-		edges:     map[string]schemas.Edge{},
+		memories:   map[string]schemas.Memory{},
+		agents:     map[string]schemas.Agent{},
+		states:     map[string]schemas.State{},
+		artifacts:  map[string]schemas.Artifact{},
+		embeddings: map[string][]float32{},
+		edges:      map[string]schemas.Edge{},
 	}
 }
 
@@ -466,6 +510,37 @@ func (s *InMemoryColdStore) GetArtifact(id string) (schemas.Artifact, bool) {
 	defer s.mu.RUnlock()
 	art, ok := s.artifacts[id]
 	return art, ok
+}
+
+func (s *InMemoryColdStore) PutMemoryEmbedding(memoryID string, vec []float32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	copied := make([]float32, len(vec))
+	copy(copied, vec)
+	s.embeddings[memoryID] = copied
+	return nil
+}
+
+func (s *InMemoryColdStore) GetMemoryEmbedding(memoryID string) ([]float32, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	vec, ok := s.embeddings[memoryID]
+	if !ok {
+		return nil, false, nil
+	}
+	copied := make([]float32, len(vec))
+	copy(copied, vec)
+	return copied, true, nil
+}
+
+func (s *InMemoryColdStore) DeleteMemoryEmbedding(memoryID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.embeddings, memoryID)
+	return nil
 }
 
 func (s *InMemoryColdStore) PutEdge(e schemas.Edge) {
@@ -536,6 +611,72 @@ func (s *InMemoryColdStore) ColdSearch(query string, topK int) []string {
 	}
 
 	// sort by score desc, then by ts desc (newest first)
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		return results[i].ts > results[j].ts
+	})
+
+	out := make([]string, 0, min(topK, len(results)))
+	for i := range results {
+		if i >= topK {
+			break
+		}
+		out = append(out, results[i].id)
+	}
+	return out
+}
+
+func dotProduct(a, b []float32) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += float64(a[i] * b[i])
+	}
+	return sum
+}
+
+func (s *InMemoryColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if topK <= 0 || len(queryVec) == 0 {
+		return nil
+	}
+
+	type scored struct {
+		id    string
+		score float64
+		ts    int64
+	}
+
+	results := make([]scored, 0, len(s.embeddings))
+	for memoryID, emb := range s.embeddings {
+		score := dotProduct(queryVec, emb)
+		if score <= 0 {
+			continue
+		}
+
+		var ts int64
+		if m, ok := s.memories[memoryID]; ok {
+			ts = m.Version
+		}
+
+		results = append(results, scored{
+			id:    memoryID,
+			score: score,
+			ts:    ts,
+		})
+	}
+
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].score != results[j].score {
 			return results[i].score > results[j].score
