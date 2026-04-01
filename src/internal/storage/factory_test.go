@@ -7,19 +7,17 @@ import (
 	"andb/src/internal/schemas"
 )
 
-func TestBuildRuntime_defaultIsMemory(t *testing.T) {
+func TestBuildRuntime_defaultIsDisk(t *testing.T) {
 	t.Setenv(EnvStorage, "")
 	t.Setenv(EnvDataDir, t.TempDir())
+	t.Setenv(EnvBadgerInMemory, "true") // keep test fast: Badger RAM mode
 	bundle, err := buildRuntime(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = bundle.Close() }()
-	if bundle.Config.BadgerEnabled {
-		t.Fatalf("expected badger disabled for default memory mode")
-	}
-	if _, ok := bundle.RuntimeStorage.(*MemoryRuntimeStorage); !ok {
-		t.Fatalf("expected *MemoryRuntimeStorage, got %T", bundle.RuntimeStorage)
+	if !bundle.Config.BadgerEnabled {
+		t.Fatalf("expected badger enabled for default disk mode")
 	}
 }
 

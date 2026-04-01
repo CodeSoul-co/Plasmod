@@ -1,6 +1,6 @@
 module andb
 
-go 1.24.0
+go 1.25.0
 
 require (
 	andb/retrievalplane v0.0.0
@@ -29,7 +29,10 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/text v0.35.0
 	google.golang.org/protobuf v1.36.7 // indirect
 )
 
 replace andb/retrievalplane => ./src/internal/dataplane/retrievalplane
+
+replace github.com/go-skynet/go-llama.cpp => ./libs/go-llama.cpp
