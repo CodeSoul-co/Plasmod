@@ -156,6 +156,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	matched := 0
 	updated := 0
 	alreadyInactive := 0
+	coldEmbeddingsDeleted := 0
 	matchedIDs := make([]string, 0)
 	deletedIDs := make([]string, 0)
 	for _, m := range mems {
@@ -193,6 +194,11 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 				PolicySource:     "admin_api",
 			})
 		}
+		// Best-effort cleanup: remove cold-tier embedding if present.
+		if g.runtime != nil {
+			g.runtime.DeleteColdMemoryEmbedding(m.MemoryID)
+			coldEmbeddingsDeleted++
+		}
 		updated++
 		deletedIDs = append(deletedIDs, m.MemoryID)
 	}
@@ -204,6 +210,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 		"matched":      matched,
 		"deleted":      updated,
 		"inactive":     alreadyInactive,
+		"cold_embeddings_deleted": coldEmbeddingsDeleted,
 		"matched_memory_ids": matchedIDs,
 		"deleted_memory_ids": deletedIDs,
 		// Backward-compat alias: keep "memory_ids" as deleted ids.

@@ -23,6 +23,7 @@ type gatewayDeps struct {
 	gw      *Gateway
 	store   *storage.MemoryRuntimeStorage
 	runtime *worker.Runtime
+	cold    *storage.InMemoryColdStore
 }
 
 func buildTestGatewayWithDeps() gatewayDeps {
@@ -30,7 +31,8 @@ func buildTestGatewayWithDeps() gatewayDeps {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
-	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), storage.NewInMemoryColdStore())
+	cold := storage.NewInMemoryColdStore()
+	tieredObjs := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), cold)
 	plane := dataplane.NewTieredDataPlane(tieredObjs)
 	policy := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
@@ -63,6 +65,7 @@ func buildTestGatewayWithDeps() gatewayDeps {
 		gw:      NewGateway(coord, runtime, store, nil),
 		store:   store,
 		runtime: runtime,
+		cold:    cold,
 	}
 }
 
@@ -140,6 +143,7 @@ func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 		t.Fatalf("ingest failed: %v", err)
 	}
 	memID := "mem_evt_delete_ds_1"
+	_ = deps.cold.PutMemoryEmbedding(memID, []float32{1, 2, 3})
 
 	// dry run
 	body, _ := json.Marshal(map[string]any{
@@ -164,6 +168,9 @@ func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 	if mem, ok := deps.store.Objects().GetMemory(memID); !ok || !mem.IsActive {
 		t.Fatalf("memory should remain active after dry-run")
 	}
+	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); !ok {
+		t.Fatalf("cold embedding should remain after dry-run")
+	}
 
 	// real delete
 	body2, _ := json.Marshal(map[string]any{
@@ -180,6 +187,9 @@ func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 	}
 	if mem, ok := deps.store.Objects().GetMemory(memID); !ok || mem.IsActive {
 		t.Fatalf("memory should be inactive after delete")
+	}
+	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); ok {
+		t.Fatalf("cold embedding should be deleted after delete")
 	}
 }
 

@@ -197,6 +197,15 @@ type TieredObjectStore struct {
 	hotThreshold float64
 }
 
+// DeleteMemoryEmbedding removes a cold-tier embedding for the given memory ID.
+// This is best-effort cleanup used by admin dataset deletion to reduce cold-tier bloat.
+func (t *TieredObjectStore) DeleteMemoryEmbedding(memoryID string) error {
+	if t == nil || t.cold == nil {
+		return nil
+	}
+	return t.cold.DeleteMemoryEmbedding(memoryID)
+}
+
 func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore) *TieredObjectStore {
 	return NewTieredObjectStoreWithThreshold(hot, warm, warmEdge, cold, schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold)
 }
