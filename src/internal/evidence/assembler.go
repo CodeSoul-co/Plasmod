@@ -104,18 +104,33 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 	}
 
 	if strings.Contains(result.Tier, "cold") {
-		trace = append(trace,
-			schemas.ProofStep{
+		switch result.ColdSearchMode {
+		case "hnsw":
+			trace = append(trace, schemas.ProofStep{
 				StepType:    "cold",
-				Operation:   "cold_embedding_fetch",
-				Description: "cold tier fetched archived embeddings or cold candidates",
-			},
-			schemas.ProofStep{
+				Operation:   "cold_hnsw_search",
+				Description: "cold tier searched archived embeddings via HNSW index",
+			})
+		case "vector":
+			trace = append(trace,
+				schemas.ProofStep{
+					StepType:    "cold",
+					Operation:   "cold_embedding_fetch",
+					Description: "cold tier fetched archived embeddings or cold candidates",
+				},
+				schemas.ProofStep{
+					StepType:    "cold",
+					Operation:   "cold_rerank",
+					Description: "cold tier reranked results with dense similarity",
+				},
+			)
+		case "lexical":
+			trace = append(trace, schemas.ProofStep{
 				StepType:    "cold",
-				Operation:   "cold_rerank",
-				Description: "cold tier reranked results with dense similarity",
-			},
-		)
+				Operation:   "cold_lexical_search",
+				Description: "cold tier searched archived memories using lexical matching",
+			})
+		}
 	}
 
 	for _, seg := range result.PlannedSegments {

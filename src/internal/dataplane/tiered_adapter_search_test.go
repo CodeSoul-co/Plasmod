@@ -97,6 +97,9 @@ func TestTieredDataPlane_Search_IncludeColdUsesVectorSearch(t *testing.T) {
 	if out.ObjectIDs[0] != "m1" {
 		t.Fatalf("expected m1 ranked first, got %+v", out.ObjectIDs)
 	}
+	if out.ColdSearchMode != "vector" {
+		t.Fatalf("expected ColdSearchMode=vector, got %q", out.ColdSearchMode)
+	}
 }
 
 func TestTieredDataPlane_Search_IncludeColdFallsBackToLexicalWhenNoEmbedder(t *testing.T) {
@@ -127,6 +130,9 @@ func TestTieredDataPlane_Search_IncludeColdFallsBackToLexicalWhenNoEmbedder(t *t
 	}
 	if out.ObjectIDs[0] != "mem_cold_lexical" {
 		t.Fatalf("expected mem_cold_lexical, got %+v", out.ObjectIDs)
+	}
+	if out.ColdSearchMode != "lexical" {
+		t.Fatalf("expected ColdSearchMode=lexical, got %q", out.ColdSearchMode)
 	}
 }
 
@@ -177,6 +183,10 @@ func TestTieredDataPlane_Search_IncludeColdWhenHotSatisfiesTopK_UsesVectorSearch
 		t.Fatalf("tier: got %q, want hot+cold", out.Tier)
 	}
 
+	if out.ColdSearchMode != "vector" {
+		t.Fatalf("expected ColdSearchMode=vector, got %q", out.ColdSearchMode)
+	}
+
 	// Because mergeOutputs truncates to TopK, the cold ID may not appear in the final ObjectIDs,
 	//so we don't force an assertion that the cold ID will definitely appear; we only verify that the fast-path has not been broken.
 	if len(out.ObjectIDs) != 2 {
@@ -201,13 +211,16 @@ func TestTieredDataPlane_resolveColdIDs_PrefersHNSWOverVector(t *testing.T) {
 		},
 	}
 
-	got := tp.resolveColdIDs(SearchInput{
+	got, mode := tp.resolveColdIDs(SearchInput{
 		QueryText: "hello",
 		TopK:      5,
 	})
 
 	if len(got) != 1 || got[0] != "mem_hnsw" {
 		t.Fatalf("expected HNSW result [mem_hnsw], got %v", got)
+	}
+	if mode != "hnsw" {
+		t.Fatalf("expected mode hnsw, got %q", mode)
 	}
 }
 
@@ -228,13 +241,16 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToVectorWhenHNSWEmpty(t *testin
 		},
 	}
 
-	got := tp.resolveColdIDs(SearchInput{
+	got, mode := tp.resolveColdIDs(SearchInput{
 		QueryText: "hello",
 		TopK:      5,
 	})
 
 	if len(got) != 1 || got[0] != "mem_vector" {
 		t.Fatalf("expected vector fallback [mem_vector], got %v", got)
+	}
+	if mode != "vector" {
+		t.Fatalf("expected mode vector, got %q", mode)
 	}
 }
 
@@ -247,13 +263,16 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToLexicalWithoutEmbedder(t *tes
 		},
 	}
 
-	got := tp.resolveColdIDs(SearchInput{
+	got, mode := tp.resolveColdIDs(SearchInput{
 		QueryText: "hello",
 		TopK:      5,
 	})
 
 	if len(got) != 1 || got[0] != "mem_lexical" {
 		t.Fatalf("expected lexical fallback [mem_lexical], got %v", got)
+	}
+	if mode != "lexical" {
+		t.Fatalf("expected mode lexical, got %q", mode)
 	}
 }
 

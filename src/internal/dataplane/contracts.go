@@ -50,6 +50,9 @@ type SearchOutput struct {
 	PlannedSegments []SegmentTrace
 	// Tier indicates which tier(s) were hit ("hot", "warm", "cold", "hot+warm", …).
 	Tier string
+	// ColdSearchMode records how the cold tier was queried when IncludeCold=true.
+	// Allowed values: "", "hnsw", "vector", "lexical".
+	ColdSearchMode string
 }
 
 // DataPlane is the interface satisfied by all retrieval execution modules

@@ -232,8 +232,9 @@ func TestAssembler_Build_ColdTierEvidenceCacheStatsAndTrace(t *testing.T) {
 
 	input := dataplane.SearchInput{TopK: 5}
 	result := dataplane.SearchOutput{
-		ObjectIDs: []string{"mem_1", "mem_2"},
-		Tier:      "hot+warm+cold",
+		ObjectIDs:      []string{"mem_1", "mem_2"},
+		Tier:           "hot+warm+cold",
+		ColdSearchMode: "vector",
 	}
 
 	resp := a.Build(input, result, nil)
@@ -287,5 +288,67 @@ func TestAssembler_Build_ColdTierEvidenceCacheStatsAndTrace(t *testing.T) {
 	}
 	if !foundRerank {
 		t.Fatalf("expected proof trace to include cold_rerank, got %+v", resp.ProofTrace)
+	}
+}
+
+func TestAssembler_Build_ColdTierProofTrace_HNSWMode(t *testing.T) {
+	cache := NewCache(100)
+	a := NewCachedAssembler(cache)
+
+	result := dataplane.SearchOutput{
+		ObjectIDs:      []string{"mem_1"},
+		Tier:           "hot+warm+cold",
+		ColdSearchMode: "hnsw",
+	}
+
+	resp := a.Build(dataplane.SearchInput{TopK: 5}, result, nil)
+
+	foundHNSW := false
+	foundVectorFetch := false
+	for _, step := range resp.ProofTrace {
+		if step.Operation == "cold_hnsw_search" {
+			foundHNSW = true
+		}
+		if step.Operation == "cold_embedding_fetch" {
+			foundVectorFetch = true
+		}
+	}
+
+	if !foundHNSW {
+		t.Fatalf("expected proof trace to include cold_hnsw_search, got %+v", resp.ProofTrace)
+	}
+	if foundVectorFetch {
+		t.Fatalf("did not expect cold_embedding_fetch in hnsw mode, got %+v", resp.ProofTrace)
+	}
+}
+
+func TestAssembler_Build_ColdTierProofTrace_LexicalMode(t *testing.T) {
+	cache := NewCache(100)
+	a := NewCachedAssembler(cache)
+
+	result := dataplane.SearchOutput{
+		ObjectIDs:      []string{"mem_1"},
+		Tier:           "hot+warm+cold",
+		ColdSearchMode: "lexical",
+	}
+
+	resp := a.Build(dataplane.SearchInput{TopK: 5}, result, nil)
+
+	foundLexical := false
+	foundVectorFetch := false
+	for _, step := range resp.ProofTrace {
+		if step.Operation == "cold_lexical_search" {
+			foundLexical = true
+		}
+		if step.Operation == "cold_embedding_fetch" {
+			foundVectorFetch = true
+		}
+	}
+
+	if !foundLexical {
+		t.Fatalf("expected proof trace to include cold_lexical_search, got %+v", resp.ProofTrace)
+	}
+	if foundVectorFetch {
+		t.Fatalf("did not expect cold_embedding_fetch in lexical mode, got %+v", resp.ProofTrace)
 	}
 }
