@@ -244,3 +244,64 @@ func TestGateway_DatasetDelete_DeletedMemoryNotReturnedInQuery(t *testing.T) {
 		t.Fatalf("expected deleted dataset memory not returned, got objects=%v", objects)
 	}
 }
+
+func TestGateway_DatasetDelete_CompatViaSourceEventIDs_WhenPolicyTagsEmpty(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_delete_ds_compat_1",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_member_a_dataset",
+		AgentID:     "agent_member_a",
+		SessionID:   "sess_member_a_dataset",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=deep1B.ibin row=1 dim=100 vec[:8]=[...]",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_delete_ds_compat_1"
+
+	mem, ok := deps.store.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatalf("expected memory %s to exist", memID)
+	}
+	if len(mem.SourceEventIDs) == 0 {
+		t.Fatalf("expected memory.SourceEventIDs to be populated for compatibility path")
+	}
+
+	// Force the delete path to skip PolicyTags matching and rely on SourceEventIDs.
+	mem.PolicyTags = nil
+	deps.store.Objects().PutMemory(mem)
+
+	body, _ := json.Marshal(map[string]any{
+		"file_name":    "deep1B.ibin",
+		"workspace_id": "w_member_a_dataset",
+		"dry_run":      false,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: want 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if int(resp["matched"].(float64)) != 1 || int(resp["deleted"].(float64)) != 1 {
+		t.Fatalf("delete response mismatch: %+v", resp)
+	}
+	if m2, ok := deps.store.Objects().GetMemory(memID); !ok || m2.IsActive {
+		t.Fatalf("memory should be inactive after delete")
+	}
+}
