@@ -100,7 +100,7 @@ def _iter_ivecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[int]]]:
                 return
 
 
-def _iter_ibin(path: Path, limit: int) -> Iterator[tuple[int, int, list[float] | list[int], str]]:
+def _iter_ibin(path: Path, limit: int, ibin_dtype: str) -> Iterator[tuple[int, int, list[float] | list[int], str]]:
     with path.open("rb") as f:
         header = f.read(8)
         if len(header) != 8:
@@ -109,9 +109,17 @@ def _iter_ibin(path: Path, limit: int) -> Iterator[tuple[int, int, list[float] |
         if dim == 0 or dim > 100000:
             raise RuntimeError(f"{path}: unexpected dim={dim}")
 
-        # Heuristic: groundtruth-like files usually contain integer IDs.
+        # Dtype selection:
+        # - explicit override via --ibin-dtype
+        # - fallback heuristic in auto mode
         lower = path.name.lower()
-        as_int = ("groundtruth" in lower) or lower.startswith("gt.") or ".gt" in lower
+        if ibin_dtype == "int32":
+            as_int = True
+        elif ibin_dtype == "float32":
+            as_int = False
+        else:
+            # Heuristic: groundtruth-like files usually contain integer IDs.
+            as_int = ("groundtruth" in lower) or lower.startswith("gt.") or ".gt" in lower
         dtype = "int32" if as_int else "float32"
 
         rows = min(n, limit) if limit > 0 else n
@@ -147,13 +155,11 @@ def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[fl
         raise RuntimeError("pyarrow is required for .arrow files. Please install: pip install pyarrow")
 
     reader = pa_ipc.open_file(path)
-    table = reader.read_all()
-    cols = table.column_names
-    rows = table.to_pylist()
+    cols = reader.schema.names
 
     # Heuristic column selection (works for varying schemas):
     # 1) prefer canonical names
-    # 2) fallback to first vector-like field in first non-empty rows
+    # 2) fallback to first vector-like field in sampled rows
     preferred_vec = ("embedding", "vector", "values", "feature", "features")
     preferred_txt = ("text", "content", "title", "name", "caption")
     preferred_id = ("id", "row_id", "uid", "pk")
@@ -162,8 +168,17 @@ def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[fl
     txt_col = next((c for c in preferred_txt if c in cols), None)
     id_col = next((c for c in preferred_id if c in cols), None)
 
+    sampled_rows: list[dict] = []
+    sample_budget = 50
+    for bi in range(reader.num_record_batches):
+        rb = reader.get_batch(bi)
+        rows = rb.to_pylist()
+        sampled_rows.extend(rows[: max(0, sample_budget - len(sampled_rows))])
+        if len(sampled_rows) >= sample_budget:
+            break
+
     if vec_col is None:
-        for r in rows[: min(50, len(rows))]:
+        for r in sampled_rows:
             for c in cols:
                 if _is_vector_like(r.get(c)):
                     vec_col = c
@@ -175,24 +190,30 @@ def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[fl
         raise RuntimeError(f"{path}: no vector-like column detected in arrow file")
 
     emitted = 0
-    for i, r in enumerate(rows):
-        if limit > 0 and emitted >= limit:
-            break
-        vals_obj = r.get(vec_col)
-        if not _is_vector_like(vals_obj):
-            continue
-        vals = list(vals_obj)
-        dim = len(vals)
-        # Infer numeric dtype for metadata/text only.
-        dtype = "float32" if isinstance(vals[0], float) else "int32"
-        # Include best-effort extra text token for easier retrieval.
-        extra = ""
-        if txt_col and r.get(txt_col) is not None:
-            extra = str(r.get(txt_col))
-        elif id_col and r.get(id_col) is not None:
-            extra = f"id:{r.get(id_col)}"
-        yield i, dim, vals, dtype, extra
-        emitted += 1
+    row_idx = 0
+    for bi in range(reader.num_record_batches):
+        rb = reader.get_batch(bi)
+        rows = rb.to_pylist()
+        for r in rows:
+            if limit > 0 and emitted >= limit:
+                return
+            vals_obj = r.get(vec_col)
+            if not _is_vector_like(vals_obj):
+                row_idx += 1
+                continue
+            vals = list(vals_obj)
+            dim = len(vals)
+            # Infer numeric dtype for metadata/text only.
+            dtype = "float32" if isinstance(vals[0], float) else "int32"
+            # Include best-effort extra text token for easier retrieval.
+            extra = ""
+            if txt_col and r.get(txt_col) is not None:
+                extra = str(r.get(txt_col))
+            elif id_col and r.get(id_col) is not None:
+                extra = f"id:{r.get(id_col)}"
+            yield row_idx, dim, vals, dtype, extra
+            emitted += 1
+            row_idx += 1
 
 
 def _collect_files(file_arg: str) -> list[Path]:
@@ -224,6 +245,12 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=200, help="Rows per file; <=0 means all")
     ap.add_argument("--preview-k", type=int, default=6, help="How many leading values in payload.text")
     ap.add_argument("--start-seq", type=int, default=0, help="Global event sequence start")
+    ap.add_argument(
+        "--ibin-dtype",
+        choices=("auto", "float32", "int32"),
+        default="auto",
+        help="How to decode .ibin payload values (default: auto heuristic by filename)",
+    )
     args = ap.parse_args()
 
     files = _collect_files(args.file)
@@ -241,7 +268,10 @@ def main() -> None:
         elif ext == ".ivecs":
             row_iter = ((i, dim, vals, "int32", "") for i, dim, vals in _iter_ivecs(path, args.limit))
         elif ext == ".ibin":
-            row_iter = ((i, dim, vals, dtype, "") for i, dim, vals, dtype in _iter_ibin(path, args.limit))
+            row_iter = (
+                (i, dim, vals, dtype, "")
+                for i, dim, vals, dtype in _iter_ibin(path, args.limit, args.ibin_dtype)
+            )
         elif ext == ".arrow":
             row_iter = _iter_arrow_rows(path, args.limit)
         else:
@@ -253,7 +283,7 @@ def main() -> None:
             ts = _now_iso()
             ev_id = f"evt_{args.dataset}_{path.stem}_{seq:08d}"
             txt = (
-                f"dataset:{args.dataset} file:{path.name} row:{i} "
+                f"dataset={path.name} dataset_name:{args.dataset} row:{i} "
                 f"dim:{dim} dtype:{dtype} head:{_preview(vals, args.preview_k)}"
             )
             if extra:
