@@ -160,25 +160,31 @@ func (t *TieredDataPlane) BatchIngest(records []IngestRecord) error {
 	return t.warm.BatchIngest(records)
 }
 
-func (t *TieredDataPlane) resolveColdIDs(input SearchInput) []string {
+func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string) {
 	if t.embedder != nil {
 		queryVec, err := t.embedder.Generate(input.QueryText)
 		if err == nil && len(queryVec) > 0 {
 			if t.coldHNSWSearch != nil {
 				ids := t.coldHNSWSearch(queryVec, input.TopK)
 				if len(ids) > 0 {
-					return ids
+					return ids, "hnsw"
 				}
 			}
 			if t.coldVectorSearch != nil {
-				return t.coldVectorSearch(queryVec, input.TopK)
+				ids := t.coldVectorSearch(queryVec, input.TopK)
+				if len(ids) > 0 {
+					return ids, "vector"
+				}
 			}
 		}
 	}
 	if t.coldSearch != nil {
-		return t.coldSearch(input.QueryText, input.TopK)
+		ids := t.coldSearch(input.QueryText, input.TopK)
+		if len(ids) > 0 {
+			return ids, "lexical"
+		}
 	}
-	return nil
+	return nil, ""
 }
 
 // Search executes the tiered search:
@@ -205,10 +211,15 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		}
 		// Caller asked for cold tier: merge even when hot already satisfies TopK,
 		// otherwise archived hits would never be consulted on a full hot page.
-		coldIDs := t.resolveColdIDs(input)
-		coldOutput := SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
+		coldIDs, coldMode := t.resolveColdIDs(input)
+		coldOutput := SearchOutput{
+			ObjectIDs:      coldIDs,
+			Tier:           "cold",
+			ColdSearchMode: coldMode,
+		}
 		merged := mergeOutputs(hotOut, coldOutput, input.TopK)
 		merged.Tier = "hot+cold"
+		merged.ColdSearchMode = coldMode
 		return merged
 	}
 
@@ -229,8 +240,12 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	// Cold tier is consulted only when explicitly requested.
 	coldOut := SearchOutput{}
 	if input.IncludeCold {
-		coldIDs := t.resolveColdIDs(input)
-		coldOut = SearchOutput{ObjectIDs: coldIDs, Tier: "cold"}
+		coldIDs, coldMode := t.resolveColdIDs(input)
+		coldOut = SearchOutput{
+			ObjectIDs:      coldIDs,
+			Tier:           "cold",
+			ColdSearchMode: coldMode,
+		}
 		if len(coldOut.ObjectIDs) > 0 {
 			candidateLists = append(candidateLists, coldOut.ObjectIDs)
 		}
@@ -254,6 +269,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		ScannedSegments: scanned,
 		PlannedSegments: planned,
 		Tier:            tierLabel,
+		ColdSearchMode:  coldOut.ColdSearchMode,
 	}
 }
 

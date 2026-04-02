@@ -626,3 +626,9 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 	}
 	return out
 }
+
+func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
+	// HNSW index loading from S3 is not implemented yet.
+	// Return nil so callers fall back to brute-force ColdVectorSearch.
+	return nil
+}
