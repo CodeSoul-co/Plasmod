@@ -1,0 +1,3 @@
+{
+    "window.title": "${dirty}${separator}${rootPath} ${separator} ${activeEditorMedium}${separator}[Branch: feature/graph-c]"
+}

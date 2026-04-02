@@ -65,7 +65,9 @@ func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg sch
 		coldVectorSearch: func(queryVec []float32, topK int) []string {
 			return objs.ColdVectorSearch(queryVec, topK)
 		},
-		coldHNSWSearch: nil,
+		coldHNSWSearch: func(queryVec []float32, topK int) []string {
+			return objs.ColdHNSWSearch(queryVec, topK)
+		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
@@ -102,7 +104,9 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 		coldVectorSearch: func(queryVec []float32, topK int) []string {
 			return tieredObjs.ColdVectorSearch(queryVec, topK)
 		},
-		coldHNSWSearch: nil,
+		coldHNSWSearch: func(queryVec []float32, topK int) []string {
+			return tieredObjs.ColdHNSWSearch(queryVec, topK)
+		},
 		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
 			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},

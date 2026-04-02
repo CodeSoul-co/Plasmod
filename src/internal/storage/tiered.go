@@ -359,6 +359,16 @@ func (t *TieredObjectStore) ColdVectorSearch(queryVec []float32, topK int) []str
 	return t.cold.ColdVectorSearch(queryVec, topK)
 }
 
+func (t *TieredObjectStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
+	if t == nil || t.cold == nil || topK <= 0 || len(queryVec) == 0 {
+		return nil
+	}
+	if hnsw, ok := t.cold.(ColdHNSWSearcher); ok {
+		return hnsw.ColdHNSWSearch(queryVec, topK)
+	}
+	return nil
+}
+
 // ArchiveColdRecord persists an ingest record directly to the cold tier.
 // This is called by TieredDataPlane when an object is explicitly archived
 // (e.g. on TTL expiry or manual tier migration) rather than through the
@@ -410,6 +420,12 @@ func (t *TieredObjectStore) ArchiveColdRecord(memoryID, text string, attrs map[s
 }
 
 // ─── ColdObjectStore ─────────────────────────────────────────────────────────
+// ColdHNSWSearcher is an optional capability for cold stores that can
+// execute HNSW-based ANN search over archived embeddings.
+// Stores that do not support HNSW simply do not implement this interface.
+type ColdHNSWSearcher interface {
+	ColdHNSWSearch(queryVec []float32, topK int) []string
+}
 
 // ColdObjectStore is the interface for the cold/disk tier.
 // In production this would be backed by a file-based or object storage engine.
@@ -692,4 +708,10 @@ func (s *InMemoryColdStore) ColdVectorSearch(queryVec []float32, topK int) []str
 		out = append(out, results[i].id)
 	}
 	return out
+}
+
+func (s *InMemoryColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
+	// HNSW index is not yet built for the in-memory cold store.
+	// Return nil so callers can fall back to brute-force ColdVectorSearch.
+	return nil
 }
