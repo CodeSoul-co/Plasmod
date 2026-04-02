@@ -34,7 +34,7 @@ except Exception:
     pa_ipc = None
 
 
-SUPPORTED_EXTS = {".fvecs", ".ivecs", ".ibin", ".arrow"}
+SUPPORTED_EXTS = {".fvecs", ".ivecs", ".ibin", ".fbin", ".arrow"}
 
 
 def _now_iso() -> str:
@@ -132,6 +132,24 @@ def _iter_ibin(path: Path, limit: int, ibin_dtype: str) -> Iterator[tuple[int, i
             else:
                 vals = list(struct.unpack("<" + "f" * dim, b))
             yield i, dim, vals, dtype
+
+
+def _iter_fbin(path: Path, limit: int) -> Iterator[tuple[int, int, list[float], str]]:
+    with path.open("rb") as f:
+        header = f.read(8)
+        if len(header) != 8:
+            raise RuntimeError(f"{path}: malformed fbin header")
+        n, dim = struct.unpack("<II", header)
+        if dim == 0 or dim > 100000:
+            raise RuntimeError(f"{path}: unexpected dim={dim}")
+
+        rows = min(n, limit) if limit > 0 else n
+        for i in range(rows):
+            b = f.read(4 * dim)
+            if len(b) != 4 * dim:
+                raise RuntimeError(f"{path}: truncated data at row {i}")
+            vals = list(struct.unpack("<" + "f" * dim, b))
+            yield i, dim, vals, "float32"
 
 
 def _preview(vals: Iterable, k: int) -> str:
@@ -272,6 +290,8 @@ def main() -> None:
                 (i, dim, vals, dtype, "")
                 for i, dim, vals, dtype in _iter_ibin(path, args.limit, args.ibin_dtype)
             )
+        elif ext == ".fbin":
+            row_iter = ((i, dim, vals, dtype, "") for i, dim, vals, dtype in _iter_fbin(path, args.limit))
         elif ext == ".arrow":
             row_iter = _iter_arrow_rows(path, args.limit)
         else:
