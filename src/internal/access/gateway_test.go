@@ -121,6 +121,24 @@ func TestGateway_DatasetDelete_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestGateway_DatasetDelete_WorkspaceIDRequired(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"file_name": "deep1B.ibin",
+		"dry_run":   true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", w.Code)
+	}
+}
+
 func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()

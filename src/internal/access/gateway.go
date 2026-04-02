@@ -138,7 +138,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	type reqBody struct {
 		FileName    string `json:"file_name"`
-		WorkspaceID string `json:"workspace_id,omitempty"`
+		WorkspaceID string `json:"workspace_id"`
 		DryRun      bool   `json:"dry_run,omitempty"`
 	}
 	var req reqBody
@@ -151,6 +151,11 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file_name is required", http.StatusBadRequest)
 		return
 	}
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	if req.WorkspaceID == "" {
+		http.Error(w, "workspace_id is required", http.StatusBadRequest)
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	mems := g.store.Objects().ListMemories("", "")
 	matched := 0
@@ -160,7 +165,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	matchedIDs := make([]string, 0)
 	deletedIDs := make([]string, 0)
 	for _, m := range mems {
-		if req.WorkspaceID != "" && m.Scope != req.WorkspaceID {
+		if m.Scope != req.WorkspaceID {
 			continue
 		}
 		if !g.matchesDatasetFile(m, req.FileName) {
