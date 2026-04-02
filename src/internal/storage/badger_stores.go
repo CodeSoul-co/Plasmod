@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"andb/src/internal/schemas"
@@ -245,7 +246,7 @@ func (s *badgerObjectStore) ListUsers() []schemas.User {
 
 func listByPrefix[T any](db *badger.DB, prefix string) []T {
 	var out []T
-	_ = db.View(func(txn *badger.Txn) error {
+	if err := db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 		p := []byte(prefix)
@@ -261,7 +262,9 @@ func listByPrefix[T any](db *badger.DB, prefix string) []T {
 			})
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("[badger] listByPrefix view failed prefix=%q err=%v", prefix, err)
+	}
 	return out
 }
 

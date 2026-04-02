@@ -47,6 +47,15 @@ type Runtime struct {
 	lastMemMu sync.RWMutex
 }
 
+// DeleteColdMemoryEmbedding best-effort deletes the cold-tier embedding for a memory.
+// Used by admin dataset deletion to reduce cold-tier bloat after soft delete.
+func (r *Runtime) DeleteColdMemoryEmbedding(memoryID string) {
+	if r == nil || r.tieredObjects == nil {
+		return
+	}
+	_ = r.tieredObjects.DeleteMemoryEmbedding(memoryID)
+}
+
 func CreateRuntime(
 	wal eventbackbone.WAL,
 	bus eventbackbone.Bus,
