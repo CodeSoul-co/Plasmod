@@ -362,8 +362,9 @@ func writeJSON(w http.ResponseWriter, v any) {
 func mustJSONBytes(v any) []byte {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		// should never happen for map/structs used here
-		panic(err)
+		// Keep gateway alive even if JSON serialization fails unexpectedly.
+		// Caller will fail the export round-trip and return a 500.
+		return nil
 	}
 	return b
 }
