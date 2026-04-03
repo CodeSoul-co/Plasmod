@@ -38,6 +38,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
+	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
@@ -155,6 +156,11 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	req.FileName = strings.TrimSpace(req.FileName)
 	req.DatasetName = strings.TrimSpace(req.DatasetName)
 	req.Prefix = strings.TrimSpace(req.Prefix)
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	if req.WorkspaceID == "" {
+		http.Error(w, "workspace_id is required", http.StatusBadRequest)
+		return
+	}
 	if req.FileName == "" && req.DatasetName == "" && req.Prefix == "" {
 		http.Error(w, "at least one selector is required: file_name, dataset_name, or prefix", http.StatusBadRequest)
 		return
@@ -177,7 +183,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	ids := make([]string, 0)
 	for _, m := range mems {
-		if req.WorkspaceID != "" && m.Scope != req.WorkspaceID {
+		if m.Scope != req.WorkspaceID {
 			continue
 		}
 		if fileMarker != "" && !strings.Contains(m.Content, fileMarker) {
@@ -199,6 +205,9 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 			m.ValidTo = now
 		}
 		g.store.Objects().PutMemory(m)
+		if tiered := g.runtime.TieredObjects(); tiered != nil {
+			_ = tiered.DeleteMemoryEmbedding(m.MemoryID)
+		}
 		if g.store.Policies() != nil {
 			g.store.Policies().AppendPolicy(schemas.PolicyRecord{
 				PolicyID:         "policy_delete_" + m.MemoryID,
@@ -225,6 +234,123 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 		"matched":      matched,
 		"deleted":      updated,
 		"memory_ids":   ids,
+	})
+}
+
+// handleDatasetPurge removes inactive (soft-deleted) memories from all tiers when selectors match.
+// Requires workspace_id. only_if_inactive defaults to true (active memories are skipped).
+func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		FileName       string `json:"file_name,omitempty"`
+		DatasetName    string `json:"dataset_name,omitempty"`
+		Prefix         string `json:"prefix,omitempty"`
+		WorkspaceID    string `json:"workspace_id,omitempty"`
+		DryRun         bool   `json:"dry_run,omitempty"`
+		OnlyIfInactive *bool  `json:"only_if_inactive,omitempty"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.FileName = strings.TrimSpace(req.FileName)
+	req.DatasetName = strings.TrimSpace(req.DatasetName)
+	req.Prefix = strings.TrimSpace(req.Prefix)
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	if req.WorkspaceID == "" {
+		http.Error(w, "workspace_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.FileName == "" && req.DatasetName == "" && req.Prefix == "" {
+		http.Error(w, "at least one selector is required: file_name, dataset_name, or prefix", http.StatusBadRequest)
+		return
+	}
+	onlyIfInactive := true
+	if req.OnlyIfInactive != nil {
+		onlyIfInactive = *req.OnlyIfInactive
+	}
+	fileMarker := ""
+	if req.FileName != "" {
+		fileMarker = "dataset=" + req.FileName
+	}
+	datasetNameMarker := ""
+	if req.DatasetName != "" {
+		datasetNameMarker = "dataset_name:" + req.DatasetName
+	}
+	prefixMarker := ""
+	if req.Prefix != "" {
+		prefixMarker = "dataset=" + req.Prefix
+	}
+	tiered := g.runtime.TieredObjects()
+	if tiered == nil {
+		http.Error(w, "tiered storage is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	mems := g.store.Objects().ListMemories("", "")
+	matched := 0
+	skippedActive := 0
+	purgeable := 0
+	purged := 0
+	ids := make([]string, 0)
+	purgeIDs := make([]string, 0)
+	for _, m := range mems {
+		if m.Scope != req.WorkspaceID {
+			continue
+		}
+		if fileMarker != "" && !strings.Contains(m.Content, fileMarker) {
+			continue
+		}
+		if datasetNameMarker != "" && !strings.Contains(m.Content, datasetNameMarker) {
+			continue
+		}
+		if prefixMarker != "" && !strings.Contains(m.Content, prefixMarker) {
+			continue
+		}
+		matched++
+		ids = append(ids, m.MemoryID)
+		if m.IsActive && onlyIfInactive {
+			skippedActive++
+			continue
+		}
+		purgeable++
+		purgeIDs = append(purgeIDs, m.MemoryID)
+		if req.DryRun {
+			continue
+		}
+		tiered.HardDeleteMemory(m.MemoryID)
+		if g.store.Audits() != nil {
+			now := time.Now().UTC().Format(time.RFC3339)
+			g.store.Audits().AppendAudit(schemas.AuditRecord{
+				RecordID:       fmt.Sprintf("audit_purge_%s_%d", m.MemoryID, time.Now().UnixNano()),
+				TargetMemoryID: m.MemoryID,
+				OperationType:  string(schemas.AuditOpDelete),
+				ActorType:      "system",
+				ActorID:        "admin_api",
+				Decision:       "allow",
+				ReasonCode:     "dataset_purge",
+				Timestamp:      now,
+			})
+		}
+		purged++
+	}
+	writeJSON(w, map[string]any{
+		"status":           "ok",
+		"file_name":        req.FileName,
+		"dataset_name":     req.DatasetName,
+		"prefix":           req.Prefix,
+		"workspace_id":     req.WorkspaceID,
+		"dry_run":          req.DryRun,
+		"only_if_inactive": onlyIfInactive,
+		"matched":          matched,
+		"skipped_active":   skippedActive,
+		"purgeable":        purgeable,
+		"purged":           purged,
+		"memory_ids":       ids,
+		"purged_memory_ids": purgeIDs,
 	})
 }
 

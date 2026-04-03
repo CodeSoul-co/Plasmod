@@ -155,6 +155,11 @@ func (s *badgerObjectStore) GetMemory(id string) (schemas.Memory, bool) {
 	ok, err := badgerGetJSON(s.db, []byte(kpObjMemory+id), &o)
 	return o, ok && err == nil
 }
+
+func (s *badgerObjectStore) DeleteMemory(id string) {
+	_ = badgerDelete(s.db, []byte(kpObjMemory+id))
+}
+
 func (s *badgerObjectStore) ListMemories(agentID, sessionID string) []schemas.Memory {
 	all := listByPrefix[schemas.Memory](s.db, kpObjMemory)
 	out := make([]schemas.Memory, 0)
