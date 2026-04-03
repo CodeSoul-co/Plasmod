@@ -1,2 +1,6 @@
 # Shell entrypoints must use LF so Docker (Linux) does not fail on CRLF shebang lines.
 scripts/docker/*.sh text eol=lf
+
+# Keep main branch README files on merge from dev.
+# Run: git config merge.ours.driver true  (once per machine)
+README*.md merge=ours
