@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"andb/src/internal/schemas"
 )
@@ -47,5 +49,138 @@ func TestShouldEarlyStop_NotEnoughCandidates(t *testing.T) {
 	ok := shouldEarlyStop(top, 3, 2, 6, 0.95, 3, 2)
 	if ok {
 		t.Fatal("expected early stop to be false when candidates are insufficient")
+	}
+}
+
+func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Skipf("skip S3 lifecycle test: %v", err)
+	}
+
+	// Use an isolated prefix so repeated runs do not collide.
+	cfg.Prefix = fmt.Sprintf("%s/test_s3cold_%d", cfg.Prefix, time.Now().UnixNano())
+
+	store := NewS3ColdStore(cfg)
+
+	memoryID := fmt.Sprintf("mem_s3_embed_%d", time.Now().UnixNano())
+	mem := schemas.Memory{
+		MemoryID: memoryID,
+		Content:  "s3 embedding lifecycle test",
+		Version:  time.Now().Unix(),
+		IsActive: false,
+	}
+
+	// 1) Put/Get memory json
+	store.PutMemory(mem)
+
+	gotMem, ok := store.GetMemory(memoryID)
+	if !ok {
+		t.Fatal("expected memory to exist in S3 cold store")
+	}
+	if gotMem.MemoryID != memoryID {
+		t.Fatalf("unexpected memory id: got %q want %q", gotMem.MemoryID, memoryID)
+	}
+
+	// 2) Put/Get embedding
+	wantVec := []float32{0.1, 0.2, 0.3}
+	if err := store.PutMemoryEmbedding(memoryID, wantVec); err != nil {
+		t.Fatalf("PutMemoryEmbedding failed: %v", err)
+	}
+
+	gotVec, ok, err := store.GetMemoryEmbedding(memoryID)
+	if err != nil {
+		t.Fatalf("GetMemoryEmbedding returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected embedding to exist in S3 cold store")
+	}
+	if len(gotVec) != len(wantVec) {
+		t.Fatalf("unexpected embedding length: got %d want %d", len(gotVec), len(wantVec))
+	}
+	for i := range wantVec {
+		if gotVec[i] != wantVec[i] {
+			t.Fatalf("unexpected embedding value at %d: got %v want %v", i, gotVec[i], wantVec[i])
+		}
+	}
+
+	// 3) Delete embedding, memory should still remain
+	if err := store.DeleteMemoryEmbedding(memoryID); err != nil {
+		t.Fatalf("DeleteMemoryEmbedding failed: %v", err)
+	}
+
+	_, ok, err = store.GetMemoryEmbedding(memoryID)
+	if err != nil {
+		t.Fatalf("GetMemoryEmbedding after delete returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected embedding to be deleted from S3 cold store")
+	}
+
+	gotMem, ok = store.GetMemory(memoryID)
+	if !ok {
+		t.Fatal("expected memory json to still exist after embedding deletion")
+	}
+	if gotMem.MemoryID != memoryID {
+		t.Fatalf("unexpected memory id after embedding deletion: got %q want %q", gotMem.MemoryID, memoryID)
+	}
+
+	// 4) Cleanup memory blob (best effort)
+	if err := store.DeleteMemory(memoryID); err != nil {
+		t.Fatalf("DeleteMemory failed: %v", err)
+	}
+}
+
+func TestMemoryIDFromEmbeddingKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{
+			key:  "andb/integration_tests/cold/embeddings/mem_123.npy",
+			want: "mem_123",
+		},
+		{
+			key:  "cold/embeddings/mem_abc.npy",
+			want: "mem_abc",
+		},
+		{
+			key:  "mem_only.npy",
+			want: "mem_only",
+		},
+		{
+			key:  "",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		got := memoryIDFromEmbeddingKey(tt.key)
+		if got != tt.want {
+			t.Fatalf("memoryIDFromEmbeddingKey(%q) = %q, want %q", tt.key, got, tt.want)
+		}
+	}
+}
+
+func TestFloat32BytesRoundTrip(t *testing.T) {
+	want := []float32{0.1, 0.2, 0.3, 1.5, -2.0}
+
+	data, err := float32SliceToBytes(want)
+	if err != nil {
+		t.Fatalf("float32SliceToBytes returned error: %v", err)
+	}
+
+	got, err := bytesToFloat32Slice(data)
+	if err != nil {
+		t.Fatalf("bytesToFloat32Slice returned error: %v", err)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("round-trip mismatch at %d: got %v want %v", i, got[i], want[i])
+		}
 	}
 }
