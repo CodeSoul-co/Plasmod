@@ -216,9 +216,33 @@ func TestS3ColdStore_ColdVectorSearch_TopKOrdering(t *testing.T) {
 		if err := store.PutMemoryEmbedding(it.id, it.vec); err != nil {
 			t.Fatalf("PutMemoryEmbedding(%s) failed: %v", it.id, err)
 		}
+
+		gotVec, ok, err := store.GetMemoryEmbedding(it.id)
+		if err != nil {
+			t.Fatalf("GetMemoryEmbedding(%s) failed: %v", it.id, err)
+		}
+		if !ok {
+			t.Fatalf("expected embedding %s to be readable immediately after write", it.id)
+		}
+		if len(gotVec) != len(it.vec) {
+			t.Fatalf("embedding length mismatch for %s: got %d want %d", it.id, len(gotVec), len(it.vec))
+		}
 	}
 
-	got := store.ColdVectorSearch([]float32{1, 0}, 2)
+	var got []string
+	deadline := time.Now().Add(2 * time.Second)
+
+	for {
+		got = store.ColdVectorSearch([]float32{1, 0}, 2)
+		if len(got) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	if len(got) != 2 {
 		t.Fatalf("expected top2 results, got %d: %+v", len(got), got)
 	}
