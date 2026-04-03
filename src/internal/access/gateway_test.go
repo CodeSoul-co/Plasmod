@@ -333,3 +333,134 @@ func TestGateway_DatasetDelete_CompatViaSourceEventIDs_WhenPolicyTagsEmpty(t *te
 		t.Fatalf("memory should be inactive after delete")
 	}
 }
+
+func TestGateway_DatasetPurge_DryRun(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_ds_1",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_purge",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=purge.bin row=1 dataset_name:purgeDS",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_purge_ds_1"
+
+	delBody, _ := json.Marshal(map[string]any{
+		"dataset_name":   "purgeDS",
+		"workspace_id":   "w_purge",
+		"dry_run":        false,
+	})
+	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
+	delReq.Header.Set("Content-Type", "application/json")
+	delW := httptest.NewRecorder()
+	mux.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("soft delete: want 200, got %d", delW.Code)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name": "purgeDS",
+		"workspace_id": "w_purge",
+		"dry_run":      true,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge dry-run: want 200, got %d", purgeW.Code)
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+	if int(pr["matched"].(float64)) != 1 || int(pr["purgeable"].(float64)) != 1 || int(pr["purged"].(float64)) != 0 {
+		t.Fatalf("purge dry-run mismatch: %+v", pr)
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); !ok {
+		t.Fatalf("memory should still exist after purge dry-run")
+	}
+}
+
+func TestGateway_DatasetPurge_RemovesMemoryAndAudit(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_ds_2",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_purge2",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=purge2.bin row=1 dataset_name:purgeDS2",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_purge_ds_2"
+	_ = deps.cold.PutMemoryEmbedding(memID, []float32{1, 2, 3})
+
+	delBody, _ := json.Marshal(map[string]any{
+		"dataset_name":   "purgeDS2",
+		"workspace_id":   "w_purge2",
+		"dry_run":        false,
+	})
+	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
+	delReq.Header.Set("Content-Type", "application/json")
+	delW := httptest.NewRecorder()
+	mux.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("soft delete: want 200, got %d", delW.Code)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name": "purgeDS2",
+		"workspace_id": "w_purge2",
+		"dry_run":      false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge: want 200, got %d", purgeW.Code)
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+	if int(pr["purged"].(float64)) != 1 {
+		t.Fatalf("purge count mismatch: %+v", pr)
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); ok {
+		t.Fatalf("memory should be removed after purge")
+	}
+	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); ok {
+		t.Fatalf("cold embedding should be removed after purge")
+	}
+	audits := deps.store.Audits().GetAudits(memID)
+	if len(audits) != 1 {
+		t.Fatalf("expected one audit record, got %d", len(audits))
+	}
+	if audits[0].ReasonCode != "dataset_purge" {
+		t.Fatalf("unexpected audit reason: %q", audits[0].ReasonCode)
+	}
+}

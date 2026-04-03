@@ -115,6 +115,10 @@ func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
 	return m, true
 }
 
+func (s *S3ColdStore) DeleteMemory(id string) error {
+	return DeleteObject(context.Background(), nil, s.cfg, s.memoryKey(id))
+}
+
 func (s *S3ColdStore) PutMemoryEmbedding(memoryID string, vec []float32) error {
 	s.doEnsureBucket()
 
@@ -267,6 +271,10 @@ func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
 		return schemas.Edge{}, false
 	}
 	return e, true
+}
+
+func (s *S3ColdStore) DeleteEdge(id string) error {
+	return DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
 }
 
 // ListEdges is not supported for the S3 cold store — scanning all cold edge

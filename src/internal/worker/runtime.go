@@ -86,6 +86,14 @@ func (r *Runtime) RegisterDefaults() {
 	_ = r.bus.Subscribe("wal.events")
 }
 
+// TieredObjects returns the tiered object store used on the ingest path, or nil.
+func (r *Runtime) TieredObjects() *storage.TieredObjectStore {
+	if r == nil {
+		return nil
+	}
+	return r.tieredObjects
+}
+
 // QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
 // It is nil if the Runtime was constructed without a nodeManager.
 func (r *Runtime) QueryChain() *chain.QueryChain {
@@ -242,6 +250,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs)
 	retrievalHitCount := len(result.ObjectIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
@@ -318,6 +327,22 @@ func applyQueryOutcomeHint(resp *schemas.QueryResponse, retrievalHits int) {
 	}
 	resp.QueryStatus = "no_retrieval_hits_supplemented"
 	resp.QueryHint = "语义/向量检索未命中；当前 objects 可能仅来自会话下的 event/state/artifact 等补充列表，与查询文本不一定相关。"
+}
+
+// filterObjectIDsExcludingInactiveMemories drops memory IDs whose canonical Memory
+// exists in ObjectStore with IsActive=false (soft-deleted dataset rows).
+func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []string) []string {
+	if os == nil || len(ids) == 0 {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if m, ok := os.GetMemory(id); ok && !m.IsActive {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical

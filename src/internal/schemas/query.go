@@ -41,9 +41,11 @@ type QueryRequest struct {
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
 type EvidenceCacheStats struct {
-	LookedUp int `json:"looked_up"`
-	Hits     int `json:"hits"`
-	Misses   int `json:"misses"`
+	LookedUp   int `json:"looked_up"`
+	Hits       int `json:"hits"`
+	Misses     int `json:"misses"`
+	ColdHits   int `json:"cold_hits,omitempty"`
+	ColdMisses int `json:"cold_misses,omitempty"`
 }
 
 type QueryResponse struct {
