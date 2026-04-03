@@ -55,6 +55,8 @@ type ObjectStore interface {
 
 	PutMemory(obj schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
+	// DeleteMemory removes the canonical Memory record from the warm object store.
+	DeleteMemory(id string)
 	ListMemories(agentID, sessionID string) []schemas.Memory
 
 	PutState(obj schemas.State)

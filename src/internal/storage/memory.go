@@ -168,6 +168,13 @@ func (s *memoryObjectStore) GetMemory(id string) (schemas.Memory, bool) {
 	v, ok := s.memories[id]
 	return v, ok
 }
+
+func (s *memoryObjectStore) DeleteMemory(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.memories, id)
+}
+
 func (s *memoryObjectStore) ListMemories(agentID, sessionID string) []schemas.Memory {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
