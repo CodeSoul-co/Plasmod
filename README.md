@@ -1,3 +1,13 @@
+<div align="center">
+  <img src="assets/cogdb.png" alt="CogDB Logo" width="480"/>
+</div>
+
+<div align="center">
+
+[English](README.md) · [中文](README.zh-CN.md)
+
+</div>
+
 # CogDB — Agent-Native Database for Multi-Agent Systems
 > **Branch:** `dev` (integration) · **Pass 9** (2026-03-28)
 
