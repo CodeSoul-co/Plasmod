@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"andb/src/internal/schemas"
@@ -154,6 +155,11 @@ func (s *badgerObjectStore) GetMemory(id string) (schemas.Memory, bool) {
 	ok, err := badgerGetJSON(s.db, []byte(kpObjMemory+id), &o)
 	return o, ok && err == nil
 }
+
+func (s *badgerObjectStore) DeleteMemory(id string) {
+	_ = badgerDelete(s.db, []byte(kpObjMemory+id))
+}
+
 func (s *badgerObjectStore) ListMemories(agentID, sessionID string) []schemas.Memory {
 	all := listByPrefix[schemas.Memory](s.db, kpObjMemory)
 	out := make([]schemas.Memory, 0)
@@ -245,7 +251,7 @@ func (s *badgerObjectStore) ListUsers() []schemas.User {
 
 func listByPrefix[T any](db *badger.DB, prefix string) []T {
 	var out []T
-	_ = db.View(func(txn *badger.Txn) error {
+	if err := db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 		p := []byte(prefix)
@@ -261,7 +267,9 @@ func listByPrefix[T any](db *badger.DB, prefix string) []T {
 			})
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("[badger] listByPrefix view failed prefix=%q err=%v", prefix, err)
+	}
 	return out
 }
 

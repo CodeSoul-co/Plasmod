@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"log"
 
 	"github.com/dgraph-io/badger/v4"
 )
@@ -9,10 +10,15 @@ import (
 func badgerSetJSON(db *badger.DB, key []byte, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
+		log.Printf("[badger] marshal json failed key=%q err=%v", string(key), err)
 		return err
 	}
 	return db.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, b)
+		if err := txn.Set(key, b); err != nil {
+			log.Printf("[badger] txn.Set failed key=%q err=%v", string(key), err)
+			return err
+		}
+		return nil
 	})
 }
 
@@ -24,6 +30,7 @@ func badgerGetJSON(db *badger.DB, key []byte, dest any) (bool, error) {
 			return nil
 		}
 		if err != nil {
+			log.Printf("[badger] txn.Get failed key=%q err=%v", string(key), err)
 			return err
 		}
 		found = true
@@ -31,6 +38,9 @@ func badgerGetJSON(db *badger.DB, key []byte, dest any) (bool, error) {
 			return json.Unmarshal(val, dest)
 		})
 	})
+	if err != nil {
+		log.Printf("[badger] view failed key=%q err=%v", string(key), err)
+	}
 	return found, err
 }
 

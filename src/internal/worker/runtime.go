@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -16,13 +13,12 @@ import (
 	"andb/src/internal/eventbackbone"
 	"andb/src/internal/evidence"
 	"andb/src/internal/materialization"
-	"andb/src/internal/retrieval"
 	"andb/src/internal/schemas"
 	"andb/src/internal/semantic"
 	"andb/src/internal/storage"
-	"time"
 	"andb/src/internal/worker/chain"
 	"andb/src/internal/worker/nodes"
+	"time"
 )
 
 type Runtime struct {
@@ -47,8 +43,6 @@ type Runtime struct {
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
 }
-
-var datasetMarkerRE = regexp.MustCompile(`(?:^|\s)dataset=([^\s]+)`)
 
 func CreateRuntime(
 	wal eventbackbone.WAL,
@@ -92,6 +86,14 @@ func (r *Runtime) RegisterDefaults() {
 	_ = r.bus.Subscribe("wal.events")
 }
 
+// TieredObjects returns the tiered object store used on the ingest path, or nil.
+func (r *Runtime) TieredObjects() *storage.TieredObjectStore {
+	if r == nil {
+		return nil
+	}
+	return r.tieredObjects
+}
+
 // QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
 // It is nil if the Runtime was constructed without a nodeManager.
 func (r *Runtime) QueryChain() *chain.QueryChain {
@@ -113,9 +115,6 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.nodeManager.DispatchIngestValidation(ev); err != nil {
 		return nil, err
 	}
-	if err := validateEmbeddingIngestPayload(ev); err != nil {
-		return nil, err
-	}
 	entry, err := r.wal.Append(ev)
 	if err != nil {
 		return nil, err
@@ -125,28 +124,6 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
-	if txt, ok := ev.Payload[schemas.PayloadKeyText].(string); ok {
-		if file := extractDatasetFileName(txt); file != "" {
-			tag := "dataset_file:" + file
-			exists := false
-			for _, t := range mat.Memory.PolicyTags {
-				if t == tag {
-					exists = true
-					break
-				}
-			}
-			if !exists {
-				mat.Memory.PolicyTags = append(mat.Memory.PolicyTags, tag)
-			}
-		}
-	}
-	if record.Attributes == nil {
-		record.Attributes = map[string]string{}
-	}
-	record.Attributes["embedding_family"] = storage.ResolveEmbeddingFamily(record.Attributes)
-	if dim := currentEmbeddingDim(); dim > 0 {
-		record.Attributes["embedding_dim"] = strconv.Itoa(dim)
-	}
 
 	// Fail fast on retrieval-plane ingest before mutating canonical stores.
 	// This reduces partial-success windows (WAL only) where object writes succeed
@@ -258,20 +235,6 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
-	if reject, reason := shouldRejectByEmbeddingRoute(req); reject {
-		return schemas.QueryResponse{
-			Objects:           []string{},
-			AppliedFilters:    []string{reason},
-			RouteRejected:     true,
-			RouteRejectReason: reason,
-			ChainTraces: schemas.ChainTraceSlots{
-				Main:           []string{"query_route_rejected=true"},
-				MemoryPipeline: []string{},
-				Query:          []string{reason},
-				Collaboration:  []string{},
-			},
-		}
-	}
 	plan := r.planner.Build(req)
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
@@ -287,35 +250,8 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
-	result.ObjectIDs = r.filterInactiveMemories(result.ObjectIDs)
-
-	// ── Candidate seed enrichment via Retriever ───────────────────────────────
-	// Retriever enriches raw ObjectIDs with Memory metadata, applies the safety
-	// filter (7 governance rules), reranks via RRF × importance × freshness ×
-	// confidence, and marks high-quality candidates as seeds.
-	// Seeds are passed to QueryChain for targeted graph expansion rather than
-	// sending every retrieved object into the graph traversal.
-	retriever := retrieval.New(r.plane, r.storage.Objects())
-	retriever.SeedThreshold = retrieval.DefaultSeedThreshold
-	retriever.SeedAbsoluteFloor = retrieval.DefaultSeedAbsoluteFloor
-
-	retReq := retrieval.DefaultRetrievalRequest(req.QueryText, plan.TopK)
-	retReq.AgentID = req.AgentID
-	retReq.SessionID = req.SessionID
-	retReq.WorkspaceID = req.WorkspaceID
-	retReq.TenantID = req.TenantID
-	retReq.Scope = req.QueryScope
-	retReq.ObjectTypes = plan.ObjectTypes
-	retReq.MemoryTypes = req.MemoryTypes
-	retReq.ForGraph = true // request TopK×2 candidates to give graph expansion more seeds
-	candidateList := retriever.EnrichAndRank(result.ObjectIDs, retReq)
-
-	// Update result with ranked object IDs from the enriched candidate list.
-	rankedIDs := make([]string, len(candidateList.Candidates))
-	for i, c := range candidateList.Candidates {
-		rankedIDs[i] = c.ObjectID
-	}
-	result.ObjectIDs = rankedIDs
+	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs)
+	retrievalHitCount := len(result.ObjectIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
 	// State and Artifact objects are stored directly in ObjectStore, not in the
@@ -323,10 +259,10 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// canonical store so they appear in the response alongside memory results.
 	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
 	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
-	result.ObjectIDs = r.filterInactiveMemories(result.ObjectIDs)
 
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
+	applyQueryOutcomeHint(&resp, retrievalHitCount)
 
 	resp.ChainTraces.Main = formatQueryPathMainChainLines(req, result)
 	resp.ChainTraces.MemoryPipeline = formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs)
@@ -338,19 +274,9 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
-	//
-	// Graph expansion uses SeedIDs (top-scoring candidates) rather than all
-	// retrieved IDs to keep the subgraph focused on high-quality seed objects.
-	graphSeedIDs := candidateList.SeedIDs
-	if len(graphSeedIDs) == 0 {
-		// Fallback: if no seeds were marked (e.g. all scores below floor),
-		// use the top-N ranked object IDs to ensure graph expansion still runs.
-		graphSeedIDs = result.ObjectIDs
-	}
-
-	if len(graphSeedIDs) > 0 {
+	if len(result.ObjectIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
-			ObjectIDs:   graphSeedIDs,
+			ObjectIDs:   result.ObjectIDs,
 			MaxDepth:    0, // default cap of 8
 			ObjectStore: r.storage.Objects(),
 			EdgeStore:   r.storage.Edges(),
@@ -382,190 +308,41 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		resp.ChainTraces.Query = []string{"query_chain skipped=no_seed_object_ids"}
 	}
 
-	// Attach seed provenance so callers can see which objects drove graph expansion.
-	if len(candidateList.SeedIDs) > 0 {
-		resp.Provenance = append(resp.Provenance,
-			fmt.Sprintf("retrieval_seeds=%d graph_expansion_via=seed_ids", len(candidateList.SeedIDs)))
-	}
-
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
-	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 
 	return resp
 }
 
-func (r *Runtime) filterInactiveMemories(ids []string) []string {
-	if r.storage == nil {
+// applyQueryOutcomeHint sets query_status / query_hint so clients can tell "no dataset"
+// from an empty or misleading object list (e.g. only unrelated artifacts).
+func applyQueryOutcomeHint(resp *schemas.QueryResponse, retrievalHits int) {
+	if retrievalHits > 0 {
+		resp.QueryStatus = "ok"
+		return
+	}
+	if len(resp.Objects) == 0 {
+		resp.QueryStatus = "no_retrieval_hits"
+		resp.QueryHint = "检索主路径未命中任何对象。若期望某数据集：请确认 workspace/query_scope 与导入时一致、数据已写入、未被软删除；也可尝试放宽 TopK、检查 object_types，或开启 include_cold。"
+		return
+	}
+	resp.QueryStatus = "no_retrieval_hits_supplemented"
+	resp.QueryHint = "语义/向量检索未命中；当前 objects 可能仅来自会话下的 event/state/artifact 等补充列表，与查询文本不一定相关。"
+}
+
+// filterObjectIDsExcludingInactiveMemories drops memory IDs whose canonical Memory
+// exists in ObjectStore with IsActive=false (soft-deleted dataset rows).
+func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []string) []string {
+	if os == nil || len(ids) == 0 {
 		return ids
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if strings.HasPrefix(id, schemas.IDPrefixMemory) || strings.HasPrefix(id, schemas.IDPrefixSummary) || strings.HasPrefix(id, schemas.IDPrefixShared) {
-			if mem, ok := r.storage.Objects().GetMemory(id); ok && !mem.IsActive {
-				continue
-			}
+		if m, ok := os.GetMemory(id); ok && !m.IsActive {
+			continue
 		}
 		out = append(out, id)
 	}
 	return out
-}
-
-func currentEmbeddingDim() int {
-	if dimStr := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER_DIM")); dimStr != "" {
-		if dim, err := strconv.Atoi(dimStr); err == nil && dim > 0 {
-			return dim
-		}
-	}
-	embedder := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER"))
-	if embedder == "" || embedder == "tfidf" {
-		return dataplane.DefaultEmbeddingDim
-	}
-	return 0
-}
-
-func shouldRejectByEmbeddingRoute(req schemas.QueryRequest) (bool, string) {
-	currFamily := storage.ResolveEmbeddingFamily(nil)
-	if req.TargetEmbeddingFamily != "" && req.TargetEmbeddingFamily != currFamily {
-		return true, fmt.Sprintf("embedding_family_mismatch requested=%s runtime=%s", req.TargetEmbeddingFamily, currFamily)
-	}
-	if req.TargetDim > 0 {
-		currDim := currentEmbeddingDim()
-		if currDim <= 0 {
-			return true, fmt.Sprintf("embedding_dim_unknown requested=%d runtime=unknown", req.TargetDim)
-		}
-		if req.TargetDim != currDim {
-			return true, fmt.Sprintf("embedding_dim_mismatch requested=%d runtime=%d", req.TargetDim, currDim)
-		}
-	}
-	return false, ""
-}
-
-func (r *Runtime) attachEmbeddingProvenance(
-	resp schemas.QueryResponse,
-	req schemas.QueryRequest,
-	currentIDs []string,
-) schemas.QueryResponse {
-	currFamily := storage.ResolveEmbeddingFamily(nil)
-	currDim := currentEmbeddingDim()
-
-	// Always stamp runtime embedding route info for downstream auditing.
-	resp.Provenance = append(resp.Provenance,
-		fmt.Sprintf("embedding_runtime_family=%s", currFamily),
-		fmt.Sprintf("embedding_runtime_dim=%d", currDim),
-	)
-
-	// Cross-dim fusion hook (RRF at result layer): currently fuses available
-	// local candidate lists and is forward-compatible with multi-runtime fanout.
-	//
-	// Trigger condition:
-	// - No explicit hard pin to one target family/dim (route-locked requests).
-	if req.TargetEmbeddingFamily == "" && req.TargetDim == 0 {
-		candidateLists := [][]string{}
-		if len(currentIDs) > 0 {
-			candidateLists = append(candidateLists, currentIDs)
-		}
-		if len(candidateLists) > 0 {
-			fused := rrfFuseStringLists(candidateLists, 60, req.TopK)
-			if len(fused) > 0 {
-				resp.Objects = fused
-			}
-		}
-		resp.Provenance = append(resp.Provenance,
-			"cross_dim_fusion=rrf_result_layer",
-			fmt.Sprintf("cross_dim_candidates=%d", len(candidateLists)),
-		)
-	}
-	return resp
-}
-
-func rrfFuseStringLists(lists [][]string, k int, topK int) []string {
-	if k <= 0 {
-		k = 60
-	}
-	scores := map[string]float64{}
-	order := make([]string, 0)
-	for _, ids := range lists {
-		for rank, id := range ids {
-			if _, ok := scores[id]; !ok {
-				order = append(order, id)
-			}
-			scores[id] += 1.0 / float64(k+rank+1)
-		}
-	}
-	sort.SliceStable(order, func(i, j int) bool {
-		return scores[order[i]] > scores[order[j]]
-	})
-	if topK > 0 && len(order) > topK {
-		return order[:topK]
-	}
-	return order
-}
-
-func extractDatasetFileName(text string) string {
-	m := datasetMarkerRE.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
-}
-
-func validateEmbeddingIngestPayload(ev schemas.Event) error {
-	if ev.Payload == nil {
-		return nil
-	}
-	runtimeDim := currentEmbeddingDim()
-	if runtimeDim <= 0 {
-		return nil
-	}
-	if payloadDim, ok := payloadEmbeddingDim(ev.Payload); ok && payloadDim != runtimeDim {
-		return fmt.Errorf("embedding_dim_mismatch payload=%d runtime=%d", payloadDim, runtimeDim)
-	}
-	if vecLen, ok := payloadVectorLen(ev.Payload); ok && vecLen != runtimeDim {
-		return fmt.Errorf("embedding_vector_len_mismatch payload=%d runtime=%d", vecLen, runtimeDim)
-	}
-	return nil
-}
-
-func payloadEmbeddingDim(payload map[string]any) (int, bool) {
-	raw, ok := payload["embedding_dim"]
-	if !ok {
-		raw, ok = payload["dim"]
-		if !ok {
-			return 0, false
-		}
-	}
-	switch v := raw.(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	case string:
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return n, true
-		}
-	}
-	return 0, false
-}
-
-func payloadVectorLen(payload map[string]any) (int, bool) {
-	raw, ok := payload["embedding"]
-	if !ok {
-		raw, ok = payload["vector"]
-		if !ok {
-			return 0, false
-		}
-	}
-	switch v := raw.(type) {
-	case []float32:
-		return len(v), true
-	case []float64:
-		return len(v), true
-	case []any:
-		return len(v), true
-	}
-	return 0, false
 }
 
 // fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical

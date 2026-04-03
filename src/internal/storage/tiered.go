@@ -197,6 +197,43 @@ type TieredObjectStore struct {
 	hotThreshold float64
 }
 
+// DeleteMemoryEmbedding removes a cold-tier embedding for the given memory ID.
+// This is best-effort cleanup used by admin dataset deletion to reduce cold-tier bloat.
+func (t *TieredObjectStore) DeleteMemoryEmbedding(memoryID string) error {
+	if t == nil || t.cold == nil {
+		return nil
+	}
+	return t.cold.DeleteMemoryEmbedding(memoryID)
+}
+
+// HardDeleteMemory removes a memory across hot, warm, cold tiers and graph edges.
+// It does not enforce IsActive or selector rules; callers must apply policy first.
+func (t *TieredObjectStore) HardDeleteMemory(memoryID string) {
+	if t == nil {
+		return
+	}
+	if t.hot != nil {
+		t.hot.Evict(memoryID)
+	}
+	if t.warmEdge != nil {
+		for _, e := range t.warmEdge.BulkEdges([]string{memoryID}) {
+			t.warmEdge.DeleteEdge(e.EdgeID)
+		}
+	}
+	if t.cold != nil {
+		_ = t.cold.DeleteMemoryEmbedding(memoryID)
+		_ = t.cold.DeleteMemory(memoryID)
+		for _, e := range t.cold.ListEdges() {
+			if e.SrcObjectID == memoryID || e.DstObjectID == memoryID {
+				_ = t.cold.DeleteEdge(e.EdgeID)
+			}
+		}
+	}
+	if t.warm != nil {
+		t.warm.DeleteMemory(memoryID)
+	}
+}
+
 func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore) *TieredObjectStore {
 	return NewTieredObjectStoreWithThreshold(hot, warm, warmEdge, cold, schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold)
 }
@@ -432,6 +469,8 @@ type ColdHNSWSearcher interface {
 type ColdObjectStore interface {
 	PutMemory(m schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
+	// DeleteMemory removes the cold-tier memory record (best-effort).
+	DeleteMemory(id string) error
 	PutAgent(a schemas.Agent)
 	GetAgent(id string) (schemas.Agent, bool)
 	PutState(s schemas.State)
@@ -444,6 +483,7 @@ type ColdObjectStore interface {
 	// Edge cold-tier (R6): edges archived when their src/dst memory is promoted to cold.
 	PutEdge(e schemas.Edge)
 	GetEdge(id string) (schemas.Edge, bool)
+	DeleteEdge(id string) error
 	ListEdges() []schemas.Edge
 	// ColdSearch performs a lexical substring search over all cold-tier memories.
 	// This is used by TieredDataPlane when IncludeCold=true in SearchInput.
@@ -487,6 +527,13 @@ func (s *InMemoryColdStore) GetMemory(id string) (schemas.Memory, bool) {
 	defer s.mu.RUnlock()
 	m, ok := s.memories[id]
 	return m, ok
+}
+
+func (s *InMemoryColdStore) DeleteMemory(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.memories, id)
+	return nil
 }
 
 func (s *InMemoryColdStore) PutAgent(a schemas.Agent) {
@@ -570,6 +617,13 @@ func (s *InMemoryColdStore) GetEdge(id string) (schemas.Edge, bool) {
 	defer s.mu.RUnlock()
 	e, ok := s.edges[id]
 	return e, ok
+}
+
+func (s *InMemoryColdStore) DeleteEdge(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.edges, id)
+	return nil
 }
 
 func (s *InMemoryColdStore) ListEdges() []schemas.Edge {
