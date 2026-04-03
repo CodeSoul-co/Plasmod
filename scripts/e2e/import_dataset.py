@@ -5,6 +5,8 @@ Import vector/groundtruth datasets into ANDB via /v1/ingest/events.
 Usage examples:
   python3 scripts/e2e/import_dataset.py --file /path/to/ABC.fvecs --dataset ABC
   python3 scripts/e2e/import_dataset.py --file /path/to/datasets_dir --dataset ABC --limit 200
+  python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id deep1B_w
+  python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/dir --dataset deep1B --workspace-id deep1B_w
 
 Required:
   --file     File path or directory path
@@ -234,6 +236,20 @@ def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[fl
             row_idx += 1
 
 
+def _run_dataset_delete(base_url: str, workspace_id: str, file_name: str, dataset: str, dry_run: bool) -> dict:
+    """POST /v1/admin/dataset/delete with both file_name and dataset_name (matches ingest markers)."""
+    body: dict = {
+        "workspace_id": workspace_id,
+        "file_name": file_name,
+        "dataset_name": dataset,
+        "dry_run": dry_run,
+    }
+    status, ack = _http_post_json(base_url, "/v1/admin/dataset/delete", body)
+    if status != 200:
+        raise RuntimeError(f"unexpected status={status} ack={ack}")
+    return ack
+
+
 def _collect_files(file_arg: str) -> list[Path]:
     p = Path(file_arg).expanduser().resolve()
     if not p.exists():
@@ -269,9 +285,44 @@ def main() -> None:
         default="auto",
         help="How to decode .ibin payload values (default: auto heuristic by filename)",
     )
+    ap.add_argument(
+        "--delete",
+        action="store_true",
+        help="Call /v1/admin/dataset/delete instead of ingest; sends file_name + dataset_name (same as --dataset)",
+    )
+    ap.add_argument(
+        "--delete-dry-run",
+        action="store_true",
+        help="With --delete, preview only (dry_run=true)",
+    )
     args = ap.parse_args()
 
     files = _collect_files(args.file)
+
+    if args.delete:
+        mode = "dry-run" if args.delete_dry_run else "delete"
+        print(
+            f"[delete:{mode}] files={len(files)} dataset_name={args.dataset!r} "
+            f"workspace_id={args.workspace_id!r} base={args.base_url}"
+        )
+        total_matched = 0
+        total_deleted = 0
+        for path in files:
+            ack = _run_dataset_delete(
+                args.base_url,
+                args.workspace_id,
+                path.name,
+                args.dataset,
+                args.delete_dry_run,
+            )
+            matched = int(ack.get("matched", 0))
+            deleted = int(ack.get("deleted", 0))
+            total_matched += matched
+            total_deleted += deleted
+            print(f"  [file] {path.name} matched={matched} deleted={deleted}")
+        print(f"[delete:{mode}] done total_matched={total_matched} total_deleted={total_deleted}")
+        return
+
     seq = args.start_seq
     total = 0
 
