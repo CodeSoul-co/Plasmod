@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -109,6 +111,9 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if strings.TrimSpace(ev.EventID) == "" {
 		return nil, errors.New("event_id is required")
+	}
+	if err := validateEmbeddingIngestPayload(ev); err != nil {
+		return nil, err
 	}
 	// IngestWorker validation: runs all registered IngestWorkers before WAL
 	// append so malformed events are rejected before touching durable state.
@@ -309,6 +314,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
+	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 
 	return resp
 }
@@ -687,4 +693,127 @@ func formatQueryChainTraceLines(res chain.ChainResult, out chain.QueryChainOutpu
 		fmt.Sprintf("merged_edges=%d", len(out.MergedEdges)),
 	)
 	return lines
+}
+
+func currentEmbeddingDim() int {
+	if dimStr := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER_DIM")); dimStr != "" {
+		if dim, err := strconv.Atoi(dimStr); err == nil && dim > 0 {
+			return dim
+		}
+	}
+	embedder := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER"))
+	if embedder == "" || embedder == "tfidf" {
+		return dataplane.DefaultEmbeddingDim
+	}
+	return 0
+}
+
+func (r *Runtime) attachEmbeddingProvenance(
+	resp schemas.QueryResponse,
+	req schemas.QueryRequest,
+	currentIDs []string,
+) schemas.QueryResponse {
+	currFamily := storage.ResolveEmbeddingFamily(nil)
+	currDim := currentEmbeddingDim()
+	resp.Provenance = append(resp.Provenance,
+		fmt.Sprintf("embedding_runtime_family=%s", currFamily),
+		fmt.Sprintf("embedding_runtime_dim=%d", currDim),
+	)
+	candidateLists := [][]string{}
+	if len(currentIDs) > 0 {
+		candidateLists = append(candidateLists, currentIDs)
+	}
+	if len(candidateLists) > 0 {
+		fused := rrfFuseStringLists(candidateLists, 60, req.TopK)
+		if len(fused) > 0 {
+			resp.Objects = fused
+		}
+	}
+	resp.Provenance = append(resp.Provenance,
+		"cross_dim_fusion=rrf_result_layer",
+		fmt.Sprintf("cross_dim_candidates=%d", len(candidateLists)),
+	)
+	return resp
+}
+
+func rrfFuseStringLists(lists [][]string, k int, topK int) []string {
+	if k <= 0 {
+		k = 60
+	}
+	scores := map[string]float64{}
+	order := make([]string, 0)
+	for _, ids := range lists {
+		for rank, id := range ids {
+			if _, ok := scores[id]; !ok {
+				order = append(order, id)
+			}
+			scores[id] += 1.0 / float64(k+rank+1)
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return scores[order[i]] > scores[order[j]]
+	})
+	if topK > 0 && len(order) > topK {
+		return order[:topK]
+	}
+	return order
+}
+
+func validateEmbeddingIngestPayload(ev schemas.Event) error {
+	if ev.Payload == nil {
+		return nil
+	}
+	runtimeDim := currentEmbeddingDim()
+	if runtimeDim <= 0 {
+		return nil
+	}
+	if payloadDim, ok := payloadEmbeddingDim(ev.Payload); ok && payloadDim != runtimeDim {
+		return fmt.Errorf("embedding_dim_mismatch payload=%d runtime=%d", payloadDim, runtimeDim)
+	}
+	if vecLen, ok := payloadVectorLen(ev.Payload); ok && vecLen != runtimeDim {
+		return fmt.Errorf("embedding_vector_len_mismatch payload=%d runtime=%d", vecLen, runtimeDim)
+	}
+	return nil
+}
+
+func payloadEmbeddingDim(payload map[string]any) (int, bool) {
+	raw, ok := payload["embedding_dim"]
+	if !ok {
+		raw, ok = payload["dim"]
+		if !ok {
+			return 0, false
+		}
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func payloadVectorLen(payload map[string]any) (int, bool) {
+	raw, ok := payload["embedding"]
+	if !ok {
+		raw, ok = payload["vector"]
+		if !ok {
+			return 0, false
+		}
+	}
+	switch v := raw.(type) {
+	case []float32:
+		return len(v), true
+	case []float64:
+		return len(v), true
+	case []any:
+		return len(v), true
+	}
+	return 0, false
 }
