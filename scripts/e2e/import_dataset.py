@@ -8,10 +8,12 @@ Usage examples:
   python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --delete --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/dir --dataset deep1B --workspace-id deep1B_w
+  python3 scripts/e2e/import_dataset.py --purge --dataset deep1B --workspace-id deep1B_w
+  python3 scripts/e2e/import_dataset.py --purge --purge-dry-run --file /path/to/base.fbin --dataset deep1B --workspace-id deep1B_w
 
 Required:
   --dataset  Dataset name tag written into payload
-  --file     File or directory path (required for ingest; optional for --delete — omit to delete by dataset_name + workspace only)
+  --file     File or directory path (required for ingest; optional for --delete / --purge — omit to act by dataset_name + workspace only)
 
 Optional fields are auto-generated if omitted.
 """
@@ -258,6 +260,29 @@ def _run_dataset_delete(
     return ack
 
 
+def _run_dataset_purge(
+    base_url: str,
+    workspace_id: str,
+    dataset: str,
+    dry_run: bool,
+    only_if_inactive: bool,
+    file_name: str | None = None,
+) -> dict:
+    """POST /v1/admin/dataset/purge. Hard-remove inactive memories matching selectors (see server docs)."""
+    body: dict = {
+        "workspace_id": workspace_id,
+        "dataset_name": dataset,
+        "dry_run": dry_run,
+        "only_if_inactive": only_if_inactive,
+    }
+    if file_name:
+        body["file_name"] = file_name
+    status, ack = _http_post_json(base_url, "/v1/admin/dataset/purge", body)
+    if status != 200:
+        raise RuntimeError(f"unexpected status={status} ack={ack}")
+    return ack
+
+
 def _collect_files(file_arg: str) -> list[Path]:
     p = Path(file_arg).expanduser().resolve()
     if not p.exists():
@@ -307,10 +332,87 @@ def main() -> None:
         action="store_true",
         help="With --delete, preview only (dry_run=true)",
     )
+    ap.add_argument(
+        "--purge",
+        action="store_true",
+        help="Call /v1/admin/dataset/purge (hard delete after soft-delete); requires --workspace-id; same --file rules as --delete",
+    )
+    ap.add_argument(
+        "--purge-dry-run",
+        action="store_true",
+        help="With --purge, preview only (dry_run=true)",
+    )
+    ap.add_argument(
+        "--purge-include-active",
+        action="store_true",
+        help="With --purge, set only_if_inactive=false (also purge active matching memories; dangerous)",
+    )
     args = ap.parse_args()
 
-    if not args.delete and not args.file:
+    if args.delete and args.purge:
+        ap.error("cannot use --delete and --purge together")
+
+    if not args.delete and not args.purge and not args.file:
         ap.error("the following arguments are required: --file (for ingest)")
+
+    if args.purge:
+        mode = "dry-run" if args.purge_dry_run else "purge"
+        only_if_inactive = not args.purge_include_active
+        if not args.file:
+            print(
+                f"[purge:{mode}] by dataset_name only dataset={args.dataset!r} "
+                f"workspace_id={args.workspace_id!r} only_if_inactive={only_if_inactive} base={args.base_url}"
+            )
+            ack = _run_dataset_purge(
+                args.base_url,
+                args.workspace_id,
+                args.dataset,
+                args.purge_dry_run,
+                only_if_inactive,
+                file_name=None,
+            )
+            print(
+                f"  matched={int(ack.get('matched', 0))} skipped_active={int(ack.get('skipped_active', 0))} "
+                f"purgeable={int(ack.get('purgeable', 0))} purged={int(ack.get('purged', 0))}"
+            )
+            print(f"[purge:{mode}] done")
+            return
+
+        files = _collect_files(args.file)
+        print(
+            f"[purge:{mode}] files={len(files)} dataset_name={args.dataset!r} "
+            f"workspace_id={args.workspace_id!r} only_if_inactive={only_if_inactive} base={args.base_url}"
+        )
+        total_matched = 0
+        total_skipped = 0
+        total_purgeable = 0
+        total_purged = 0
+        for path in files:
+            ack = _run_dataset_purge(
+                args.base_url,
+                args.workspace_id,
+                args.dataset,
+                args.purge_dry_run,
+                only_if_inactive,
+                file_name=path.name,
+            )
+            matched = int(ack.get("matched", 0))
+            skipped = int(ack.get("skipped_active", 0))
+            purgeable = int(ack.get("purgeable", 0))
+            purged = int(ack.get("purged", 0))
+            total_matched += matched
+            total_skipped += skipped
+            total_purgeable += purgeable
+            total_purged += purged
+            print(
+                f"  [file] {path.name} matched={matched} skipped_active={skipped} "
+                f"purgeable={purgeable} purged={purged}"
+            )
+        print(
+            f"[purge:{mode}] done total_matched={total_matched} total_skipped_active={total_skipped} "
+            f"total_purgeable={total_purgeable} total_purged={total_purged}"
+        )
+        return
 
     if args.delete:
         mode = "dry-run" if args.delete_dry_run else "delete"
