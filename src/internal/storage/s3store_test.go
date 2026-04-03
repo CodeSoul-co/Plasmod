@@ -184,3 +184,55 @@ func TestFloat32BytesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestS3ColdStore_ColdVectorSearch_TopKOrdering(t *testing.T) {
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Skipf("skip S3 cold vector search test: %v", err)
+	}
+
+	cfg.Prefix = fmt.Sprintf("%s/test_s3_vector_%d", cfg.Prefix, time.Now().UnixNano())
+	store := NewS3ColdStore(cfg)
+
+	type item struct {
+		id      string
+		version int64
+		vec     []float32
+	}
+
+	items := []item{
+		{id: fmt.Sprintf("m1_%d", time.Now().UnixNano()), version: 1, vec: []float32{1, 0}},
+		{id: fmt.Sprintf("m2_%d", time.Now().UnixNano()), version: 2, vec: []float32{0.5, 0.5}},
+		{id: fmt.Sprintf("m3_%d", time.Now().UnixNano()), version: 3, vec: []float32{0, 1}},
+	}
+
+	for _, it := range items {
+		store.PutMemory(schemas.Memory{
+			MemoryID: it.id,
+			Content:  "vector search test",
+			Version:  it.version,
+			IsActive: false,
+		})
+		if err := store.PutMemoryEmbedding(it.id, it.vec); err != nil {
+			t.Fatalf("PutMemoryEmbedding(%s) failed: %v", it.id, err)
+		}
+	}
+
+	got := store.ColdVectorSearch([]float32{1, 0}, 2)
+	if len(got) != 2 {
+		t.Fatalf("expected top2 results, got %d: %+v", len(got), got)
+	}
+
+	if got[0] != items[0].id {
+		t.Fatalf("expected first result %q, got %+v", items[0].id, got)
+	}
+	if got[1] != items[1].id {
+		t.Fatalf("expected second result %q, got %+v", items[1].id, got)
+	}
+
+	// cleanup (best effort)
+	for _, it := range items {
+		_ = store.DeleteMemoryEmbedding(it.id)
+		_ = store.DeleteMemory(it.id)
+	}
+}
