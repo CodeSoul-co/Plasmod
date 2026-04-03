@@ -15,10 +15,10 @@ const (
 // main / memory_pipeline / collaboration carry read-path summaries (the write
 // chains are not re-executed); query is filled from QueryChain.
 type ChainTraceSlots struct {
-	Main           []string `json:"main"`
-	MemoryPipeline []string `json:"memory_pipeline"`
-	Query          []string `json:"query"`
-	Collaboration  []string `json:"collaboration"`
+	Main             []string `json:"main"`
+	MemoryPipeline   []string `json:"memory_pipeline"`
+	Query            []string `json:"query"`
+	Collaboration    []string `json:"collaboration"`
 }
 
 type QueryRequest struct {
@@ -37,37 +37,32 @@ type QueryRequest struct {
 	ResponseMode        string     `json:"response_mode"`
 	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
 	IncludeCold bool `json:"include_cold,omitempty"`
-	// TargetEmbeddingFamily routes query to a specific embedding family namespace.
-	// When set, runtime should reject cross-family execution.
-	TargetEmbeddingFamily string `json:"target_embedding_family,omitempty"`
-	// TargetDim routes query to a specific embedding dimension.
-	// When set (>0), runtime should reject cross-dimension execution.
-	TargetDim int `json:"target_dim,omitempty"`
 }
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
 type EvidenceCacheStats struct {
-	LookedUp   int `json:"looked_up"`
-	Hits       int `json:"hits"`
-	Misses     int `json:"misses"`
-	ColdHits   int `json:"cold_hits,omitempty"`
-	ColdMisses int `json:"cold_misses,omitempty"`
+	LookedUp int `json:"looked_up"`
+	Hits     int `json:"hits"`
+	Misses   int `json:"misses"`
 }
 
 type QueryResponse struct {
-	Objects        []string            `json:"objects"`
-	Nodes          []GraphNode         `json:"nodes,omitempty"`
-	Edges          []Edge              `json:"edges"`
-	Provenance     []string            `json:"provenance"`
-	Versions       []ObjectVersion     `json:"versions"`
-	AppliedFilters []string            `json:"applied_filters"`
-	ProofTrace     []ProofStep         `json:"proof_trace"`
-	ChainTraces    ChainTraceSlots     `json:"chain_traces"`
+	Objects        []string        `json:"objects"`
+	Nodes          []GraphNode     `json:"nodes,omitempty"`
+	Edges          []Edge          `json:"edges"`
+	Provenance     []string        `json:"provenance"`
+	Versions       []ObjectVersion `json:"versions"`
+	AppliedFilters []string        `json:"applied_filters"`
+	ProofTrace     []ProofStep     `json:"proof_trace"`
+	ChainTraces    ChainTraceSlots `json:"chain_traces"`
 	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
-	// RouteRejected indicates query was rejected by embedding family/dim routing guards.
-	RouteRejected bool `json:"route_rejected,omitempty"`
-	// RouteRejectReason provides machine-readable rejection reason.
-	RouteRejectReason string `json:"route_reject_reason,omitempty"`
+	// QueryStatus classifies retrieval-plane seed hits (distinct from supplemental canonical IDs).
+	//   ok — retrieval returned at least one candidate before canonical supplement.
+	//   no_retrieval_hits — zero retrieval seeds and empty objects list.
+	//   no_retrieval_hits_supplemented — zero retrieval seeds but objects came from event/state/artifact listing.
+	QueryStatus string `json:"query_status,omitempty"`
+	// QueryHint is a short human-readable explanation for demos and UIs (may be localized).
+	QueryHint string `json:"query_hint,omitempty"`
 }
 
 type GraphExpandRequest struct {
