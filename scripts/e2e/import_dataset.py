@@ -6,11 +6,12 @@ Usage examples:
   python3 scripts/e2e/import_dataset.py --file /path/to/ABC.fvecs --dataset ABC
   python3 scripts/e2e/import_dataset.py --file /path/to/datasets_dir --dataset ABC --limit 200
   python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id deep1B_w
+  python3 scripts/e2e/import_dataset.py --delete --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/dir --dataset deep1B --workspace-id deep1B_w
 
 Required:
-  --file     File path or directory path
   --dataset  Dataset name tag written into payload
+  --file     File or directory path (required for ingest; optional for --delete — omit to delete by dataset_name + workspace only)
 
 Optional fields are auto-generated if omitted.
 """
@@ -236,14 +237,21 @@ def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[fl
             row_idx += 1
 
 
-def _run_dataset_delete(base_url: str, workspace_id: str, file_name: str, dataset: str, dry_run: bool) -> dict:
-    """POST /v1/admin/dataset/delete with both file_name and dataset_name (matches ingest markers)."""
+def _run_dataset_delete(
+    base_url: str,
+    workspace_id: str,
+    dataset: str,
+    dry_run: bool,
+    file_name: str | None = None,
+) -> dict:
+    """POST /v1/admin/dataset/delete. If file_name is set, matches dataset=<file_name> AND dataset_name:...; if omitted, only dataset_name + workspace."""
     body: dict = {
         "workspace_id": workspace_id,
-        "file_name": file_name,
         "dataset_name": dataset,
         "dry_run": dry_run,
     }
+    if file_name:
+        body["file_name"] = file_name
     status, ack = _http_post_json(base_url, "/v1/admin/dataset/delete", body)
     if status != 200:
         raise RuntimeError(f"unexpected status={status} ack={ack}")
@@ -266,7 +274,11 @@ def _collect_files(file_arg: str) -> list[Path]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Import dataset files to ANDB ingest API")
-    ap.add_argument("--file", required=True, help="Dataset file path or directory path")
+    ap.add_argument(
+        "--file",
+        default=None,
+        help="Dataset file path or directory path (required for ingest; for --delete, omit to delete by --dataset + --workspace-id only)",
+    )
     ap.add_argument("--dataset", required=True, help="Dataset name label, e.g. ABC")
     ap.add_argument("--base-url", default=os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080"))
     ap.add_argument("--tenant-id", default="t_demo")
@@ -297,10 +309,30 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    files = _collect_files(args.file)
+    if not args.delete and not args.file:
+        ap.error("the following arguments are required: --file (for ingest)")
 
     if args.delete:
         mode = "dry-run" if args.delete_dry_run else "delete"
+        if not args.file:
+            print(
+                f"[delete:{mode}] by dataset_name only dataset={args.dataset!r} "
+                f"workspace_id={args.workspace_id!r} base={args.base_url}"
+            )
+            ack = _run_dataset_delete(
+                args.base_url,
+                args.workspace_id,
+                args.dataset,
+                args.delete_dry_run,
+                file_name=None,
+            )
+            print(
+                f"  matched={int(ack.get('matched', 0))} deleted={int(ack.get('deleted', 0))}"
+            )
+            print(f"[delete:{mode}] done")
+            return
+
+        files = _collect_files(args.file)
         print(
             f"[delete:{mode}] files={len(files)} dataset_name={args.dataset!r} "
             f"workspace_id={args.workspace_id!r} base={args.base_url}"
@@ -311,9 +343,9 @@ def main() -> None:
             ack = _run_dataset_delete(
                 args.base_url,
                 args.workspace_id,
-                path.name,
                 args.dataset,
                 args.delete_dry_run,
+                file_name=path.name,
             )
             matched = int(ack.get("matched", 0))
             deleted = int(ack.get("deleted", 0))
@@ -322,6 +354,8 @@ def main() -> None:
             print(f"  [file] {path.name} matched={matched} deleted={deleted}")
         print(f"[delete:{mode}] done total_matched={total_matched} total_deleted={total_deleted}")
         return
+
+    files = _collect_files(args.file)
 
     seq = args.start_seq
     total = 0
