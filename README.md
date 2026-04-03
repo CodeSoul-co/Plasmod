@@ -8,8 +8,10 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 ## What is implemented
 
 - Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
-- Admin dataset cleanup endpoint: `POST /v1/admin/dataset/delete` supports delete-by-filename (with `workspace_id` and `dry_run`) to soft-delete uploaded dataset memories instead of one-click global purge
-  - Minimal body: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}`
+- Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). At least one of `file_name`, `dataset_name`, or `prefix` is required; `workspace_id` is optional (omit to consider all scopes). `dry_run` only reports matches without mutating.
+  - Matching rules: if `file_name` is set, content must contain `dataset=<file_name>`; if `dataset_name` is set, content must contain `dataset_name:<dataset_name>`; if `prefix` is set, content must contain `dataset=<prefix` (prefix-style substring on the `dataset=` marker).
+  - Example bodies: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}` · `{"file_name":"base.10M.fbin","dataset_name":"deep1B","workspace_id":"w_demo","dry_run":false}`
+  - Response fields include `matched`, `deleted`, and `memory_ids` (all memory IDs that matched the selectors; in `dry_run`, `deleted` stays `0` while `memory_ids` still lists matches).
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
@@ -31,6 +33,26 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Module-level test coverage: 22 packages with `*_test.go`
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
+
+## Dataset bulk import and CLI delete (E2E)
+
+Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` in a loop over matched files.
+
+- **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
+- **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
+- **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.
+- **Examples** (set `ANDB_BASE_URL` if the server is not `http://127.0.0.1:8080`):
+
+```bash
+# Ingest (limit rows per file)
+python3 scripts/e2e/import_dataset.py --file /path/to/base.10M.fbin --dataset deep1B --limit 200 --workspace-id w_demo
+
+# Delete dry-run (per file under --file: sends file_name + dataset_name + workspace_id)
+python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/base.10M.fbin --dataset deep1B --workspace-id w_demo
+
+# Delete for real
+python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id w_demo
+```
 
 ## Why This Project Exists
 
