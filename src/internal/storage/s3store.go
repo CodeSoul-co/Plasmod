@@ -628,15 +628,10 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 				continue
 			}
 
-			var ts int64
-			if m, ok := s.GetMemory(memoryID); ok {
-				ts = m.Version
-			}
-
 			pageResults = append(pageResults, scored{
 				id:    memoryID,
 				score: score,
-				ts:    ts,
+				ts:    0,
 			})
 		}
 
@@ -653,6 +648,12 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 			if len(results) > maxCandidates {
 				results = results[:maxCandidates]
 			}
+		}
+	}
+
+	for i := range results {
+		if m, ok := s.GetMemory(results[i].id); ok {
+			results[i].ts = m.Version
 		}
 	}
 
