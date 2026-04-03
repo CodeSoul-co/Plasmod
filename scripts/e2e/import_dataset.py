@@ -27,6 +27,8 @@ import json
 import os
 import struct
 import sys
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Iterable, Iterator
 from urllib.error import HTTPError, URLError
@@ -47,12 +49,14 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _http_post_json(base_url: str, path: str, body: dict) -> tuple[int, dict]:
+def _http_post_json(
+    base_url: str, path: str, body: dict, timeout: float = 30.0
+) -> tuple[int, dict]:
     url = base_url.rstrip("/") + path
     req = Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
     req.add_header("Content-Type", "application/json")
     try:
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return resp.status, json.loads(raw.decode("utf-8")) if raw else {}
     except HTTPError as e:
@@ -60,6 +64,12 @@ def _http_post_json(base_url: str, path: str, body: dict) -> tuple[int, dict]:
         raise RuntimeError(f"HTTP {e.code} POST {url}: {raw}") from e
     except URLError as e:
         raise RuntimeError(f"POST {url} failed: {e}") from e
+
+
+def _ingest_event_post(base_url: str, body: dict, timeout: float) -> None:
+    status, ack = _http_post_json(base_url, "/v1/ingest/events", body, timeout=timeout)
+    if status != 200:
+        raise RuntimeError(f"unexpected status={status} ack={ack}")
 
 
 def _iter_fvecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[float]]]:
@@ -323,6 +333,20 @@ def main() -> None:
     ap.add_argument("--preview-k", type=int, default=6, help="How many leading values in payload.text")
     ap.add_argument("--start-seq", type=int, default=0, help="Global event sequence start")
     ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Ingest only: parallel HTTP requests (default 1 = one row at a time). Try 8–32 if server can handle load.",
+    )
+    ap.add_argument(
+        "--http-timeout",
+        type=float,
+        default=30.0,
+        metavar="SEC",
+        help="Per-request timeout for ingest POST (default 30)",
+    )
+    ap.add_argument(
         "--ibin-dtype",
         choices=("auto", "float32", "int32"),
         default="auto",
@@ -354,6 +378,9 @@ def main() -> None:
         help="With --purge, set only_if_inactive=false (also purge active matching memories; dangerous)",
     )
     args = ap.parse_args()
+
+    if args.concurrency < 1:
+        ap.error("--concurrency must be >= 1")
 
     if args.delete and args.purge:
         ap.error("cannot use --delete and --purge together")
@@ -472,7 +499,10 @@ def main() -> None:
     total = 0
 
     lim_disp = "none" if args.limit is None else args.limit
-    print(f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} limit={lim_disp}")
+    print(
+        f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
+        f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s"
+    )
     for path in files:
         ext = path.suffix.lower()
         session_id = f"{args.session_prefix}_{args.dataset}_{path.name}"
@@ -496,16 +526,24 @@ def main() -> None:
             continue
 
         print(f"[file] {path} ({ext})")
-        for i, dim, vals, dtype, extra in row_iter:
+
+        def _build_ingest_body(
+            row_i: int,
+            dim: int,
+            vals: list,
+            dtype: str,
+            extra: str,
+            seq_val: int,
+        ) -> dict:
             ts = _now_iso()
-            ev_id = f"evt_{args.dataset}_{path.stem}_{seq:08d}"
+            ev_id = f"evt_{args.dataset}_{path.stem}_{seq_val:08d}"
             txt = (
-                f"dataset={path.name} dataset_name:{args.dataset} row:{i} "
+                f"dataset={path.name} dataset_name:{args.dataset} row:{row_i} "
                 f"dim:{dim} dtype:{dtype} head:{_preview(vals, args.preview_k)}"
             )
             if extra:
                 txt = txt + " extra:" + extra
-            body = {
+            return {
                 "event_id": ev_id,
                 "tenant_id": args.tenant_id,
                 "workspace_id": args.workspace_id,
@@ -519,21 +557,60 @@ def main() -> None:
                     "text": txt,
                     "dataset": args.dataset,
                     "file_name": path.name,
-                    "row_index": i,
+                    "row_index": row_i,
                     "dim": dim,
                     "dtype": dtype,
                 },
                 "source": args.source,
                 "version": args.version,
             }
-            status, ack = _http_post_json(args.base_url, "/v1/ingest/events", body)
-            if status != 200:
-                raise RuntimeError(f"unexpected status={status} ack={ack}")
-            seq += 1
-            count += 1
-            total += 1
-            if count % 200 == 0:
-                print(f"  ingested {count} rows...")
+
+        if args.concurrency <= 1:
+            for i, dim, vals, dtype, extra in row_iter:
+                body = _build_ingest_body(i, dim, vals, dtype, extra, seq)
+                seq += 1
+                _ingest_event_post(args.base_url, body, args.http_timeout)
+                count += 1
+                total += 1
+                if count % 200 == 0:
+                    print(f"  ingested {count} rows...")
+        else:
+            seq_lock = threading.Lock()
+
+            def _next_seq() -> int:
+                nonlocal seq
+                with seq_lock:
+                    s = seq
+                    seq += 1
+                    return s
+
+            prog_lock = threading.Lock()
+
+            def _on_done() -> None:
+                nonlocal count, total
+                with prog_lock:
+                    count += 1
+                    total += 1
+                    if count % 200 == 0:
+                        print(f"  ingested {count} rows...")
+
+            pending = set()
+            with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                for i, dim, vals, dtype, extra in row_iter:
+                    body = _build_ingest_body(i, dim, vals, dtype, extra, _next_seq())
+                    pending.add(
+                        ex.submit(_ingest_event_post, args.base_url, body, args.http_timeout)
+                    )
+                    if len(pending) >= args.concurrency:
+                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        for fut in done:
+                            fut.result()
+                            _on_done()
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for fut in done:
+                        fut.result()
+                        _on_done()
 
         print(f"  done rows={count} session_id={session_id}")
 
