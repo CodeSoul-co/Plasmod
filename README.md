@@ -35,9 +35,9 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
 
-## Dataset bulk import and CLI delete (E2E)
+## Dataset bulk import and CLI delete / purge (E2E)
 
-Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` in a loop over matched files.
+Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`).
 
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
@@ -53,6 +53,12 @@ python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/
 
 # Delete for real
 python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id w_demo
+
+# Purge dry-run (after soft delete; by dataset + workspace, or add --file to scope per basename)
+python3 scripts/e2e/import_dataset.py --purge --purge-dry-run --dataset deep1B --workspace-id w_demo
+
+# Purge for real (default: only inactive memories)
+python3 scripts/e2e/import_dataset.py --purge --file /path/to/base.10M.fbin --dataset deep1B --workspace-id w_demo
 ```
 
 ## Why This Project Exists
