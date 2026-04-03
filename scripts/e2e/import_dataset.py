@@ -4,6 +4,7 @@ Import vector/groundtruth datasets into ANDB via /v1/ingest/events.
 
 Usage examples:
   python3 scripts/e2e/import_dataset.py --file /path/to/ABC.fvecs --dataset ABC
+  python3 scripts/e2e/import_dataset.py --file /path/to/datasets_dir --dataset ABC
   python3 scripts/e2e/import_dataset.py --file /path/to/datasets_dir --dataset ABC --limit 200
   python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --delete --dataset deep1B --workspace-id deep1B_w
@@ -313,7 +314,12 @@ def main() -> None:
     ap.add_argument("--event-type", default="dataset_record")
     ap.add_argument("--source", default="dataset_loader")
     ap.add_argument("--version", type=int, default=1)
-    ap.add_argument("--limit", type=int, default=200, help="Rows per file; <=0 means all")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max rows per file; omit for no cap; <=0 means all rows",
+    )
     ap.add_argument("--preview-k", type=int, default=6, help="How many leading values in payload.text")
     ap.add_argument("--start-seq", type=int, default=0, help="Global event sequence start")
     ap.add_argument(
@@ -459,28 +465,32 @@ def main() -> None:
 
     files = _collect_files(args.file)
 
+    # None / <=0 → no row cap (iterators treat limit>0 as the cap).
+    row_limit = 0 if args.limit is None else args.limit
+
     seq = args.start_seq
     total = 0
 
-    print(f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} limit={args.limit}")
+    lim_disp = "none" if args.limit is None else args.limit
+    print(f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} limit={lim_disp}")
     for path in files:
         ext = path.suffix.lower()
         session_id = f"{args.session_prefix}_{args.dataset}_{path.name}"
         count = 0
 
         if ext == ".fvecs":
-            row_iter = ((i, dim, vals, "float32", "") for i, dim, vals in _iter_fvecs(path, args.limit))
+            row_iter = ((i, dim, vals, "float32", "") for i, dim, vals in _iter_fvecs(path, row_limit))
         elif ext == ".ivecs":
-            row_iter = ((i, dim, vals, "int32", "") for i, dim, vals in _iter_ivecs(path, args.limit))
+            row_iter = ((i, dim, vals, "int32", "") for i, dim, vals in _iter_ivecs(path, row_limit))
         elif ext == ".ibin":
             row_iter = (
                 (i, dim, vals, dtype, "")
-                for i, dim, vals, dtype in _iter_ibin(path, args.limit, args.ibin_dtype)
+                for i, dim, vals, dtype in _iter_ibin(path, row_limit, args.ibin_dtype)
             )
         elif ext == ".fbin":
-            row_iter = ((i, dim, vals, dtype, "") for i, dim, vals, dtype in _iter_fbin(path, args.limit))
+            row_iter = ((i, dim, vals, dtype, "") for i, dim, vals, dtype in _iter_fbin(path, row_limit))
         elif ext == ".arrow":
-            row_iter = _iter_arrow_rows(path, args.limit)
+            row_iter = _iter_arrow_rows(path, row_limit)
         else:
             # Should never happen due to _collect_files
             continue
