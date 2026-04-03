@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -227,6 +228,34 @@ func TestS3ColdStore_ColdVectorSearch_TopKOrdering(t *testing.T) {
 		if len(gotVec) != len(it.vec) {
 			t.Fatalf("embedding length mismatch for %s: got %d want %d", it.id, len(gotVec), len(it.vec))
 		}
+	}
+
+	embeddingPrefix := fmt.Sprintf("%s/cold/embeddings/", cfg.Prefix)
+
+	keys, err := ListObjects(context.Background(), nil, cfg, embeddingPrefix)
+	if err != nil {
+		t.Fatalf("ListObjects failed: %v", err)
+	}
+	t.Logf("listed embedding keys: %+v", keys)
+
+	if len(keys) < 3 {
+		t.Fatalf("expected at least 3 embedding keys, got %d: %+v", len(keys), keys)
+	}
+
+	for _, key := range keys {
+		data, err := GetBytes(context.Background(), nil, cfg, key)
+		if err != nil {
+			t.Fatalf("GetBytes(%s) failed: %v", key, err)
+		}
+		if data == nil {
+			t.Fatalf("GetBytes(%s) returned nil data", key)
+		}
+
+		vec, err := bytesToFloat32Slice(data)
+		if err != nil {
+			t.Fatalf("bytesToFloat32Slice(%s) failed: %v", key, err)
+		}
+		t.Logf("decoded %s => %+v", key, vec)
 	}
 
 	var got []string
