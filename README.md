@@ -629,7 +629,7 @@ Additional supporting docs already in the repo:
 
 - End-to-end event ingest and structured-evidence query 
 - Tiered hot → warm → cold retrieval with RRF fusion 
-- 1-hop graph expansion in every `QueryResponse` 
+- 1-hop graph expansion in every `QueryResponse`
 - Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time 
 - Go HTTP API (25 paths in `RegisterRoutes`), Python SDK, and integration test suite 
 - Pluggable memory governance algorithms (Baseline + MemoryBank) 
