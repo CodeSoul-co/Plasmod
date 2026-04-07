@@ -214,8 +214,10 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleDatasetPurge removes inactive (soft-deleted) memories from all tiers when selectors match.
+// handleDatasetPurge removes inactive (soft-deleted) memories when selectors match.
 // Requires workspace_id. only_if_inactive defaults to true (active memories are skipped).
+// When TieredObjectStore is wired, HardDeleteMemory clears hot/warm/cold; otherwise PurgeMemoryWarmOnly
+// removes hot/warm only (cold embeddings may remain — response field purge_backend is "warm_only").
 func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -251,9 +253,9 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		onlyIfInactive = *req.OnlyIfInactive
 	}
 	tiered := g.runtime.TieredObjects()
+	purgeBackend := "tiered"
 	if tiered == nil {
-		http.Error(w, "tiered storage is not configured", http.StatusServiceUnavailable)
-		return
+		purgeBackend = "warm_only"
 	}
 	mems := g.store.Objects().ListMemories("", "")
 	matched := 0
@@ -277,7 +279,11 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		if req.DryRun {
 			continue
 		}
-		tiered.HardDeleteMemory(m.MemoryID)
+		if tiered != nil {
+			tiered.HardDeleteMemory(m.MemoryID)
+		} else {
+			storage.PurgeMemoryWarmOnly(g.store, m.MemoryID)
+		}
 		if g.store.Audits() != nil {
 			now := time.Now().UTC().Format(time.RFC3339)
 			g.store.Audits().AppendAudit(schemas.AuditRecord{
@@ -294,18 +300,19 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		purged++
 	}
 	writeJSON(w, map[string]any{
-		"status":           "ok",
-		"file_name":        req.FileName,
-		"dataset_name":     req.DatasetName,
-		"prefix":           req.Prefix,
-		"workspace_id":     req.WorkspaceID,
-		"dry_run":          req.DryRun,
-		"only_if_inactive": onlyIfInactive,
-		"matched":          matched,
-		"skipped_active":   skippedActive,
-		"purgeable":        purgeable,
-		"purged":           purged,
-		"memory_ids":       ids,
+		"status":            "ok",
+		"file_name":         req.FileName,
+		"dataset_name":      req.DatasetName,
+		"prefix":            req.Prefix,
+		"workspace_id":      req.WorkspaceID,
+		"dry_run":           req.DryRun,
+		"only_if_inactive":  onlyIfInactive,
+		"purge_backend":     purgeBackend,
+		"matched":           matched,
+		"skipped_active":    skippedActive,
+		"purgeable":         purgeable,
+		"purged":            purged,
+		"memory_ids":        ids,
 		"purged_memory_ids": purgeIDs,
 	})
 }
