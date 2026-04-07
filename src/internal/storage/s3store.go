@@ -85,6 +85,22 @@ func (s *S3ColdStore) edgeKey(id string) string {
 	return fmt.Sprintf("%s/cold/edges/%s.json", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) edgeBySrcKey(srcID, edgeID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_src/%s/%s.ref", s.cfg.Prefix, srcID, edgeID)
+}
+
+func (s *S3ColdStore) edgeByDstKey(dstID, edgeID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_dst/%s/%s.ref", s.cfg.Prefix, dstID, edgeID)
+}
+
+func (s *S3ColdStore) edgeBySrcPrefix(srcID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_src/%s/", s.cfg.Prefix, srcID)
+}
+
+func (s *S3ColdStore) edgeByDstPrefix(dstID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_dst/%s/", s.cfg.Prefix, dstID)
+}
+
 func (s *S3ColdStore) PutMemory(m schemas.Memory) {
 	s.doEnsureBucket()
 	data, err := json.Marshal(m)
@@ -253,6 +269,13 @@ func (s *S3ColdStore) PutEdge(e schemas.Edge) {
 	if err := PutBytes(context.Background(), nil, s.cfg, s.edgeKey(e.EdgeID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put edge %s: %v", e.EdgeID, err)
 	}
+
+	// Secondary indices for incident-edge lookup by object ID.
+	// These are small reference objects so HardDeleteMemory can delete cold edges
+	// without scanning the entire cold edge set.
+	ref := []byte("1")
+	_ = PutBytes(context.Background(), nil, s.cfg, s.edgeBySrcKey(e.SrcObjectID, e.EdgeID), ref, "application/octet-stream")
+	_ = PutBytes(context.Background(), nil, s.cfg, s.edgeByDstKey(e.DstObjectID, e.EdgeID), ref, "application/octet-stream")
 }
 
 func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
@@ -274,7 +297,44 @@ func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
 }
 
 func (s *S3ColdStore) DeleteEdge(id string) error {
+	// Best-effort delete: remove main edge object plus its src/dst index refs.
+	if e, ok := s.GetEdge(id); ok {
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeBySrcKey(e.SrcObjectID, id))
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeByDstKey(e.DstObjectID, id))
+	}
 	return DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
+}
+
+func (s *S3ColdStore) ListEdgeIDsByObjectID(objectID string) ([]string, error) {
+	ctx := context.Background()
+	out := make(map[string]bool)
+
+	srcKeys, err := ListObjects(ctx, nil, s.cfg, s.edgeBySrcPrefix(objectID))
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range srcKeys {
+		if id, ok := parseEdgeRefKey(k); ok {
+			out[id] = true
+		}
+	}
+
+	dstKeys, err := ListObjects(ctx, nil, s.cfg, s.edgeByDstPrefix(objectID))
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range dstKeys {
+		if id, ok := parseEdgeRefKey(k); ok {
+			out[id] = true
+		}
+	}
+
+	ids := make([]string, 0, len(out))
+	for id := range out {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // ListEdges is not supported for the S3 cold store — scanning all cold edge
@@ -282,6 +342,20 @@ func (s *S3ColdStore) DeleteEdge(id string) error {
 // Callers should use GetEdge for point lookups.  Returns empty slice always.
 func (s *S3ColdStore) ListEdges() []schemas.Edge {
 	return []schemas.Edge{}
+}
+
+func parseEdgeRefKey(objectKey string) (string, bool) {
+	// Expect: .../<edge_id>.ref
+	objectKey = strings.TrimRight(objectKey, "/")
+	i := strings.LastIndex(objectKey, "/")
+	if i < 0 || i+1 >= len(objectKey) {
+		return "", false
+	}
+	base := objectKey[i+1:]
+	if !strings.HasSuffix(base, ".ref") {
+		return "", false
+	}
+	return strings.TrimSuffix(base, ".ref"), true
 }
 
 // ColdSearch searches cold-tier memories stored in S3 using prefix-based listing.
