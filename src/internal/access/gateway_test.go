@@ -69,6 +69,49 @@ func buildTestGatewayWithDeps() gatewayDeps {
 	}
 }
 
+// buildTestGatewayNoTieredRuntime wires Runtime with nil TieredObjectStore (ingest uses PutMemoryWithBaseEdges only).
+func buildTestGatewayNoTieredRuntime() gatewayDeps {
+	store := storage.NewMemoryRuntimeStorage()
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+	cold := storage.NewInMemoryColdStore()
+	plane := dataplane.NewTieredDataPlane(nil)
+	policy := semantic.NewPolicyEngine()
+	planner := semantic.NewDefaultQueryPlanner()
+	model := semantic.NewObjectModelRegistry()
+	mat := materialization.NewService()
+	evCache := evidence.NewCache(1000)
+	preCompute := materialization.NewPreComputeService(evCache)
+	assembler := evidence.NewCachedAssembler(evCache).WithEdgeStore(store.Edges())
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("d1", store.Segments()))
+	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("i1", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("q1", plane))
+
+	coord := coordinator.NewCoordinatorHub(
+		coordinator.NewSchemaCoordinator(model),
+		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
+		coordinator.NewPolicyCoordinator(policy, store.Policies()),
+		coordinator.NewVersionCoordinator(clock, store.Versions()),
+		coordinator.NewWorkerScheduler(),
+		coordinator.NewMemoryCoordinator(store.Objects()),
+		coordinator.NewIndexCoordinator(store.Segments(), store.Indexes()),
+		coordinator.NewShardCoordinator(4),
+		coordinator.NewQueryCoordinator(planner, policy),
+	)
+
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, evCache, nil, nil, nodeManager, store, nil)
+	runtime.RegisterDefaults()
+
+	return gatewayDeps{
+		gw:      NewGateway(coord, runtime, store, nil),
+		store:   store,
+		runtime: runtime,
+		cold:    cold,
+	}
+}
+
 func buildTestGateway() *Gateway {
 	return buildTestGatewayWithDeps().gw
 }
@@ -465,5 +508,68 @@ func TestGateway_DatasetPurge_RemovesMemoryAndAudit(t *testing.T) {
 	}
 	if audits[0].ReasonCode != "dataset_purge" {
 		t.Fatalf("unexpected audit reason: %q", audits[0].ReasonCode)
+	}
+	if pr["purge_backend"] != "tiered" {
+		t.Fatalf("expected purge_backend=tiered, got %v", pr["purge_backend"])
+	}
+}
+
+func TestGateway_DatasetPurge_WarmOnlyWithoutTieredRuntime(t *testing.T) {
+	deps := buildTestGatewayNoTieredRuntime()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_warmonly",
+		TenantID:    "t_a",
+		WorkspaceID: "w_warmonly",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=w.bin row=1 dataset_name:DSW",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_purge_warmonly"
+
+	delBody, _ := json.Marshal(map[string]any{
+		"dataset_name":   "DSW",
+		"workspace_id":   "w_warmonly",
+		"dry_run":        false,
+	})
+	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
+	delReq.Header.Set("Content-Type", "application/json")
+	delW := httptest.NewRecorder()
+	mux.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("soft delete: want 200, got %d", delW.Code)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name": "DSW",
+		"workspace_id": "w_warmonly",
+		"dry_run":      false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge: want 200, got %d body=%s", purgeW.Code, purgeW.Body.String())
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if pr["purge_backend"] != "warm_only" {
+		t.Fatalf("expected purge_backend=warm_only, got %v", pr["purge_backend"])
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); ok {
+		t.Fatalf("memory should be removed from warm store")
 	}
 }
