@@ -2,6 +2,7 @@ package access
 
 import (
 	"crypto/subtle"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -26,8 +27,7 @@ func WrapAdminAuth(next http.Handler) http.Handler {
 	key := strings.TrimSpace(os.Getenv(EnvAdminAPIKey))
 	if key == "" {
 		adminAuthWarnOnce.Do(func() {
-			// Intentionally silent by default: dev / tests should work without extra env.
-			// Production must enforce network isolation or set ANDB_ADMIN_API_KEY.
+			log.Printf("warning: admin routes are unprotected because %s is not set", EnvAdminAPIKey)
 		})
 		return next
 	}
