@@ -151,6 +151,65 @@ func TestGateway_Topology(t *testing.T) {
 	}
 }
 
+func TestGateway_AdminAuth_DisabledByDefault(t *testing.T) {
+	t.Setenv(EnvAdminAPIKey, "")
+
+	gw := buildTestGateway()
+	mux := http.NewServeMux()
+	gw.RegisterRoutes(mux)
+	h := WrapAdminAuth(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 when admin auth disabled, got %d", w.Code)
+	}
+}
+
+func TestGateway_AdminAuth_EnforcedForAdminPrefix(t *testing.T) {
+	t.Setenv(EnvAdminAPIKey, "k_test_admin")
+
+	gw := buildTestGateway()
+	mux := http.NewServeMux()
+	gw.RegisterRoutes(mux)
+	h := WrapAdminAuth(mux)
+
+	// No header → 401
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w1.Code)
+	}
+
+	// Wrong header → 401
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	req2.Header.Set("X-Admin-Key", "wrong")
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w2.Code)
+	}
+
+	// Correct header → 200
+	req3 := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	req3.Header.Set("X-Admin-Key", "k_test_admin")
+	w3 := httptest.NewRecorder()
+	h.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w3.Code)
+	}
+
+	// Non-admin path should not require the key.
+	req4 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w4 := httptest.NewRecorder()
+	h.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Fatalf("healthz want 200, got %d", w4.Code)
+	}
+}
+
 func TestGateway_DatasetDelete_MethodNotAllowed(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()

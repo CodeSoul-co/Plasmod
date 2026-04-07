@@ -443,6 +443,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	gateway := access.NewGateway(coord, runtime, store, storageCfg)
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
+	handler := access.WrapAdminAuth(mux)
 
 	// shutdown bundles context cancellation (subscriber/orchestrator) and
 	// Badger close (storage cleanup) into one cleanup function.
@@ -450,5 +451,5 @@ func BuildServer() (*http.Server, func() error, error) {
 		cancel()
 		return bundle.Close()
 	}
-	return &http.Server{Addr: addr, Handler: mux}, shutdown, nil
+	return &http.Server{Addr: addr, Handler: handler}, shutdown, nil
 }

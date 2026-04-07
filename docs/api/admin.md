@@ -105,7 +105,7 @@ Hard-deletes memories that match the same selector keys as delete. JSON body: **
 
 When a **`TieredObjectStore`** is wired, removal uses **`HardDeleteMemory`** (hot/warm/cold as applicable). If tiered storage is **not** configured, the handler falls back to **warm-only** purge (`PurgeMemoryWarmOnly`); the JSON response includes **`purge_backend`**: `"tiered"` or `"warm_only"`.
 
-> **Security:** these admin routes are **not authenticated** in the default dev server. Restrict by network or add a reverse proxy / API key in production.
+> **Security:** these admin routes are protected when `ANDB_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is **not** set, the default dev server does **not** authenticate `/v1/admin/*`. Always restrict by network or put a reverse proxy in front in production.
 
 ## Not Yet Implemented
 
