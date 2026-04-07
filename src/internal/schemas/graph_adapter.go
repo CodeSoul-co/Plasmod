@@ -21,6 +21,12 @@ func MemoryToGraphNode(m Memory) GraphNode {
 		"is_active":        m.IsActive,
 		"join_key":         "mem:" + m.MemoryID,
 	}
+	if m.DatasetName != "" {
+		props["dataset_name"] = m.DatasetName
+	}
+	if m.SourceFileName != "" {
+		props["source_file_name"] = m.SourceFileName
+	}
 
 	label := m.Summary
 	if label == "" {
