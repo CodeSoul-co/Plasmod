@@ -242,9 +242,17 @@ func (t *TieredObjectStore) HardDeleteMemory(memoryID string) {
 	if t.cold != nil {
 		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		_ = t.cold.DeleteMemory(memoryID)
-		for _, e := range t.cold.ListEdges() {
-			if e.SrcObjectID == memoryID || e.DstObjectID == memoryID {
-				_ = t.cold.DeleteEdge(e.EdgeID)
+		if ids, err := t.cold.ListEdgeIDsByObjectID(memoryID); err == nil {
+			for _, id := range ids {
+				_ = t.cold.DeleteEdge(id)
+			}
+		} else {
+			// Fallback for cold stores that cannot index edges by object ID.
+			// Note: S3ColdStore.ListEdges returns empty by design.
+			for _, e := range t.cold.ListEdges() {
+				if e.SrcObjectID == memoryID || e.DstObjectID == memoryID {
+					_ = t.cold.DeleteEdge(e.EdgeID)
+				}
 			}
 		}
 	}
@@ -503,6 +511,9 @@ type ColdObjectStore interface {
 	PutEdge(e schemas.Edge)
 	GetEdge(id string) (schemas.Edge, bool)
 	DeleteEdge(id string) error
+	// ListEdgeIDsByObjectID returns all cold-tier edge IDs incident to objectID.
+	// Implementations should be O(k) where k is node degree, not O(n) over all edges.
+	ListEdgeIDsByObjectID(objectID string) ([]string, error)
 	ListEdges() []schemas.Edge
 	// ColdSearch performs a lexical substring search over all cold-tier memories.
 	// This is used by TieredDataPlane when IncludeCold=true in SearchInput.
@@ -643,6 +654,18 @@ func (s *InMemoryColdStore) DeleteEdge(id string) error {
 	defer s.mu.Unlock()
 	delete(s.edges, id)
 	return nil
+}
+
+func (s *InMemoryColdStore) ListEdgeIDsByObjectID(objectID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0)
+	for id, e := range s.edges {
+		if e.SrcObjectID == objectID || e.DstObjectID == objectID {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 func (s *InMemoryColdStore) ListEdges() []schemas.Edge {
