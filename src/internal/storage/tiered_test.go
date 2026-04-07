@@ -112,6 +112,22 @@ func TestTieredObjectStore_GetMemoryActivated_DeletesColdEmbedding(t *testing.T)
 	}
 }
 
+func TestTieredObjectStore_SoftDeleteMemoryTierCleanup_EvictsHot(t *testing.T) {
+	hot := NewHotObjectCache(100)
+	warm := newMemoryObjectStore()
+	tiered := NewTieredObjectStore(hot, warm, newMemoryGraphEdgeStore(), NewInMemoryColdStore())
+
+	mem := schemas.Memory{MemoryID: "mem_soft_1", Content: "x", IsActive: true}
+	tiered.PutMemory(mem, 1.0)
+	if !tiered.HotCache().Contains(mem.MemoryID) {
+		t.Fatal("expected memory in hot after PutMemory with high salience")
+	}
+	tiered.SoftDeleteMemoryTierCleanup(mem.MemoryID)
+	if tiered.HotCache().Contains(mem.MemoryID) {
+		t.Fatal("expected hot evicted after SoftDeleteMemoryTierCleanup")
+	}
+}
+
 func TestInMemoryColdStore_ColdVectorSearch(t *testing.T) {
 	cold := NewInMemoryColdStore()
 

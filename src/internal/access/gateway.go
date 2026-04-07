@@ -183,7 +183,7 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		g.store.Objects().PutMemory(m)
 		if tiered := g.runtime.TieredObjects(); tiered != nil {
-			_ = tiered.DeleteMemoryEmbedding(m.MemoryID)
+			tiered.SoftDeleteMemoryTierCleanup(m.MemoryID)
 		}
 		if g.store.Policies() != nil {
 			g.store.Policies().AppendPolicy(schemas.PolicyRecord{
