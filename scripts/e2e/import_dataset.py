@@ -4,12 +4,16 @@ Import vector/groundtruth datasets into ANDB via /v1/ingest/events.
 
 Usage examples:
   python3 scripts/e2e/import_dataset.py --file /path/to/ABC.fvecs --dataset ABC
+  python3 scripts/e2e/import_dataset.py --file /path/to/datasets_dir --dataset ABC
   python3 scripts/e2e/import_dataset.py --file /path/to/datasets_dir --dataset ABC --limit 200
   python3 scripts/e2e/import_dataset.py --delete --file /path/to/base.10M.fbin --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --delete --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/dir --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --purge --dataset deep1B --workspace-id deep1B_w
   python3 scripts/e2e/import_dataset.py --purge --purge-dry-run --file /path/to/base.fbin --dataset deep1B --workspace-id deep1B_w
+
+Ingest has no cross-row transaction: successful rows stay committed if a later row fails.
+Use --checkpoint with --concurrency 1 for resumable imports; otherwise use --start-seq on retry.
 
 Required:
   --dataset  Dataset name tag written into payload
@@ -26,6 +30,11 @@ import json
 import os
 import struct
 import sys
+import tempfile
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from itertools import islice
 from pathlib import Path
 from typing import Iterable, Iterator
 from urllib.error import HTTPError, URLError
@@ -46,12 +55,14 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _http_post_json(base_url: str, path: str, body: dict) -> tuple[int, dict]:
+def _http_post_json(
+    base_url: str, path: str, body: dict, timeout: float = 30.0
+) -> tuple[int, dict]:
     url = base_url.rstrip("/") + path
     req = Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
     req.add_header("Content-Type", "application/json")
     try:
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return resp.status, json.loads(raw.decode("utf-8")) if raw else {}
     except HTTPError as e:
@@ -59,6 +70,90 @@ def _http_post_json(base_url: str, path: str, body: dict) -> tuple[int, dict]:
         raise RuntimeError(f"HTTP {e.code} POST {url}: {raw}") from e
     except URLError as e:
         raise RuntimeError(f"POST {url} failed: {e}") from e
+
+
+def _ingest_event_post(base_url: str, body: dict, timeout: float) -> None:
+    status, ack = _http_post_json(base_url, "/v1/ingest/events", body, timeout=timeout)
+    if status != 200:
+        raise RuntimeError(f"unexpected status={status} ack={ack}")
+
+
+def _ingest_event_post_retry(
+    base_url: str,
+    body: dict,
+    timeout: float,
+    retries: int,
+    backoff: float,
+) -> None:
+    last_err: BaseException | None = None
+    for attempt in range(retries + 1):
+        try:
+            _ingest_event_post(base_url, body, timeout)
+            return
+        except RuntimeError as e:
+            last_err = e
+            if attempt >= retries:
+                raise
+            delay = backoff * (2**attempt)
+            print(
+                f"  [retry] ingest attempt {attempt + 1}/{retries + 1} failed ({e}); sleeping {delay:.2f}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    assert last_err is not None
+    raise last_err
+
+
+def _checkpoint_file_key(path: Path) -> str:
+    return str(path.resolve())
+
+
+def _load_ingest_checkpoint(checkpoint_path: str) -> tuple[dict[str, int], int | None]:
+    """Load checkpoint: per_file[path] = rows already ingested from start of that file; next_seq for global event ids."""
+    if not os.path.isfile(checkpoint_path):
+        return {}, None
+    try:
+        with open(checkpoint_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise RuntimeError(f"checkpoint: cannot read {checkpoint_path!r}: {e}") from e
+    if not isinstance(data, dict):
+        raise RuntimeError(f"checkpoint: expected JSON object in {checkpoint_path!r}")
+    if data.get("version") != 1:
+        raise RuntimeError(f"checkpoint: unsupported version in {checkpoint_path!r}")
+    pf = data.get("per_file")
+    if not isinstance(pf, dict):
+        raise RuntimeError(f"checkpoint: missing per_file in {checkpoint_path!r}")
+    per_file: dict[str, int] = {}
+    for k, v in pf.items():
+        if not isinstance(k, str) or not isinstance(v, int) or v < 0:
+            raise RuntimeError(f"checkpoint: bad per_file entry {k!r}:{v!r}")
+        per_file[k] = v
+    ns = data.get("next_seq")
+    next_seq: int | None = ns if isinstance(ns, int) and ns >= 0 else None
+    return per_file, next_seq
+
+
+def _save_ingest_checkpoint(checkpoint_path: str, per_file: dict[str, int], next_seq: int) -> None:
+    payload = {
+        "version": 1,
+        "per_file": dict(sorted(per_file.items())),
+        "next_seq": next_seq,
+    }
+    d = os.path.dirname(os.path.abspath(checkpoint_path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".import_ckpt_", suffix=".tmp", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, checkpoint_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _iter_fvecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[float]]]:
@@ -313,9 +408,48 @@ def main() -> None:
     ap.add_argument("--event-type", default="dataset_record")
     ap.add_argument("--source", default="dataset_loader")
     ap.add_argument("--version", type=int, default=1)
-    ap.add_argument("--limit", type=int, default=200, help="Rows per file; <=0 means all")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max rows per file; omit for no cap; <=0 means all rows",
+    )
     ap.add_argument("--preview-k", type=int, default=6, help="How many leading values in payload.text")
     ap.add_argument("--start-seq", type=int, default=0, help="Global event sequence start")
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Ingest only: parallel HTTP requests (default 1 = one row at a time). Try 8–32 if server can handle load.",
+    )
+    ap.add_argument(
+        "--http-timeout",
+        type=float,
+        default=30.0,
+        metavar="SEC",
+        help="Per-request timeout for ingest POST (default 30)",
+    )
+    ap.add_argument(
+        "--checkpoint",
+        default=None,
+        metavar="PATH",
+        help="Ingest only (requires --concurrency 1): JSON progress file; resume when it exists",
+    )
+    ap.add_argument(
+        "--ingest-retries",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Ingest only: retries per row on transient POST failures (default 3; 0 = no retry)",
+    )
+    ap.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=0.5,
+        metavar="SEC",
+        help="Base backoff for ingest retries, doubled each attempt (default 0.5)",
+    )
     ap.add_argument(
         "--ibin-dtype",
         choices=("auto", "float32", "int32"),
@@ -348,6 +482,15 @@ def main() -> None:
         help="With --purge, set only_if_inactive=false (also purge active matching memories; dangerous)",
     )
     args = ap.parse_args()
+
+    if args.concurrency < 1:
+        ap.error("--concurrency must be >= 1")
+    if args.checkpoint and args.concurrency > 1:
+        ap.error("--checkpoint requires --concurrency 1")
+    if args.ingest_retries < 0:
+        ap.error("--ingest-retries must be >= 0")
+    if args.retry_backoff < 0:
+        ap.error("--retry-backoff must be >= 0")
 
     if args.delete and args.purge:
         ap.error("cannot use --delete and --purge together")
@@ -459,73 +602,192 @@ def main() -> None:
 
     files = _collect_files(args.file)
 
+    # None / <=0 → no row cap (iterators treat limit>0 as the cap).
+    row_limit = 0 if args.limit is None else args.limit
+
+    checkpoint_path = args.checkpoint
+    ckpt_per_file: dict[str, int] = {}
     seq = args.start_seq
+    if checkpoint_path:
+        loaded_pf, loaded_next = _load_ingest_checkpoint(checkpoint_path)
+        ckpt_per_file = loaded_pf
+        if loaded_next is not None:
+            if loaded_next != args.start_seq:
+                print(
+                    f"[checkpoint] using next_seq={loaded_next} from file (ignoring --start-seq={args.start_seq})"
+                )
+            seq = loaded_next
+
     total = 0
+    resume_next_seq = seq
 
-    print(f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} limit={args.limit}")
-    for path in files:
-        ext = path.suffix.lower()
-        session_id = f"{args.session_prefix}_{args.dataset}_{path.name}"
-        count = 0
+    lim_disp = "none" if args.limit is None else args.limit
+    ck_disp = checkpoint_path or "none"
+    print(
+        f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
+        f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
+        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries}"
+    )
+    try:
+        for path in files:
+            ext = path.suffix.lower()
+            session_id = f"{args.session_prefix}_{args.dataset}_{path.name}"
+            count = 0
+            ck_key = _checkpoint_file_key(path)
+            file_skip = ckpt_per_file.get(ck_key, 0) if checkpoint_path else 0
+            if file_skip:
+                print(f"  [resume] skipping first {file_skip} rows of {path.name}")
 
-        if ext == ".fvecs":
-            row_iter = ((i, dim, vals, "float32", "") for i, dim, vals in _iter_fvecs(path, args.limit))
-        elif ext == ".ivecs":
-            row_iter = ((i, dim, vals, "int32", "") for i, dim, vals in _iter_ivecs(path, args.limit))
-        elif ext == ".ibin":
-            row_iter = (
-                (i, dim, vals, dtype, "")
-                for i, dim, vals, dtype in _iter_ibin(path, args.limit, args.ibin_dtype)
+            if ext == ".fvecs":
+                base_iter = (
+                    (i, dim, vals, "float32", "") for i, dim, vals in _iter_fvecs(path, row_limit)
+                )
+            elif ext == ".ivecs":
+                base_iter = ((i, dim, vals, "int32", "") for i, dim, vals in _iter_ivecs(path, row_limit))
+            elif ext == ".ibin":
+                base_iter = (
+                    (i, dim, vals, dtype, "")
+                    for i, dim, vals, dtype in _iter_ibin(path, row_limit, args.ibin_dtype)
+                )
+            elif ext == ".fbin":
+                base_iter = (
+                    (i, dim, vals, dtype, "")
+                    for i, dim, vals, dtype in _iter_fbin(path, row_limit)
+                )
+            elif ext == ".arrow":
+                base_iter = _iter_arrow_rows(path, row_limit)
+            else:
+                # Should never happen due to _collect_files
+                continue
+
+            row_iter: Iterable[tuple[int, int, list, str, str]] = (
+                islice(base_iter, file_skip, None) if file_skip else base_iter
             )
-        elif ext == ".fbin":
-            row_iter = ((i, dim, vals, dtype, "") for i, dim, vals, dtype in _iter_fbin(path, args.limit))
-        elif ext == ".arrow":
-            row_iter = _iter_arrow_rows(path, args.limit)
+
+            print(f"[file] {path} ({ext})")
+
+            def _build_ingest_body(
+                row_i: int,
+                dim: int,
+                vals: list,
+                dtype: str,
+                extra: str,
+                seq_val: int,
+            ) -> dict:
+                ts = _now_iso()
+                ev_id = f"evt_{args.dataset}_{path.stem}_{seq_val:08d}"
+                txt = (
+                    f"dataset={path.name} dataset_name:{args.dataset} row:{row_i} "
+                    f"dim:{dim} dtype:{dtype} head:{_preview(vals, args.preview_k)}"
+                )
+                if extra:
+                    txt = txt + " extra:" + extra
+                return {
+                    "event_id": ev_id,
+                    "tenant_id": args.tenant_id,
+                    "workspace_id": args.workspace_id,
+                    "agent_id": args.agent_id,
+                    "session_id": session_id,
+                    "event_type": args.event_type,
+                    "event_time": ts,
+                    "ingest_time": ts,
+                    "visible_time": ts,
+                    "payload": {
+                        "text": txt,
+                        "dataset": args.dataset,
+                        "file_name": path.name,
+                        "row_index": row_i,
+                        "dim": dim,
+                        "dtype": dtype,
+                    },
+                    "source": args.source,
+                    "version": args.version,
+                }
+
+            if args.concurrency <= 1:
+                for i, dim, vals, dtype, extra in row_iter:
+                    body = _build_ingest_body(i, dim, vals, dtype, extra, seq)
+                    _ingest_event_post_retry(
+                        args.base_url,
+                        body,
+                        args.http_timeout,
+                        args.ingest_retries,
+                        args.retry_backoff,
+                    )
+                    seq += 1
+                    resume_next_seq = seq
+                    count += 1
+                    total += 1
+                    if checkpoint_path:
+                        ckpt_per_file[ck_key] = file_skip + count
+                        _save_ingest_checkpoint(checkpoint_path, ckpt_per_file, seq)
+                    if count % 200 == 0:
+                        print(f"  ingested {count} rows...")
+            else:
+                seq_lock = threading.Lock()
+
+                def _next_seq() -> int:
+                    nonlocal seq
+                    with seq_lock:
+                        s = seq
+                        seq += 1
+                        return s
+
+                prog_lock = threading.Lock()
+
+                def _on_done() -> None:
+                    nonlocal count, total
+                    with prog_lock:
+                        count += 1
+                        total += 1
+                        if count % 200 == 0:
+                            print(f"  ingested {count} rows...")
+
+                pending = set()
+                with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                    for i, dim, vals, dtype, extra in row_iter:
+                        body = _build_ingest_body(i, dim, vals, dtype, extra, _next_seq())
+                        pending.add(
+                            ex.submit(
+                                _ingest_event_post_retry,
+                                args.base_url,
+                                body,
+                                args.http_timeout,
+                                args.ingest_retries,
+                                args.retry_backoff,
+                            )
+                        )
+                        if len(pending) >= args.concurrency:
+                            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                            for fut in done:
+                                fut.result()
+                                _on_done()
+                    while pending:
+                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        for fut in done:
+                            fut.result()
+                            _on_done()
+
+            print(f"  done rows={count} session_id={session_id}")
+
+    except Exception:
+        if args.checkpoint:
+            print(
+                "[hint] Re-run with the same --checkpoint to continue after the last successful row.",
+                file=sys.stderr,
+            )
+        elif args.concurrency <= 1:
+            print(
+                f"[hint] Ingest is not transactional; already-committed rows remain. "
+                f"Re-run with --start-seq {resume_next_seq} or use --checkpoint PATH with --concurrency 1.",
+                file=sys.stderr,
+            )
         else:
-            # Should never happen due to _collect_files
-            continue
-
-        print(f"[file] {path} ({ext})")
-        for i, dim, vals, dtype, extra in row_iter:
-            ts = _now_iso()
-            ev_id = f"evt_{args.dataset}_{path.stem}_{seq:08d}"
-            txt = (
-                f"dataset={path.name} dataset_name:{args.dataset} row:{i} "
-                f"dim:{dim} dtype:{dtype} head:{_preview(vals, args.preview_k)}"
+            print(
+                "[hint] Concurrent ingest may have partial commits; prefer --concurrency 1 with --checkpoint to resume safely.",
+                file=sys.stderr,
             )
-            if extra:
-                txt = txt + " extra:" + extra
-            body = {
-                "event_id": ev_id,
-                "tenant_id": args.tenant_id,
-                "workspace_id": args.workspace_id,
-                "agent_id": args.agent_id,
-                "session_id": session_id,
-                "event_type": args.event_type,
-                "event_time": ts,
-                "ingest_time": ts,
-                "visible_time": ts,
-                "payload": {
-                    "text": txt,
-                    "dataset": args.dataset,
-                    "file_name": path.name,
-                    "row_index": i,
-                    "dim": dim,
-                    "dtype": dtype,
-                },
-                "source": args.source,
-                "version": args.version,
-            }
-            status, ack = _http_post_json(args.base_url, "/v1/ingest/events", body)
-            if status != 200:
-                raise RuntimeError(f"unexpected status={status} ack={ack}")
-            seq += 1
-            count += 1
-            total += 1
-            if count % 200 == 0:
-                print(f"  ingested {count} rows...")
-
-        print(f"  done rows={count} session_id={session_id}")
+        raise
 
     print(f"[done] total_rows={total}")
 
