@@ -69,6 +69,49 @@ func buildTestGatewayWithDeps() gatewayDeps {
 	}
 }
 
+// buildTestGatewayNoTieredRuntime wires Runtime with nil TieredObjectStore (ingest uses PutMemoryWithBaseEdges only).
+func buildTestGatewayNoTieredRuntime() gatewayDeps {
+	store := storage.NewMemoryRuntimeStorage()
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+	cold := storage.NewInMemoryColdStore()
+	plane := dataplane.NewTieredDataPlane(nil)
+	policy := semantic.NewPolicyEngine()
+	planner := semantic.NewDefaultQueryPlanner()
+	model := semantic.NewObjectModelRegistry()
+	mat := materialization.NewService()
+	evCache := evidence.NewCache(1000)
+	preCompute := materialization.NewPreComputeService(evCache)
+	assembler := evidence.NewCachedAssembler(evCache).WithEdgeStore(store.Edges())
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("d1", store.Segments()))
+	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("i1", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("q1", plane))
+
+	coord := coordinator.NewCoordinatorHub(
+		coordinator.NewSchemaCoordinator(model),
+		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
+		coordinator.NewPolicyCoordinator(policy, store.Policies()),
+		coordinator.NewVersionCoordinator(clock, store.Versions()),
+		coordinator.NewWorkerScheduler(),
+		coordinator.NewMemoryCoordinator(store.Objects()),
+		coordinator.NewIndexCoordinator(store.Segments(), store.Indexes()),
+		coordinator.NewShardCoordinator(4),
+		coordinator.NewQueryCoordinator(planner, policy),
+	)
+
+	runtime := worker.CreateRuntime(wal, bus, plane, coord, policy, planner, mat, preCompute, assembler, evCache, nil, nil, nodeManager, store, nil)
+	runtime.RegisterDefaults()
+
+	return gatewayDeps{
+		gw:      NewGateway(coord, runtime, store, nil),
+		store:   store,
+		runtime: runtime,
+		cold:    cold,
+	}
+}
+
 func buildTestGateway() *Gateway {
 	return buildTestGatewayWithDeps().gw
 }
@@ -105,6 +148,65 @@ func TestGateway_Topology(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("/v1/admin/topology: want 200, got %d", w.Code)
+	}
+}
+
+func TestGateway_AdminAuth_DisabledByDefault(t *testing.T) {
+	t.Setenv(EnvAdminAPIKey, "")
+
+	gw := buildTestGateway()
+	mux := http.NewServeMux()
+	gw.RegisterRoutes(mux)
+	h := WrapAdminAuth(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 when admin auth disabled, got %d", w.Code)
+	}
+}
+
+func TestGateway_AdminAuth_EnforcedForAdminPrefix(t *testing.T) {
+	t.Setenv(EnvAdminAPIKey, "k_test_admin")
+
+	gw := buildTestGateway()
+	mux := http.NewServeMux()
+	gw.RegisterRoutes(mux)
+	h := WrapAdminAuth(mux)
+
+	// No header → 401
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w1.Code)
+	}
+
+	// Wrong header → 401
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	req2.Header.Set("X-Admin-Key", "wrong")
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w2.Code)
+	}
+
+	// Correct header → 200
+	req3 := httptest.NewRequest(http.MethodGet, "/v1/admin/topology", nil)
+	req3.Header.Set("X-Admin-Key", "k_test_admin")
+	w3 := httptest.NewRecorder()
+	h.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w3.Code)
+	}
+
+	// Non-admin path should not require the key.
+	req4 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w4 := httptest.NewRecorder()
+	h.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Fatalf("healthz want 200, got %d", w4.Code)
 	}
 }
 
@@ -206,8 +308,11 @@ func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 	if mem, ok := deps.store.Objects().GetMemory(memID); !ok || mem.IsActive {
 		t.Fatalf("memory should be inactive after delete")
 	}
-	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); ok {
-		t.Fatalf("cold embedding should be deleted after delete")
+	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); !ok {
+		t.Fatalf("cold embedding should remain after soft delete until purge")
+	}
+	if deps.runtime.TieredObjects().HotCache().Contains(memID) {
+		t.Fatalf("hot cache should be evicted after soft delete")
 	}
 }
 
@@ -462,5 +567,68 @@ func TestGateway_DatasetPurge_RemovesMemoryAndAudit(t *testing.T) {
 	}
 	if audits[0].ReasonCode != "dataset_purge" {
 		t.Fatalf("unexpected audit reason: %q", audits[0].ReasonCode)
+	}
+	if pr["purge_backend"] != "tiered" {
+		t.Fatalf("expected purge_backend=tiered, got %v", pr["purge_backend"])
+	}
+}
+
+func TestGateway_DatasetPurge_WarmOnlyWithoutTieredRuntime(t *testing.T) {
+	deps := buildTestGatewayNoTieredRuntime()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_warmonly",
+		TenantID:    "t_a",
+		WorkspaceID: "w_warmonly",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=w.bin row=1 dataset_name:DSW",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_purge_warmonly"
+
+	delBody, _ := json.Marshal(map[string]any{
+		"dataset_name":   "DSW",
+		"workspace_id":   "w_warmonly",
+		"dry_run":        false,
+	})
+	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
+	delReq.Header.Set("Content-Type", "application/json")
+	delW := httptest.NewRecorder()
+	mux.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("soft delete: want 200, got %d", delW.Code)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name": "DSW",
+		"workspace_id": "w_warmonly",
+		"dry_run":      false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge: want 200, got %d body=%s", purgeW.Code, purgeW.Body.String())
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if pr["purge_backend"] != "warm_only" {
+		t.Fatalf("expected purge_backend=warm_only, got %v", pr["purge_backend"])
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); ok {
+		t.Fatalf("memory should be removed from warm store")
 	}
 }

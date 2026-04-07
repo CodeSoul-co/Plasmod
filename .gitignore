@@ -41,6 +41,9 @@ integration_tests/
 # Member private docs
 devdocs/
 
+# Local issue tracker (not for version control)
+KNOWN_ISSUES.md
+
 # Rule file
 rule
 代码阅读顺序.md

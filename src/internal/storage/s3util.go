@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -330,13 +331,17 @@ func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, pre
 	continuationToken := ""
 
 	for {
-		listURL := fmt.Sprintf("%s/%s?list-type=2&prefix=%s",
-			cfg.baseURL(), cfg.Bucket, prefix)
+		q := url.Values{}
+		q.Set("list-type", "2")
+		q.Set("prefix", prefix)
 		if continuationToken != "" {
-			listURL += "&continuation-token=" + continuationToken
+			q.Set("continuation-token", continuationToken)
 		}
 
+		listURL := fmt.Sprintf("%s/%s?%s", cfg.baseURL(), cfg.Bucket, q.Encode())
+
 		resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, listURL, nil, "")
+
 		if err != nil {
 			return nil, fmt.Errorf("list objects do: %w", err)
 		}

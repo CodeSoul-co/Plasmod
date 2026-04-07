@@ -76,6 +76,11 @@ type Memory struct {
 	PolicyTags []string `json:"policy_tags,omitempty"`
 	// AlgorithmStateRef links to the MemoryAlgorithmState record keyed by memory_id+algorithm_id.
 	AlgorithmStateRef string `json:"algorithm_state_ref,omitempty"`
+	// DatasetName is a stable ingest label copied from Event.Payload["dataset"] when present.
+	// Admin dataset delete/purge match this field first (exact), then fall back to Content parsing.
+	DatasetName string `json:"dataset_name,omitempty"`
+	// SourceFileName is the originating file basename from Event.Payload["file_name"] when present.
+	SourceFileName string `json:"source_file_name,omitempty"`
 }
 
 type State struct {
