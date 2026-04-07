@@ -41,7 +41,11 @@ ANDB_BASE_URL="${ANDB_BASE_URL}" python3 scripts/e2e/member_a_capture.py \
   --out-dir "${OUT_DIR}"
 
 echo "[task4-strict] build test builder image..."
-docker build --target builder -t cogdb:test-builder .
+docker build \
+  --build-arg GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" \
+  --build-arg GOSUMDB="${GOSUMDB:-sum.golang.google.cn}" \
+  --target builder \
+  -t cogdb:test-builder .
 
 echo "[task4-strict] run S3 cold-tier roundtrip tests..."
 docker run --rm \

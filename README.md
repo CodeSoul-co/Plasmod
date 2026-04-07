@@ -749,15 +749,15 @@ The cold vector search loop terminates on `shouldEarlyStop` or bucket exhaustion
 
 ```
 [ ] docker build -t cogdb:latest . succeeds (no errors)
-[ ] docker compose up -d andb + minio starts cleanly
-[ ] GET /healthz returns 200
-[ ] POST /v1/ingest with event returns 200 with LSN
-[ ] GET /v1/query returns structured response with proof_trace
+[√] docker compose up -d andb + minio starts cleanly
+[√] GET /healthz returns 200
+[√] POST /v1/ingest with event returns 200 with LSN
+[√] GET /v1/query returns structured response with proof_trace
 [ ] TieredObjectStore archives memory to S3 (verify via mc ls)
 [ ] ColdSearch returns archived memories (include_cold=true)
-[ ] GetMemoryActivated rehydrates full Memory from S3
-[ ] go test ./src/internal/... inside container passes (excluding known failures)
-[ ] GPU visible inside container (nvidia-smi)
+[√] GetMemoryActivated rehydrates full Memory from S3
+[√] go test ./src/internal/... inside container passes (excluding known failures)
+[√] GPU visible inside container (nvidia-smi)
 ```
 
 ---
