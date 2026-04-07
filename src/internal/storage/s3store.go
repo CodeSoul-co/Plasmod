@@ -38,7 +38,8 @@ type s3ColdScored struct {
 }
 
 type s3ColdSearchConfig struct {
-	maxKeys        int
+	maxPages       int
+	maxCandidates  int
 	concurrency    int
 	batchSize      int
 	bufferFactor   int
@@ -371,12 +372,9 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 	cfg := loadS3ColdSearchConfigFromEnv()
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, pagesScanned, listTruncated, err := ListObjectsLimited(ctx, nil, s.cfg, prefix, cfg.maxPages, cfg.maxCandidates)
 	if err != nil || len(keys) == 0 {
 		return nil
-	}
-	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
-		keys = keys[:cfg.maxKeys]
 	}
 
 	targetCandidates := topK * cfg.bufferFactor
@@ -458,6 +456,10 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	for _, r := range results {
 		out = append(out, r.id)
 	}
+	log.Printf(
+		"s3cold: cold lexical search query=%q top_k=%d pages=%d listed=%d list_truncated=%t returned=%d cfg{max_pages=%d,max_candidates=%d,batch=%d,concurrency=%d}",
+		query, topK, pagesScanned, len(keys), listTruncated, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize, cfg.concurrency,
+	)
 	return out
 }
 
@@ -509,22 +511,32 @@ func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
 	algoCfg := schemas.DefaultAlgorithmConfig()
 
 	cfg := s3ColdSearchConfig{
-		maxKeys:        algoCfg.ColdMaxCandidates,
+		maxPages:       20,
+		maxCandidates:  algoCfg.ColdMaxCandidates,
 		concurrency:    8,
 		batchSize:      algoCfg.ColdBatchSize,
 		bufferFactor:   3,
 		earlyStopScore: 0.95,
 		noImprovePages: 2,
 	}
-	if cfg.maxKeys <= 0 {
-		cfg.maxKeys = 1000
+	if cfg.maxCandidates <= 0 {
+		cfg.maxCandidates = 1000
 	}
 	if cfg.batchSize <= 0 {
 		cfg.batchSize = 128
 	}
 
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxKeys); v > 0 {
-		cfg.maxKeys = v
+	if v := parseEnvIntWithDefault("S3_COLD_MAX_PAGES", cfg.maxPages); v > 0 {
+		cfg.maxPages = v
+	}
+	if v := parseEnvIntWithDefault("S3_COLD_MAX_CANDIDATES", cfg.maxCandidates); v > 0 {
+		cfg.maxCandidates = v
+	}
+	// Backward compatibility: old env name still works if new one is not set.
+	if strings.TrimSpace(os.Getenv("S3_COLD_MAX_CANDIDATES")) == "" {
+		if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxCandidates); v > 0 {
+			cfg.maxCandidates = v
+		}
 	}
 	if v := parseEnvIntWithDefault("S3_COLDSEARCH_CONCURRENCY", cfg.concurrency); v > 0 {
 		cfg.concurrency = v
@@ -648,13 +660,9 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
 	cfg := loadS3ColdSearchConfigFromEnv()
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, pagesScanned, listTruncated, err := ListObjectsLimited(ctx, nil, s.cfg, prefix, cfg.maxPages, cfg.maxCandidates)
 	if err != nil || len(keys) == 0 {
 		return nil
-	}
-
-	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
-		keys = keys[:cfg.maxKeys]
 	}
 
 	type scored struct {
@@ -663,7 +671,7 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		ts    int64
 	}
 
-	maxCandidates := cfg.maxKeys
+	maxCandidates := cfg.maxCandidates
 	if maxCandidates <= 0 {
 		maxCandidates = topK * 4
 	}
@@ -745,6 +753,10 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		}
 		out = append(out, results[i].id)
 	}
+	log.Printf(
+		"s3cold: cold vector search top_k=%d pages=%d listed=%d list_truncated=%t returned=%d cfg{max_pages=%d,max_candidates=%d,batch=%d}",
+		topK, pagesScanned, len(keys), listTruncated, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize,
+	)
 	return out
 }
 

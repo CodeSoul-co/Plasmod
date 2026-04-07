@@ -89,6 +89,7 @@ Use this matrix when switching deployment scenarios.
 | TensorRT CUDA | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=tensorrt`, `ANDB_EMBEDDER_DEVICE=cuda` |
 | Metal (macOS) | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=gguf` or `onnx`, `ANDB_EMBEDDER_DEVICE=metal` |
 | S3/MinIO cold tier enabled | `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE`, `S3_REGION`, `S3_PREFIX` |
+| S3/MinIO cold query protection (recommended) | `S3_COLD_MAX_PAGES` (default `20`), `S3_COLD_MAX_CANDIDATES` (default `1000`) |
 
 Canonical values:
 
@@ -97,6 +98,12 @@ Canonical values:
 - `ANDB_EMBEDDER=tfidf|openai|zhipuai|onnx|gguf|tensorrt`
 - `ANDB_EMBEDDER_DEVICE=cpu|cuda|metal`
 - `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE`, `S3_REGION`, `S3_PREFIX`
+- `S3_COLD_MAX_PAGES` (hard cap for ListObjects pages in cold search)
+- `S3_COLD_MAX_CANDIDATES` (hard cap for cold candidates scanned)
+
+Compatibility note:
+
+- Legacy `S3_COLDSEARCH_MAX_KEYS` is still supported as a fallback if `S3_COLD_MAX_CANDIDATES` is not set.
 
 ## Current execution status
 
