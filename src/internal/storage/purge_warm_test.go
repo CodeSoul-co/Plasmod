@@ -58,6 +58,9 @@ func TestPurgeMemoryWarmOnlyWithStats(t *testing.T) {
 	if stats.EdgeDeleteFailed != 0 {
 		t.Fatalf("expected edge delete failures = 0, got %+v", stats)
 	}
+	if stats.EdgeDeleteRetried != 0 {
+		t.Fatalf("expected no retries when bulk deleter is available, got %+v", stats)
+	}
 
 	after := store.Edges().BulkEdges([]string{mem.MemoryID})
 	if len(after) != 0 {

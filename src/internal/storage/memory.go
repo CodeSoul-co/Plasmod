@@ -359,6 +359,31 @@ func (s *memoryGraphEdgeStore) DeleteEdge(id string) {
 	}
 }
 
+// DeleteEdgesByObjectID deletes all edges where src or dst equals objectID in one critical section.
+// Returns the number of deleted edges.
+func (s *memoryGraphEdgeStore) DeleteEdgesByObjectID(objectID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ids := map[string]struct{}{}
+	for eid := range s.srcIdx[objectID] {
+		ids[eid] = struct{}{}
+	}
+	for eid := range s.dstIdx[objectID] {
+		ids[eid] = struct{}{}
+	}
+
+	deleted := 0
+	for eid := range ids {
+		if e, ok := s.edges[eid]; ok {
+			s.removeFromIdx(e)
+			delete(s.edges, eid)
+			deleted++
+		}
+	}
+	return deleted
+}
+
 func (s *memoryGraphEdgeStore) BulkEdges(objectIDs []string) []schemas.Edge {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
