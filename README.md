@@ -28,12 +28,12 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 
 ## What is implemented
 
-- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
-- Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). **`workspace_id` is required.** At least one of `file_name`, `dataset_name`, or `prefix` is required. `dry_run` only reports matches without mutating. After soft delete, cold-tier embeddings for those memories are best-effort removed via the tiered store.
-  - Matching rules: if `file_name` is set, content must contain `dataset=<file_name>`; if `dataset_name` is set, content must contain `dataset_name:<dataset_name>`; if `prefix` is set, content must contain `dataset=<prefix` (prefix-style substring on the `dataset=` marker).
+- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with **25 HTTP paths** registered in [`Gateway.RegisterRoutes`](src/internal/access/gateway.go) (see [HTTP API surface](#http-api-surface-v1)), graceful shutdown via `context.WithCancel`
+- Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). **`workspace_id` is required.** At least one of `file_name`, `dataset_name`, or `prefix` is required. `dry_run` only reports matches without mutating. Soft delete sets `IsActive=false` and evicts the hot-tier **cache** copy so stale rows are not served; **cold-tier embeddings are kept** until hard delete (`purge`) so metadata and vectors stay consistent. Query paths filter inactive memories.
+  - Matching rules (**AND**): prefer structured fields on `Memory` when ingest provided them — `dataset` → `Memory.dataset_name`, `file_name` → `Memory.source_file_name` (from `Event.Payload`). Otherwise selectors fall back to **token-safe** parsing of `Memory.Content` (exact file token after `dataset=`, exact `dataset_name:` label without matching a longer label prefix, prefix on the file token).
   - Example bodies: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}` · `{"file_name":"base.10M.fbin","dataset_name":"deep1B","workspace_id":"w_demo","dry_run":false}`
   - Response fields include `matched`, `deleted`, and `memory_ids` (all memory IDs that matched the selectors; in `dry_run`, `deleted` stays `0` while `memory_ids` still lists matches).
-- Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. It physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting. Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
+- Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. When a tiered object store is wired, it physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. If the runtime has **no** `TieredObjectStore`, purge falls back to **warm-only** removal (`purge_backend` in the JSON response is `warm_only`; cold embeddings may remain orphaned until a later cold GC or a deployment that wires tiered storage). By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting. Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
@@ -56,10 +56,26 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
 
+## HTTP API surface (v1)
+
+Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.go). Content type for JSON bodies: `application/json`.
+
+| Group | Endpoints |
+|-------|-----------|
+| **Health** | `GET /healthz` |
+| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` |
+| **Core** | `POST /v1/ingest/events` · `POST /v1/query` |
+| **Canonical CRUD** | `GET` / `POST` — `/v1/agents`, `/v1/sessions`, `/v1/memory`, `/v1/states`, `/v1/artifacts`, `/v1/edges`, `/v1/policies`, `/v1/share-contracts` (list/filter via query params; POST creates or replaces per handler) |
+| **Traces** | `GET /v1/traces/{object_id}` |
+| **Internal (Agent SDK bridge)** | `POST` — `/v1/internal/memory/recall`, `/v1/internal/memory/ingest`, `/v1/internal/memory/compress`, `/v1/internal/memory/summarize`, `/v1/internal/memory/decay`, `/v1/internal/memory/share`, `/v1/internal/memory/conflict/resolve` |
+
+**Operational notes:** `/v1/admin/*` is protected when `ANDB_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response).
+
 ## Dataset bulk import and CLI delete / purge (E2E)
 
 Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`).
 
+- **Ingest is not transactional:** use `--concurrency 1` with `--checkpoint PATH` for resumable imports after failures, plus `--ingest-retries` / `--retry-backoff` for transient HTTP errors (see script `--help`).
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
 - **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.
@@ -132,7 +148,7 @@ HTTP API (access)
 
 Code layout:
 
-- [`src/internal/access`](src/internal/access): HTTP gateway, 14 routes including ingest, query, and canonical CRUD
+- [`src/internal/access`](src/internal/access): HTTP gateway (`RegisterRoutes`), ingest, query, admin, canonical CRUD, traces, internal SDK bridge
 - [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
 - [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
 - [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
@@ -615,7 +631,7 @@ Additional supporting docs already in the repo:
 - Tiered hot → warm → cold retrieval with RRF fusion 
 - 1-hop graph expansion in every `QueryResponse` 
 - Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time 
-- Go HTTP API with 14 routes, Python SDK, and integration test suite 
+- Go HTTP API (25 paths in `RegisterRoutes`), Python SDK, and integration test suite 
 - Pluggable memory governance algorithms (Baseline + MemoryBank) 
 - 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) 
 - `include_cold` query flag fully wired 
@@ -638,6 +654,45 @@ Additional supporting docs already in the repo:
 - Cloud-native distributed orchestration
 
 For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md).
+
+---
+
+## Code Review — Known Issues (Pass 9, 2026-04-07)
+
+> Issues identified during review of `feature/schema-a` + `feature/graph-c` merge. Not yet fixed.
+
+### 🐛 Bug (breaks multi-provider embedding support)
+
+**`.env.example` / `app/bootstrap.go` — per-provider env var names are dead; bootstrap only reads unified `ANDB_EMBEDDER_*` vars**
+`bootstrap.go` reads `ANDB_EMBEDDER_API_KEY`, `ANDB_EMBEDDER_MODEL`, and `ANDB_EMBEDDER_BASE_URL` for **all** online providers (openai, zhipuai, cohere, huggingface). The `.env.example` previously documented per-provider names (`ANDB_OPENAI_API_KEY`, `ANDB_ZHIPUAI_API_KEY`, `ANDB_COHERE_API_KEY`, `ANDB_HUGGINGFACE_API_KEY`, `ANDB_OPENAI_MODEL`, `ANDB_ZHIPUAI_MODEL`, `ANDB_HUGGINGFACE_MODEL`) that are **never read**. Any user following the old example cannot switch embedding providers without knowing the correct unified variable names. `.env.example` has been corrected; existing deployments using the old names must migrate to `ANDB_EMBEDDER_API_KEY` / `ANDB_EMBEDDER_MODEL` / `ANDB_EMBEDDER_BASE_URL`.
+
+### ⚠️ Medium
+
+**`admin_auth.go` — `constantTimeEqual` leaks key length via timing**
+The length check (`len(a) != len(b)`) returns early before the constant-time comparison, allowing an attacker to distinguish "wrong length" from "wrong content" by timing. Fix: derive fixed-length HMAC digests of both keys and compare those with `subtle.ConstantTimeCompare`.
+
+**`dataset_match.go` — `contentDatasetNameLabelEquals` ignores `,` and `;` as token boundaries**
+The boundary check only handles space/tab/newline/`row:`. Content like `dataset_name:deep1B,extra` will not match `deep1B`. Either extend the boundary character set or document the exact token grammar.
+
+**`purge_warm.go` — edge deletion race with concurrent graph writes**
+`BulkEdges` returns a snapshot and `DeleteEdge` is called in a loop. New edges added between the two calls are not cleaned up. The in-memory `GraphEdgeStore` is not transactional. Needs a tombstone-based approach or a short mutex window around the read-delete pair.
+
+**`s3store.go` — `selectTopScored` sorts the caller's slice in place**
+`sort.Slice(candidates, ...)` mutates the input. Currently safe because callers don't reuse the slice after, but this is an implicit contract that is easy to violate. Sort a copy, or document the mutation.
+
+### ℹ️ Low
+
+**`admin_auth.go` — no startup signal when `ANDB_ADMIN_API_KEY` is unset**
+`adminAuthWarnOnce` body is empty. Production deployments that forget to set the env var get no indication that admin routes are unprotected. Emit a structured log warning at startup (not per-request).
+
+**`dataset_match.go` — all-empty selectors match the entire workspace**
+When `fileName`, `datasetName`, and `prefix` are all empty, `MemoryDatasetMatch` returns `true` for any memory in the workspace. The gateway enforces at least one selector, but direct callers have no guard. Add a doc comment warning.
+
+**`purge_warm.go` — `DeleteEdge` errors are silently discarded**
+The return value of `DeleteEdge` is not checked. Silent failures leave graph edges dangling without any log entry.
+
+**`s3store.go` — no hard upper bound on S3 `ListObjects` pages**
+The cold vector search loop terminates on `shouldEarlyStop` or bucket exhaustion but has no `maxPages` guard. A large cold store with a poor query could issue hundreds of S3 API calls and incur unexpected cost.
 
 ---
 
