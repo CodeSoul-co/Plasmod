@@ -1001,6 +1001,43 @@ Seed pipeline verified end-to-end:
 - `resp.Edges` (14): `belongs_to_session` + `owned_by_agent` + `derived_from` + `caused_by` + `projected_from`
 - `QueryChain` ran (not skipped) — subgraph and proof trace assembled
 
+#### Bug Fixes (2026-04-07) — Code Review Pass 9
+
+Two bugs identified in the Code Review pass were fixed and merged from `dev`:
+
+**🐛 Bug 1 (Critical): `simpleTokenize` in `onnx_cuda.go` — fake tokenizer producing wrong embeddings**
+
+The original tokenizer mapped each Unicode code point `% 30000 + 1000` to a token ID. This has nothing to do with BERT WordPiece tokenization, meaning every inference call was producing meaningless vectors.
+
+| File | Fix |
+|------|-----|
+| `src/internal/dataplane/embedding/onnx_tokenizer.go` | **New file**: real BERT WordPiece tokenizer — lowercase, NFD normalisation, accent stripping, CJK/punct spacing, vocab.txt lookup with `##` continuation, FNV-32a hash fallback when no vocab file |
+| `src/internal/dataplane/embedding/onnx_cuda.go` | Replace `simpleTokenize()` call with `e.tokenizer.tokenize()`; add `VocabPath` to `OnnxConfig`; add `tokenizer *bertTokenizer` field |
+| `src/internal/dataplane/embedding/tensorrt_cuda.go` | Same fix: replace per-char hashing with `bertTokenizer`; add `VocabPath` to `TensorRTConfig` |
+
+**🐛 Bug 2 (Critical): `bootstrap.go` missing `onnx`, `tensorrt`, `huggingface`, `vertexai` provider cases**
+
+The bootstrap switch only handled `openai`, `zhipuai`, `cohere`. Setting `ANDB_EMBEDDER=onnx` or `ANDB_EMBEDDER=tensorrt` fell through to the default TFIDF stub, silently ignoring the GPU providers.
+
+| File | Fix |
+|------|-----|
+| `src/internal/app/bootstrap.go` | Added `case "huggingface"`, `case "vertexai"`, `case "onnx"`, `case "tensorrt"` — each reads `ANDB_EMBEDDER_MODEL_PATH`, `ANDB_EMBEDDER_DIM`, `ANDB_EMBEDDER_DEVICE` and properly initialises the GPU embedder |
+
+**Additional fixes:**
+
+| File | Fix |
+|------|-----|
+| `go.mod` | Downgrade `golang.org/x/text` from `v0.35.0` → `v0.24.0` (v0.35.0 requires Go 1.25; server has Go 1.24) |
+| `libs/go-llama.cpp/` | Add stub `go.mod` + `llama.go` so non-`gguf`-tag builds resolve the replace directive without needing the real C++ library |
+
+**Verification:**
+
+```
+$ go build ./src/internal/dataplane/embedding/   # PASS
+$ go build ./src/internal/...                    # PASS
+$ go test ./src/internal/dataplane/embedding/    # ok  0.023s
+```
+
 ---
 
 ### Member C — S3 Cold Tier, DFS Search, Graph Hot/Cold Integration
