@@ -661,6 +661,11 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 > Issues identified during review of `feature/schema-a` + `feature/graph-c` merge. Not yet fixed.
 
+### 🐛 Bug (breaks multi-provider embedding support)
+
+**`.env.example` / `app/bootstrap.go` — per-provider env var names are dead; bootstrap only reads unified `ANDB_EMBEDDER_*` vars**
+`bootstrap.go` reads `ANDB_EMBEDDER_API_KEY`, `ANDB_EMBEDDER_MODEL`, and `ANDB_EMBEDDER_BASE_URL` for **all** online providers (openai, zhipuai, cohere, huggingface). The `.env.example` previously documented per-provider names (`ANDB_OPENAI_API_KEY`, `ANDB_ZHIPUAI_API_KEY`, `ANDB_COHERE_API_KEY`, `ANDB_HUGGINGFACE_API_KEY`, `ANDB_OPENAI_MODEL`, `ANDB_ZHIPUAI_MODEL`, `ANDB_HUGGINGFACE_MODEL`) that are **never read**. Any user following the old example cannot switch embedding providers without knowing the correct unified variable names. `.env.example` has been corrected; existing deployments using the old names must migrate to `ANDB_EMBEDDER_API_KEY` / `ANDB_EMBEDDER_MODEL` / `ANDB_EMBEDDER_BASE_URL`.
+
 ### ⚠️ Medium
 
 **`admin_auth.go` — `constantTimeEqual` leaks key length via timing**
