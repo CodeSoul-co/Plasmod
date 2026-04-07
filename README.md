@@ -659,13 +659,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ## Code Review — Known Issues (Pass 9, 2026-04-07)
 
-> Issues identified during review of `feature/schema-a` + `feature/graph-c` merge.
-> Status legend: `[DONE]` fixed, `[PARTIAL]` mitigated but follow-up needed, `[OPEN]` not fixed.
-
-### 🐛 Bug (breaks multi-provider embedding support)
-
-** `.env.example` / `app/bootstrap.go` — per-provider env var names are dead; bootstrap only reads unified `ANDB_EMBEDDER_*` vars**
-`bootstrap.go` reads `ANDB_EMBEDDER_API_KEY`, `ANDB_EMBEDDER_MODEL`, and `ANDB_EMBEDDER_BASE_URL` for **all** online providers (openai, zhipuai, cohere, huggingface). The `.env.example` previously documented per-provider names (`ANDB_OPENAI_API_KEY`, `ANDB_ZHIPUAI_API_KEY`, `ANDB_COHERE_API_KEY`, `ANDB_HUGGINGFACE_API_KEY`, `ANDB_OPENAI_MODEL`, `ANDB_ZHIPUAI_MODEL`, `ANDB_HUGGINGFACE_MODEL`) that are **never read**. Any user following the old example cannot switch embedding providers without knowing the correct unified variable names. `.env.example` has been corrected; existing deployments using the old names must migrate to `ANDB_EMBEDDER_API_KEY` / `ANDB_EMBEDDER_MODEL` / `ANDB_EMBEDDER_BASE_URL`.
+> Remaining issues identified during review of `feature/schema-a` + `feature/graph-c` merge.
 
 ### ⚠️ Medium
 
@@ -675,25 +669,13 @@ The length check (`len(a) != len(b)`) returns early before the constant-time com
 ** `dataset_match.go` — `contentDatasetNameLabelEquals` ignores `,` and `;` as token boundaries**
 The boundary check only handles space/tab/newline/`row:`. Content like `dataset_name:deep1B,extra` will not match `deep1B`. Either extend the boundary character set or document the exact token grammar.
 
-** `purge_warm.go` — edge deletion race with concurrent graph writes**
-`PurgeMemoryWarmOnlyWithStats` now prefers a store-level bulk incident-edge delete capability (`DeleteEdgesByObjectID`) implemented by memory/badger edge stores, reducing the read-delete race window to one critical section/transaction. It still keeps a fallback pass with residual checks and warning logs for stores that do not implement the bulk deleter.
-
 ** `s3store.go` — `selectTopScored` sorts the caller's slice in place**
 `sort.Slice(candidates, ...)` mutates the input. Currently safe because callers don't reuse the slice after, but this is an implicit contract that is easy to violate. Sort a copy, or document the mutation.
 
 ### ℹ️ Low
 
-**`admin_auth.go` — no startup signal when `ANDB_ADMIN_API_KEY` is unset**
-`adminAuthWarnOnce` body is empty. Production deployments that forget to set the env var get no indication that admin routes are unprotected. Emit a structured log warning at startup (not per-request).
-
 ** `dataset_match.go` — all-empty selectors match the entire workspace**
 When `fileName`, `datasetName`, and `prefix` are all empty, `MemoryDatasetMatch` returns `true` for any memory in the workspace. The gateway enforces at least one selector, but direct callers have no guard. Add a doc comment warning.
-
-** `purge_warm.go` — `DeleteEdge` errors are silently discarded**
-The return value of `DeleteEdge` is not checked. Silent failures leave graph edges dangling without any log entry.
-
-** `s3store.go` — no hard upper bound on S3 `ListObjects` pages**
-The cold vector search loop terminates on `shouldEarlyStop` or bucket exhaustion but has no `maxPages` guard. A large cold store with a poor query could issue hundreds of S3 API calls and incur unexpected cost.
 
 ---
 
