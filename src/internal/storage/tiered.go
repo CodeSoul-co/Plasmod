@@ -206,6 +206,25 @@ func (t *TieredObjectStore) DeleteMemoryEmbedding(memoryID string) error {
 	return t.cold.DeleteMemoryEmbedding(memoryID)
 }
 
+// SoftDeleteMemoryTierCleanup runs after canonical Memory soft-delete (IsActive=false) was
+// written to ObjectStore. It evicts the hot-tier copy so stale active payloads are not served;
+// it does not remove cold embeddings — those stay aligned with the warm Memory row until
+// hard delete (purge / HardDeleteMemory).
+func (t *TieredObjectStore) SoftDeleteMemoryTierCleanup(memoryID string) {
+	if t == nil || t.hot == nil {
+		return
+	}
+	t.hot.Evict(memoryID)
+}
+
+// HotCache returns the hot object cache (may be nil).
+func (t *TieredObjectStore) HotCache() *HotObjectCache {
+	if t == nil {
+		return nil
+	}
+	return t.hot
+}
+
 // HardDeleteMemory removes a memory across hot, warm, cold tiers and graph edges.
 // It does not enforce IsActive or selector rules; callers must apply policy first.
 func (t *TieredObjectStore) HardDeleteMemory(memoryID string) {

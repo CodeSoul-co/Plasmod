@@ -206,8 +206,11 @@ func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 	if mem, ok := deps.store.Objects().GetMemory(memID); !ok || mem.IsActive {
 		t.Fatalf("memory should be inactive after delete")
 	}
-	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); ok {
-		t.Fatalf("cold embedding should be deleted after delete")
+	if _, ok, _ := deps.cold.GetMemoryEmbedding(memID); !ok {
+		t.Fatalf("cold embedding should remain after soft delete until purge")
+	}
+	if deps.runtime.TieredObjects().HotCache().Contains(memID) {
+		t.Fatalf("hot cache should be evicted after soft delete")
 	}
 }
 
