@@ -66,8 +66,10 @@ services:
       ANDB_HTTP_ADDR: 0.0.0.0:8080
       ANDB_STORAGE: disk
       ANDB_DATA_DIR: /data
-      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-onnx}
-      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cuda}
+      # CPU-safe defaults for Member A baseline stack.
+      # Override via env when validating GPU paths (e.g. ANDB_EMBEDDER=onnx, ANDB_EMBEDDER_DEVICE=cuda).
+      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-tfidf}
+      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cpu}
       S3_ENDPOINT: minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
@@ -75,15 +77,6 @@ services:
       S3_SECURE: "false"
       S3_REGION: us-east-1
       S3_PREFIX: andb/docker
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${ANDB_GPU_COUNT:-1}
-              capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
       interval: 10s
