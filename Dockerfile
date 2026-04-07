@@ -56,6 +56,11 @@ RUN git clone --depth 1 --recurse-submodules "${GO_LLAMACPP_REPO}" /tmp/go-llama
 WORKDIR /src
 
 # go.mod replace: andb/retrievalplane => ./src/internal/dataplane/retrievalplane
+# go.mod also replaces github.com/go-skynet/go-llama.cpp => ./libs/go-llama.cpp.
+# Prepare that local path inside the build container before `go mod download`.
+RUN mkdir -p /src/libs \
+    && cp -a /tmp/go-llama-cpp /src/libs/go-llama.cpp
+
 COPY go.mod go.sum ./
 COPY src ./src
 RUN if [ -n "${GOPROXY}" ]; then go env -w GOPROXY="${GOPROXY}"; fi \
