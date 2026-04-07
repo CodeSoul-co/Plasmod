@@ -236,6 +236,10 @@ const (
 	PayloadKeyStateValue = "state_value"
 	PayloadKeyURI        = "uri"
 	PayloadKeyMimeType   = "mime_type"
+	// PayloadKeyDataset is the stable dataset label (e.g. import_dataset --dataset).
+	PayloadKeyDataset = "dataset"
+	// PayloadKeyFileName is the originating file basename when ingesting file-backed rows.
+	PayloadKeyFileName = "file_name"
 )
 
 // Numeric defaults shared across worker implementations.

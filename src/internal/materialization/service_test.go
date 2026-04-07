@@ -46,6 +46,30 @@ func TestService_MaterializeEvent_Basic(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEvent_PayloadDatasetAndFileName(t *testing.T) {
+	svc := NewService()
+	ev := schemas.Event{
+		EventID:     "evt_ds",
+		AgentID:     "agent_1",
+		SessionID:   "sess_1",
+		WorkspaceID: "ws_1",
+		EventType:   "dataset_record",
+		LogicalTS:   1,
+		Payload: map[string]any{
+			"text":      "dataset=f.bin dataset_name:DS row:0",
+			"dataset":   "DS",
+			"file_name": "f.bin",
+		},
+	}
+	res := svc.MaterializeEvent(ev)
+	if res.Memory.DatasetName != "DS" {
+		t.Errorf("Memory.DatasetName: want DS, got %q", res.Memory.DatasetName)
+	}
+	if res.Memory.SourceFileName != "f.bin" {
+		t.Errorf("Memory.SourceFileName: want f.bin, got %q", res.Memory.SourceFileName)
+	}
+}
+
 func TestService_MaterializeEvent_EdgeDerivation(t *testing.T) {
 	svc := NewService()
 	ev := schemas.Event{
