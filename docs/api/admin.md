@@ -93,6 +93,20 @@ Main response fields:
 
 > Note: This endpoint is intended for local/dev validation and pre-delivery checks.
 
+### `POST /v1/admin/dataset/delete`
+
+Soft-deletes **Memory** rows that match the request selectors (**AND** semantics). JSON body must include **`workspace_id`** and at least one of **`file_name`**, **`dataset_name`**, **`prefix`**. Optional **`dry_run`**: if true, returns `matched` / `memory_ids` without mutating.
+
+Matching prefers structured fields on `Memory` (`dataset_name`, `source_file_name` from ingest payload) and otherwise uses token-safe parsing of `Content` — see `schemas.MemoryDatasetMatch` in code and the root **`README.md`** (admin dataset cleanup).
+
+### `POST /v1/admin/dataset/purge`
+
+Hard-deletes memories that match the same selector keys as delete. JSON body: **`workspace_id`**, at least one selector, optional **`dry_run`**, optional **`only_if_inactive`** (default **true** — skip active memories unless set to false).
+
+When a **`TieredObjectStore`** is wired, removal uses **`HardDeleteMemory`** (hot/warm/cold as applicable). If tiered storage is **not** configured, the handler falls back to **warm-only** purge (`PurgeMemoryWarmOnly`); the JSON response includes **`purge_backend`**: `"tiered"` or `"warm_only"`.
+
+> **Security:** these admin routes are **not authenticated** in the default dev server. Restrict by network or add a reverse proxy / API key in production.
+
 ## Not Yet Implemented
 
 - `GET /readyz`

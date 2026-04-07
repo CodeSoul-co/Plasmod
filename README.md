@@ -28,7 +28,7 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 
 ## What is implemented
 
-- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
+- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with **25 HTTP paths** registered in [`Gateway.RegisterRoutes`](src/internal/access/gateway.go) (see [HTTP API surface](#http-api-surface-v1)), graceful shutdown via `context.WithCancel`
 - Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). **`workspace_id` is required.** At least one of `file_name`, `dataset_name`, or `prefix` is required. `dry_run` only reports matches without mutating. Soft delete sets `IsActive=false` and evicts the hot-tier **cache** copy so stale rows are not served; **cold-tier embeddings are kept** until hard delete (`purge`) so metadata and vectors stay consistent. Query paths filter inactive memories.
   - Matching rules (**AND**): prefer structured fields on `Memory` when ingest provided them — `dataset` → `Memory.dataset_name`, `file_name` → `Memory.source_file_name` (from `Event.Payload`). Otherwise selectors fall back to **token-safe** parsing of `Memory.Content` (exact file token after `dataset=`, exact `dataset_name:` label without matching a longer label prefix, prefix on the file token).
   - Example bodies: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}` · `{"file_name":"base.10M.fbin","dataset_name":"deep1B","workspace_id":"w_demo","dry_run":false}`
@@ -56,10 +56,26 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
 
+## HTTP API surface (v1)
+
+Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.go). Content type for JSON bodies: `application/json`.
+
+| Group | Endpoints |
+|-------|-----------|
+| **Health** | `GET /healthz` |
+| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` |
+| **Core** | `POST /v1/ingest/events` · `POST /v1/query` |
+| **Canonical CRUD** | `GET` / `POST` — `/v1/agents`, `/v1/sessions`, `/v1/memory`, `/v1/states`, `/v1/artifacts`, `/v1/edges`, `/v1/policies`, `/v1/share-contracts` (list/filter via query params; POST creates or replaces per handler) |
+| **Traces** | `GET /v1/traces/{object_id}` |
+| **Internal (Agent SDK bridge)** | `POST` — `/v1/internal/memory/recall`, `/v1/internal/memory/ingest`, `/v1/internal/memory/compress`, `/v1/internal/memory/summarize`, `/v1/internal/memory/decay`, `/v1/internal/memory/share`, `/v1/internal/memory/conflict/resolve` |
+
+**Operational notes:** `/v1/admin/*` is **not authenticated** in the default dev server — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response).
+
 ## Dataset bulk import and CLI delete / purge (E2E)
 
 Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`).
 
+- **Ingest is not transactional:** use `--concurrency 1` with `--checkpoint PATH` for resumable imports after failures, plus `--ingest-retries` / `--retry-backoff` for transient HTTP errors (see script `--help`).
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
 - **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.
@@ -132,7 +148,7 @@ HTTP API (access)
 
 Code layout:
 
-- [`src/internal/access`](src/internal/access): HTTP gateway, 14 routes including ingest, query, and canonical CRUD
+- [`src/internal/access`](src/internal/access): HTTP gateway (`RegisterRoutes`), ingest, query, admin, canonical CRUD, traces, internal SDK bridge
 - [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
 - [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
 - [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
@@ -615,7 +631,7 @@ Additional supporting docs already in the repo:
 - Tiered hot → warm → cold retrieval with RRF fusion 
 - 1-hop graph expansion in every `QueryResponse` 
 - Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time 
-- Go HTTP API with 14 routes, Python SDK, and integration test suite 
+- Go HTTP API (25 paths in `RegisterRoutes`), Python SDK, and integration test suite 
 - Pluggable memory governance algorithms (Baseline + MemoryBank) 
 - 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) 
 - `include_cold` query flag fully wired 
