@@ -572,10 +572,15 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
+	cfg := loadS3ColdSearchConfigFromEnv()
 
 	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
+	}
+
+	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
+		keys = keys[:cfg.maxKeys]
 	}
 
 	type scored struct {
@@ -584,38 +589,72 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		ts    int64
 	}
 
-	results := make([]scored, 0, len(keys))
-	for _, key := range keys {
-		data, err := GetBytes(ctx, nil, s.cfg, key)
-		if err != nil || data == nil {
-			continue
+	maxCandidates := cfg.maxKeys
+	if maxCandidates <= 0 {
+		maxCandidates = topK * 4
+	}
+	if maxCandidates < topK {
+		maxCandidates = topK
+	}
+
+	results := make([]scored, 0, min(maxCandidates, len(keys)))
+
+	for start := 0; start < len(keys); start += cfg.batchSize {
+		end := start + cfg.batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		page := keys[start:end]
+
+		pageResults := make([]scored, 0, len(page))
+		for _, key := range page {
+			data, err := GetBytes(ctx, nil, s.cfg, key)
+			if err != nil || data == nil {
+				continue
+			}
+
+			vec, err := bytesToFloat32Slice(data)
+			if err != nil {
+				continue
+			}
+
+			score := dotProduct(queryVec, vec)
+			if score <= 0 {
+				continue
+			}
+
+			memoryID := memoryIDFromEmbeddingKey(key)
+			if memoryID == "" {
+				continue
+			}
+
+			pageResults = append(pageResults, scored{
+				id:    memoryID,
+				score: score,
+				ts:    0,
+			})
 		}
 
-		vec, err := bytesToFloat32Slice(data)
-		if err != nil {
-			continue
-		}
+		if len(pageResults) > 0 {
+			results = append(results, pageResults...)
 
-		score := dotProduct(queryVec, vec)
-		if score <= 0 {
-			continue
-		}
+			sort.Slice(results, func(i, j int) bool {
+				if results[i].score != results[j].score {
+					return results[i].score > results[j].score
+				}
+				return results[i].ts > results[j].ts
+			})
 
-		memoryID := memoryIDFromEmbeddingKey(key)
-		if memoryID == "" {
-			continue
+			if len(results) > maxCandidates {
+				results = results[:maxCandidates]
+			}
 		}
+	}
 
-		var ts int64
-		if m, ok := s.GetMemory(memoryID); ok {
-			ts = m.Version
+	for i := range results {
+		if m, ok := s.GetMemory(results[i].id); ok {
+			results[i].ts = m.Version
 		}
-
-		results = append(results, scored{
-			id:    memoryID,
-			score: score,
-			ts:    ts,
-		})
 	}
 
 	sort.Slice(results, func(i, j int) bool {
