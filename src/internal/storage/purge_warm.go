@@ -15,6 +15,12 @@ type PurgeWarmStats struct {
 	EdgeDeleteRetried   int
 }
 
+// Optional capability: delete all edges incident to a given object in one store-level critical section.
+// Implemented by in-memory and badger edge stores to reduce read-delete race windows.
+type warmEdgeBulkDeleter interface {
+	DeleteEdgesByObjectID(objectID string) int
+}
+
 // PurgeMemoryWarmOnlyWithStats executes warm-only purge and returns deletion stats.
 // GraphEdgeStore does not currently return DeleteEdge errors, so we verify by
 // probing GetEdge after each delete and emit warnings for any leftovers.
@@ -27,6 +33,18 @@ func PurgeMemoryWarmOnlyWithStats(rs RuntimeStorage, memoryID string) PurgeWarmS
 		hc.Evict(memoryID)
 	}
 	if es := rs.Edges(); es != nil {
+		if bulk, ok := es.(warmEdgeBulkDeleter); ok {
+			stats.EdgeDeleteSucceeded = bulk.DeleteEdgesByObjectID(memoryID)
+			residual := es.BulkEdges([]string{memoryID})
+			if len(residual) > 0 {
+				stats.EdgeDeleteFailed = len(residual)
+				log.Printf(
+					"purge_warm: bulk delete left residual edges memory_id=%s residual=%d",
+					memoryID, len(residual),
+				)
+			}
+		}
+
 		seen := map[string]struct{}{}
 		for pass := 0; pass < 2; pass++ {
 			edges := es.BulkEdges([]string{memoryID})
