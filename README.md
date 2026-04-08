@@ -1012,7 +1012,7 @@ Seed pipeline verified end-to-end:
   - `DFSRelevanceThreshold float64`
 - Read from `configs/algorithm_memorybank.yaml` or env vars
 
-**6. Cold-tier proof trace and evidence assembly**
+**6. Cold-tier proof trace and evidence assembly**✅
 - When cold memories appear in `QueryResponse.Objects`, `Provenance` must include `"cold_tier"`
 - `Assembler.Build` must handle cold memories without graph edges
 - Evidence cache: cold hit/miss reported in `QueryResponse.EvidenceCache`
@@ -1034,8 +1034,8 @@ Seed pipeline verified end-to-end:
 [ ] ColdSearch latency < 500ms for 10K archived memories
 [√] RRF fusion: cold+hot combined ranking works correctly
 [ ] HNSW cold index loads from S3 and produces correct scores
-[ ] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
-[ ] EvidenceCache reports cold_hits and cold_misses
+[√] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
+[√] EvidenceCache reports cold_hits and cold_misses
 [ ] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
 [ ] End-to-end: archive 10K memories -> query include_cold=true -> correct results
 ```
