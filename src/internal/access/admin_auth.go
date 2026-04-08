@@ -52,16 +52,20 @@ func WrapAdminAuth(next http.Handler) http.Handler {
 }
 
 func constantTimeEqual(a, b string) bool {
-	// Hash to fixed-length digests before comparing so we do not leak key length via timing.
-	// Empty key semantics remain: empty is always rejected.
-	digest := func(s string) []byte {
-		mac := hmac.New(sha256.New, []byte("andb_admin_auth_compare_v1"))
-		_, _ = mac.Write([]byte(s))
-		return mac.Sum(nil)
+	// Keep prior semantics: empty credentials are always rejected.
+	if a == "" || b == "" {
+		return false
 	}
-	da := digest(a)
-	db := digest(b)
-	eq := subtle.ConstantTimeCompare(da, db) == 1
-	return eq && a != "" && b != ""
+	// Compare fixed-length HMAC digests to avoid leaking key length via timing.
+	da := authDigest(a)
+	db := authDigest(b)
+	return subtle.ConstantTimeCompare(da, db) == 1
+}
+
+func authDigest(v string) []byte {
+	// Key material is process-local and constant per run; digest length is fixed (sha256.Size).
+	m := hmac.New(sha256.New, []byte("andb-admin-auth-v1"))
+	_, _ = m.Write([]byte(v))
+	return m.Sum(nil)
 }
 
