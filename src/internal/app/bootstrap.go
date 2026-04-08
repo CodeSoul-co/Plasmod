@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"andb/src/internal/access"
+	"andb/src/internal/config"
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
 	"andb/src/internal/dataplane/embedding"
@@ -91,7 +92,13 @@ func BuildServer() (*http.Server, func() error, error) {
 		coldStore = storage.NewInMemoryColdStore()
 		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
 	}
-	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), coldStore)
+	tieredObjects := storage.NewTieredObjectStoreWithThreshold(
+		store.HotCache(),
+		store.Objects(),
+		store.Edges(),
+		coldStore,
+		algoCfg.HotTierSalienceThreshold,
+	)
 
 	// ── Semantic Layer ───────────────────────────────────────────────────────
 	objectModel := semantic.NewObjectModelRegistry()
@@ -104,7 +111,12 @@ func BuildServer() (*http.Server, func() error, error) {
 	//   ANDB_EVIDENCE_CACHE_SIZE   (default 10000)
 	//   ANDB_MAX_PROOF_DEPTH       (default 8)
 	//   ANDB_HOT_TIER_THRESHOLD    (default 0.5)
-	algoCfg := schemas.DefaultAlgorithmConfig()
+	algoCfg, err := config.LoadSharedAlgorithmConfig()
+	if err != nil {
+		log.Printf("[bootstrap] shared algorithm config load failed, using defaults: %v", err)
+		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
+
 	if sz := os.Getenv("ANDB_EVIDENCE_CACHE_SIZE"); sz != "" {
 		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
 			algoCfg.EvidenceCacheSize = n
