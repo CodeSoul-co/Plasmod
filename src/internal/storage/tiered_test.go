@@ -130,6 +130,26 @@ func TestTieredObjectStore_SoftDeleteMemoryTierCleanup_EvictsHot(t *testing.T) {
 	}
 }
 
+func TestTieredObjectStore_HardDeleteMemory_DeletesColdIncidentEdges(t *testing.T) {
+	hot := NewHotObjectCache(100)
+	warm := newMemoryObjectStore()
+	warmEdges := newMemoryGraphEdgeStore()
+	cold := NewInMemoryColdStore()
+	tiered := NewTieredObjectStore(hot, warm, warmEdges, cold)
+
+	cold.PutEdge(schemas.Edge{EdgeID: "e_inc", SrcObjectID: "mem_x", DstObjectID: "evt_1", EdgeType: "derived_from"})
+	cold.PutEdge(schemas.Edge{EdgeID: "e_other", SrcObjectID: "mem_y", DstObjectID: "evt_2", EdgeType: "derived_from"})
+
+	tiered.HardDeleteMemory("mem_x")
+
+	if _, ok := cold.GetEdge("e_inc"); ok {
+		t.Fatalf("expected incident cold edge to be deleted")
+	}
+	if _, ok := cold.GetEdge("e_other"); !ok {
+		t.Fatalf("expected unrelated cold edge to remain")
+	}
+}
+
 func TestInMemoryColdStore_ColdVectorSearch(t *testing.T) {
 	cold := NewInMemoryColdStore()
 

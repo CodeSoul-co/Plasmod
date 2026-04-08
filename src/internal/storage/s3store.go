@@ -38,7 +38,8 @@ type s3ColdScored struct {
 }
 
 type s3ColdSearchConfig struct {
-	maxKeys        int
+	maxPages       int
+	maxCandidates  int
 	concurrency    int
 	batchSize      int
 	bufferFactor   int
@@ -83,6 +84,22 @@ func (s *S3ColdStore) artifactKey(id string) string {
 
 func (s *S3ColdStore) edgeKey(id string) string {
 	return fmt.Sprintf("%s/cold/edges/%s.json", s.cfg.Prefix, id)
+}
+
+func (s *S3ColdStore) edgeBySrcKey(srcID, edgeID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_src/%s/%s.ref", s.cfg.Prefix, srcID, edgeID)
+}
+
+func (s *S3ColdStore) edgeByDstKey(dstID, edgeID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_dst/%s/%s.ref", s.cfg.Prefix, dstID, edgeID)
+}
+
+func (s *S3ColdStore) edgeBySrcPrefix(srcID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_src/%s/", s.cfg.Prefix, srcID)
+}
+
+func (s *S3ColdStore) edgeByDstPrefix(dstID string) string {
+	return fmt.Sprintf("%s/cold/edges_by_dst/%s/", s.cfg.Prefix, dstID)
 }
 
 func (s *S3ColdStore) PutMemory(m schemas.Memory) {
@@ -253,6 +270,13 @@ func (s *S3ColdStore) PutEdge(e schemas.Edge) {
 	if err := PutBytes(context.Background(), nil, s.cfg, s.edgeKey(e.EdgeID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put edge %s: %v", e.EdgeID, err)
 	}
+
+	// Secondary indices for incident-edge lookup by object ID.
+	// These are small reference objects so HardDeleteMemory can delete cold edges
+	// without scanning the entire cold edge set.
+	ref := []byte("1")
+	_ = PutBytes(context.Background(), nil, s.cfg, s.edgeBySrcKey(e.SrcObjectID, e.EdgeID), ref, "application/octet-stream")
+	_ = PutBytes(context.Background(), nil, s.cfg, s.edgeByDstKey(e.DstObjectID, e.EdgeID), ref, "application/octet-stream")
 }
 
 func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
@@ -274,7 +298,44 @@ func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
 }
 
 func (s *S3ColdStore) DeleteEdge(id string) error {
+	// Best-effort delete: remove main edge object plus its src/dst index refs.
+	if e, ok := s.GetEdge(id); ok {
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeBySrcKey(e.SrcObjectID, id))
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeByDstKey(e.DstObjectID, id))
+	}
 	return DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
+}
+
+func (s *S3ColdStore) ListEdgeIDsByObjectID(objectID string) ([]string, error) {
+	ctx := context.Background()
+	out := make(map[string]bool)
+
+	srcKeys, err := ListObjects(ctx, nil, s.cfg, s.edgeBySrcPrefix(objectID))
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range srcKeys {
+		if id, ok := parseEdgeRefKey(k); ok {
+			out[id] = true
+		}
+	}
+
+	dstKeys, err := ListObjects(ctx, nil, s.cfg, s.edgeByDstPrefix(objectID))
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range dstKeys {
+		if id, ok := parseEdgeRefKey(k); ok {
+			out[id] = true
+		}
+	}
+
+	ids := make([]string, 0, len(out))
+	for id := range out {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // ListEdges is not supported for the S3 cold store — scanning all cold edge
@@ -282,6 +343,20 @@ func (s *S3ColdStore) DeleteEdge(id string) error {
 // Callers should use GetEdge for point lookups.  Returns empty slice always.
 func (s *S3ColdStore) ListEdges() []schemas.Edge {
 	return []schemas.Edge{}
+}
+
+func parseEdgeRefKey(objectKey string) (string, bool) {
+	// Expect: .../<edge_id>.ref
+	objectKey = strings.TrimRight(objectKey, "/")
+	i := strings.LastIndex(objectKey, "/")
+	if i < 0 || i+1 >= len(objectKey) {
+		return "", false
+	}
+	base := objectKey[i+1:]
+	if !strings.HasSuffix(base, ".ref") {
+		return "", false
+	}
+	return strings.TrimSuffix(base, ".ref"), true
 }
 
 // ColdSearch searches cold-tier memories stored in S3 using prefix-based listing.
@@ -297,12 +372,9 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 	cfg := loadS3ColdSearchConfigFromEnv()
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, pagesScanned, listTruncated, err := ListObjectsLimited(ctx, nil, s.cfg, prefix, cfg.maxPages, cfg.maxCandidates)
 	if err != nil || len(keys) == 0 {
 		return nil
-	}
-	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
-		keys = keys[:cfg.maxKeys]
 	}
 
 	targetCandidates := topK * cfg.bufferFactor
@@ -384,6 +456,10 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	for _, r := range results {
 		out = append(out, r.id)
 	}
+	log.Printf(
+		"s3cold: cold lexical search query=%q top_k=%d pages=%d listed=%d list_truncated=%t returned=%d cfg{max_pages=%d,max_candidates=%d,batch=%d,concurrency=%d}",
+		query, topK, pagesScanned, len(keys), listTruncated, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize, cfg.concurrency,
+	)
 	return out
 }
 
@@ -435,22 +511,32 @@ func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
 	algoCfg := schemas.DefaultAlgorithmConfig()
 
 	cfg := s3ColdSearchConfig{
-		maxKeys:        algoCfg.ColdMaxCandidates,
+		maxPages:       20,
+		maxCandidates:  algoCfg.ColdMaxCandidates,
 		concurrency:    8,
 		batchSize:      algoCfg.ColdBatchSize,
 		bufferFactor:   3,
 		earlyStopScore: 0.95,
 		noImprovePages: 2,
 	}
-	if cfg.maxKeys <= 0 {
-		cfg.maxKeys = 1000
+	if cfg.maxCandidates <= 0 {
+		cfg.maxCandidates = 1000
 	}
 	if cfg.batchSize <= 0 {
 		cfg.batchSize = 128
 	}
 
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxKeys); v > 0 {
-		cfg.maxKeys = v
+	if v := parseEnvIntWithDefault("S3_COLD_MAX_PAGES", cfg.maxPages); v > 0 {
+		cfg.maxPages = v
+	}
+	if v := parseEnvIntWithDefault("S3_COLD_MAX_CANDIDATES", cfg.maxCandidates); v > 0 {
+		cfg.maxCandidates = v
+	}
+	// Backward compatibility: old env name still works if new one is not set.
+	if strings.TrimSpace(os.Getenv("S3_COLD_MAX_CANDIDATES")) == "" {
+		if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxCandidates); v > 0 {
+			cfg.maxCandidates = v
+		}
 	}
 	if v := parseEnvIntWithDefault("S3_COLDSEARCH_CONCURRENCY", cfg.concurrency); v > 0 {
 		cfg.concurrency = v
@@ -574,13 +660,9 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
 	cfg := loadS3ColdSearchConfigFromEnv()
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, pagesScanned, listTruncated, err := ListObjectsLimited(ctx, nil, s.cfg, prefix, cfg.maxPages, cfg.maxCandidates)
 	if err != nil || len(keys) == 0 {
 		return nil
-	}
-
-	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
-		keys = keys[:cfg.maxKeys]
 	}
 
 	type scored struct {
@@ -589,7 +671,7 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		ts    int64
 	}
 
-	maxCandidates := cfg.maxKeys
+	maxCandidates := cfg.maxCandidates
 	if maxCandidates <= 0 {
 		maxCandidates = topK * 4
 	}
@@ -671,6 +753,10 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		}
 		out = append(out, results[i].id)
 	}
+	log.Printf(
+		"s3cold: cold vector search top_k=%d pages=%d listed=%d list_truncated=%t returned=%d cfg{max_pages=%d,max_candidates=%d,batch=%d}",
+		topK, pagesScanned, len(keys), listTruncated, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize,
+	)
 	return out
 }
 

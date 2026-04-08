@@ -1,9 +1,12 @@
 package access
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -148,5 +151,24 @@ func TestWrapAdminAuth_ResponseBody_Unauthorized(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if !strings.Contains(rr.Body.String(), "unauthorized") {
 		t.Errorf("expected 'unauthorized' in body, got: %q", rr.Body.String())
+	}
+}
+
+func TestWrapAdminAuth_LogsWarningOnceWhenEnvMissing(t *testing.T) {
+	t.Setenv(EnvAdminAPIKey, "")
+	adminAuthWarnOnce = sync.Once{}
+
+	oldOut := log.Writer()
+	defer log.SetOutput(oldOut)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+
+	_ = WrapAdminAuth(okHandler())
+	_ = WrapAdminAuth(okHandler())
+
+	out := buf.String()
+	want := "admin routes are unprotected because ANDB_ADMIN_API_KEY is not set"
+	if strings.Count(out, want) != 1 {
+		t.Fatalf("expected warning once, got logs: %q", out)
 	}
 }
