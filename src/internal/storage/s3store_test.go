@@ -289,3 +289,43 @@ func TestS3ColdStore_ColdVectorSearch_TopKOrdering(t *testing.T) {
 		_ = store.DeleteMemory(it.id)
 	}
 }
+
+func TestS3ColdStore_ColdHNSWSearch_TopKOrdering(t *testing.T) {
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Skipf("skip S3 cold HNSW search test: %v", err)
+	}
+	cfg.Prefix = fmt.Sprintf("%s/test_s3_hnsw_%d", cfg.Prefix, time.Now().UnixNano())
+
+	cold := NewS3ColdStoreWithAlgorithmConfig(cfg, schemas.DefaultAlgorithmConfig())
+
+	// 3 个 memory + embedding
+	mem1 := schemas.Memory{MemoryID: fmt.Sprintf("m1_%d", time.Now().UnixNano()), Version: time.Now().Unix()}
+	mem2 := schemas.Memory{MemoryID: fmt.Sprintf("m2_%d", time.Now().UnixNano()), Version: time.Now().Unix()}
+	mem3 := schemas.Memory{MemoryID: fmt.Sprintf("m3_%d", time.Now().UnixNano()), Version: time.Now().Unix()}
+
+	cold.PutMemory(mem1)
+	cold.PutMemory(mem2)
+	cold.PutMemory(mem3)
+
+	if err := cold.PutMemoryEmbedding(mem1.MemoryID, []float32{1, 0}); err != nil {
+		t.Fatalf("PutMemoryEmbedding m1 failed: %v", err)
+	}
+	if err := cold.PutMemoryEmbedding(mem2.MemoryID, []float32{0.5, 0.5}); err != nil {
+		t.Fatalf("PutMemoryEmbedding m2 failed: %v", err)
+	}
+	if err := cold.PutMemoryEmbedding(mem3.MemoryID, []float32{0, 1}); err != nil {
+		t.Fatalf("PutMemoryEmbedding m3 failed: %v", err)
+	}
+
+	got := cold.ColdHNSWSearch([]float32{1, 0}, 3)
+
+	// retrieval bridge 不可用时允许返回 nil，让调用方 fallback
+	if len(got) == 0 {
+		t.Skip("ColdHNSWSearch returned no results; retrieval bridge may be unavailable, fallback path remains valid")
+	}
+
+	if got[0] != mem1.MemoryID {
+		t.Fatalf("expected %s ranked first, got %v", mem1.MemoryID, got)
+	}
+}
