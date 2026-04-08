@@ -657,25 +657,40 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ---
 
-## Code Review — Known Issues (Pass 9, 2026-04-07)
+## Code Review — Known Issues (Pass 10, 2026-04-08)
 
-> Remaining issues identified during review of `feature/schema-a` + `feature/graph-c` merge.
+> Updated after merging `feature/schema-a` and `feature/retrieval-b`. Issues already fixed this pass are omitted.
 
 ### ⚠️ Medium
 
 **`admin_auth.go` — `constantTimeEqual` leaks key length via timing**
-The length check (`len(a) != len(b)`) returns early before the constant-time comparison, allowing an attacker to distinguish "wrong length" from "wrong content" by timing. Fix: derive fixed-length HMAC digests of both keys and compare those with `subtle.ConstantTimeCompare`.
+The length check (`len(a) != len(b)`) returns before content comparison, allowing an attacker to distinguish "wrong length" from "wrong content" by timing. The dummy `subtle.ConstantTimeCompare(ab, ab)` call is not a real fix. Correct fix: derive fixed-length HMAC-SHA256 digests of both keys before comparing with `subtle.ConstantTimeCompare`.
 
-** `dataset_match.go` — `contentDatasetNameLabelEquals` ignores `,` and `;` as token boundaries**
-The boundary check only handles space/tab/newline/`row:`. Content like `dataset_name:deep1B,extra` will not match `deep1B`. Either extend the boundary character set or document the exact token grammar.
+**`dataset_match.go` — `contentDatasetNameLabelEquals` ignores `,` and `;` as token boundaries**
+The boundary set covers only space/tab/newline/`row:`. Content like `dataset_name:deep1B,extra` will not match selector `deep1B`. Extend boundary chars or document the token grammar explicitly.
 
-** `s3store.go` — `selectTopScored` sorts the caller's slice in place**
-`sort.Slice(candidates, ...)` mutates the input. Currently safe because callers don't reuse the slice after, but this is an implicit contract that is easy to violate. Sort a copy, or document the mutation.
+**`s3store.go` — `selectTopScored` sorts the caller's slice in place**
+`sort.Slice(candidates, ...)` mutates the input slice. Currently safe, but the implicit mutation contract is fragile. Sort a copy or document the side-effect.
+
+**`tensorrt_cuda.go` — global mutex serialises all inference; no CUDA stream parallelism**
+`BatchGenerate` holds `e.mu` for the entire GPU inference duration. Concurrent callers queue behind a single lock, yielding no parallelism benefit from multiple CUDA streams. For production throughput, use per-call CUDA streams with explicit synchronisation instead.
+
+**`tensorrt_cuda.go` — `dim == 0` at construction allocates a zero-size output buffer**
+If `NewTensorRT` is called with `dim == 0`, `effDim` resolves to zero, `outputGPU` is allocated with size 0, and `outputHost` has zero length. Any subsequent `BatchGenerate` will index `outputHost[0]` and panic. Add a guard: `if dim <= 0 { return nil, fmt.Errorf("dim must be > 0") }`.
+
+**`onnx_tokenizer.go` — `wordPieceSplit` has no max-subword guard**
+For OOV tokens with no vocabulary match, `wordPieceSplit` emits a single `[UNK]` and returns, which is correct. However, for tokens that match many partial prefixes, the inner loop iterates over the full token length squared, producing O(n²) work with no depth limit. On adversarial or very long tokens this degrades into a CPU hot-path.
 
 ### ℹ️ Low
 
-** `dataset_match.go` — all-empty selectors match the entire workspace**
-When `fileName`, `datasetName`, and `prefix` are all empty, `MemoryDatasetMatch` returns `true` for any memory in the workspace. The gateway enforces at least one selector, but direct callers have no guard. Add a doc comment warning.
+**`dataset_match.go` — all-empty selectors match the entire workspace**
+When `fileName`, `datasetName`, and `prefix` are all empty, `MemoryDatasetMatch` returns `true` for every memory in the workspace. The gateway enforces at least one selector, but direct callers have no guard. Add a doc comment warning.
+
+**`tensorrt_cuda.go` — batch size > `MaxBatchSize` returns an error instead of auto-splitting**
+Callers must manually split large inputs. The ONNX CPU provider handles over-sized batches silently by chunking. Align TensorRT's behaviour with the rest of the embedding interface or document the restriction clearly in `TensorRTConfig`.
+
+**`purge_warm.go` — 2-pass retry reduces but does not eliminate the edge race**
+The bulk-delete + 2-pass retry mitigates the previous race. However, new edges added after the second `BulkEdges` call are still not cleaned up. Acceptable for the warm-only degraded path, but document as a known limitation.
 
 ---
 
