@@ -33,6 +33,16 @@ func TestMemoryDatasetMatch_contentFallback_datasetNameBoundary(t *testing.T) {
 	}
 }
 
+func TestMemoryDatasetMatch_contentFallback_datasetNameBoundaryCommaSemicolon(t *testing.T) {
+	m := Memory{
+		Scope:   "w1",
+		Content: "dataset=a.bin dataset_name:deep1B,extra; row:1 dim:10",
+	}
+	if !MemoryDatasetMatch(m, "w1", "", "deep1B", "") {
+		t.Fatal("dataset_name should match before ',' or ';' boundary")
+	}
+}
+
 func TestMemoryDatasetMatch_contentFallback_fileToken(t *testing.T) {
 	m := Memory{
 		Scope:   "w1",

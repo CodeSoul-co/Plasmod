@@ -46,12 +46,16 @@ func TestSelectTopScored_ByScoreThenRecency(t *testing.T) {
 		{id: "b", score: 0.9, ts: 1},
 		{id: "c", score: 0.9, ts: 5},
 	}
+	orig := append([]s3ColdScored(nil), in...)
 	out := selectTopScored(in, 2)
 	if len(out) != 2 {
 		t.Fatalf("len(out)= %d, want 2", len(out))
 	}
 	if out[0].id != "c" || out[1].id != "b" {
 		t.Fatalf("unexpected order: %+v", out)
+	}
+	if in[0].id != orig[0].id || in[1].id != orig[1].id || in[2].id != orig[2].id {
+		t.Fatalf("selectTopScored must not mutate input slice, got=%+v want=%+v", in, orig)
 	}
 }
 
