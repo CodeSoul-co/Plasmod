@@ -180,21 +180,18 @@ func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
 	}
 }
 
-func TestRuntime_SubmitIngest_RejectsEmbeddingDimMismatch(t *testing.T) {
+func TestRuntime_SubmitIngest_AllowsMetadataOnlyEmbeddingDimMismatch(t *testing.T) {
 	r := buildTestRuntime(t)
 	_, err := r.SubmitIngest(schemas.Event{
 		EventID:   "evt_dim_mismatch_1",
 		AgentID:   "agent_dim",
 		SessionID: "session_dim",
 		Payload: map[string]any{
-			"text":          "embedding dim mismatch",
+			"text":          "metadata-only dim should pass",
 			"embedding_dim": 128, // runtime default tfidf dim is 256
 		},
 	})
-	if err == nil {
-		t.Fatal("expected embedding_dim_mismatch error")
-	}
-	if !strings.Contains(err.Error(), "embedding_dim_mismatch") {
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -214,6 +211,26 @@ func TestRuntime_SubmitIngest_RejectsEmbeddingVectorLengthMismatch(t *testing.T)
 		t.Fatal("expected embedding_vector_len_mismatch error")
 	}
 	if !strings.Contains(err.Error(), "embedding_vector_len_mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRuntime_SubmitIngest_RejectsEmbeddingDimMismatchWhenVectorProvided(t *testing.T) {
+	r := buildTestRuntime(t)
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:   "evt_dim_mismatch_with_vec_1",
+		AgentID:   "agent_dim_vec",
+		SessionID: "session_dim_vec",
+		Payload: map[string]any{
+			"text":          "embedding dim mismatch with vector",
+			"embedding_dim": 128, // runtime default tfidf dim is 256
+			"vector":        []any{0.1, 0.2, 0.3},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected embedding_dim_mismatch error")
+	}
+	if !strings.Contains(err.Error(), "embedding_dim_mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

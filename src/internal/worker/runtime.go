@@ -767,10 +767,18 @@ func validateEmbeddingIngestPayload(ev schemas.Event) error {
 	if runtimeDim <= 0 {
 		return nil
 	}
+
+	// Only enforce runtime-dim constraints when an explicit vector/embedding is provided.
+	// Metadata-only fields like payload.dim from dataset import are informational and can
+	// differ across datasets within one runtime.
+	vecLen, hasVector := payloadVectorLen(ev.Payload)
+	if !hasVector {
+		return nil
+	}
 	if payloadDim, ok := payloadEmbeddingDim(ev.Payload); ok && payloadDim != runtimeDim {
 		return fmt.Errorf("embedding_dim_mismatch payload=%d runtime=%d", payloadDim, runtimeDim)
 	}
-	if vecLen, ok := payloadVectorLen(ev.Payload); ok && vecLen != runtimeDim {
+	if vecLen != runtimeDim {
 		return fmt.Errorf("embedding_vector_len_mismatch payload=%d runtime=%d", vecLen, runtimeDim)
 	}
 	return nil
