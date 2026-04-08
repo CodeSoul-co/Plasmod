@@ -1001,6 +1001,49 @@ Seed pipeline verified end-to-end:
 - `resp.Edges` (14): `belongs_to_session` + `owned_by_agent` + `derived_from` + `caused_by` + `projected_from`
 - `QueryChain` ran (not skipped) — subgraph and proof trace assembled
 
+#### Bug Fixes (2026-04-08) — Code Review Pass 10
+
+Four issues identified in Pass 10 for Member B are now fixed:
+
+**Fix 1 — `tensorrt_cuda.go`: `dim <= 0` causes zero-size GPU buffer → panic**
+
+Added a guard at the top of `NewTensorRT`:
+```go
+if dim <= 0 {
+    return nil, fmt.Errorf("NewTensorRT: dim must be > 0, got %d", dim)
+}
+```
+Previously `dim=0` allocated GPU and host buffers using an `effDim=1024` probe, but stored `e.dim=0`, causing `outputSize=0` in `BatchGenerate`, resulting in silent zero-length embeddings or a panic on `outputHost[0]` access.
+
+**Fix 2 — `onnx_tokenizer.go`: `wordPieceSplit` O(n²) CPU hot-path on adversarial tokens**
+
+Added `bertMaxSubwords = 200` constant. The inner split loop now checks `len(subwords) >= bertMaxSubwords` at the top of each outer iteration and returns `[UNK]` immediately. This caps worst-case work at `200 × bertMaxWordLen = 200 × 200 = 40 000` inner iterations regardless of token content.
+
+**Fix 3 — `tensorrt_cuda.go`: `BatchGenerate` returns error for batches > `MaxBatchSize`**
+
+Added `batchGenerateSplit` helper that transparently chunks large inputs and concatenates results. `BatchGenerate` now calls it instead of returning an error, aligning TensorRT with the ONNX CPU provider which already auto-splits silently.
+
+**Fix 4 — `tensorrt_cuda.go`: global `sync.Mutex` serialises tokenisation + GPU inference together**
+
+Replaced the single `mu sync.Mutex` with two separate locks:
+- `closedMu sync.RWMutex` — guards only the `closed` flag (fast RLock for readers)
+- `inferenceMu sync.Mutex` — covers GPU H2D copy → kernel launch → D2H copy only
+
+Tokenisation (CPU-bound) now happens **before** acquiring `inferenceMu`, so concurrent callers can tokenize in parallel and only queue at the GPU serialisation point. Pre-allocated `inputIDsHost`/`attentionMaskHost` struct fields replaced with per-call local slices to avoid shared-buffer conflicts.
+
+| File | Change |
+|------|--------|
+| `src/internal/dataplane/embedding/tensorrt_cuda.go` | dim guard; split `mu` → `closedMu`+`inferenceMu`; tokenize outside lock; auto-split oversized batches |
+| `src/internal/dataplane/embedding/onnx_tokenizer.go` | `bertMaxSubwords` cap in `wordPieceSplit` |
+
+**Verification:**
+```
+$ go build ./src/internal/dataplane/embedding/   PASS
+$ go test  ./src/internal/dataplane/embedding/   ok  0.025s
+```
+
+---
+
 #### Bug Fixes (2026-04-07) — Code Review Pass 9
 
 Two bugs identified in the Code Review pass were fixed and merged from `dev`:
