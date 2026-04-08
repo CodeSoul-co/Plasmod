@@ -59,6 +59,21 @@ func TestSelectTopScored_ByScoreThenRecency(t *testing.T) {
 	}
 }
 
+func TestSelectTopScored_DoesNotMutateInput(t *testing.T) {
+	in := []s3ColdScored{
+		{id: "a", score: 0.7, ts: 1},
+		{id: "b", score: 0.9, ts: 1},
+		{id: "c", score: 0.9, ts: 5},
+	}
+	orig := append([]s3ColdScored(nil), in...)
+	_ = selectTopScored(in, 2)
+	for i := range in {
+		if in[i] != orig[i] {
+			t.Fatalf("input mutated at %d: got %+v want %+v", i, in[i], orig[i])
+		}
+	}
+}
+
 func TestShouldEarlyStop_WithHighScoreAndStablePages(t *testing.T) {
 	top := []s3ColdScored{
 		{id: "m1", score: 1.0},
