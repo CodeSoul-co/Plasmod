@@ -21,6 +21,9 @@ const (
 	bertTokUNK = int64(100)
 
 	bertMaxWordLen = 200
+	// Defensive cap for WordPiece segmentation depth per token.
+	// Prevents adversarial tokens from triggering excessive O(n^2) inner-loop work.
+	bertMaxSubwords = 64
 )
 
 // bertTokenizer implements BERT WordPiece tokenization.
@@ -157,6 +160,9 @@ func (bt *bertTokenizer) wordPieceSplit(word string) []int64 {
 	subwords := make([]int64, 0, 4)
 	start := 0
 	for start < len(chars) {
+		if len(subwords) >= bertMaxSubwords {
+			return []int64{bertTokUNK}
+		}
 		end := len(chars)
 		found := false
 		for end > start {
