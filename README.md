@@ -492,10 +492,17 @@ If `go mod` fails inside the `andb` container with TLS/x509 errors (corporate HT
 docker compose up -d
 # optional: fixture-driven JSON captures (stdlib HTTP only; no SDK install required)
 python scripts/e2e/member_a_capture.py --out-dir ./out/member_a
+# or explicitly point fixtures:
+python scripts/e2e/member_a_capture.py --fixtures ./scripts/e2e/fixtures/member_a --out-dir ./out/member_a
 make integration-test   # still expects a server at ANDB_BASE_URL (same URL)
 ```
 
-Fixture sets and manifest: [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/). Capture script: [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py). Convenience targets: `make docker-up`, `make docker-down`, `make member-a-capture`.
+Fixture-driven capture entrypoint: [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py).  
+Default fixture lookup order is:
+1) `integration_tests/fixtures/member_a/`
+2) `scripts/e2e/fixtures/member_a/` (fallback)
+Use `--fixtures` to force a concrete path in CI or local verification.
+Convenience targets: `make docker-up`, `make docker-down`, `make member-a-capture`.
 
 ### Run all integration tests
 
