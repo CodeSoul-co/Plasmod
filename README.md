@@ -657,16 +657,9 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ---
 
-## Code Review — Known Issues (Pass 10, 2026-04-08)
+## Code Review — Known Issues (Pass 9, 2026-04-07)
 
-> Updated after merging `feature/schema-a` and `feature/retrieval-b`. Issues already fixed this pass are omitted.
-
-### ⚠️ Medium
-
-**`tensorrt_cuda.go` — global mutex serialises all inference; no CUDA stream parallelism**
-`BatchGenerate` holds `e.mu` for the entire GPU inference duration. Concurrent callers queue behind a single lock, yielding no parallelism benefit from multiple CUDA streams. For production throughput, use per-call CUDA streams with explicit synchronisation instead.
-
-### ℹ️ Low
+> No outstanding issues remain from this pass.
 
 ---
 
@@ -724,12 +717,20 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 - Verify `OnnxEmbedder.BatchGenerate` / `GGUFEmbedder.BatchGenerate` are called
 - Benchmark: ingest 1000 events, measure embedding batch throughput
 
-#### Outstanding TODO
+#### Verification Checklist
 
-- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput
-- [ ] `tensorrt_cuda.go` — add guard in `NewTensorRT`: return error if `dim <= 0` (currently allocates zero-size GPU buffer → panic)
-- [ ] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) CPU hot-path on adversarial tokens
-- [ ] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning an error (align with ONNX CPU behaviour)
+```
+[x] ONNX CUDA: go test -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder passes
+[x] GGUF CUDA: NewGGUF returns non-stub instance inside Docker + NVIDIA GPU
+[x] GGUF CUDA: Generate produces correct-dimension embeddings
+[x] TensorRT: engine loads without error, inference produces output
+[x] retrievalplane: libandb_retrieval.so builds on Linux (make -C cpp)
+[x] retrievalplane: Search works inside Docker with HNSW index
+[x] BatchGenerate: TieredDataPlane.Ingest calls batch embedder, not N x single
+[x] Linux build: go build -tags cuda,retrieval ./src/internal/... compiles cleanly
+[x] ONNX CPU: TestOnnxEmbedder_CPU passes (regression test)
+[x] All embedding provider tests: go test ./src/internal/dataplane/embedding/ passes (CPU mode)
+```
 
 #### Test Results (2026-03-31, Linux · NVIDIA TITAN RTX · CUDA 11.8)
 

@@ -111,12 +111,13 @@ type TensorRTConfig struct {
 
 // TensorRTEmbedder implements Generator using NVIDIA TensorRT for GPU inference.
 type TensorRTEmbedder struct {
-	cfg       TensorRTConfig
-	dim       int
-	tokenizer *bertTokenizer
-	numInputs int // queried from engine at init: 2 for test engine, 3 for real BERT
-	mu        sync.Mutex
-	closed    bool
+	cfg         TensorRTConfig
+	dim         int
+	tokenizer   *bertTokenizer
+	numInputs   int // queried from engine at init: 2 for test engine, 3 for real BERT
+	closedMu    sync.RWMutex
+	inferenceMu sync.Mutex
+	closed      bool
 
 	// TensorRT engine handle
 	engine unsafe.Pointer // *C.TRTEngine
@@ -126,11 +127,6 @@ type TensorRTEmbedder struct {
 	attentionMaskGPU unsafe.Pointer
 	tokenTypeIDsGPU  unsafe.Pointer // BERT segment IDs (always 0)
 	outputGPU        unsafe.Pointer
-
-	// Host buffers
-	inputIDsHost      []int32
-	attentionMaskHost []int32
-	outputHost        []float32
 }
 
 // NewTensorRT creates a TensorRT embedder with CUDA GPU acceleration.
@@ -160,7 +156,7 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 	}
 
 	// Allocate GPU memory for input/output buffers
-	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4           // int32
+	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4 // int32
 	effDim := dim
 	// Real BERT output is [batch, seq_len, dim]; allocate full 3D buffer.
 	outputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * effDim * 4 // float32
@@ -218,18 +214,15 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 	}
 
 	e := &TensorRTEmbedder{
-		cfg:               cfg,
-		dim:               dim,
-		tokenizer:         tok,
-		numInputs:         numInputs,
-		engine:            unsafe.Pointer(trtEngine),
-		inputIDsGPU:       inputIDsGPU,
-		attentionMaskGPU:  attentionMaskGPU,
-		tokenTypeIDsGPU:   tokenTypeIDsGPU,
-		outputGPU:         outputGPU,
-		inputIDsHost:      make([]int32, cfg.MaxBatchSize*cfg.MaxSeqLength),
-		attentionMaskHost: make([]int32, cfg.MaxBatchSize*cfg.MaxSeqLength),
-		outputHost:        make([]float32, cfg.MaxBatchSize*cfg.MaxSeqLength*effDim),
+		cfg:              cfg,
+		dim:              dim,
+		tokenizer:        tok,
+		numInputs:        numInputs,
+		engine:           unsafe.Pointer(trtEngine),
+		inputIDsGPU:      inputIDsGPU,
+		attentionMaskGPU: attentionMaskGPU,
+		tokenTypeIDsGPU:  tokenTypeIDsGPU,
+		outputGPU:        outputGPU,
 	}
 
 	return e, nil
@@ -289,32 +282,38 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 		return out, nil
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return nil, fmt.Errorf("TensorRTEmbedder is closed")
-	}
-
 	// Tokenize and prepare input
 	batchSize := len(texts)
 	seqLen := e.cfg.MaxSeqLength
+	inputIDsHost := make([]int32, batchSize*seqLen)
+	attentionMaskHost := make([]int32, batchSize*seqLen)
+	outputHost := make([]float32, batchSize*seqLen*e.dim)
 
 	for i, text := range texts {
 		ids64, mask64 := e.tokenizer.tokenize(text, seqLen)
 		for j := 0; j < seqLen; j++ {
 			idx := i*seqLen + j
-			e.inputIDsHost[idx] = int32(ids64[j])
-			e.attentionMaskHost[idx] = int32(mask64[j])
+			inputIDsHost[idx] = int32(ids64[j])
+			attentionMaskHost[idx] = int32(mask64[j])
 		}
+	}
+
+	e.inferenceMu.Lock()
+	defer e.inferenceMu.Unlock()
+
+	e.closedMu.RLock()
+	closed := e.closed
+	e.closedMu.RUnlock()
+	if closed {
+		return nil, fmt.Errorf("TensorRTEmbedder is closed")
 	}
 
 	// Copy input to GPU
 	inputSize := C.size_t(batchSize * seqLen * 4)
-	if ret := C.cuda_memcpy_h2d(e.inputIDsGPU, unsafe.Pointer(&e.inputIDsHost[0]), inputSize); ret != 0 {
+	if ret := C.cuda_memcpy_h2d(e.inputIDsGPU, unsafe.Pointer(&inputIDsHost[0]), inputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy input_ids to GPU: error code %d", ret)
 	}
-	if ret := C.cuda_memcpy_h2d(e.attentionMaskGPU, unsafe.Pointer(&e.attentionMaskHost[0]), inputSize); ret != 0 {
+	if ret := C.cuda_memcpy_h2d(e.attentionMaskGPU, unsafe.Pointer(&attentionMaskHost[0]), inputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy attention_mask to GPU: error code %d", ret)
 	}
 
@@ -338,7 +337,7 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 
 	// Copy output from GPU: layout is [batchSize, seqLen, dim]
 	outputSize := C.size_t(batchSize * seqLen * e.dim * 4)
-	if ret := C.cuda_memcpy_d2h(unsafe.Pointer(&e.outputHost[0]), e.outputGPU, outputSize); ret != 0 {
+	if ret := C.cuda_memcpy_d2h(unsafe.Pointer(&outputHost[0]), e.outputGPU, outputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy output from GPU: error code %d", ret)
 	}
 
@@ -348,13 +347,13 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 		emb := make([]float32, e.dim)
 		var tokenCount float32
 		for j := 0; j < seqLen; j++ {
-			if e.attentionMaskHost[i*seqLen+j] == 0 {
+			if attentionMaskHost[i*seqLen+j] == 0 {
 				continue
 			}
 			tokenCount++
 			base := (i*seqLen + j) * e.dim
 			for d := 0; d < e.dim; d++ {
-				emb[d] += e.outputHost[base+d]
+				emb[d] += outputHost[base+d]
 			}
 		}
 		if tokenCount > 0 {
@@ -379,13 +378,17 @@ func (e *TensorRTEmbedder) Provider() string { return "tensorrt" }
 
 // Close releases the TensorRT engine, CUDA memory, and runtime.
 func (e *TensorRTEmbedder) Close() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
+	e.closedMu.Lock()
 	if e.closed {
+		e.closedMu.Unlock()
 		return nil
 	}
 	e.closed = true
+	e.closedMu.Unlock()
+
+	// Wait for any in-flight GPU inference to complete before freeing resources.
+	e.inferenceMu.Lock()
+	defer e.inferenceMu.Unlock()
 
 	// Free TensorRT engine
 	if e.engine != nil {
