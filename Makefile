@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture setup
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict setup
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -111,3 +111,15 @@ docker-down:
 # Requires a running server (e.g. `make dev` or `make docker-up`). Writes JSON per scenario under ./out/member_a/
 member-a-capture:
 	python scripts/e2e/member_a_capture.py --out-dir ./out/member_a
+
+# One-command Member A verification: docker up + healthz + fixture capture.
+member-a-verify:
+	bash scripts/e2e/member_a_verify.sh
+
+# Member A GPU visibility check (compose GPU overlay).
+member-a-gpu-check:
+	bash scripts/e2e/member_a_gpu_check.sh
+
+# Strict Task 4: API-level E2E + S3 cold roundtrip unit tests in builder container.
+member-a-task4-strict:
+	bash scripts/e2e/member_a_task4_strict.sh

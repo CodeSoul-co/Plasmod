@@ -9,6 +9,30 @@ import (
 	"andb/src/internal/schemas"
 )
 
+func TestLoadS3ColdSearchConfigFromEnv_NewLimitVars(t *testing.T) {
+	t.Setenv("S3_COLD_MAX_PAGES", "7")
+	t.Setenv("S3_COLD_MAX_CANDIDATES", "321")
+	t.Setenv("S3_COLDSEARCH_MAX_KEYS", "999") // should be ignored when new var exists
+
+	cfg := loadS3ColdSearchConfigFromEnv()
+	if cfg.maxPages != 7 {
+		t.Fatalf("maxPages = %d, want 7", cfg.maxPages)
+	}
+	if cfg.maxCandidates != 321 {
+		t.Fatalf("maxCandidates = %d, want 321", cfg.maxCandidates)
+	}
+}
+
+func TestLoadS3ColdSearchConfigFromEnv_LegacyMaxKeysFallback(t *testing.T) {
+	t.Setenv("S3_COLD_MAX_CANDIDATES", "")
+	t.Setenv("S3_COLDSEARCH_MAX_KEYS", "654")
+
+	cfg := loadS3ColdSearchConfigFromEnv()
+	if cfg.maxCandidates != 654 {
+		t.Fatalf("maxCandidates = %d, want 654", cfg.maxCandidates)
+	}
+}
+
 func TestScoreColdMemory_ExactMatchWins(t *testing.T) {
 	m := schemas.Memory{Content: "hello world", Summary: "short"}
 	if got := scoreColdMemory("hello world", m); got != 1.0 {
