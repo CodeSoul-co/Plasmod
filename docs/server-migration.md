@@ -34,15 +34,18 @@ bash scripts/e2e/run_acceptance_scenario_a.sh
 3. Output JSON files include:
    - `response.proof_trace`
    - `response.evidence_cache`
-4. MinIO bucket receives data objects:
+4. MinIO hard check passes (write + stat):
 
 ```bash
-docker compose exec minio-init mc ls local/andb-integration
+docker compose run --rm --entrypoint /bin/sh minio-init -lc \
+  'mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null && \
+   printf "{\"ok\":true}\n" | mc pipe local/andb-integration/andb/task4_probe.json >/dev/null && \
+   mc stat local/andb-integration/andb/task4_probe.json >/dev/null'
 ```
 
 Notes:
 
-- Fixture inputs are under `integration_tests/fixtures/member_a/`.
+- Fixture path should be explicitly passed with `--fixtures` for reproducibility (the capture script supports a fallback search order).
 - The capture script emits one JSON result per scenario to the output directory.
 
 ## Task 5 — Go Unit Tests in Docker
