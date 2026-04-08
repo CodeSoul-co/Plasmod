@@ -972,7 +972,7 @@ Seed pipeline verified end-to-end:
 
 #### Tasks
 
-**1. Cold embedding generation and storage**
+**1. Cold embedding generation and storage**✅
 - When `Memory` is archived (lifecycle -> archived), compute and store its embedding:
   - Use current embedder (configured via `ANDB_EMBEDDER`)
   - Serialize to `float32` binary: `embeddings/{memory_id}.npy`
@@ -1028,11 +1028,11 @@ Seed pipeline verified end-to-end:
 #### Verification Checklist
 
 ```
-[ ] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
-[ ] Memory reactivated -> S3 embeddings/{id}.npy deleted
-[ ] include_cold=true query returns cold memories ranked via vector similarity
+[√] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
+[√] Memory reactivated -> S3 embeddings/{id}.npy deleted
+[√] include_cold=true query returns cold memories ranked via vector similarity
 [ ] ColdSearch latency < 500ms for 10K archived memories
-[ ] RRF fusion: cold+hot combined ranking works correctly
+[√] RRF fusion: cold+hot combined ranking works correctly
 [ ] HNSW cold index loads from S3 and produces correct scores
 [ ] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
 [ ] EvidenceCache reports cold_hits and cold_misses
