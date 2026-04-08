@@ -28,6 +28,7 @@ import (
 // EnsureBucket is called at most once per store lifetime via ensureOnce.
 type S3ColdStore struct {
 	cfg        S3Config
+	algoCfg    schemas.AlgorithmConfig
 	ensureOnce sync.Once
 }
 
@@ -48,7 +49,14 @@ type s3ColdSearchConfig struct {
 
 // NewS3ColdStore returns an S3-backed ColdObjectStore using the supplied config.
 func NewS3ColdStore(cfg S3Config) *S3ColdStore {
-	return &S3ColdStore{cfg: cfg}
+	return NewS3ColdStoreWithAlgorithmConfig(cfg, schemas.DefaultAlgorithmConfig())
+}
+
+func NewS3ColdStoreWithAlgorithmConfig(cfg S3Config, algoCfg schemas.AlgorithmConfig) *S3ColdStore {
+	return &S3ColdStore{
+		cfg:     cfg,
+		algoCfg: algoCfg,
+	}
 }
 
 // doEnsureBucket creates the S3 bucket if it does not exist. It is called
@@ -295,7 +303,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	}
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
-	cfg := loadS3ColdSearchConfigFromEnv()
+	cfg := s.loadS3ColdSearchConfigFromEnv()
 
 	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
@@ -431,8 +439,11 @@ func memoryIDFromEmbeddingKey(key string) string {
 	return parts[len(parts)-1]
 }
 
-func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
-	algoCfg := schemas.DefaultAlgorithmConfig()
+func (s *S3ColdStore) loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
+	algoCfg := s.algoCfg
+	if algoCfg == (schemas.AlgorithmConfig{}) {
+		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
 
 	cfg := s3ColdSearchConfig{
 		maxKeys:        algoCfg.ColdMaxCandidates,
@@ -581,7 +592,7 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
-	cfg := loadS3ColdSearchConfigFromEnv()
+	cfg := s.loadS3ColdSearchConfigFromEnv()
 
 	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {

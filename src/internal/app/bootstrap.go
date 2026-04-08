@@ -84,7 +84,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
 	var coldStore storage.ColdObjectStore
 	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
-		coldStore = storage.NewS3ColdStore(s3Cfg)
+		coldStore = storage.NewS3ColdStoreWithAlgorithmConfig(s3Cfg, algoCfg)
 		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
 			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
 	} else {
