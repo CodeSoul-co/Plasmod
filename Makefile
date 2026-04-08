@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict setup
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all setup
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -123,3 +123,7 @@ member-a-gpu-check:
 # Strict Task 4: API-level E2E + S3 cold roundtrip unit tests in builder container.
 member-a-task4-strict:
 	bash scripts/e2e/member_a_task4_strict.sh
+
+# Unified Member A entrypoint: verify + optional GPU check + strict task4.
+member-a-all:
+	bash scripts/e2e/member_a_all.sh

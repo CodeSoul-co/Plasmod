@@ -7,15 +7,22 @@ set -euo pipefail
 #
 # Usage:
 #   bash scripts/e2e/member_a_gpu_check.sh
+# Env:
+#   COMPOSE_FILES (default "docker-compose.yml docker-compose.gpu.yml")
+#   GPU_SERVICE (default andb)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
+source "${REPO_ROOT}/scripts/e2e/member_a_common.sh"
+ma_enable_failure_diagnostics "member-a-gpu"
+COMPOSE_FILES="${COMPOSE_FILES:-docker-compose.yml docker-compose.gpu.yml}"
+GPU_SERVICE="${GPU_SERVICE:-andb}"
 
 echo "[member-a-gpu] start stack with GPU overlay..."
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d andb
+ma_compose up -d "${GPU_SERVICE}"
 
 echo "[member-a-gpu] probing GPU visibility in container..."
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec -T andb /bin/sh -lc '
+ma_compose exec -T "${GPU_SERVICE}" /bin/sh -lc '
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi
   exit 0
