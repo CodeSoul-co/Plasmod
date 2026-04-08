@@ -21,7 +21,9 @@ import (
 
 type failingPlane struct{}
 
-func (f *failingPlane) Ingest(record dataplane.IngestRecord) error { return errors.New("ingest failed") }
+func (f *failingPlane) Ingest(record dataplane.IngestRecord) error {
+	return errors.New("ingest failed")
+}
 func (f *failingPlane) Search(input dataplane.SearchInput) dataplane.SearchOutput {
 	return dataplane.SearchOutput{}
 }
@@ -604,4 +606,152 @@ func TestRuntime_SeedDrivesGraphExpansion(t *testing.T) {
 		t.Error("query chain was skipped — seed IDs or fallback IDs should have been passed")
 	}
 	t.Logf("ChainTraces.Query: %v", resp.ChainTraces.Query)
+}
+
+func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+
+	plane := dataplane.NewSegmentDataPlane()
+	policy := semantic.NewPolicyEngine()
+	planner := semantic.NewDefaultQueryPlanner()
+	materializer := materialization.NewService()
+	assembler := evidence.NewAssembler()
+
+	store := storage.NewMemoryRuntimeStorage()
+	cold := storage.NewInMemoryColdStore()
+
+	// 这里不能直接复用 buildTestRuntime(t)，因为 buildTestRuntime 里的
+	// tieredObjs 没有 embedder，ArchiveMemory 不会写 cold embedding。
+	embedder := dataplane.NewTfidfEmbedder(dataplane.DefaultEmbeddingDim)
+
+	tieredObjs := storage.NewTieredObjectStoreWithEmbedder(
+		store.HotCache(),
+		store.Objects(),
+		store.Edges(),
+		cold,
+		embedder,
+		schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold,
+	)
+
+	nodeManager := nodes.CreateManager()
+	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
+	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
+	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
+	nodeManager.RegisterStateMaterialization(
+		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions(), nil),
+	)
+
+	coord := coordinator.NewCoordinatorHub(
+		coordinator.NewSchemaCoordinator(semantic.NewObjectModelRegistry()),
+		coordinator.NewObjectCoordinator(store.Objects(), store.Versions()),
+		coordinator.NewPolicyCoordinator(policy, store.Policies()),
+		coordinator.NewVersionCoordinator(clock, store.Versions()),
+		coordinator.NewWorkerScheduler(),
+		coordinator.NewMemoryCoordinator(store.Objects()),
+		coordinator.NewIndexCoordinator(store.Segments(), store.Indexes()),
+		coordinator.NewShardCoordinator(4),
+		coordinator.NewQueryCoordinator(planner, policy),
+	)
+
+	evCache := evidence.NewCache(1000)
+	preCompute := materialization.NewPreComputeService(evCache)
+
+	r := CreateRuntime(
+		wal,
+		bus,
+		plane,
+		coord,
+		policy,
+		planner,
+		materializer,
+		preCompute,
+		assembler,
+		evCache,
+		nil,
+		nil,
+		nodeManager,
+		store,
+		tieredObjs,
+	)
+
+	ev := schemas.Event{
+		EventID:    "evt_cold_runtime_1",
+		AgentID:    "agent_cold",
+		SessionID:  "sess_cold",
+		EventType:  "tool_call",
+		Source:     "planner",
+		Importance: 0.95,
+		Payload:    map[string]any{"text": "archived cold retrieval target"},
+	}
+
+	if _, err := r.SubmitIngest(ev); err != nil {
+		t.Fatalf("SubmitIngest failed: %v", err)
+	}
+
+	memID := "mem_evt_cold_runtime_1"
+
+	// 先确认 ingest 后 warm 中有这条 memory
+	mem, ok := store.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatalf("expected warm memory %s after ingest", memID)
+	}
+
+	// archive 到 cold（会写 cold memory + cold embedding）
+	tieredObjs.ArchiveMemory(memID)
+
+	// ArchiveMemory 当前不会删除 warm，所以这里手动删掉 warm copy，
+	// 这样后面的命中才能证明来自 cold tier，而不是 warm。
+	store.Objects().DeleteMemory(memID)
+
+	// 验证 cold 中已经有对象
+	if _, ok := cold.GetMemory(memID); !ok {
+		t.Fatalf("expected archived memory %s in cold store", memID)
+	}
+
+	// 验证 cold embedding 已写入
+	vec, ok, err := cold.GetMemoryEmbedding(memID)
+	if err != nil {
+		t.Fatalf("GetMemoryEmbedding failed: %v", err)
+	}
+	if !ok || len(vec) == 0 {
+		t.Fatalf("expected cold embedding for %s", memID)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   mem.Content,
+		SessionID:   "sess_cold",
+		AgentID:     "agent_cold",
+		TopK:        5,
+		IncludeCold: true,
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatal("expected non-empty resp.Objects for include_cold query")
+	}
+
+	found := false
+	for _, id := range resp.Objects {
+		if id == memID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected archived cold memory %s in resp.Objects, got %v", memID, resp.Objects)
+	}
+
+	if len(resp.Provenance) == 0 {
+		t.Fatal("expected non-empty resp.Provenance")
+	}
+	if len(resp.ProofTrace) == 0 {
+		t.Fatal("expected non-empty resp.ProofTrace")
+	}
+
+	t.Logf("resp.Objects: %v", resp.Objects)
+	t.Logf("resp.Provenance: %v", resp.Provenance)
+	t.Logf("resp.ProofTrace: %v", resp.ProofTrace)
+	t.Logf("resp.ChainTraces.Query: %v", resp.ChainTraces.Query)
 }
