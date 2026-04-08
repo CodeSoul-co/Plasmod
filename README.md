@@ -700,14 +700,6 @@ The bulk-delete + 2-pass retry mitigates the previous race. However, new edges a
 
 **Scope:** Build the Linux server test environment: Docker, S3/MinIO cold tier, full E2E integration pipeline. Verify all components work end-to-end on Linux.
 
-#### Outstanding TODO
-
-- [ ] `admin_auth.go` — fix `constantTimeEqual` timing leak: replace length-branch with HMAC-SHA256 digest comparison
-- [ ] `dataset_match.go` — add `,` and `;` as token boundaries in `contentDatasetNameLabelEquals`
-- [ ] `s3store.go` — `selectTopScored`: sort a copy of the slice instead of mutating the input
-- [ ] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate edge race (known limitation)
-- [ ] `dataset_match.go` — add doc comment warning: all-empty selectors match every memory in the workspace
-
 ---
 
 ### Member B — GPU/CUDA Acceleration, Embedding Provider Library Implementation

@@ -611,16 +611,17 @@ func selectTopScored(results []s3ColdScored, n int) []s3ColdScored {
 	if len(results) == 0 || n <= 0 {
 		return nil
 	}
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].score != results[j].score {
-			return results[i].score > results[j].score
+	sorted := append([]s3ColdScored(nil), results...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].score != sorted[j].score {
+			return sorted[i].score > sorted[j].score
 		}
-		return results[i].ts > results[j].ts
+		return sorted[i].ts > sorted[j].ts
 	})
-	if len(results) <= n {
-		return results
+	if len(sorted) <= n {
+		return sorted
 	}
-	return results[:n]
+	return sorted[:n]
 }
 
 func cutoffScore(results []s3ColdScored, topK int) float64 {

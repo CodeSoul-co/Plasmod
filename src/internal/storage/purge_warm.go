@@ -24,6 +24,9 @@ type warmEdgeBulkDeleter interface {
 // PurgeMemoryWarmOnlyWithStats executes warm-only purge and returns deletion stats.
 // GraphEdgeStore does not currently return DeleteEdge errors, so we verify by
 // probing GetEdge after each delete and emit warnings for any leftovers.
+//
+// Known limitation (warm-only degraded path): if new edges are added concurrently after the last
+// BulkEdges snapshot, those edges may not be cleaned up by this purge run.
 func PurgeMemoryWarmOnlyWithStats(rs RuntimeStorage, memoryID string) PurgeWarmStats {
 	var stats PurgeWarmStats
 	if rs == nil {
