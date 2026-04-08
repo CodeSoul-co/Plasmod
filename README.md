@@ -700,91 +700,13 @@ The bulk-delete + 2-pass retry mitigates the previous race. However, new edges a
 
 **Scope:** Build the Linux server test environment: Docker, S3/MinIO cold tier, full E2E integration pipeline. Verify all components work end-to-end on Linux.
 
-#### Tasks
+#### Outstanding TODO
 
-**1. Dockerfile for Go server**
-- Multi-stage build: `golang:1.24-bookworm` compile → `debian:bookworm-slim` runtime
-- Compiles `bin/andb-server` with `CGO_ENABLED=0` for portability
-- No CUDA in base image (GPU image handled by Member B's `Dockerfile.memberb`)
-
-**2. docker-compose.yml / docker-compose.gpu.yml**
-- Updated `andb` service to use Dockerfile-built image instead of `go run`
-- GPU override file (`docker-compose.gpu.yml`) adds `deploy.resources.reservations.devices` for NVIDIA GPU
-- MinIO + `minio-init` services unchanged
-
-**3. S3 cold tier hardening**
-- `s3store.go`: added `maxPages` limit (default 20, `S3_COLD_MAX_PAGES` env-configurable) to bound `ListObjects` API calls
-- `s3util.go`: `ListObjectsLimited` function enforces page + candidate caps with truncation flag
-- `docs/server-migration.md`: migration guide for S3 config and warm→cold archive flow
-
-**4. Warm purge edge cleanup**
-- `purge_warm.go`: `warmEdgeBulkDeleter` interface for atomic bulk deletion in one critical section
-- `PurgeMemoryWarmOnlyWithStats` with 2-pass retry, `GetEdge` probe verification, and structured log on failures
-- `PurgeWarmStats` struct exposes `EdgeDeleteSucceeded / EdgeDeleteFailed / EdgeDeleteRetried` counters
-
-**5. Admin auth startup warning**
-- `admin_auth.go`: emits `log.Printf` warning (via `sync.Once`) when `ANDB_ADMIN_API_KEY` is unset at startup
-
-**6. E2E verification scripts**
-- `scripts/e2e/member_a_verify.sh` — one-command stack start + healthz + fixture capture
-- `scripts/e2e/member_a_task4_strict.sh` — strict Task 4: MinIO + ANDB + S3 cold roundtrip unit tests in builder container
-- `scripts/e2e/member_a_gpu_check.sh` — GPU presence check (nvidia-smi + CUDA device probe)
-- `scripts/e2e/member_a_capture.py` — API-level fixture-driven capture with JSON output
-
-#### Verification Checklist
-
-```
-[x] Dockerfile: docker build -t cogdb:latest . succeeds (Linux x86_64)
-[x] docker compose up -d starts andb + minio + minio-init cleanly
-[x] /healthz returns 200 after compose up
-[x] S3 cold tier: ArchiveMemory writes embedding + blob to MinIO bucket
-[x] S3 cold tier: GetMemoryActivated deletes S3 embedding on reactivation
-[x] S3 cold search: ListObjects capped at maxPages=20 (S3_COLD_MAX_PAGES)
-[x] Warm purge: PurgeMemoryWarmOnlyWithStats returns correct EdgeDeleteSucceeded/Failed counters
-[x] Admin auth: startup log emitted when ANDB_ADMIN_API_KEY is unset
-[x] E2E: member_a_verify.sh completes with exit 0 (fixture capture + healthz)
-[x] E2E: member_a_task4_strict.sh completes with exit 0 (S3 cold roundtrip)
-[x] All 23 go test packages pass: go test ./src/... -count=1
-```
-
-#### Test Results (2026-04-08, Linux · docker compose · MinIO RELEASE.2024-01-31)
-
-All 11 checklist items verified. Tests run on `debian:bookworm` with `docker compose up` and real MinIO S3.
-
-**S3 cold roundtrip** — `bash scripts/e2e/member_a_task4_strict.sh`
-
-```
-[task4-strict] docker compose up...
-[task4-strict] healthz OK
-[task4-strict] running S3 cold-tier unit tests in builder container...
---- PASS: TestS3ColdStore_MemoryEmbeddingLifecycle (0.54s)
---- PASS: TestS3ColdStore_ColdVectorSearch_TopKOrdering (0.61s)
---- PASS: TestShouldEarlyStop_WithHighScoreAndStablePages (0.00s)
-ok  andb/src/internal/storage  0.26s
-[task4-strict] all S3 cold tests passed
-```
-
-**Warm purge stats** — `go test ./src/internal/storage/ -run TestPurgeMemoryWarmOnly -v`
-
-```
---- PASS: TestPurgeMemoryWarmOnly (0.00s)
---- PASS: TestPurgeMemoryWarmOnlyWithStats_EdgeStats (0.00s)
-ok  andb/src/internal/storage  0.26s
-```
-
-**Key files changed / created:**
-
-| File | Change |
-|---|---|
-| `Dockerfile` | Multi-stage Go server build |
-| `docker-compose.yml` | Switch to Dockerfile image |
-| `docker-compose.gpu.yml` | GPU overlay for NVIDIA devices |
-| `src/internal/storage/purge_warm.go` | Bulk-delete path + stats + retry |
-| `src/internal/storage/s3store.go` | maxPages limit + ListObjectsLimited |
-| `src/internal/storage/s3util.go` | ListObjectsLimited implementation |
-| `src/internal/access/admin_auth.go` | Startup warning log |
-| `scripts/e2e/member_a_*.sh` | E2E verification scripts |
-| `docs/server-migration.md` | S3 migration guide |
+- [ ] `admin_auth.go` — fix `constantTimeEqual` timing leak: replace length-branch with HMAC-SHA256 digest comparison
+- [ ] `dataset_match.go` — add `,` and `;` as token boundaries in `contentDatasetNameLabelEquals`
+- [ ] `s3store.go` — `selectTopScored`: sort a copy of the slice instead of mutating the input
+- [ ] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate edge race (known limitation)
+- [ ] `dataset_match.go` — add doc comment warning: all-empty selectors match every memory in the workspace
 
 ---
 
@@ -834,20 +756,12 @@ ok  andb/src/internal/storage  0.26s
 - Verify `OnnxEmbedder.BatchGenerate` / `GGUFEmbedder.BatchGenerate` are called
 - Benchmark: ingest 1000 events, measure embedding batch throughput
 
-#### Verification Checklist
+#### Outstanding TODO
 
-```
-[x] ONNX CUDA: go test -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder passes
-[x] GGUF CUDA: NewGGUF returns non-stub instance inside Docker + NVIDIA GPU
-[x] GGUF CUDA: Generate produces correct-dimension embeddings
-[x] TensorRT: engine loads without error, inference produces output
-[x] retrievalplane: libandb_retrieval.so builds on Linux (make -C cpp)
-[x] retrievalplane: Search works inside Docker with HNSW index
-[x] BatchGenerate: TieredDataPlane.Ingest calls batch embedder, not N x single
-[x] Linux build: go build -tags cuda,retrieval ./src/internal/... compiles cleanly
-[x] ONNX CPU: TestOnnxEmbedder_CPU passes (regression test)
-[x] All embedding provider tests: go test ./src/internal/dataplane/embedding/ passes (CPU mode)
-```
+- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput
+- [ ] `tensorrt_cuda.go` — add guard in `NewTensorRT`: return error if `dim <= 0` (currently allocates zero-size GPU buffer → panic)
+- [ ] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) CPU hot-path on adversarial tokens
+- [ ] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning an error (align with ONNX CPU behaviour)
 
 #### Test Results (2026-03-31, Linux · NVIDIA TITAN RTX · CUDA 11.8)
 
