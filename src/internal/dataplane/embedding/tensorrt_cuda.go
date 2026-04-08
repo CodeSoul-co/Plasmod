@@ -135,6 +135,9 @@ type TensorRTEmbedder struct {
 
 // NewTensorRT creates a TensorRT embedder with CUDA GPU acceleration.
 func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbedder, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("dim must be > 0, got %d", dim)
+	}
 	if cfg.EnginePath == "" {
 		return nil, fmt.Errorf("TensorRTConfig.EnginePath is required")
 	}
@@ -159,9 +162,6 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 	// Allocate GPU memory for input/output buffers
 	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4           // int32
 	effDim := dim
-	if effDim == 0 {
-		effDim = 1024 // probe: assume at most 1024 dim
-	}
 	// Real BERT output is [batch, seq_len, dim]; allocate full 3D buffer.
 	outputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * effDim * 4 // float32
 
@@ -269,15 +269,31 @@ func (e *TensorRTEmbedder) Generate(text string) ([]float32, error) {
 
 // BatchGenerate runs inference on multiple texts using TensorRT on GPU.
 func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return [][]float32{}, nil
+	}
+	if len(texts) > e.cfg.MaxBatchSize {
+		// Align behavior with ONNX CPU provider: split oversized batches automatically.
+		out := make([][]float32, 0, len(texts))
+		for i := 0; i < len(texts); i += e.cfg.MaxBatchSize {
+			j := i + e.cfg.MaxBatchSize
+			if j > len(texts) {
+				j = len(texts)
+			}
+			chunk, err := e.BatchGenerate(ctx, texts[i:j])
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, chunk...)
+		}
+		return out, nil
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.closed {
 		return nil, fmt.Errorf("TensorRTEmbedder is closed")
-	}
-
-	if len(texts) > e.cfg.MaxBatchSize {
-		return nil, fmt.Errorf("batch size %d exceeds maximum %d", len(texts), e.cfg.MaxBatchSize)
 	}
 
 	// Tokenize and prepare input
