@@ -438,15 +438,24 @@ func loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
 		maxKeys:        algoCfg.ColdMaxCandidates,
 		concurrency:    8,
 		batchSize:      algoCfg.ColdBatchSize,
-		bufferFactor:   3,
-		earlyStopScore: 0.95,
-		noImprovePages: 2,
+		bufferFactor:   algoCfg.ColdBufferFactor,
+		earlyStopScore: algoCfg.ColdEarlyStopScore,
+		noImprovePages: algoCfg.ColdNoImprovePages,
 	}
 	if cfg.maxKeys <= 0 {
 		cfg.maxKeys = 1000
 	}
 	if cfg.batchSize <= 0 {
 		cfg.batchSize = 128
+	}
+	if cfg.bufferFactor <= 0 {
+		cfg.bufferFactor = 3
+	}
+	if cfg.earlyStopScore <= 0 || cfg.earlyStopScore > 1 {
+		cfg.earlyStopScore = 0.95
+	}
+	if cfg.noImprovePages <= 0 {
+		cfg.noImprovePages = 2
 	}
 
 	if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxKeys); v > 0 {
