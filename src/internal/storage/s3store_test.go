@@ -329,3 +329,85 @@ func TestS3ColdStore_ColdHNSWSearch_TopKOrdering(t *testing.T) {
 		t.Fatalf("expected %s ranked first, got %v", mem1.MemoryID, got)
 	}
 }
+
+func TestS3ColdStore_ColdVectorSearch_10K_Correctness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip 10K correctness test in short mode")
+	}
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Skipf("skip S3 10K correctness test: %v", err)
+	}
+
+	// 独立 prefix，避免与其他测试互相污染
+	cfg.Prefix = fmt.Sprintf("%s/test_s3_vector_10k_%d", cfg.Prefix, time.Now().UnixNano())
+
+	algoCfg := schemas.DefaultAlgorithmConfig()
+	algoCfg.ColdBatchSize = 256
+	algoCfg.ColdMaxCandidates = 12000 // 必须 > 10000，否则会被截断
+	store := NewS3ColdStoreWithAlgorithmConfig(cfg, algoCfg)
+
+	const (
+		totalN  = 10000
+		targetN = 100
+		topK    = 10
+	)
+
+	targetIDs := make(map[string]struct{}, targetN)
+
+	// 构造 10K 冷数据：
+	// - 前 100 条是“目标簇”，query=[1,0] 时相似度最高
+	// - 后 9900 条是“干扰簇”，query=[1,0] 时相似度为 0
+	for i := 0; i < totalN; i++ {
+		id := fmt.Sprintf("mem_10k_%05d", i)
+
+		mem := schemas.Memory{
+			MemoryID: id,
+			Content:  fmt.Sprintf("10k cold correctness item %d", i),
+			Version:  int64(i + 1),
+			IsActive: false,
+		}
+		store.PutMemory(mem)
+
+		var vec []float32
+		if i < targetN {
+			vec = []float32{1, 0}
+			targetIDs[id] = struct{}{}
+		} else {
+			vec = []float32{0, 1}
+		}
+
+		if err := store.PutMemoryEmbedding(id, vec); err != nil {
+			t.Fatalf("PutMemoryEmbedding(%s) failed: %v", id, err)
+		}
+	}
+
+	// 给对象存储一点时间完成 list / get 可见性，然后 retry 搜索结果
+	var got []string
+	deadline := time.Now().Add(10 * time.Second)
+
+	for {
+		got = store.ColdVectorSearch([]float32{1, 0}, topK)
+		if len(got) == topK {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if len(got) != topK {
+		t.Fatalf("expected topK=%d results, got %d: %+v", topK, len(got), got)
+	}
+
+	// 断言前 topK 全部来自目标簇
+	for i, id := range got {
+		if _, ok := targetIDs[id]; !ok {
+			t.Fatalf("unexpected non-target result at rank %d: %s (results=%+v)", i, id, got)
+		}
+	}
+
+	t.Logf("10K correctness PASS: top-%d results all from target cluster", topK)
+}
