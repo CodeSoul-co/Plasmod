@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"andb/retrievalplane"
+	"andb/src/internal/schemas"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -12,8 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"andb/src/internal/schemas"
 )
 
 // S3ColdStore implements ColdObjectStore backed by a MinIO/S3-compatible bucket.
@@ -695,7 +695,100 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 }
 
 func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
-	// HNSW index loading from S3 is not implemented yet.
-	// Return nil so callers fall back to brute-force ColdVectorSearch.
-	return nil
+	if topK <= 0 || len(queryVec) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
+	cfg := s.loadS3ColdSearchConfigFromEnv()
+
+	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
+		keys = keys[:cfg.maxKeys]
+	}
+
+	dim := len(queryVec)
+	if dim <= 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(keys))
+	vectors := make([]float32, 0, len(keys)*dim)
+
+	for start := 0; start < len(keys); start += cfg.batchSize {
+		end := start + cfg.batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		page := keys[start:end]
+
+		for _, key := range page {
+			data, err := GetBytes(ctx, nil, s.cfg, key)
+			if err != nil || data == nil {
+				continue
+			}
+
+			vec, err := bytesToFloat32Slice(data)
+			if err != nil {
+				continue
+			}
+			if len(vec) != dim {
+				// 维度不一致直接跳过，避免 Build/Search 出错
+				continue
+			}
+
+			memoryID := memoryIDFromEmbeddingKey(key)
+			if memoryID == "" {
+				continue
+			}
+
+			ids = append(ids, memoryID)
+			vectors = append(vectors, vec...)
+		}
+	}
+
+	if len(ids) == 0 || len(vectors) == 0 {
+		return nil
+	}
+
+	algoCfg := s.algoCfg
+	if algoCfg == (schemas.AlgorithmConfig{}) {
+		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
+
+	retriever, err := retrievalplane.NewRetrieverWithMetric(
+		dim,
+		algoCfg.HNSWM,
+		algoCfg.HNSEfConstruction,
+		algoCfg.RRFK,
+		"IP",
+	)
+	if err != nil || retriever == nil {
+		// retrieval 不可用时优雅回退，让上层继续走 ColdVectorSearch
+		return nil
+	}
+	defer retriever.Close()
+
+	if err := retriever.Build(vectors, len(ids)); err != nil {
+		return nil
+	}
+
+	intIDs, _, err := retriever.Search(queryVec, topK, nil)
+	if err != nil || len(intIDs) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(intIDs))
+	for _, idx := range intIDs {
+		i := int(idx)
+		if i < 0 || i >= len(ids) {
+			continue
+		}
+		out = append(out, ids[i])
+	}
+	return out
 }
