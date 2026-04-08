@@ -101,6 +101,18 @@ func TestMemoryDatasetMatch_ContentFallback_DatasetNameBoundary(t *testing.T) {
 	}
 }
 
+func TestMemoryDatasetMatch_ContentFallback_DatasetNameBoundary_CommaSemicolon(t *testing.T) {
+	withComma := memWith("ws1", "", "", "dataset=x.fbin dataset_name:deep1B,extra")
+	if !MemoryDatasetMatch(withComma, "ws1", "", "deep1B", "") {
+		t.Error("content fallback: dataset_name boundary via comma should match")
+	}
+
+	withSemicolon := memWith("ws1", "", "", "dataset=x.fbin dataset_name:deep1B;extra")
+	if !MemoryDatasetMatch(withSemicolon, "ws1", "", "deep1B", "") {
+		t.Error("content fallback: dataset_name boundary via semicolon should match")
+	}
+}
+
 func TestMemoryDatasetMatch_ContentFallback_PrefixMatch(t *testing.T) {
 	m := memWith("ws1", "", "", "dataset=base.10M.fbin info")
 	if !MemoryDatasetMatch(m, "ws1", "", "", "base.10") {

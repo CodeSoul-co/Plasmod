@@ -142,6 +142,14 @@ func TestConstantTimeEqual_EmptyInputs(t *testing.T) {
 	}
 }
 
+func TestAuthDigest_FixedLength(t *testing.T) {
+	d1 := authDigest("short")
+	d2 := authDigest("this-is-a-much-longer-key")
+	if len(d1) != 32 || len(d2) != 32 {
+		t.Fatalf("digest length mismatch: got %d and %d, want 32", len(d1), len(d2))
+	}
+}
+
 func TestWrapAdminAuth_ResponseBody_Unauthorized(t *testing.T) {
 	t.Setenv(EnvAdminAPIKey, "secret")
 	h := WrapAdminAuth(okHandler())
