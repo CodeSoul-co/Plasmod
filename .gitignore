@@ -24,9 +24,6 @@ models/*.bin
 
 # go-llama.cpp build artifacts
 libs/go-llama.cpp/
-libs/go-llama.cpp/build/
-libs/go-llama.cpp/libbinding.a
-libs/go-llama.cpp/llama.cpp/*.o
 
 # Local env file
 .env
