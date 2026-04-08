@@ -1002,7 +1002,9 @@ Seed pipeline verified end-to-end:
 - Build: offline job builds HNSW from all archived embeddings, uploads `.hnsw` file to S3
 - `ColdSearch` falls back to brute-force if HNSW index not present
 
-**5. AlgorithmConfig HNSW/DFS parameter externalization**
+Task 4 status: ColdHNSWSearch has been integrated into the cold-tier retrieval path and all non-retrieval regression tests pass (storage / dataplane / worker). However, final end-to-end verification under the real retrieval/HNSW runtime is still pending because the current Linux server does not have the retrieval bridge build artifacts (e.g. cpp/build/libandb_retrieval.so) available. Therefore, this task is code-complete but environment-blocked for final validation.
+
+**5. AlgorithmConfig HNSW/DFS parameter externalization**✅
 - Audit all hardcoded values in `tiered_adapter.go`, `assembler.go`, `evidence/`
 - Add to `schemas.AlgorithmConfig`:
   - `RRFK int` (default 60)
@@ -1036,7 +1038,7 @@ Seed pipeline verified end-to-end:
 [ ] HNSW cold index loads from S3 and produces correct scores
 [√] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
 [√] EvidenceCache reports cold_hits and cold_misses
-[ ] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
+[√] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
 [ ] End-to-end: archive 10K memories -> query include_cold=true -> correct results
 ```
 
