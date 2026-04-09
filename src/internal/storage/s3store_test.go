@@ -453,3 +453,51 @@ func TestS3ColdStore_ColdVectorSearch_10K_Correctness(t *testing.T) {
 
 	t.Logf("10K correctness PASS: top-%d results all from target cluster", topK)
 }
+
+func BenchmarkS3ColdStore_ColdVectorSearch_10K(b *testing.B) {
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		b.Skipf("skip S3 10K benchmark: %v", err)
+	}
+
+	cfg.Prefix = fmt.Sprintf("%s/bench_s3_vector_10k_%d", cfg.Prefix, time.Now().UnixNano())
+
+	algoCfg := schemas.DefaultAlgorithmConfig()
+	algoCfg.ColdBatchSize = 256
+	algoCfg.ColdMaxCandidates = 12000
+	store := NewS3ColdStoreWithAlgorithmConfig(cfg, algoCfg)
+
+	const (
+		totalN = 10000
+		topK   = 10
+	)
+
+	for i := 0; i < totalN; i++ {
+		id := fmt.Sprintf("bench_mem_10k_%05d", i)
+		mem := schemas.Memory{
+			MemoryID: id,
+			Content:  fmt.Sprintf("10k cold benchmark item %d", i),
+			Version:  int64(i + 1),
+			IsActive: false,
+		}
+		store.PutMemory(mem)
+
+		vec := []float32{0, 1}
+		if i < 100 {
+			vec = []float32{1, 0}
+		}
+		if err := store.PutMemoryEmbedding(id, vec); err != nil {
+			b.Fatalf("PutMemoryEmbedding(%s) failed: %v", id, err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		got := store.ColdVectorSearch([]float32{1, 0}, topK)
+		if len(got) != topK {
+			b.Fatalf("expected topK=%d results, got %d", topK, len(got))
+		}
+		b.ReportMetric(float64(time.Since(start).Microseconds())/1000.0, "ms/op-observed")
+	}
+}
