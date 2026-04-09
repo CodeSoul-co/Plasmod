@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -480,7 +481,13 @@ func BenchmarkS3ColdStore_ColdVectorSearch_10K(b *testing.B) {
 			Version:  int64(i + 1),
 			IsActive: false,
 		}
-		store.PutMemory(mem)
+		data, err := json.Marshal(mem)
+		if err != nil {
+			b.Fatalf("marshal memory %s failed: %v", id, err)
+		}
+		if err := PutBytes(context.Background(), nil, cfg, store.memoryKey(id), data, "application/json"); err != nil {
+			b.Fatalf("PutMemory(%s) failed: %v", id, err)
+		}
 
 		vec := []float32{0, 1}
 		if i < 100 {
@@ -491,10 +498,34 @@ func BenchmarkS3ColdStore_ColdVectorSearch_10K(b *testing.B) {
 		}
 	}
 
+	memoryPrefix := fmt.Sprintf("%s/cold/memories/", cfg.Prefix)
+	embeddingPrefix := fmt.Sprintf("%s/cold/embeddings/", cfg.Prefix)
+
 	// Real S3/MinIO may need a short convergence window before list/get
-	// sees the full archived set. Wait until the topK query becomes stable.
-	var warmup []string
+	// sees the full archived set. Wait until both prefixes are visible first.
 	deadline := time.Now().Add(30 * time.Second)
+	for {
+		memKeys, memErr := ListObjects(context.Background(), nil, cfg, memoryPrefix)
+		embKeys, embErr := ListObjects(context.Background(), nil, cfg, embeddingPrefix)
+		if memErr == nil && embErr == nil && len(memKeys) >= totalN && len(embKeys) >= totalN {
+			break
+		}
+		if time.Now().After(deadline) {
+			memCount := 0
+			embCount := 0
+			if memKeys, err := ListObjects(context.Background(), nil, cfg, memoryPrefix); err == nil {
+				memCount = len(memKeys)
+			}
+			if embKeys, err := ListObjects(context.Background(), nil, cfg, embeddingPrefix); err == nil {
+				embCount = len(embKeys)
+			}
+			b.Fatalf("expected %d visible S3 objects before benchmark, got memories=%d embeddings=%d", totalN, memCount, embCount)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	var warmup []string
+	deadline = time.Now().Add(30 * time.Second)
 	for {
 		warmup = store.ColdVectorSearch([]float32{1, 0}, topK)
 		if len(warmup) == topK {
