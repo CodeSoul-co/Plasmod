@@ -691,6 +691,7 @@ func (s *S3ColdStore) getMemoryEmbeddingByID(memoryID string) ([]float32, bool) 
 func (s *S3ColdStore) collectColdCandidates(query string, topK int, cfg s3ColdSearchConfig) []s3ColdCandidate {
 	ctx := context.Background()
 	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
+	queryEmpty := strings.TrimSpace(query) == ""
 
 	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
@@ -707,6 +708,16 @@ func (s *S3ColdStore) collectColdCandidates(query string, topK int, cfg s3ColdSe
 	maxCandidates := targetCandidates * 2
 	if maxCandidates < topK {
 		maxCandidates = topK
+	}
+	if queryEmpty {
+		// Dense-only cold search has no lexical prior. Keep the full configured
+		// candidate window so recency prefiltering does not discard relevant
+		// archived embeddings before vector reranking.
+		maxCandidates = len(keys)
+		if cfg.maxKeys > 0 && cfg.maxKeys < maxCandidates {
+			maxCandidates = cfg.maxKeys
+		}
+		targetCandidates = maxCandidates
 	}
 
 	results := make([]s3ColdCandidate, 0, min(maxCandidates, len(keys)))
@@ -782,7 +793,7 @@ func (s *S3ColdStore) collectColdCandidates(query string, topK int, cfg s3ColdSe
 			noImprovePages++
 		}
 
-		if shouldEarlyStopCandidates(topNow, len(results), topK, targetCandidates, cfg.earlyStopScore, noImprovePages, cfg.noImprovePages) {
+		if !queryEmpty && shouldEarlyStopCandidates(topNow, len(results), topK, targetCandidates, cfg.earlyStopScore, noImprovePages, cfg.noImprovePages) {
 			break
 		}
 	}
