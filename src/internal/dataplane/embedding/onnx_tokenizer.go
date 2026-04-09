@@ -20,7 +20,12 @@ const (
 	bertTokPAD = int64(0)
 	bertTokUNK = int64(100)
 
-	bertMaxWordLen = 200
+	bertMaxWordLen  = 200
+	// bertMaxSubwords caps the number of subword tokens emitted per word.
+	// Without this guard, a pathological token that matches many short prefixes
+	// causes the O(n²) inner loop in wordPieceSplit to run for the full word
+	// length squared.  Exceeding the cap returns [UNK] for the whole word.
+	bertMaxSubwords = 200
 )
 
 // bertTokenizer implements BERT WordPiece tokenization.
@@ -157,6 +162,11 @@ func (bt *bertTokenizer) wordPieceSplit(word string) []int64 {
 	subwords := make([]int64, 0, 4)
 	start := 0
 	for start < len(chars) {
+		// Guard against pathological tokens that generate too many subwords,
+		// preventing the O(n²) inner loop from becoming a CPU hot-path.
+		if len(subwords) >= bertMaxSubwords {
+			return []int64{bertTokUNK}
+		}
 		end := len(chars)
 		found := false
 		for end > start {

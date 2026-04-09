@@ -1,6 +1,8 @@
 package access
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"log"
 	"net/http"
@@ -50,18 +52,20 @@ func WrapAdminAuth(next http.Handler) http.Handler {
 }
 
 func constantTimeEqual(a, b string) bool {
+	// Keep prior semantics: empty credentials are always rejected.
 	if a == "" || b == "" {
 		return false
 	}
-	ab := []byte(a)
-	bb := []byte(b)
-	if len(ab) != len(bb) {
-		// Compare anyway to keep timing similar for same-length keys.
-		// Note: subtle.ConstantTimeCompare requires equal lengths; so we do a length check
-		// but still avoid early return on content paths by comparing against itself.
-		_ = subtle.ConstantTimeCompare(ab, ab)
-		return false
-	}
-	return subtle.ConstantTimeCompare(ab, bb) == 1
+	// Compare fixed-length HMAC digests to avoid leaking key length via timing.
+	da := authDigest(a)
+	db := authDigest(b)
+	return subtle.ConstantTimeCompare(da, db) == 1
+}
+
+func authDigest(v string) []byte {
+	// Key material is process-local and constant per run; digest length is fixed (sha256.Size).
+	m := hmac.New(sha256.New, []byte("andb-admin-auth-v1"))
+	_, _ = m.Write([]byte(v))
+	return m.Sum(nil)
 }
 

@@ -299,8 +299,11 @@ type AlgorithmConfig struct {
 	// DFS / cold-tier retrieval
 	DFSRelevanceThreshold float64           // minimum dense relevance to keep a cold-tier DFS hit (default 0.2)
 	ColdSearchWeights     ColdSearchWeights // weighting of lexical/dense/recency signals in cold tier
-	ColdBatchSize         int
-	ColdMaxCandidates     int
+	ColdBatchSize         int               // S3 cold search batch size (default 128)
+	ColdMaxCandidates     int               // cap on cold candidates scanned (default 1000)
+	ColdBufferFactor      int               // multiplier for target candidates in lexical cold search (default 3)
+	ColdEarlyStopScore    float64           // early-stop score threshold for lexical cold search (default 0.95)
+	ColdNoImprovePages    int               // stop after N non-improving pages (default 2)
 }
 
 // DefaultAlgorithmConfig returns a AlgorithmConfig populated with all defaults.
@@ -330,8 +333,11 @@ func DefaultAlgorithmConfig() AlgorithmConfig {
 			Dense:   0.4,
 			Recency: 0.1,
 		},
-		ColdBatchSize:     128,
-		ColdMaxCandidates: 1000,
+		ColdBatchSize:      128,
+		ColdMaxCandidates:  1000,
+		ColdBufferFactor:   3,
+		ColdEarlyStopScore: 0.95,
+		ColdNoImprovePages: 2,
 	}
 }
 

@@ -24,6 +24,9 @@ type warmEdgeBulkDeleter interface {
 // PurgeMemoryWarmOnlyWithStats executes warm-only purge and returns deletion stats.
 // GraphEdgeStore does not currently return DeleteEdge errors, so we verify by
 // probing GetEdge after each delete and emit warnings for any leftovers.
+// Known limitation: bulk-delete + 2-pass retry reduces, but does not eliminate,
+// races with concurrent edge writes (new edges inserted after the second scan
+// may remain for a later purge cycle).
 func PurgeMemoryWarmOnlyWithStats(rs RuntimeStorage, memoryID string) PurgeWarmStats {
 	var stats PurgeWarmStats
 	if rs == nil {
@@ -43,36 +46,36 @@ func PurgeMemoryWarmOnlyWithStats(rs RuntimeStorage, memoryID string) PurgeWarmS
 					memoryID, len(residual),
 				)
 			}
-		}
-
-		seen := map[string]struct{}{}
-		for pass := 0; pass < 2; pass++ {
-			edges := es.BulkEdges([]string{memoryID})
-			if pass > 0 {
-				stats.EdgeDeleteRetried += len(edges)
-			}
-			if len(edges) == 0 {
-				break
-			}
-			for _, e := range edges {
-				if _, ok := seen[e.EdgeID]; ok {
-					continue
+		} else {
+			seen := map[string]struct{}{}
+			for pass := 0; pass < 2; pass++ {
+				edges := es.BulkEdges([]string{memoryID})
+				if pass > 0 {
+					stats.EdgeDeleteRetried += len(edges)
 				}
-				seen[e.EdgeID] = struct{}{}
-				es.DeleteEdge(e.EdgeID)
-				if _, ok := es.GetEdge(e.EdgeID); ok {
-					stats.EdgeDeleteFailed++
-					log.Printf("purge_warm: delete edge failed edge_id=%s memory_id=%s", e.EdgeID, memoryID)
-					continue
+				if len(edges) == 0 {
+					break
 				}
-				stats.EdgeDeleteSucceeded++
+				for _, e := range edges {
+					if _, ok := seen[e.EdgeID]; ok {
+						continue
+					}
+					seen[e.EdgeID] = struct{}{}
+					es.DeleteEdge(e.EdgeID)
+					if _, ok := es.GetEdge(e.EdgeID); ok {
+						stats.EdgeDeleteFailed++
+						log.Printf("purge_warm: delete edge failed edge_id=%s memory_id=%s", e.EdgeID, memoryID)
+						continue
+					}
+					stats.EdgeDeleteSucceeded++
+				}
 			}
-		}
-		if stats.EdgeDeleteFailed > 0 {
-			log.Printf(
-				"purge_warm: completed with edge delete failures memory_id=%s edge_delete_succeeded=%d edge_delete_failed=%d edge_delete_retried=%d",
-				memoryID, stats.EdgeDeleteSucceeded, stats.EdgeDeleteFailed, stats.EdgeDeleteRetried,
-			)
+			if stats.EdgeDeleteFailed > 0 {
+				log.Printf(
+					"purge_warm: completed with edge delete failures memory_id=%s edge_delete_succeeded=%d edge_delete_failed=%d edge_delete_retried=%d",
+					memoryID, stats.EdgeDeleteSucceeded, stats.EdgeDeleteFailed, stats.EdgeDeleteRetried,
+				)
+			}
 		}
 	}
 	if os := rs.Objects(); os != nil {
