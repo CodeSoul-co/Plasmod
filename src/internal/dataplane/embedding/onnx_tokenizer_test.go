@@ -14,8 +14,11 @@ func TestWordPieceSplit_MaxSubwordsGuard(t *testing.T) {
 		bt.vocab["##"+ch] = int64(2000 + i)
 	}
 
-	// This would produce > bertMaxSubwords subwords with the above vocab.
-	longToken := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
+	// This would produce > bertMaxSubwords (200) subwords with the above vocab.
+	longToken := "abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmnopqrstuvwxyz" +
+		"abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmnopqrstuvwxyz" +
+		"abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmnopqrstuvwxyz" +
+		"abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmnopqrstuvwxyz" // 208 chars > 200
 	got := bt.wordPieceSplit(longToken)
 	if len(got) != 1 || got[0] != bertTokUNK {
 		t.Fatalf("expected [UNK] due to max-subwords guard, got=%v", got)
