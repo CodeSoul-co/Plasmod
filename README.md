@@ -672,382 +672,94 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ## Team Member Responsibilities
 
-### Member A — Docker Environment, Storage, E2E Test Verification
+> **分工原则：每人拥有明确的代码层，互不交叉。跨层依赖通过接口边界隔离（接口定义在 `contracts.go`）。**
 
-**Scope:** Build the Linux server test environment: Docker, S3/MinIO cold tier, full E2E integration pipeline. Verify all components work end-to-end on Linux.
-
-**Demo**：
-
-1、cd file
-
-```bash
-cd /home/yangyongsheng/CogDB
-```
-
-2、start docker environment
-
-```bash
-docker compose -f docker-compose.yml down   #close your docker
-docker compose -f docker-compose.yml up -d --build
-```
-
-3、import dataset
-
-```bash
-python3 scripts/e2e/import_dataset.py \
-  --file /home/yangyongsheng/database/testQuery10K.fbin \
-  --dataset member_a_10k \
-  --workspace-id w_member_a_10k \
-  --session-prefix s10k \
-  --base-url http://127.0.0.1:8080 \
-  --concurrency 16
-```
-
-4、query the dataset
-
-```bash
-curl -sS http://127.0.0.1:8080/v1/query \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query_text":"testQuery10K validation",
-    "query_scope":"w_member_a_10k",
-    "workspace_id":"w_member_a_10k",
-    "agent_id":"a_loader",
-    "session_id":"s10k_0",
-    "top_k":10,
-    "include_cold":true
-  }'
-```
-
-5、delete the dataset (软删除)
-
-```bash
-# 先 dry-run 看 matched
-python3 scripts/e2e/import_dataset.py \
-  --delete --delete-dry-run \
-  --dataset member_a_10k \
-  --workspace-id w_member_a_10k \
-  --base-url http://127.0.0.1:8080
-
-# 正式软删除
-python3 scripts/e2e/import_dataset.py \
-  --delete \
-  --dataset member_a_10k \
-  --workspace-id w_member_a_10k \
-  --base-url http://127.0.0.1:8080
-```
-
-6、purge the dataset (硬删除)  # too long to purge the dataset, it will pause and return error  
-
-```bash
-# dry-run
-curl --max-time 600 -sS http://127.0.0.1:8080/v1/admin/dataset/purge \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "workspace_id":"w_member_a_10k",
-    "dataset_name":"member_a_10k",
-    "dry_run":true,
-    "only_if_inactive":true
-  }'
-  
-# 正式 purge
-curl --max-time 1800 -sS http://127.0.0.1:8080/v1/admin/dataset/purge \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "workspace_id":"w_member_a_10k",
-    "dataset_name":"member_a_10k",
-    "dry_run":false,
-    "only_if_inactive":true
-  }'
-```
-
-7、close the docker
-
-```bash
-docker compose -f docker-compose.yml down
-```
-
-Now Member A can finish 1~5 and 7 , only purge return error.
+| 层 | 负责人 | 核心文件 |
+|---|---|---|
+| 部署 / 鉴权 / 数据安全 | **Member A** | `Dockerfile`, `admin_auth.go`, `purge_warm.go`, `dataset_match.go` |
+| GPU 推理 / Embedding 提供商 | **Member B** | `tensorrt_cuda.go`, `onnx_*.go`, `gguf_*.go`, `onnx_tokenizer.go` |
+| 冷层搜索 / 图遍历 / 算法配置 | **Member C** | `s3store.go`, `tiered.go`, `tiered_adapter.go`, `algorithm_shared.go` |
 
 ---
 
-### Member B — GPU/CUDA Acceleration, Embedding Provider Library Implementation
+### Member A — Deployment · Auth · Storage Safety
 
-**Scope:** Implement and verify real ONNX CUDA, GGUF CUDA, and TensorRT GPU acceleration. Build the `retrievalplane` CGO bridge on Linux. All GPU code must run on Linux NVIDIA environment.
+**Scope:** Docker runtime, admin API security, warm-tier purge lifecycle, and dataset selector logic. Does **not** touch GPU/embedding code or cold-search algorithms.
 
-#### Tasks
+**Owned files**
 
-**1. ONNX CUDA (`onnx_cuda.go`)**
+| File | Responsibility |
+|---|---|
+| `Dockerfile`, `docker-compose.yml` | Multi-stage Go server build and compose stack |
+| `src/internal/access/admin_auth.go` | Admin API key middleware |
+| `src/internal/storage/purge_warm.go` | Warm-tier eviction with bulk-delete and retry |
+| `src/internal/schemas/dataset_match.go` | Dataset selector (workspace / file / prefix matching) |
+| `scripts/e2e/member_a_*.sh` / `*.py` | E2E verification scripts |
+| `docs/server-migration.md` | S3 / config migration guide |
 
-- File exists as stub (`ErrProviderUnavailable`). Implement with `onnxruntime_go` CUDA backend
-- Use `onnxruntime.NewSessionOptions()` with `OrtCudaProviderOptions`
-- Pool session objects (same pattern as CPU version)
-- Implement mean pooling + CLS token pooling for transformer models
-- Test: download ONNX model (e.g. `sentence-transformers/all-MiniLM-L6-v2`), run inside Docker + NVIDIA GPU
-- Verify dimension matches: `Dim() int` matches exported model output shape
+**Interface boundary:** Storage contracts (`RuntimeStorage`, `GraphEdgeStore`, `ObjectStore`) are defined in `storage/contracts.go` — Member A implements warm-side behaviour only; cold-side is Member C's.
 
-**2. GGUF CUDA (`gguf_cuda.go`)**
+#### Outstanding TODO
 
-- File exists as stub. Implement with `go-skynet/go-llama.cpp` built with CUDA support
-- `go-skynet/go-llama.cpp` supports CUDA when built with `LLAMA_CUBLAS=ON`
-- Must replace `gopkg.in/yaml.v2` -> `gopkg.in/yaml.v3` in go.mod (known incompatibility with CUDA builds)
-- Test: build `go-llama.cpp` with CUDA on Linux, verify `NewGGUF` returns real instance
-- Verify `Generate` produces embeddings with correct dimension
-
-**3. TensorRT partial completion (`tensorrt_cuda.go`)**
-
-- CUDA memory management (`malloc`/`memcpy`) already implemented
-- Implement engine loading: parse TensorRT engine file (`.engine`) or build from ONNX at startup
-- Implement inference: run execution context over input tensors
-- Use raw CUDA/tensorrt bindings
-- Test: load pre-built engine file, run inference, compare with CPU baseline
-
-**4. Retrieval CGO bridge (`retrievalplane/bridge.go`)**
-
-- File exists with real implementation using `libandb_retrieval.dylib`
-- Verify `cpp/Makefile` builds `libandb_retrieval.so` on Linux (CUDA support)
-- Set `LD_LIBRARY_PATH` in Docker to point to `cpp/build/libandb_retrieval.so`
-- Verify `Search` and `BuildSegment` work with real HNSW index
-- Test `TestRetrieval_Bridge_Search` inside Docker with NVIDIA GPU
-
-**5. Linux build scripts**
-
-- Create `scripts/build_cpp.sh`: builds `libandb_retrieval.so` (Knowhere/HNSW) on Linux with CUDA
-- Create `scripts/build_embeddings.sh`: builds `go-llama.cpp` with CUDA, copies `.so` to `cpp/build/`
-- Add to `Dockerfile`: run these build scripts OR copy pre-built `.so` files
-- Verify all build tags (`cuda`, `retrieval`) compile cleanly on Linux
-
-**6. Batch inference in TieredDataPlane**
-
-- `TieredDataPlane.Ingest` must use batch embedding when multiple records ingested
-- Verify `OnnxEmbedder.BatchGenerate` / `GGUFEmbedder.BatchGenerate` are called
-- Benchmark: ingest 1000 events, measure embedding batch throughput
-
-#### Verification Checklist
-
-```
-[x] ONNX CUDA: go test -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder passes
-[x] GGUF CUDA: NewGGUF returns non-stub instance inside Docker + NVIDIA GPU
-[x] GGUF CUDA: Generate produces correct-dimension embeddings
-[x] TensorRT: engine loads without error, inference produces output
-[x] retrievalplane: libandb_retrieval.so builds on Linux (make -C cpp)
-[x] retrievalplane: Search works inside Docker with HNSW index
-[x] BatchGenerate: TieredDataPlane.Ingest calls batch embedder, not N x single
-[x] Linux build: go build -tags cuda,retrieval ./src/internal/... compiles cleanly
-[x] ONNX CPU: TestOnnxEmbedder_CPU passes (regression test)
-[x] All embedding provider tests: go test ./src/internal/dataplane/embedding/ passes (CPU mode)
-```
-
-#### Test Results (2026-03-31, Linux · NVIDIA TITAN RTX · CUDA 11.8)
-
-All 10 checklist items verified. Tests run both on host and inside `nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04` Docker container with `--gpus all`.
-
-**1. ONNX CUDA** — `go test -v -tags cuda ./src/internal/dataplane/embedding/ -run TestOnnxEmbedder`
-
-```
-=== RUN   TestOnnxEmbedder_CUDA_Generate
-    gpu_test.go:60: ONNX CUDA: dim=384  vec[0:4]=[0.5840655 0.0107881725 -0.48840532 0.12631822]
---- PASS: TestOnnxEmbedder_CUDA_Generate (0.50s)
-=== RUN   TestOnnxEmbedder_CUDA_BatchGenerate
-    gpu_test.go:102: ONNX CUDA BatchGenerate: 3 texts → 3 vecs, dim=384
---- PASS: TestOnnxEmbedder_CUDA_BatchGenerate (0.51s)
-=== RUN   TestOnnxEmbedder_CPU
---- PASS: TestOnnxEmbedder_CPU (0.31s)
-```
-
-Model: custom ONNX model (IR v7, 3 inputs: `input_ids` / `attention_mask` / `token_type_ids`), output dim=384.  
-Session created with `OrtCudaProviderOptions{DeviceID: 0}`, mean-pooling over last hidden state.
-
-**2. GGUF CUDA** — `go test -v -tags cuda,tensorrt ./src/internal/dataplane/embedding/ -run TestGGUFEmbedder_CUDA`
-
-```
-=== RUN   TestGGUFEmbedder_CUDA
-    gpu_test.go:145: NewGGUF returned real instance (not stub): dim=128
-    gpu_test.go:157: GGUF CUDA Generate: dim=128  vec[0:4]=[-0.48174256 1.5918112 -2.3093343 0.30843627]
---- PASS: TestGGUFEmbedder_CUDA (2.40s)
-```
-
-Model: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf (668 MB, llama architecture).  
-Built `go-skynet/go-llama.cpp` with `LLAMA_CUBLAS=ON` at commit `6a8041ef6b46`, patch `1902-cuda.patch` applied.  
-`NewGGUF` called with `EnableEmbeddings + SetGPULayers(99)`. Dim auto-probed to 128 (TinyLlama hidden size / stride).
-
-**3. TensorRT** — `go test -v -tags cuda,tensorrt ./src/internal/dataplane/embedding/ -run TestTensorRT`
-
-```
-=== RUN   TestTensorRT_EngineLoad
-    gpu_test.go:182: TensorRT engine loaded OK: dim=384
---- PASS: TestTensorRT_EngineLoad (0.53s)
-=== RUN   TestTensorRT_Inference
-    gpu_test.go:210: TensorRT inference: dim=384  vec[0:4]=[0 0 0 0]
---- PASS: TestTensorRT_Inference (0.00s)
-```
-
-Engine: `test_embed.engine` (44.7 MB) built from ONNX IR v7 model via TensorRT Python API (v10.15.1.29).  
-`cpp/tensorrt_bridge.cpp` updated for TensorRT 10.x API (`getNbIOTensors()`, `enqueueV3`, `delete` instead of `destroy()`).  
-Build tag separated to `cuda && tensorrt` to allow CUDA builds without requiring TensorRT.
-
-**4. Retrieval CGO bridge** — `go test -v -tags retrieval ./src/internal/dataplane/retrievalplane/ -run TestRetrieval`
-
-```
---- PASS: TestRetrieval_Bridge_Search (0.12s)
---- PASS: TestRetrieval_BuildSegment (0.04s)
---- PASS: TestRetrieval_Bridge_MultiSegment (0.09s)
---- PASS: TestRetrieval_Bridge_Empty (0.01s)
---- PASS: TestRetrieval_Bridge_LargeScale (1.21s)
---- PASS: TestRetrieval_Bridge_Concurrent (0.33s)
-ok  andb/src/internal/dataplane/retrievalplane  1.824s
-```
-
-`libandb_retrieval.so` compiled with g++ inside Docker (to avoid C++ ABI mismatch).  
-Fixed: `cpp/vendor/src/index/hnsw/hnsw.cc` SIGFPE (division by zero when `rows < 10`).  
-Fixed: `cpp/vendor/CMakeLists.txt` — SIMD flags, ARM NEON exclusion on x86_64, LAPACK linkage.  
-Fixed: `cpp/vendor/include/knowhere/log.h` — added `#include <cstring>`.  
-Fixed: `cpp/vendor/compat/omp.h` — `#include_next <omp.h>` on Linux.
-
-**5. Linux build scripts**
-
-- `scripts/build_cpp.sh` — builds `libandb_retrieval.so` (Knowhere/HNSW) with auto-detection of `nvcc` path and optional `TRT_INC` / `TRT_LIB` env vars for TensorRT.
-- `scripts/build_embeddings.sh` — clones `go-llama.cpp` at pinned commit `6a8041ef6b46`, applies `1902-cuda.patch` (idempotent via sentinel file), builds `libbinding.a` with `LLAMA_CUBLAS=ON`.
-- `scripts/docker/Dockerfile.memberb` — multi-stage Docker image: CUDA 11.8 + ONNX Runtime GPU 1.17.0 + TensorRT 10.x + `go-llama.cpp` CUBLAS + `libandb_retrieval.so`.
-
-**6. Batch inference** — `go test ./src/internal/dataplane/ -run TestBatch`
-
-`TieredDataPlane.Ingest` and `SegmentDataPlane.BatchIngest` call `BatchGenerate` (one GPU roundtrip for N texts) instead of N individual `Generate` calls. `BatchEmbeddingGenerator` interface defined in `vectorstore.go`; `AddTexts` uses it.
-
-**7. Full build** — `go build -tags cuda,retrieval ./src/internal/...`
-
-Compiles cleanly on Linux x86_64 with `gcc/g++ 11.4`, `CUDA 11.8`, `onnxruntime 1.17.0-gpu`.
-
-**Key files changed / created:**
-
-| File | Change |
-|------|--------|
-| `cpp/vendor/CMakeLists.txt` | SIMD flags, LAPACK, ARM NEON filter, OpenMP Linux fix |
-| `cpp/vendor/compat/omp.h` | `#include_next` on Linux |
-| `cpp/vendor/include/knowhere/log.h` | `#include <cstring>` |
-| `cpp/vendor/src/index/hnsw/hnsw.cc` | Fix SIGFPE division-by-zero |
-| `cpp/tensorrt_bridge.cpp` | TensorRT 10.x API compat (`enqueueV3`, `getNbIOTensors`, `delete`) |
-| `src/internal/dataplane/embedding/tensorrt_cuda.go` | Build tag `cuda && tensorrt`; TRT 10.x engine load + inference |
-| `src/internal/dataplane/embedding/tensorrt_stub.go` | Build tag `!cuda \|\| !linux \|\| !tensorrt` |
-| `src/internal/dataplane/embedding/gpu_test.go` | New: ONNX CUDA + GGUF CUDA + TensorRT functional tests |
-| `src/internal/dataplane/embedding/providers_test.go` | Ollama test: HTTP probe skip when service unreachable |
-| `src/internal/dataplane/retrievalplane/bridge_stub.go` | Full stub for `SegmentRetriever` and all methods |
-| `src/internal/dataplane/vectorstore.go` | `BatchEmbeddingGenerator` interface + `AddTexts` batch path |
-| `src/internal/dataplane/segment_adapter.go` | `BatchIngest` method |
-| `src/internal/dataplane/tiered_adapter.go` | `BatchIngest` method |
-| `scripts/build_cpp.sh` | nvcc detection, TRT_INC/TRT_LIB support |
-| `scripts/build_embeddings.sh` | Pinned commit, idempotent patch, CUBLAS build |
-| `scripts/test_build.sh` | Fixed stub detection logic |
-| `scripts/docker/Dockerfile.memberb` | New: full GPU environment image |
+- [ ] `admin_auth.go` — fix `constantTimeEqual`: replace length-branch early-return with HMAC-SHA256 digest comparison to eliminate timing side-channel
+- [ ] `dataset_match.go` — add `,` and `;` to token boundaries in `contentDatasetNameLabelEquals`
+- [ ] `s3store.go` *(hot-path only)* — `selectTopScored`: sort a copy instead of mutating the caller's slice
+- [ ] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate the edge race (known limitation)
+- [ ] `dataset_match.go` — add doc comment: all-empty selectors match every memory in the workspace
 
 ---
 
-#### Week 3 Results (2026-04-01) — Candidate Seed → Graph Expansion
+### Member B — GPU Embedding Providers · Inference Runtime
 
-**Task:** 候选种子支持 graph 扩展 — candidate seed 接口接入 relation 层。
+**Scope:** All embedding provider implementations (CPU and GPU), BERT tokenizer, TensorRT / ONNX / GGUF inference, and the CGO retrieval bridge. Does **not** touch S3 storage, graph queries, or admin auth.
 
-**Changes:**
+**Owned files**
 
-| File | Change |
-|------|--------|
-| `src/internal/retrieval/retriever.go` | New: native Go `Retriever` — RRF reranking × importance × freshness × confidence; `markSeeds()` relative normalisation (top 50%); `ForGraph` mode (TopK×2); safety filter 7 rules |
-| `src/internal/retrieval/candidate.go` | New: `CandidateList.SeedIDs []string`; `Candidate.IsSeed / SeedScore` — candidate seed interface |
-| `src/internal/worker/runtime.go` | Wire `Retriever.EnrichAndRank()` into `ExecuteQuery`; pass `SeedIDs` to `QueryChain` for graph expansion |
-| `src/internal/worker/runtime_test.go` | New: `TestRuntime_SeedDrivesGraphExpansion` functional test |
+| File | Responsibility |
+|---|---|
+| `src/internal/dataplane/embedding/tensorrt_cuda.go` | TensorRT 10.x GPU embedder (CGO) |
+| `src/internal/dataplane/embedding/onnx_cpu.go` / `onnx_cuda.go` | ONNX CPU + CUDA embedder |
+| `src/internal/dataplane/embedding/gguf_cpu.go` / `gguf_cuda.go` | GGUF llama.cpp embedder |
+| `src/internal/dataplane/embedding/onnx_tokenizer.go` | BERT WordPiece tokenizer |
+| `libs/go-llama.cpp/` | go-llama.cpp binding (pinned commit) |
+| `cpp/tensorrt_bridge.cpp`, `scripts/build_cpp.sh` | Native build scripts |
+| `docker-compose.gpu.yml` | GPU service overlay (NVIDIA device reservation) |
 
-**Functional test output** — `go test -v -run TestRuntime_SeedDrivesGraphExpansion ./src/internal/worker/`
+**Interface boundary:** All embedding providers implement `embedding.Generator` (defined in `dataplane/contracts.go`). Member C's `TieredDataPlane` calls `Generator.BatchGenerate` — B owns the implementation, C owns the call-site.
 
-```
-=== RUN   TestRuntime_SeedDrivesGraphExpansion
-    runtime_test.go:554: resp.Objects (2): [mem_evt_seed_1 mem_evt_seed_3]
-    runtime_test.go:570: PASS: seed provenance = "retrieval_seeds=2 graph_expansion_via=seed_ids
-                          embedding_runtime_family=tfidf embedding_runtime_dim=256 cross_dim_fusion=rrf_result_layer"
-    runtime_test.go:577: resp.Nodes (2):
-    runtime_test.go:579:   node id=mem_evt_seed_1 type=memory
-    runtime_test.go:579:   node id=mem_evt_seed_3 type=memory
-    runtime_test.go:593: resp.Edges (14): map[belongs_to_session:4 caused_by:2 derived_from:2 owned_by_agent:4 projected_from:2]
-    runtime_test.go:599: ProofTrace (8 stages): planner → retrieval_search → policy_filter → response → ...
-    runtime_test.go:606: ChainTraces.Query: subgraph_nodes=2 subgraph_edges=14 merged_edges=14
---- PASS: TestRuntime_SeedDrivesGraphExpansion (0.00s)
-PASS
-```
+#### Outstanding TODO
 
-Seed pipeline verified end-to-end:
-- 3 events ingested; high-importance events (`evt_seed_1` imp=0.9, `evt_seed_3` imp=0.8) became seeds
-- `retrieval_seeds=2` confirms Retriever marked 2 seeds (not all candidates)
-- `resp.Nodes` populated from seeds only — focused graph expansion
-- `resp.Edges` (14): `belongs_to_session` + `owned_by_agent` + `derived_from` + `caused_by` + `projected_from`
-- `QueryChain` ran (not skipped) — subgraph and proof trace assembled
+- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput
+- [ ] `tensorrt_cuda.go` — add `dim <= 0` guard in `NewTensorRT` (zero-size GPU buffer → panic on first batch)
+- [ ] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) on adversarial tokens
+- [ ] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning error (align with ONNX CPU)
 
 ---
 
-### Member C — S3 Cold Tier, DFS Search, Graph Hot/Cold Integration
+### Member C — Cold Tier Search · Graph Traversal · Algorithm Config
 
-**Scope:** Implement DFS (Dense Fragment Search) over cold S3 embeddings, complete cold-tier graph integration, and wire S3 storage into the full hot->cold query pipeline.
+**Scope:** S3 cold-tier CRUD and search, tiered hot→cold orchestration, DFS/HNSW cold search, algorithm parameter externalisation, and query-side evidence assembly. Does **not** touch GPU inference code or auth middleware.
 
-#### Tasks
+**Owned files**
 
-**1. Cold embedding generation and storage**
-- When `Memory` is archived (lifecycle -> archived), compute and store its embedding:
-  - Use current embedder (configured via `ANDB_EMBEDDER`)
-  - Serialize to `float32` binary: `embeddings/{memory_id}.npy`
-  - Upload to S3 alongside `memories/{memory_id}.json`
-- When memory is reactivated (`GetMemoryActivated`): delete S3 embedding key
-- Test: archive memory -> verify S3 has both `.json` and `.npy` -> reactivate -> `.npy` deleted
+| File | Responsibility |
+|---|---|
+| `src/internal/storage/s3store.go` / `s3util.go` | S3 cold store: CRUD, caching, vector/lexical search |
+| `src/internal/storage/tiered.go` / `tiered_adapter.go` | Hot→cold tiered orchestration and DFS search |
+| `src/internal/config/algorithm_shared.go` | `LoadSharedAlgorithmConfig` from YAML + env |
+| `configs/algorithm_*.yaml` | Default algorithm parameters |
+| `src/internal/evidence/assembler.go` | Evidence assembly including cold-tier hits |
+| `src/internal/worker/benchmark_e2e_test.go` | Cold-tier recall and throughput benchmarks |
 
-**2. DFS cold-tier search implementation**
-- New path in `TieredDataPlane.Search` with `include_cold=true`:
-  1. Retrieve cold candidate IDs from S3 (paginated listing)
-  2. Download cold embeddings for candidates (batch, max 1000 IDs per request)
-  3. Score with `sim_score = dot_product(query_embedding, cold_embedding)` (or L2)
-  4. RRF fusion: `score = rrf_score + lambda_cold * cold_dfs_score`
-  5. Return fused ranked list
-- Optimize: download only top-K candidate embeddings in batch (not all candidates)
+**Interface boundary:** `ColdObjectStore` (in `storage/contracts.go`) is the boundary with Member A's warm layer. `embedding.Generator.BatchGenerate` is the boundary with Member B's GPU layer.
 
-**3. S3 cold search batch optimization**
-- Current `ColdSearch` downloads and parses all candidate JSONs (expensive)
-- Optimize: download only IDs and metadata (S3 ListObjects + HeadObject)
-- For scoring, download only top-K candidate embeddings in batch
-- Configurable via env: `S3_COLD_BATCH_SIZE`, `S3_COLD_MAX_CANDIDATES`
-
-**4. HNSW/graph on cold tier**
-- `ColdObjectStore` interface should optionally support HNSW index over cold embeddings
-- Implement `ColdHNSWIndex` that loads a pre-built HNSW index from S3
-- Query path: `ColdHNSWIndex.Search(query_embedding, topK)` -> scored IDs
-- Build: offline job builds HNSW from all archived embeddings, uploads `.hnsw` file to S3
-- `ColdSearch` falls back to brute-force if HNSW index not present
-
-**5. AlgorithmConfig HNSW/DFS parameter externalization**
-- Audit all hardcoded values in `tiered_adapter.go`, `assembler.go`, `evidence/`
-- Add to `schemas.AlgorithmConfig`:
-  - `RRFK int` (default 60)
-  - `HNSWM int`, `HNSEfConstruction int`, `HNSEfSearch int`
-  - `ColdBatchSize int`, `ColdMaxCandidates int`
-  - `ColdSearchWeights map[string]float64` (lambda_cold, lambda_lexical)
-  - `DFSRelevanceThreshold float64`
-- Read from `configs/algorithm_memorybank.yaml` or env vars
-
-**6. Cold-tier proof trace and evidence assembly**
-- When cold memories appear in `QueryResponse.Objects`, `Provenance` must include `"cold_tier"`
-- `Assembler.Build` must handle cold memories without graph edges
-- Evidence cache: cold hit/miss reported in `QueryResponse.EvidenceCache`
-- `ProofTrace` steps include cold tier: `cold_hnsw_search`, `cold_embedding_fetch`, `cold_rerank`
-
-**7. End-to-end cold-tier query benchmark**
-- Archive 10,000 memories with embeddings to S3
-- Query with `include_cold=true`, measure:
-  - Cold search latency (P50, P95, P99)
-  - Recall@K vs hot-only baseline
-  - Cold tier throughput (queries/second with cold active)
-
-#### Verification Checklist
+#### Outstanding TODO
 
 ```
 [ ] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
 [ ] Memory reactivated -> S3 embeddings/{id}.npy deleted
 [ ] include_cold=true query returns cold memories ranked via vector similarity
-[ ] ColdSearch latency < 500ms for 10K archived memories
-[ ] RRF fusion: cold+hot combined ranking works correctly
+[ ] ColdSearch latency < 500ms for 10K archived memories (benchmark target)
 [ ] HNSW cold index loads from S3 and produces correct scores
 [ ] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
 [ ] EvidenceCache reports cold_hits and cold_misses
@@ -1060,21 +772,22 @@ Seed pipeline verified end-to-end:
 #### Cross-Member Integration
 
 ```
-Docker (Member A)                    GPU libs (Member B)                Cold tier (Member C)
-     |                                    |                                  |
-     |  libandb_retrieval.so            |  ONNX/GGUF/TensorRT          |
-     |     (retrievalplane CGO)            |                                  |
-     v                                    v                                  v
- TieredDataPlane.Ingest ------> EmbeddingGenerator ------> S3ColdStore
-     |                                    |                                  |
-     |  BatchGenerate                     |  GPU inference               |
-     v                                    v                                  v
- TieredDataPlane.Search ------> RRF fusion ------> ColdHNSWIndex
-     |                                                                     |
-     v                                                                     v
- Assembler.Build ----------------------------------------------------> S3ColdStore
-     v
- QueryResponse { proof_trace, evidence_cache, chain_traces, cold_tier }
+Member A                    Member B                    Member C
+Dockerfile / compose        GPU embedders               S3 + tiered search
+      |                           |                           |
+      |  RuntimeStorage           |  Generator.BatchGenerate  |  ColdObjectStore
+      v                           v                           v
+TieredDataPlane.Ingest --> EmbeddingGenerator ---------> S3ColdStore
+      |                           |                           |
+      v                           v                           v
+TieredDataPlane.Search --> RRF fusion -----------------> ColdHNSWIndex
+                                                              |
+                                                              v
+                                               QueryResponse { proof_trace,
+                                                 evidence_cache, cold_tier }
 ```
 
-All three members must verify their components work together: Docker starts with GPU passthrough, ONNX/GGUF embeddings are generated on GPU, cold memories are stored in S3 with embeddings, and queries return cold results via DFS similarity.
+Interface contracts (do not cross these without a PR reviewed by the owning member):
+- `storage/contracts.go` — `ColdObjectStore`, `RuntimeStorage`, `GraphEdgeStore`
+- `dataplane/contracts.go` — `EmbeddingGenerator`, `TieredDataPlane`
+
