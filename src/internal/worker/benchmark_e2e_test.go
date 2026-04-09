@@ -417,6 +417,86 @@ func BenchmarkRuntime_ExecuteQuery_IncludeCold_10KArchived(b *testing.B) {
 	}
 }
 
+func TestRuntime_IncludeCold_10KArchived_RecallVsHotOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip recall comparison in short mode")
+	}
+
+	r, tieredObjs, store := buildColdQueryRuntime(t)
+	targetIDs := seedArchivedColdMemories(t, tieredObjs, store, 10000, 100, "runtime cold recall payload")
+
+	hotOnly := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "runtime cold recall payload target",
+		QueryScope:  "session",
+		SessionID:   "session-cold-bench",
+		AgentID:     "agent-cold-bench",
+		TopK:        10,
+		ObjectTypes: []string{"memory"},
+		IncludeCold: false,
+	})
+	withCold := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "runtime cold recall payload target",
+		QueryScope:  "session",
+		SessionID:   "session-cold-bench",
+		AgentID:     "agent-cold-bench",
+		TopK:        10,
+		ObjectTypes: []string{"memory"},
+		IncludeCold: true,
+	})
+
+	recallAtK := func(ids []string) float64 {
+		if len(ids) == 0 {
+			return 0
+		}
+		hits := 0
+		for _, id := range ids {
+			if _, ok := targetIDs[id]; ok {
+				hits++
+			}
+		}
+		return float64(hits) / float64(len(ids))
+	}
+
+	hotRecall := recallAtK(hotOnly.Objects)
+	coldRecall := recallAtK(withCold.Objects)
+
+	if coldRecall < hotRecall {
+		t.Fatalf("expected include_cold recall >= hot-only recall, got hot=%.3f cold=%.3f", hotRecall, coldRecall)
+	}
+	if coldRecall == 0 {
+		t.Fatalf("expected include_cold recall > 0, got hot=%v cold=%v", hotOnly.Objects, withCold.Objects)
+	}
+
+	t.Logf("Recall@10 comparison: hot_only=%.3f include_cold=%.3f hot_objects=%d cold_objects=%d",
+		hotRecall, coldRecall, len(hotOnly.Objects), len(withCold.Objects))
+}
+
+func BenchmarkRuntime_ExecuteQuery_IncludeCold_10KArchived_Throughput(b *testing.B) {
+	r, tieredObjs, store := buildColdQueryRuntime(b)
+	_ = seedArchivedColdMemories(b, tieredObjs, store, 10000, 100, "runtime cold throughput payload")
+
+	startWall := time.Now()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := r.ExecuteQuery(schemas.QueryRequest{
+			QueryText:   "runtime cold throughput payload target",
+			QueryScope:  "session",
+			SessionID:   "session-cold-bench",
+			AgentID:     "agent-cold-bench",
+			TopK:        10,
+			ObjectTypes: []string{"memory"},
+			IncludeCold: true,
+		})
+		if len(resp.Objects) != 10 {
+			b.Fatalf("expected topK=10, got %d", len(resp.Objects))
+		}
+	}
+	elapsed := time.Since(startWall)
+	if elapsed > 0 {
+		b.ReportMetric(float64(b.N)/elapsed.Seconds(), "qps")
+	}
+}
+
 // TestQueryChain_ProofTrace_Stages verifies and logs the stages in ProofTrace
 func TestQueryChain_ProofTrace_Stages(t *testing.T) {
 	clock := eventbackbone.NewHybridClock()
