@@ -103,20 +103,57 @@ func (s *S3ColdStore) memoryPrefix() string {
 	return fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 }
 
+func (s *S3ColdStore) agentPrefix() string {
+	return fmt.Sprintf("%s/cold/agents/", s.cfg.Prefix)
+}
+
 func (s *S3ColdStore) agentKey(id string) string {
 	return fmt.Sprintf("%s/cold/agents/%s.json", s.cfg.Prefix, id)
+}
+
+func (s *S3ColdStore) statePrefix() string {
+	return fmt.Sprintf("%s/cold/states/", s.cfg.Prefix)
 }
 
 func (s *S3ColdStore) stateKey(id string) string {
 	return fmt.Sprintf("%s/cold/states/%s.json", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) artifactPrefix() string {
+	return fmt.Sprintf("%s/cold/artifacts/", s.cfg.Prefix)
+}
+
 func (s *S3ColdStore) artifactKey(id string) string {
 	return fmt.Sprintf("%s/cold/artifacts/%s.json", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) edgePrefix() string {
+	return fmt.Sprintf("%s/cold/edges/", s.cfg.Prefix)
+}
+
 func (s *S3ColdStore) edgeKey(id string) string {
 	return fmt.Sprintf("%s/cold/edges/%s.json", s.cfg.Prefix, id)
+}
+
+func getS3ObjectJSON[T any](cfg S3Config, objectKey, kind, id string) (T, bool) {
+	data, err := GetBytes(context.Background(), nil, cfg, objectKey)
+	if err != nil {
+		log.Printf("s3cold: get %s %s: %v", kind, id, err)
+		var zero T
+		return zero, false
+	}
+	if data == nil {
+		var zero T
+		return zero, false
+	}
+
+	var out T
+	if err := json.Unmarshal(data, &out); err != nil {
+		log.Printf("s3cold: unmarshal %s %s: %v", kind, id, err)
+		var zero T
+		return zero, false
+	}
+	return out, true
 }
 
 func (s *S3ColdStore) PutMemory(m schemas.Memory) {
@@ -134,21 +171,7 @@ func (s *S3ColdStore) PutMemory(m schemas.Memory) {
 }
 
 func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
-	data, err := GetBytes(context.Background(), nil, s.cfg, s.memoryKey(id))
-	if err != nil {
-		log.Printf("s3cold: get memory %s: %v", id, err)
-		return schemas.Memory{}, false
-	}
-	if data == nil {
-		log.Printf("s3cold: miss memory key=%s", s.memoryKey(id))
-		return schemas.Memory{}, false
-	}
-	var m schemas.Memory
-	if err := json.Unmarshal(data, &m); err != nil {
-		log.Printf("s3cold: unmarshal memory %s: %v", id, err)
-		return schemas.Memory{}, false
-	}
-	return m, true
+	return getS3ObjectJSON[schemas.Memory](s.cfg, s.memoryKey(id), "memory", id)
 }
 
 func (s *S3ColdStore) DeleteMemory(id string) error {
@@ -206,25 +229,13 @@ func (s *S3ColdStore) PutAgent(a schemas.Agent) {
 	}
 	if err := PutBytes(context.Background(), nil, s.cfg, s.agentKey(a.AgentID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put agent %s: %v", a.AgentID, err)
+		return
 	}
+	s.invalidateListCache(s.agentPrefix())
 }
 
 func (s *S3ColdStore) GetAgent(id string) (schemas.Agent, bool) {
-	data, err := GetBytes(context.Background(), nil, s.cfg, s.agentKey(id))
-	if err != nil {
-		log.Printf("s3cold: get agent %s: %v", id, err)
-		return schemas.Agent{}, false
-	}
-	if data == nil {
-		log.Printf("s3cold: miss agent key=%s", s.agentKey(id))
-		return schemas.Agent{}, false
-	}
-	var a schemas.Agent
-	if err := json.Unmarshal(data, &a); err != nil {
-		log.Printf("s3cold: unmarshal agent %s: %v", id, err)
-		return schemas.Agent{}, false
-	}
-	return a, true
+	return getS3ObjectJSON[schemas.Agent](s.cfg, s.agentKey(id), "agent", id)
 }
 
 func (s *S3ColdStore) PutState(st schemas.State) {
@@ -236,25 +247,13 @@ func (s *S3ColdStore) PutState(st schemas.State) {
 	}
 	if err := PutBytes(context.Background(), nil, s.cfg, s.stateKey(st.StateID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put state %s: %v", st.StateID, err)
+		return
 	}
+	s.invalidateListCache(s.statePrefix())
 }
 
 func (s *S3ColdStore) GetState(id string) (schemas.State, bool) {
-	data, err := GetBytes(context.Background(), nil, s.cfg, s.stateKey(id))
-	if err != nil {
-		log.Printf("s3cold: get state %s: %v", id, err)
-		return schemas.State{}, false
-	}
-	if data == nil {
-		log.Printf("s3cold: miss state key=%s", s.stateKey(id))
-		return schemas.State{}, false
-	}
-	var st schemas.State
-	if err := json.Unmarshal(data, &st); err != nil {
-		log.Printf("s3cold: unmarshal state %s: %v", id, err)
-		return schemas.State{}, false
-	}
-	return st, true
+	return getS3ObjectJSON[schemas.State](s.cfg, s.stateKey(id), "state", id)
 }
 
 func (s *S3ColdStore) PutArtifact(art schemas.Artifact) {
@@ -266,25 +265,13 @@ func (s *S3ColdStore) PutArtifact(art schemas.Artifact) {
 	}
 	if err := PutBytes(context.Background(), nil, s.cfg, s.artifactKey(art.ArtifactID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put artifact %s: %v", art.ArtifactID, err)
+		return
 	}
+	s.invalidateListCache(s.artifactPrefix())
 }
 
 func (s *S3ColdStore) GetArtifact(id string) (schemas.Artifact, bool) {
-	data, err := GetBytes(context.Background(), nil, s.cfg, s.artifactKey(id))
-	if err != nil {
-		log.Printf("s3cold: get artifact %s: %v", id, err)
-		return schemas.Artifact{}, false
-	}
-	if data == nil {
-		log.Printf("s3cold: miss artifact key=%s", s.artifactKey(id))
-		return schemas.Artifact{}, false
-	}
-	var art schemas.Artifact
-	if err := json.Unmarshal(data, &art); err != nil {
-		log.Printf("s3cold: unmarshal artifact %s: %v", id, err)
-		return schemas.Artifact{}, false
-	}
-	return art, true
+	return getS3ObjectJSON[schemas.Artifact](s.cfg, s.artifactKey(id), "artifact", id)
 }
 
 func (s *S3ColdStore) PutEdge(e schemas.Edge) {
@@ -296,29 +283,21 @@ func (s *S3ColdStore) PutEdge(e schemas.Edge) {
 	}
 	if err := PutBytes(context.Background(), nil, s.cfg, s.edgeKey(e.EdgeID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put edge %s: %v", e.EdgeID, err)
+		return
 	}
+	s.invalidateListCache(s.edgePrefix())
 }
 
 func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
-	data, err := GetBytes(context.Background(), nil, s.cfg, s.edgeKey(id))
-	if err != nil {
-		log.Printf("s3cold: get edge %s: %v", id, err)
-		return schemas.Edge{}, false
-	}
-	if data == nil {
-		log.Printf("s3cold: miss edge key=%s", s.edgeKey(id))
-		return schemas.Edge{}, false
-	}
-	var e schemas.Edge
-	if err := json.Unmarshal(data, &e); err != nil {
-		log.Printf("s3cold: unmarshal edge %s: %v", id, err)
-		return schemas.Edge{}, false
-	}
-	return e, true
+	return getS3ObjectJSON[schemas.Edge](s.cfg, s.edgeKey(id), "edge", id)
 }
 
 func (s *S3ColdStore) DeleteEdge(id string) error {
-	return DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
+	err := DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
+	if err == nil {
+		s.invalidateListCache(s.edgePrefix())
+	}
+	return err
 }
 
 // ListEdges is not supported for the S3 cold store — scanning all cold edge
