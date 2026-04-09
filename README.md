@@ -582,6 +582,99 @@ make integration-test
 | `S3_SECURE` | `false` | Use TLS |
 | `S3_REGION` | `us-east-1` | Region (MinIO ignores this) |
 | `S3_PREFIX` | `andb/integration_tests` | Object key prefix |
+| `APP_MODE` | `prod` | Runtime visibility profile: `test` (transparent debug) / `prod` (sanitized minimal output) |
+
+### Dual Entry Points + Visibility Control
+
+To support both QA validation and production rollout from a single codebase, ANDB uses one environment switch: `APP_MODE`.
+
+#### 1) Mode matrix
+
+| Mode | Primary user | API/UI visibility | Debug endpoints |
+|---|---|---|---|
+| `APP_MODE=test` | Testers, developers | Transparent diagnostics (request/response metadata, timing, debug payload) | Enabled (for example `/v1/debug/echo`) |
+| `APP_MODE=prod` | End users | Sanitized business-only output (debug/raw/internal fields removed) | Disabled (not registered; returns 404) |
+
+#### 2) How testers use the test entry point
+
+Use this mode when validating end-to-end behavior, capturing diagnostics, or reproducing defects.
+
+```bash
+# Local dev entry (tester)
+export APP_MODE=test
+make dev
+```
+
+```bash
+# Docker entry (tester)
+APP_MODE=test docker compose up -d --build
+```
+
+Validation checks for testers:
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/system/mode
+# expected: {"app_mode":"test","debug_enabled":true}
+
+curl -sS http://127.0.0.1:8080/v1/debug/echo \
+  -H 'Content-Type: application/json' \
+  -d '{"hello":"world"}'
+# expected: 200 OK in test mode
+```
+
+#### 3) How production users use the production entry point
+
+Use this mode for real user traffic. The server only exposes business-safe fields and blocks debug routes.
+
+```bash
+# Local dev entry (production profile)
+export APP_MODE=prod
+make dev
+```
+
+```bash
+# Docker entry (production profile)
+APP_MODE=prod docker compose up -d --build
+```
+
+Validation checks for production profile:
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/system/mode
+# expected: {"app_mode":"prod","debug_enabled":false}
+
+curl -i -sS http://127.0.0.1:8080/v1/debug/echo \
+  -H 'Content-Type: application/json' \
+  -d '{"hello":"world"}'
+# expected: 404 Not Found in prod mode
+```
+
+#### 4) Implementation binding (single codebase, no hardcoded branch copies)
+
+- Mode resolution: `src/internal/access/visibility.go` via `CurrentAppMode()` (default `prod`).
+- Visibility middleware: `WrapVisibility(...)`
+  - `test`: appends `_debug` metadata on JSON object responses.
+  - `prod`: recursively removes debug/internal fields (`_debug`, `debug`, `raw_*`, `chain_traces`, `intermediate`, etc.).
+- Server wiring: `src/internal/app/bootstrap.go`
+  - `handler := access.WrapVisibility(access.WrapAdminAuth(mux))`
+- Runtime probe endpoint: `GET /v1/system/mode`
+
+#### 5) Production safety gate (automation)
+
+Pre-release safety script: `scripts/check_prod_visibility.sh`  
+Make target: `make prod-safety-check`
+
+The check verifies:
+
+1. Access-layer tests under `APP_MODE=prod` (sanitization + route gating)
+2. Static guard that debug routes remain mode-gated
+3. Static scan for known debug leakage symbols in SDK-facing code
+
+```bash
+make prod-safety-check
+```
+
+If any check fails, the script exits non-zero and should block CI/CD promotion.
 
 To run only the Go internal module tests:
 
