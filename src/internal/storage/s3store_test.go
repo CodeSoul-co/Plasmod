@@ -111,6 +111,35 @@ func TestS3ColdStore_ListCacheInvalidation(t *testing.T) {
 	}
 }
 
+func TestS3ColdStore_ListCacheInvalidation_OtherPrefixes(t *testing.T) {
+	store := NewS3ColdStore(S3Config{Prefix: "andb/test"})
+	prefixes := []string{
+		store.agentPrefix(),
+		store.statePrefix(),
+		store.artifactPrefix(),
+		store.edgePrefix(),
+	}
+	now := time.Now().Add(5 * time.Second).Unix()
+
+	for _, prefix := range prefixes {
+		store.listCache[prefix] = s3ListCacheEntry{
+			keys:      []string{"one", "two"},
+			expiresAt: now,
+		}
+	}
+
+	store.invalidateListCache(store.agentPrefix())
+	store.invalidateListCache(store.statePrefix())
+	store.invalidateListCache(store.artifactPrefix())
+	store.invalidateListCache(store.edgePrefix())
+
+	for _, prefix := range prefixes {
+		if _, ok := store.listCache[prefix]; ok {
+			t.Fatalf("expected list cache entry %q to be invalidated", prefix)
+		}
+	}
+}
+
 func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
 	cfg, err := LoadFromEnv()
 	if err != nil {
