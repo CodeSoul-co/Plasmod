@@ -672,7 +672,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ## Team Member Responsibilities
 
-> **分工原则：每人拥有明确的代码层，互不交叉。跨层依赖通过接口边界隔离（接口定义在 `contracts.go`）。**
 
 | 层 | 负责人 | 核心文件 |
 |---|---|---|
