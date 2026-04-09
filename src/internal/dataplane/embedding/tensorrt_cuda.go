@@ -110,29 +110,41 @@ type TensorRTConfig struct {
 }
 
 // TensorRTEmbedder implements Generator using NVIDIA TensorRT for GPU inference.
+//
+// Concurrency model:
+//   - closedMu guards the closed flag only (RWMutex so reads are cheap).
+//   - inferenceMu serialises GPU memory transfers and the TRT kernel launch.
+//     Tokenisation (CPU-bound) happens before acquiring inferenceMu, so
+//     concurrent callers can tokenize in parallel and only queue at the GPU.
+//   - True stream-level parallelism would require multiple TRT execution
+//     contexts; that is a future optimisation beyond this implementation.
 type TensorRTEmbedder struct {
-	cfg         TensorRTConfig
-	dim         int
-	tokenizer   *bertTokenizer
-	numInputs   int // queried from engine at init: 2 for test engine, 3 for real BERT
-	closedMu    sync.RWMutex
-	inferenceMu sync.Mutex
-	closed      bool
+	cfg       TensorRTConfig
+	dim       int
+	tokenizer *bertTokenizer
+	numInputs int // queried from engine at init: 2 for test engine, 3 for real BERT
 
-	// TensorRT engine handle
+	closedMu    sync.RWMutex // protects closed flag only
+	closed      bool
+	inferenceMu sync.Mutex // serialises GPU H2D copy → kernel → D2H copy
+
+	// TensorRT engine handle (immutable after init)
 	engine unsafe.Pointer // *C.TRTEngine
 
-	// GPU memory buffers
+	// GPU memory buffers (protected by inferenceMu)
 	inputIDsGPU      unsafe.Pointer
 	attentionMaskGPU unsafe.Pointer
 	tokenTypeIDsGPU  unsafe.Pointer // BERT segment IDs (always 0)
 	outputGPU        unsafe.Pointer
+
+	// outputHost is a shared scratch buffer used only inside inferenceMu.
+	outputHost []float32
 }
 
 // NewTensorRT creates a TensorRT embedder with CUDA GPU acceleration.
 func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbedder, error) {
 	if dim <= 0 {
-		return nil, fmt.Errorf("dim must be > 0, got %d", dim)
+		return nil, fmt.Errorf("NewTensorRT: dim must be > 0, got %d", dim)
 	}
 	if cfg.EnginePath == "" {
 		return nil, fmt.Errorf("TensorRTConfig.EnginePath is required")
@@ -155,11 +167,10 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 		return nil, fmt.Errorf("failed to set CUDA device %d: error code %d", cfg.DeviceID, ret)
 	}
 
-	// Allocate GPU memory for input/output buffers
-	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4 // int32
-	effDim := dim
-	// Real BERT output is [batch, seq_len, dim]; allocate full 3D buffer.
-	outputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * effDim * 4 // float32
+	// Allocate GPU memory for input/output buffers.
+	// Real BERT output layout is [batch, seq_len, dim]; allocate full 3D buffer.
+	inputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * 4      // int32
+	outputSize := cfg.MaxBatchSize * cfg.MaxSeqLength * dim * 4 // float32
 
 	var inputIDsGPU, attentionMaskGPU, outputGPU unsafe.Pointer
 
@@ -223,6 +234,7 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 		attentionMaskGPU: attentionMaskGPU,
 		tokenTypeIDsGPU:  tokenTypeIDsGPU,
 		outputGPU:        outputGPU,
+		outputHost:       make([]float32, cfg.MaxBatchSize*cfg.MaxSeqLength*dim),
 	}
 
 	return e, nil
@@ -261,48 +273,50 @@ func (e *TensorRTEmbedder) Generate(text string) ([]float32, error) {
 }
 
 // BatchGenerate runs inference on multiple texts using TensorRT on GPU.
+//
+// Texts larger than MaxBatchSize are automatically split into chunks so that
+// callers do not need to handle the limit themselves (consistent with the ONNX
+// CPU provider behaviour).
+//
+// Tokenisation is performed before acquiring the inference lock so that
+// concurrent callers can tokenize in parallel; only the GPU memory transfer
+// and kernel launch are serialised.
 func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([][]float32, error) {
-	if len(texts) == 0 {
-		return [][]float32{}, nil
+	e.closedMu.RLock()
+	closed := e.closed
+	e.closedMu.RUnlock()
+	if closed {
+		return nil, fmt.Errorf("TensorRTEmbedder is closed")
 	}
-	if len(texts) > e.cfg.MaxBatchSize {
-		// Align behavior with ONNX CPU provider: split oversized batches automatically.
-		out := make([][]float32, 0, len(texts))
-		for i := 0; i < len(texts); i += e.cfg.MaxBatchSize {
-			j := i + e.cfg.MaxBatchSize
-			if j > len(texts) {
-				j = len(texts)
-			}
-			chunk, err := e.BatchGenerate(ctx, texts[i:j])
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, chunk...)
-		}
-		return out, nil
+	if len(texts) == 0 {
+		return nil, nil
 	}
 
-	// Tokenize and prepare input
+	// Auto-split batches larger than MaxBatchSize (aligns with ONNX CPU behaviour).
+	if len(texts) > e.cfg.MaxBatchSize {
+		return e.batchGenerateSplit(ctx, texts)
+	}
+
 	batchSize := len(texts)
 	seqLen := e.cfg.MaxSeqLength
-	inputIDsHost := make([]int32, batchSize*seqLen)
-	attentionMaskHost := make([]int32, batchSize*seqLen)
-	outputHost := make([]float32, batchSize*seqLen*e.dim)
 
+	// Tokenize all texts before acquiring inferenceMu (CPU-bound, parallelisable).
+	inputIDs := make([]int32, batchSize*seqLen)
+	attnMask := make([]int32, batchSize*seqLen)
 	for i, text := range texts {
 		ids64, mask64 := e.tokenizer.tokenize(text, seqLen)
 		for j := 0; j < seqLen; j++ {
-			idx := i*seqLen + j
-			inputIDsHost[idx] = int32(ids64[j])
-			attentionMaskHost[idx] = int32(mask64[j])
+			inputIDs[i*seqLen+j] = int32(ids64[j])
+			attnMask[i*seqLen+j] = int32(mask64[j])
 		}
 	}
 
+	// Serialise GPU operations: H2D copy → kernel launch → D2H copy.
 	e.inferenceMu.Lock()
 	defer e.inferenceMu.Unlock()
 
 	e.closedMu.RLock()
-	closed := e.closed
+	closed = e.closed
 	e.closedMu.RUnlock()
 	if closed {
 		return nil, fmt.Errorf("TensorRTEmbedder is closed")
@@ -310,10 +324,10 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 
 	// Copy input to GPU
 	inputSize := C.size_t(batchSize * seqLen * 4)
-	if ret := C.cuda_memcpy_h2d(e.inputIDsGPU, unsafe.Pointer(&inputIDsHost[0]), inputSize); ret != 0 {
+	if ret := C.cuda_memcpy_h2d(e.inputIDsGPU, unsafe.Pointer(&inputIDs[0]), inputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy input_ids to GPU: error code %d", ret)
 	}
-	if ret := C.cuda_memcpy_h2d(e.attentionMaskGPU, unsafe.Pointer(&attentionMaskHost[0]), inputSize); ret != 0 {
+	if ret := C.cuda_memcpy_h2d(e.attentionMaskGPU, unsafe.Pointer(&attnMask[0]), inputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy attention_mask to GPU: error code %d", ret)
 	}
 
@@ -337,7 +351,7 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 
 	// Copy output from GPU: layout is [batchSize, seqLen, dim]
 	outputSize := C.size_t(batchSize * seqLen * e.dim * 4)
-	if ret := C.cuda_memcpy_d2h(unsafe.Pointer(&outputHost[0]), e.outputGPU, outputSize); ret != 0 {
+	if ret := C.cuda_memcpy_d2h(unsafe.Pointer(&e.outputHost[0]), e.outputGPU, outputSize); ret != 0 {
 		return nil, fmt.Errorf("failed to copy output from GPU: error code %d", ret)
 	}
 
@@ -347,13 +361,13 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 		emb := make([]float32, e.dim)
 		var tokenCount float32
 		for j := 0; j < seqLen; j++ {
-			if attentionMaskHost[i*seqLen+j] == 0 {
+			if attnMask[i*seqLen+j] == 0 {
 				continue
 			}
 			tokenCount++
 			base := (i*seqLen + j) * e.dim
 			for d := 0; d < e.dim; d++ {
-				emb[d] += outputHost[base+d]
+				emb[d] += e.outputHost[base+d]
 			}
 		}
 		if tokenCount > 0 {
@@ -364,6 +378,23 @@ func (e *TensorRTEmbedder) BatchGenerate(ctx context.Context, texts []string) ([
 		results[i] = emb
 	}
 
+	return results, nil
+}
+
+// batchGenerateSplit splits texts into MaxBatchSize chunks and merges results.
+func (e *TensorRTEmbedder) batchGenerateSplit(ctx context.Context, texts []string) ([][]float32, error) {
+	results := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += e.cfg.MaxBatchSize {
+		end := start + e.cfg.MaxBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		chunk, err := e.BatchGenerate(ctx, texts[start:end])
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, chunk...)
+	}
 	return results, nil
 }
 
@@ -386,17 +417,14 @@ func (e *TensorRTEmbedder) Close() error {
 	e.closed = true
 	e.closedMu.Unlock()
 
-	// Wait for any in-flight GPU inference to complete before freeing resources.
+	// Wait for any in-flight inference to finish before freeing resources.
 	e.inferenceMu.Lock()
 	defer e.inferenceMu.Unlock()
 
-	// Free TensorRT engine
 	if e.engine != nil {
 		C.trt_free_engine((*C.TRTEngine)(e.engine))
 		e.engine = nil
 	}
-
-	// Free GPU memory
 	if e.inputIDsGPU != nil {
 		C.cuda_free(e.inputIDsGPU)
 		e.inputIDsGPU = nil
