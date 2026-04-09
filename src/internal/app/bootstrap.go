@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"andb/src/internal/access"
+	"andb/src/internal/config"
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
 	"andb/src/internal/dataplane/embedding"
@@ -80,31 +81,42 @@ func BuildServer() (*http.Server, func() error, error) {
 		log.Printf("[bootstrap] storage: in-memory mode")
 	}
 
-	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
-	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
-	var coldStore storage.ColdObjectStore
-	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
-		coldStore = storage.NewS3ColdStore(s3Cfg)
-		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
-			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
-	} else {
-		coldStore = storage.NewInMemoryColdStore()
-		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
-	}
-	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), coldStore)
-
-	// ── Semantic Layer ───────────────────────────────────────────────────────
-	objectModel := semantic.NewObjectModelRegistry()
-	policyEngine := semantic.NewPolicyEngine()
-	planner := semantic.NewDefaultQueryPlanner()
-
 	// ── Algorithm Config — all tunable worker parameters ─────────────────────
 	// Defaults are in schemas.DefaultAlgorithmConfig().  Environment variables
 	// override specific fields when set:
 	//   ANDB_EVIDENCE_CACHE_SIZE   (default 10000)
 	//   ANDB_MAX_PROOF_DEPTH       (default 8)
 	//   ANDB_HOT_TIER_THRESHOLD    (default 0.5)
-	algoCfg := schemas.DefaultAlgorithmConfig()
+	algoCfg, err := config.LoadSharedAlgorithmConfig()
+	if err != nil {
+		log.Printf("[bootstrap] shared algorithm config load failed, using defaults: %v", err)
+		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
+
+	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
+	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
+	var coldStore storage.ColdObjectStore
+	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
+		coldStore = storage.NewS3ColdStoreWithAlgorithmConfig(s3Cfg, algoCfg)
+		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
+			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
+	} else {
+		coldStore = storage.NewInMemoryColdStore()
+		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
+	}
+	tieredObjects := storage.NewTieredObjectStoreWithThreshold(
+		store.HotCache(),
+		store.Objects(),
+		store.Edges(),
+		coldStore,
+		algoCfg.HotTierSalienceThreshold,
+	)
+
+	// ── Semantic Layer ───────────────────────────────────────────────────────
+	objectModel := semantic.NewObjectModelRegistry()
+	policyEngine := semantic.NewPolicyEngine()
+	planner := semantic.NewDefaultQueryPlanner()
+
 	if sz := os.Getenv("ANDB_EVIDENCE_CACHE_SIZE"); sz != "" {
 		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
 			algoCfg.EvidenceCacheSize = n

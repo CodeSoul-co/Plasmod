@@ -1,7 +1,9 @@
 package dataplane
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"andb/src/internal/schemas"
 	"andb/src/internal/storage"
@@ -273,6 +275,112 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToLexicalWithoutEmbedder(t *tes
 	}
 	if mode != "lexical" {
 		t.Fatalf("expected mode lexical, got %q", mode)
+	}
+}
+
+func TestTieredDataPlane_Search_IncludeCold_10KArchivedCorrectness(t *testing.T) {
+	embedder := &fakeQueryEmbedder{vec: []float32{1, 0}}
+
+	cold := storage.NewInMemoryColdStore()
+	targetIDs := map[string]struct{}{}
+
+	for i := 0; i < 10000; i++ {
+		id := fmt.Sprintf("mem_cold_10k_%05d", i)
+		vec := []float32{0, 1}
+		if i < 100 {
+			vec = []float32{1, 0}
+			targetIDs[id] = struct{}{}
+		}
+		cold.PutMemory(schemas.Memory{
+			MemoryID: id,
+			Content:  "cold archived test payload",
+			Version:  int64(i + 1),
+		})
+		if err := cold.PutMemoryEmbedding(id, vec); err != nil {
+			t.Fatalf("PutMemoryEmbedding(%s) failed: %v", id, err)
+		}
+	}
+
+	tieredObjs := storage.NewTieredObjectStoreWithEmbedder(
+		storage.NewHotObjectCache(100),
+		nil,
+		nil,
+		cold,
+		embedder,
+		schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold,
+	)
+
+	dp, err := NewTieredDataPlaneWithEmbedderAndConfig(
+		tieredObjs,
+		embedder,
+		schemas.DefaultAlgorithmConfig(),
+	)
+	if err != nil {
+		t.Fatalf("NewTieredDataPlaneWithEmbedderAndConfig failed: %v", err)
+	}
+
+	out := dp.Search(SearchInput{
+		QueryText:   "cold archived test payload",
+		TopK:        10,
+		IncludeCold: true,
+	})
+
+	if len(out.ObjectIDs) != 10 {
+		t.Fatalf("expected topK=10 results, got %d", len(out.ObjectIDs))
+	}
+	for i, id := range out.ObjectIDs {
+		if _, ok := targetIDs[id]; !ok {
+			t.Fatalf("unexpected non-target result at rank %d: %s", i, id)
+		}
+	}
+	if out.ColdSearchMode != "vector" {
+		t.Fatalf("expected ColdSearchMode=vector, got %q", out.ColdSearchMode)
+	}
+}
+
+func BenchmarkTieredDataPlane_Search_IncludeCold_10KArchived(b *testing.B) {
+	embedder := &fakeQueryEmbedder{vec: []float32{1, 0}}
+	cold := storage.NewInMemoryColdStore()
+
+	for i := 0; i < 10000; i++ {
+		id := fmt.Sprintf("bench_cold_10k_%05d", i)
+		vec := []float32{0, 1}
+		if i < 100 {
+			vec = []float32{1, 0}
+		}
+		cold.PutMemory(schemas.Memory{
+			MemoryID: id,
+			Content:  "cold benchmark payload",
+			Version:  int64(i + 1),
+		})
+		_ = cold.PutMemoryEmbedding(id, vec)
+	}
+
+	tieredObjs := storage.NewTieredObjectStoreWithEmbedder(
+		storage.NewHotObjectCache(100),
+		nil,
+		nil,
+		cold,
+		embedder,
+		schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold,
+	)
+	dp, err := NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs, embedder, schemas.DefaultAlgorithmConfig())
+	if err != nil {
+		b.Fatalf("NewTieredDataPlaneWithEmbedderAndConfig failed: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		out := dp.Search(SearchInput{
+			QueryText:   "cold benchmark payload",
+			TopK:        10,
+			IncludeCold: true,
+		})
+		if len(out.ObjectIDs) != 10 {
+			b.Fatalf("expected 10 results, got %d", len(out.ObjectIDs))
+		}
+		b.ReportMetric(float64(time.Since(start).Microseconds())/1000.0, "ms/op-observed")
 	}
 }
 

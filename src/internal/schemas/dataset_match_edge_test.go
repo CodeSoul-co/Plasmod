@@ -26,10 +26,10 @@ func TestMemoryDatasetMatch_WrongWorkspaceFalse(t *testing.T) {
 	}
 }
 
-func TestMemoryDatasetMatch_AllSelectorsEmpty_MatchesAnyInWorkspace(t *testing.T) {
+func TestMemoryDatasetMatch_AllSelectorsEmpty_ReturnsFalse(t *testing.T) {
 	m := memWith("ws1", "anything.fbin", "anydataset", "some content")
-	if !MemoryDatasetMatch(m, "ws1", "", "", "") {
-		t.Error("all selectors empty should match any memory in workspace")
+	if MemoryDatasetMatch(m, "ws1", "", "", "") {
+		t.Error("all selectors empty should return false")
 	}
 }
 
@@ -98,6 +98,18 @@ func TestMemoryDatasetMatch_ContentFallback_DatasetNameBoundary(t *testing.T) {
 	// "deep1" should NOT match (would be a prefix of deep1B without boundary)
 	if MemoryDatasetMatch(m, "ws1", "", "deep1", "") {
 		t.Error("content fallback: dataset_name prefix without boundary should not match")
+	}
+}
+
+func TestMemoryDatasetMatch_ContentFallback_DatasetNameBoundary_CommaSemicolon(t *testing.T) {
+	withComma := memWith("ws1", "", "", "dataset=x.fbin dataset_name:deep1B,extra")
+	if !MemoryDatasetMatch(withComma, "ws1", "", "deep1B", "") {
+		t.Error("content fallback: dataset_name boundary via comma should match")
+	}
+
+	withSemicolon := memWith("ws1", "", "", "dataset=x.fbin dataset_name:deep1B;extra")
+	if !MemoryDatasetMatch(withSemicolon, "ws1", "", "deep1B", "") {
+		t.Error("content fallback: dataset_name boundary via semicolon should match")
 	}
 }
 

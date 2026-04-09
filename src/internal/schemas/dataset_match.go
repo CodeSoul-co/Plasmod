@@ -9,7 +9,17 @@ import "strings"
 // string equality (and HasPrefix for prefix on SourceFileName). Otherwise matching falls back to
 // Content with token-boundary rules to avoid substring false positives (e.g. dataset_name:foo vs foobar).
 func MemoryDatasetMatch(m Memory, workspaceID string, fileName, datasetName, prefix string) bool {
-	if strings.TrimSpace(workspaceID) == "" || m.Scope != workspaceID {
+	workspaceID = strings.TrimSpace(workspaceID)
+	fileName = strings.TrimSpace(fileName)
+	datasetName = strings.TrimSpace(datasetName)
+	prefix = strings.TrimSpace(prefix)
+
+	if workspaceID == "" || m.Scope != workspaceID {
+		return false
+	}
+	// Safety guard for direct callers: require at least one selector.
+	// Gateway handlers already enforce this at request validation layer.
+	if fileName == "" && datasetName == "" && prefix == "" {
 		return false
 	}
 	if fileName != "" {
@@ -87,7 +97,7 @@ func contentDatasetNameLabelEquals(content, name string) bool {
 	}
 	// Reject if "name" is only a prefix of a longer label (e.g. foo vs foobar).
 	c := content[after]
-	if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+	if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' || c == ';' {
 		return true
 	}
 	if strings.HasPrefix(content[after:], "row:") {

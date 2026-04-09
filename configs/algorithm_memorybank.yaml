@@ -82,9 +82,12 @@ memorybank:
   retrieval:
     rrf_k: 60
 
-  cold_search:
+    cold_search:
     batch_size: 128
     max_candidates: 1000
+    buffer_factor: 3
+    early_stop_score: 0.95
+    no_improve_pages: 2
     dfs_relevance_threshold: 0.2
     weights:
       lexical: 0.5
