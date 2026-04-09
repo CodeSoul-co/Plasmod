@@ -1027,6 +1027,8 @@ Task 4 status: ColdHNSWSearch has been integrated into the cold-tier retrieval p
   - Recall@K vs hot-only baseline
   - Cold tier throughput (queries/second with cold active)
 
+Progress update: an in-memory 10K archived-memory validation path is now wired for both `TieredDataPlane.Search` and `Runtime.ExecuteQuery(include_cold=true)`. Current repo benchmarks report approximately `3.052 ms/op-observed` for `BenchmarkTieredDataPlane_Search_IncludeCold_10KArchived` and `9.856 ms/op-observed` for `BenchmarkRuntime_ExecuteQuery_IncludeCold_10KArchived` on a Windows dev machine. The remaining unchecked work for Task 7 is the same benchmark under a real S3/MinIO cold tier with archived objects stored remotely, plus recall / throughput reporting in that environment.
+
 #### Verification Checklist
 
 ```
