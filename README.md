@@ -676,6 +676,99 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 **Scope:** Build the Linux server test environment: Docker, S3/MinIO cold tier, full E2E integration pipeline. Verify all components work end-to-end on Linux.
 
+**Demo**：
+
+1、cd file
+
+```bash
+cd /home/yangyongsheng/CogDB
+```
+
+2、start docker environment
+
+```bash
+docker compose -f docker-compose.yml down   #close your docker
+docker compose -f docker-compose.yml up -d --build
+```
+
+3、import dataset
+
+```bash
+python3 scripts/e2e/import_dataset.py \
+  --file /home/yangyongsheng/database/testQuery10K.fbin \
+  --dataset member_a_10k \
+  --workspace-id w_member_a_10k \
+  --session-prefix s10k \
+  --base-url http://127.0.0.1:8080 \
+  --concurrency 16
+```
+
+4、query the dataset
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query_text":"testQuery10K validation",
+    "query_scope":"w_member_a_10k",
+    "workspace_id":"w_member_a_10k",
+    "agent_id":"a_loader",
+    "session_id":"s10k_0",
+    "top_k":10,
+    "include_cold":true
+  }'
+```
+
+5、delete the dataset (软删除)
+
+```bash
+# 先 dry-run 看 matched
+python3 scripts/e2e/import_dataset.py \
+  --delete --delete-dry-run \
+  --dataset member_a_10k \
+  --workspace-id w_member_a_10k \
+  --base-url http://127.0.0.1:8080
+
+# 正式软删除
+python3 scripts/e2e/import_dataset.py \
+  --delete \
+  --dataset member_a_10k \
+  --workspace-id w_member_a_10k \
+  --base-url http://127.0.0.1:8080
+```
+
+6、purge the dataset (硬删除)  # too long to purge the dataset, it will pause and return error  
+
+```bash
+# dry-run
+curl --max-time 600 -sS http://127.0.0.1:8080/v1/admin/dataset/purge \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workspace_id":"w_member_a_10k",
+    "dataset_name":"member_a_10k",
+    "dry_run":true,
+    "only_if_inactive":true
+  }'
+  
+# 正式 purge
+curl --max-time 1800 -sS http://127.0.0.1:8080/v1/admin/dataset/purge \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workspace_id":"w_member_a_10k",
+    "dataset_name":"member_a_10k",
+    "dry_run":false,
+    "only_if_inactive":true
+  }'
+```
+
+7、close the docker
+
+```bash
+docker compose -f docker-compose.yml down
+```
+
+Now Member A can finish 1~5 and 7 , only purge return error.
+
 ---
 
 ### Member B — GPU/CUDA Acceleration, Embedding Provider Library Implementation
@@ -685,6 +778,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 #### Tasks
 
 **1. ONNX CUDA (`onnx_cuda.go`)**
+
 - File exists as stub (`ErrProviderUnavailable`). Implement with `onnxruntime_go` CUDA backend
 - Use `onnxruntime.NewSessionOptions()` with `OrtCudaProviderOptions`
 - Pool session objects (same pattern as CPU version)
@@ -693,6 +787,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 - Verify dimension matches: `Dim() int` matches exported model output shape
 
 **2. GGUF CUDA (`gguf_cuda.go`)**
+
 - File exists as stub. Implement with `go-skynet/go-llama.cpp` built with CUDA support
 - `go-skynet/go-llama.cpp` supports CUDA when built with `LLAMA_CUBLAS=ON`
 - Must replace `gopkg.in/yaml.v2` -> `gopkg.in/yaml.v3` in go.mod (known incompatibility with CUDA builds)
@@ -700,6 +795,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 - Verify `Generate` produces embeddings with correct dimension
 
 **3. TensorRT partial completion (`tensorrt_cuda.go`)**
+
 - CUDA memory management (`malloc`/`memcpy`) already implemented
 - Implement engine loading: parse TensorRT engine file (`.engine`) or build from ONNX at startup
 - Implement inference: run execution context over input tensors
@@ -707,6 +803,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 - Test: load pre-built engine file, run inference, compare with CPU baseline
 
 **4. Retrieval CGO bridge (`retrievalplane/bridge.go`)**
+
 - File exists with real implementation using `libandb_retrieval.dylib`
 - Verify `cpp/Makefile` builds `libandb_retrieval.so` on Linux (CUDA support)
 - Set `LD_LIBRARY_PATH` in Docker to point to `cpp/build/libandb_retrieval.so`
@@ -714,12 +811,14 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 - Test `TestRetrieval_Bridge_Search` inside Docker with NVIDIA GPU
 
 **5. Linux build scripts**
+
 - Create `scripts/build_cpp.sh`: builds `libandb_retrieval.so` (Knowhere/HNSW) on Linux with CUDA
 - Create `scripts/build_embeddings.sh`: builds `go-llama.cpp` with CUDA, copies `.so` to `cpp/build/`
 - Add to `Dockerfile`: run these build scripts OR copy pre-built `.so` files
 - Verify all build tags (`cuda`, `retrieval`) compile cleanly on Linux
 
 **6. Batch inference in TieredDataPlane**
+
 - `TieredDataPlane.Ingest` must use batch embedding when multiple records ingested
 - Verify `OnnxEmbedder.BatchGenerate` / `GGUFEmbedder.BatchGenerate` are called
 - Benchmark: ingest 1000 events, measure embedding batch throughput
