@@ -53,6 +53,48 @@ func TestShouldEarlyStop_NotEnoughCandidates(t *testing.T) {
 	}
 }
 
+func TestCombineColdScores(t *testing.T) {
+	weights := schemas.ColdSearchWeights{
+		Lexical: 0.5,
+		Dense:   0.4,
+		Recency: 0.1,
+	}
+	got := combineColdScores(0.8, 0.6, 0.5, weights)
+	want := 0.4*0.8 + 0.5*0.6 + 0.1*0.5
+	if diff := got - want; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("combineColdScores: want %v, got %v", want, got)
+	}
+}
+
+func TestS3ColdStore_LoadConfig_AcceptsReadmeEnvAliases(t *testing.T) {
+	t.Setenv("S3_COLD_BATCH_SIZE", "64")
+	t.Setenv("S3_COLD_MAX_CANDIDATES", "4096")
+	t.Setenv("S3_COLD_CONCURRENCY", "12")
+	t.Setenv("S3_COLD_BUFFER_FACTOR", "5")
+	t.Setenv("S3_COLD_EARLY_STOP_SCORE", "0.88")
+	t.Setenv("S3_COLD_NO_IMPROVE_PAGES", "4")
+
+	cfg := NewS3ColdStore(S3Config{}).loadS3ColdSearchConfigFromEnv()
+	if cfg.batchSize != 64 {
+		t.Fatalf("batchSize: want 64, got %d", cfg.batchSize)
+	}
+	if cfg.maxKeys != 4096 {
+		t.Fatalf("maxKeys: want 4096, got %d", cfg.maxKeys)
+	}
+	if cfg.concurrency != 12 {
+		t.Fatalf("concurrency: want 12, got %d", cfg.concurrency)
+	}
+	if cfg.bufferFactor != 5 {
+		t.Fatalf("bufferFactor: want 5, got %d", cfg.bufferFactor)
+	}
+	if cfg.earlyStopScore != 0.88 {
+		t.Fatalf("earlyStopScore: want 0.88, got %v", cfg.earlyStopScore)
+	}
+	if cfg.noImprovePages != 4 {
+		t.Fatalf("noImprovePages: want 4, got %d", cfg.noImprovePages)
+	}
+}
+
 func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
 	cfg, err := LoadFromEnv()
 	if err != nil {
