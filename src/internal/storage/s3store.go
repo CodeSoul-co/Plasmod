@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // S3ColdStore implements ColdObjectStore backed by a MinIO/S3-compatible bucket.
@@ -27,9 +28,17 @@ import (
 // Reads use GetBytes; a 404 is treated as "not found" (returns false).
 // EnsureBucket is called at most once per store lifetime via ensureOnce.
 type S3ColdStore struct {
-	cfg        S3Config
-	algoCfg    schemas.AlgorithmConfig
-	ensureOnce sync.Once
+	cfg          S3Config
+	algoCfg      schemas.AlgorithmConfig
+	ensureOnce   sync.Once
+	listCacheMu  sync.RWMutex
+	listCache    map[string]s3ListCacheEntry
+	listCacheTTL int64
+}
+
+type s3ListCacheEntry struct {
+	keys      []string
+	expiresAt int64
 }
 
 type s3ColdScored struct {
@@ -61,8 +70,10 @@ func NewS3ColdStore(cfg S3Config) *S3ColdStore {
 
 func NewS3ColdStoreWithAlgorithmConfig(cfg S3Config, algoCfg schemas.AlgorithmConfig) *S3ColdStore {
 	return &S3ColdStore{
-		cfg:     cfg,
-		algoCfg: algoCfg,
+		cfg:          cfg,
+		algoCfg:      algoCfg,
+		listCache:    map[string]s3ListCacheEntry{},
+		listCacheTTL: 5,
 	}
 }
 
@@ -80,8 +91,16 @@ func (s *S3ColdStore) memoryEmbeddingKey(id string) string {
 	return fmt.Sprintf("%s/cold/embeddings/%s.npy", s.cfg.Prefix, id)
 }
 
+func (s *S3ColdStore) embeddingPrefix() string {
+	return fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
+}
+
 func (s *S3ColdStore) memoryKey(id string) string {
 	return fmt.Sprintf("%s/cold/memories/%s.json", s.cfg.Prefix, id)
+}
+
+func (s *S3ColdStore) memoryPrefix() string {
+	return fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 }
 
 func (s *S3ColdStore) agentKey(id string) string {
@@ -109,7 +128,9 @@ func (s *S3ColdStore) PutMemory(m schemas.Memory) {
 	}
 	if err := PutBytes(context.Background(), nil, s.cfg, s.memoryKey(m.MemoryID), data, "application/json"); err != nil {
 		log.Printf("s3cold: put memory %s: %v", m.MemoryID, err)
+		return
 	}
+	s.invalidateListCache(s.memoryPrefix())
 }
 
 func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
@@ -131,7 +152,11 @@ func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
 }
 
 func (s *S3ColdStore) DeleteMemory(id string) error {
-	return DeleteObject(context.Background(), nil, s.cfg, s.memoryKey(id))
+	err := DeleteObject(context.Background(), nil, s.cfg, s.memoryKey(id))
+	if err == nil {
+		s.invalidateListCache(s.memoryPrefix())
+	}
+	return err
 }
 
 func (s *S3ColdStore) PutMemoryEmbedding(memoryID string, vec []float32) error {
@@ -142,14 +167,18 @@ func (s *S3ColdStore) PutMemoryEmbedding(memoryID string, vec []float32) error {
 		return err
 	}
 
-	return PutBytes(
+	if err := PutBytes(
 		context.Background(),
 		nil,
 		s.cfg,
 		s.memoryEmbeddingKey(memoryID),
 		data,
 		"application/octet-stream",
-	)
+	); err != nil {
+		return err
+	}
+	s.invalidateListCache(s.embeddingPrefix())
+	return nil
 }
 
 func (s *S3ColdStore) GetMemoryEmbedding(memoryID string) ([]float32, bool, error) {
@@ -309,10 +338,10 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 		return nil
 	}
 	ctx := context.Background()
-	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
+	prefix := s.memoryPrefix()
 	cfg := s.loadS3ColdSearchConfigFromEnv()
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, err := s.cachedListObjects(ctx, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
@@ -403,7 +432,11 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 }
 
 func (s *S3ColdStore) DeleteMemoryEmbedding(memoryID string) error {
-	return DeleteObject(context.Background(), nil, s.cfg, s.memoryEmbeddingKey(memoryID))
+	err := DeleteObject(context.Background(), nil, s.cfg, s.memoryEmbeddingKey(memoryID))
+	if err == nil {
+		s.invalidateListCache(s.embeddingPrefix())
+	}
+	return err
 }
 
 func float32SliceToBytes(vec []float32) ([]byte, error) {
@@ -444,6 +477,41 @@ func memoryIDFromEmbeddingKey(key string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+func (s *S3ColdStore) invalidateListCache(prefix string) {
+	s.listCacheMu.Lock()
+	defer s.listCacheMu.Unlock()
+	delete(s.listCache, prefix)
+}
+
+func (s *S3ColdStore) cachedListObjects(ctx context.Context, prefix string) ([]string, error) {
+	now := time.Now().Unix()
+
+	s.listCacheMu.RLock()
+	if entry, ok := s.listCache[prefix]; ok && entry.expiresAt > now {
+		keys := make([]string, len(entry.keys))
+		copy(keys, entry.keys)
+		s.listCacheMu.RUnlock()
+		return keys, nil
+	}
+	s.listCacheMu.RUnlock()
+
+	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	copyKeys := make([]string, len(keys))
+	copy(copyKeys, keys)
+
+	s.listCacheMu.Lock()
+	s.listCache[prefix] = s3ListCacheEntry{
+		keys:      copyKeys,
+		expiresAt: now + s.listCacheTTL,
+	}
+	s.listCacheMu.Unlock()
+	return keys, nil
 }
 
 func (s *S3ColdStore) loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
@@ -690,10 +758,10 @@ func (s *S3ColdStore) getMemoryEmbeddingByID(memoryID string) ([]float32, bool) 
 
 func (s *S3ColdStore) collectColdCandidates(query string, topK int, cfg s3ColdSearchConfig) []s3ColdCandidate {
 	ctx := context.Background()
-	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
+	prefix := s.memoryPrefix()
 	queryEmpty := strings.TrimSpace(query) == ""
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, err := s.cachedListObjects(ctx, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
@@ -824,8 +892,8 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		ts    int64
 	}
 
-	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	prefix := s.embeddingPrefix()
+	keys, err := s.cachedListObjects(ctx, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
@@ -925,10 +993,10 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 	}
 
 	ctx := context.Background()
-	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
+	prefix := s.embeddingPrefix()
 	cfg := s.loadS3ColdSearchConfigFromEnv()
 
-	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	keys, err := s.cachedListObjects(ctx, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}

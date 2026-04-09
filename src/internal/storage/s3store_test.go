@@ -96,6 +96,21 @@ func TestS3ColdStore_LoadConfig_AcceptsReadmeEnvAliases(t *testing.T) {
 	}
 }
 
+func TestS3ColdStore_ListCacheInvalidation(t *testing.T) {
+	store := NewS3ColdStore(S3Config{})
+	prefix := "andb/test/cold/embeddings/"
+	store.listCache[prefix] = s3ListCacheEntry{
+		keys:      []string{"a", "b"},
+		expiresAt: time.Now().Add(5 * time.Second).Unix(),
+	}
+
+	store.invalidateListCache(prefix)
+
+	if _, ok := store.listCache[prefix]; ok {
+		t.Fatal("expected list cache entry to be invalidated")
+	}
+}
+
 func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
 	cfg, err := LoadFromEnv()
 	if err != nil {
