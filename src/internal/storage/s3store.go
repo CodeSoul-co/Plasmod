@@ -38,6 +38,13 @@ type s3ColdScored struct {
 	score float64
 }
 
+type s3ColdCandidate struct {
+	id           string
+	ts           int64
+	lexicalScore float64
+	recencyScore float64
+}
+
 type s3ColdSearchConfig struct {
 	maxKeys        int
 	concurrency    int
@@ -469,25 +476,53 @@ func (s *S3ColdStore) loadS3ColdSearchConfigFromEnv() s3ColdSearchConfig {
 		cfg.noImprovePages = 2
 	}
 
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_MAX_KEYS", cfg.maxKeys); v > 0 {
+	if v := parseFirstEnvIntWithDefault([]string{"S3_COLD_MAX_CANDIDATES", "S3_COLDSEARCH_MAX_KEYS"}, cfg.maxKeys); v > 0 {
 		cfg.maxKeys = v
 	}
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_CONCURRENCY", cfg.concurrency); v > 0 {
+	if v := parseFirstEnvIntWithDefault([]string{"S3_COLD_CONCURRENCY", "S3_COLDSEARCH_CONCURRENCY"}, cfg.concurrency); v > 0 {
 		cfg.concurrency = v
 	}
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_BATCH_SIZE", cfg.batchSize); v > 0 {
+	if v := parseFirstEnvIntWithDefault([]string{"S3_COLD_BATCH_SIZE", "S3_COLDSEARCH_BATCH_SIZE"}, cfg.batchSize); v > 0 {
 		cfg.batchSize = v
 	}
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_BUFFER_FACTOR", cfg.bufferFactor); v > 0 {
+	if v := parseFirstEnvIntWithDefault([]string{"S3_COLD_BUFFER_FACTOR", "S3_COLDSEARCH_BUFFER_FACTOR"}, cfg.bufferFactor); v > 0 {
 		cfg.bufferFactor = v
 	}
-	if v := parseEnvFloatWithDefault("S3_COLDSEARCH_EARLY_STOP_SCORE", cfg.earlyStopScore); v > 0 && v <= 1 {
+	if v := parseFirstEnvFloatWithDefault([]string{"S3_COLD_EARLY_STOP_SCORE", "S3_COLDSEARCH_EARLY_STOP_SCORE"}, cfg.earlyStopScore); v > 0 && v <= 1 {
 		cfg.earlyStopScore = v
 	}
-	if v := parseEnvIntWithDefault("S3_COLDSEARCH_NO_IMPROVE_PAGES", cfg.noImprovePages); v > 0 {
+	if v := parseFirstEnvIntWithDefault([]string{"S3_COLD_NO_IMPROVE_PAGES", "S3_COLDSEARCH_NO_IMPROVE_PAGES"}, cfg.noImprovePages); v > 0 {
 		cfg.noImprovePages = v
 	}
 	return cfg
+}
+
+func parseFirstEnvIntWithDefault(keys []string, fallback int) int {
+	for _, key := range keys {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func parseFirstEnvFloatWithDefault(keys []string, fallback float64) float64 {
+	for _, key := range keys {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.ParseFloat(raw, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return fallback
 }
 
 func parseEnvIntWithDefault(key string, fallback int) int {
@@ -512,6 +547,20 @@ func parseEnvFloatWithDefault(key string, fallback float64) float64 {
 		return fallback
 	}
 	return n
+}
+
+func recencyScore(version int64, latest int64) float64 {
+	if latest <= 0 || version <= 0 {
+		return 0
+	}
+	if version >= latest {
+		return 1
+	}
+	return float64(version) / float64(latest)
+}
+
+func combineColdScores(dense, lexical, recency float64, weights schemas.ColdSearchWeights) float64 {
+	return weights.Dense*dense + weights.Lexical*lexical + weights.Recency*recency
 }
 
 func scoreColdMemory(query string, m schemas.Memory) float64 {
@@ -585,39 +634,85 @@ func shouldEarlyStop(
 	return high >= topK && noImprovePages >= noImprovePagesThreshold
 }
 
-func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
-	if topK <= 0 || len(queryVec) == 0 {
+func selectTopCandidates(results []s3ColdCandidate, n int) []s3ColdCandidate {
+	if len(results) == 0 || n <= 0 {
 		return nil
 	}
+	sort.Slice(results, func(i, j int) bool {
+		left := results[i].lexicalScore + results[i].recencyScore*0.1
+		right := results[j].lexicalScore + results[j].recencyScore*0.1
+		if left != right {
+			return left > right
+		}
+		return results[i].ts > results[j].ts
+	})
+	if len(results) <= n {
+		return results
+	}
+	return results[:n]
+}
 
+func cutoffCandidateScore(results []s3ColdCandidate, topK int) float64 {
+	if topK <= 0 || len(results) < topK {
+		return -1
+	}
+	return results[topK-1].lexicalScore + results[topK-1].recencyScore*0.1
+}
+
+func shouldEarlyStopCandidates(
+	topResults []s3ColdCandidate,
+	totalCandidates int,
+	topK int,
+	targetCandidates int,
+	highScoreThreshold float64,
+	noImprovePages int,
+	noImprovePagesThreshold int,
+) bool {
+	if topK <= 0 || len(topResults) < topK || totalCandidates < targetCandidates {
+		return false
+	}
+	high := 0
+	for _, r := range topResults {
+		if r.lexicalScore >= highScoreThreshold {
+			high++
+		}
+	}
+	return high >= topK && noImprovePages >= noImprovePagesThreshold
+}
+
+func (s *S3ColdStore) getMemoryEmbeddingByID(memoryID string) ([]float32, bool) {
+	vec, ok, err := s.GetMemoryEmbedding(memoryID)
+	if err != nil || !ok || len(vec) == 0 {
+		return nil, false
+	}
+	return vec, true
+}
+
+func (s *S3ColdStore) collectColdCandidates(query string, topK int, cfg s3ColdSearchConfig) []s3ColdCandidate {
 	ctx := context.Background()
-	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
-	cfg := s.loadS3ColdSearchConfigFromEnv()
+	prefix := fmt.Sprintf("%s/cold/memories/", s.cfg.Prefix)
 
 	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
-
 	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
 		keys = keys[:cfg.maxKeys]
 	}
 
-	type scored struct {
-		id    string
-		score float64
-		ts    int64
+	targetCandidates := topK * cfg.bufferFactor
+	if targetCandidates < topK {
+		targetCandidates = topK
 	}
-
-	maxCandidates := cfg.maxKeys
-	if maxCandidates <= 0 {
-		maxCandidates = topK * 4
-	}
+	maxCandidates := targetCandidates * 2
 	if maxCandidates < topK {
 		maxCandidates = topK
 	}
 
-	results := make([]scored, 0, min(maxCandidates, len(keys)))
+	results := make([]s3ColdCandidate, 0, min(maxCandidates, len(keys)))
+	noImprovePages := 0
+	prevCutoff := -1.0
+	latestVersion := int64(0)
 
 	for start := 0; start < len(keys); start += cfg.batchSize {
 		end := start + cfg.batchSize
@@ -626,55 +721,122 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		}
 		page := keys[start:end]
 
-		pageResults := make([]scored, 0, len(page))
+		pageResults := make([]s3ColdCandidate, 0, len(page))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, cfg.concurrency)
+
 		for _, key := range page {
-			data, err := GetBytes(ctx, nil, s.cfg, key)
-			if err != nil || data == nil {
-				continue
-			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(objectKey string) {
+				defer wg.Done()
+				defer func() { <-sem }()
 
-			vec, err := bytesToFloat32Slice(data)
-			if err != nil {
-				continue
-			}
+				data, err := GetBytes(ctx, nil, s.cfg, objectKey)
+				if err != nil || data == nil {
+					return
+				}
+				var m schemas.Memory
+				if err := json.Unmarshal(data, &m); err != nil {
+					return
+				}
+				lexical := 1.0
+				if strings.TrimSpace(query) != "" {
+					lexical = scoreColdMemory(query, m)
+				}
+				if lexical <= 0 {
+					return
+				}
 
-			score := dotProduct(queryVec, vec)
-			if score <= 0 {
-				continue
-			}
-
-			memoryID := memoryIDFromEmbeddingKey(key)
-			if memoryID == "" {
-				continue
-			}
-
-			pageResults = append(pageResults, scored{
-				id:    memoryID,
-				score: score,
-				ts:    0,
-			})
+				mu.Lock()
+				if m.Version > latestVersion {
+					latestVersion = m.Version
+				}
+				pageResults = append(pageResults, s3ColdCandidate{
+					id:           m.MemoryID,
+					ts:           m.Version,
+					lexicalScore: lexical,
+				})
+				mu.Unlock()
+			}(key)
 		}
+		wg.Wait()
 
+		if latestVersion > 0 {
+			for i := range pageResults {
+				pageResults[i].recencyScore = recencyScore(pageResults[i].ts, latestVersion)
+			}
+		}
 		if len(pageResults) > 0 {
 			results = append(results, pageResults...)
+			results = selectTopCandidates(results, maxCandidates)
+		}
 
-			sort.Slice(results, func(i, j int) bool {
-				if results[i].score != results[j].score {
-					return results[i].score > results[j].score
-				}
-				return results[i].ts > results[j].ts
-			})
+		topNow := selectTopCandidates(results, topK)
+		currCutoff := cutoffCandidateScore(topNow, topK)
+		if currCutoff > prevCutoff {
+			noImprovePages = 0
+			prevCutoff = currCutoff
+		} else {
+			noImprovePages++
+		}
 
-			if len(results) > maxCandidates {
-				results = results[:maxCandidates]
-			}
+		if shouldEarlyStopCandidates(topNow, len(results), topK, targetCandidates, cfg.earlyStopScore, noImprovePages, cfg.noImprovePages) {
+			break
 		}
 	}
 
-	for i := range results {
-		if m, ok := s.GetMemory(results[i].id); ok {
-			results[i].ts = m.Version
+	if latestVersion > 0 {
+		for i := range results {
+			results[i].recencyScore = recencyScore(results[i].ts, latestVersion)
 		}
+	}
+	return selectTopCandidates(results, maxCandidates)
+}
+
+func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
+	if topK <= 0 || len(queryVec) == 0 {
+		return nil
+	}
+
+	cfg := s.loadS3ColdSearchConfigFromEnv()
+	algoCfg := s.algoCfg
+	if algoCfg == (schemas.AlgorithmConfig{}) {
+		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
+
+	type scored struct {
+		id    string
+		score float64
+		ts    int64
+	}
+
+	candidates := s.collectColdCandidates("", topK, cfg)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	results := make([]scored, 0, len(candidates))
+	for _, cand := range candidates {
+		vec, ok := s.getMemoryEmbeddingByID(cand.id)
+		if !ok {
+			continue
+		}
+		denseScore := dotProduct(queryVec, vec)
+		if denseScore < algoCfg.DFSRelevanceThreshold {
+			continue
+		}
+		results = append(results, scored{
+			id: cand.id,
+			score: combineColdScores(
+				denseScore,
+				cand.lexicalScore,
+				cand.recencyScore,
+				algoCfg.ColdSearchWeights,
+			),
+			ts: cand.ts,
+		})
 	}
 
 	sort.Slice(results, func(i, j int) bool {
