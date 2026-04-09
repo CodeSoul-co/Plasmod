@@ -491,6 +491,21 @@ func BenchmarkS3ColdStore_ColdVectorSearch_10K(b *testing.B) {
 		}
 	}
 
+	// Real S3/MinIO may need a short convergence window before list/get
+	// sees the full archived set. Wait until the topK query becomes stable.
+	var warmup []string
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		warmup = store.ColdVectorSearch([]float32{1, 0}, topK)
+		if len(warmup) == topK {
+			break
+		}
+		if time.Now().After(deadline) {
+			b.Fatalf("expected topK=%d warmup results before benchmark, got %d", topK, len(warmup))
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		start := time.Now()
