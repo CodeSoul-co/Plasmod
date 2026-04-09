@@ -811,6 +811,7 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		return nil
 	}
 
+	ctx := context.Background()
 	cfg := s.loadS3ColdSearchConfigFromEnv()
 	algoCfg := s.algoCfg
 	if algoCfg == (schemas.AlgorithmConfig{}) {
@@ -823,38 +824,89 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 		ts    int64
 	}
 
-	candidates := s.collectColdCandidates("", topK, cfg)
-	if len(candidates) == 0 {
+	prefix := fmt.Sprintf("%s/cold/embeddings/", s.cfg.Prefix)
+	keys, err := ListObjects(ctx, nil, s.cfg, prefix)
+	if err != nil || len(keys) == 0 {
 		return nil
 	}
+	if cfg.maxKeys > 0 && len(keys) > cfg.maxKeys {
+		keys = keys[:cfg.maxKeys]
+	}
 
-	results := make([]scored, 0, len(candidates))
-	for _, cand := range candidates {
-		vec, ok := s.getMemoryEmbeddingByID(cand.id)
-		if !ok {
-			continue
+	maxCandidates := cfg.maxKeys
+	if maxCandidates <= 0 || maxCandidates > len(keys) {
+		maxCandidates = len(keys)
+	}
+	if maxCandidates < topK {
+		maxCandidates = topK
+	}
+
+	results := make([]scored, 0, min(maxCandidates, len(keys)))
+	for start := 0; start < len(keys); start += cfg.batchSize {
+		end := start + cfg.batchSize
+		if end > len(keys) {
+			end = len(keys)
 		}
-		denseScore := dotProduct(queryVec, vec)
-		if denseScore < algoCfg.DFSRelevanceThreshold {
-			continue
+		page := keys[start:end]
+		pageResults := make([]scored, 0, len(page))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, cfg.concurrency)
+
+		for _, key := range page {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(objectKey string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				data, err := GetBytes(ctx, nil, s.cfg, objectKey)
+				if err != nil || data == nil {
+					return
+				}
+				vec, err := bytesToFloat32Slice(data)
+				if err != nil {
+					return
+				}
+				denseScore := dotProduct(queryVec, vec)
+				if denseScore < algoCfg.DFSRelevanceThreshold {
+					return
+				}
+				memoryID := memoryIDFromEmbeddingKey(objectKey)
+				if memoryID == "" {
+					return
+				}
+
+				mu.Lock()
+				pageResults = append(pageResults, scored{
+					id:    memoryID,
+					score: combineColdScores(denseScore, 0, 0, algoCfg.ColdSearchWeights),
+					ts:    0,
+				})
+				mu.Unlock()
+			}(key)
 		}
-		results = append(results, scored{
-			id: cand.id,
-			score: combineColdScores(
-				denseScore,
-				cand.lexicalScore,
-				cand.recencyScore,
-				algoCfg.ColdSearchWeights,
-			),
-			ts: cand.ts,
-		})
+		wg.Wait()
+
+		if len(pageResults) > 0 {
+			results = append(results, pageResults...)
+			sort.Slice(results, func(i, j int) bool {
+				if results[i].score != results[j].score {
+					return results[i].score > results[j].score
+				}
+				return results[i].id < results[j].id
+			})
+			if len(results) > maxCandidates {
+				results = results[:maxCandidates]
+			}
+		}
 	}
 
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].score != results[j].score {
 			return results[i].score > results[j].score
 		}
-		return results[i].ts > results[j].ts
+		return results[i].id < results[j].id
 	})
 
 	out := make([]string, 0, min(topK, len(results)))
