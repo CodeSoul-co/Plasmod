@@ -33,12 +33,16 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("/v1/system/mode", g.handleSystemMode)
 	mux.HandleFunc("/v1/admin/topology", g.handleTopology)
 	mux.HandleFunc("/v1/admin/storage", g.handleStorage)
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
+	if isTestMode() {
+		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
+	}
 
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
@@ -65,6 +69,34 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/decay", g.handleMemoryDecay)
 	mux.HandleFunc("/v1/internal/memory/share", g.handleMemoryShare)
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
+}
+
+func (g *Gateway) handleSystemMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"app_mode":      CurrentAppMode(),
+		"debug_enabled": isTestMode(),
+	})
+}
+
+// handleDebugEcho is test-only endpoint for end-to-end transparency verification.
+func (g *Gateway) handleDebugEcho(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status": "ok",
+		"echo":   body,
+	})
 }
 
 func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
@@ -118,12 +150,12 @@ func (g *Gateway) handleStorage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if g.storageCfg == nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"mode":             "memory",
-			"data_dir":         "",
-			"badger_enabled":   false,
-			"stores":           map[string]string{},
-			"wal_persistence":  false,
-			"note":             "storage config not wired (nil ConfigSnapshot)",
+			"mode":            "memory",
+			"data_dir":        "",
+			"badger_enabled":  false,
+			"stores":          map[string]string{},
+			"wal_persistence": false,
+			"note":            "storage config not wired (nil ConfigSnapshot)",
 		})
 		return
 	}
@@ -412,8 +444,8 @@ func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
 	capture := map[string]any{
 		"captured_at": now.Format(time.RFC3339),
 		"object_key":  objectKey,
-		"ack":          ack,
-		"query":        qReq,
+		"ack":         ack,
+		"query":       qReq,
 		"response":    qResp,
 	}
 
@@ -695,7 +727,7 @@ func (g *Gateway) handleTraces(w http.ResponseWriter, r *http.Request) {
 		EvidenceFragment: frag,
 		Edges:            edges,
 		Versions:         versions,
-		Policies:        policies,
+		Policies:         policies,
 		DerivationLog:    derivLog,
 		PolicyDecisions:  policyDecisions,
 		ProofSteps:       steps,
@@ -707,24 +739,24 @@ func (g *Gateway) handleTraces(w http.ResponseWriter, r *http.Request) {
 
 // TraceResponse is the structured proof-trace response returned by /v1/traces/{object_id}.
 type TraceResponse struct {
-	ObjectID         string               `json:"object_id"`
-	ObjectType       string               `json:"object_type"`
-	CanonicalObject  any                  `json:"canonical_object,omitempty"`
-	EvidenceFragment any                  `json:"evidence_fragment,omitempty"`
-	Edges            []schemas.Edge       `json:"edges"`
+	ObjectID         string                  `json:"object_id"`
+	ObjectType       string                  `json:"object_type"`
+	CanonicalObject  any                     `json:"canonical_object,omitempty"`
+	EvidenceFragment any                     `json:"evidence_fragment,omitempty"`
+	Edges            []schemas.Edge          `json:"edges"`
 	Versions         []schemas.ObjectVersion `json:"versions"`
-	Policies         []schemas.PolicyRecord `json:"policies"`
-	DerivationLog    []string             `json:"derivation_log,omitempty"`
-	PolicyDecisions  []string             `json:"policy_decisions,omitempty"`
-	ProofSteps       []TraceStep          `json:"proof_steps"`
+	Policies         []schemas.PolicyRecord  `json:"policies"`
+	DerivationLog    []string                `json:"derivation_log,omitempty"`
+	PolicyDecisions  []string                `json:"policy_decisions,omitempty"`
+	ProofSteps       []TraceStep             `json:"proof_steps"`
 }
 
 // TraceStep is a human-readable step in the assembled proof trace.
 type TraceStep struct {
-	Phase    string `json:"phase"`    // e.g. "canonical", "fragment", "edges", "versions", "policy"
-	Label    string `json:"label"`    // e.g. "salience", "belongs_to_session", "ttl_active"
-	Detail   string `json:"detail"`   // human-readable description
-	Value    string `json:"value,omitempty"` // key value if applicable
+	Phase  string `json:"phase"`           // e.g. "canonical", "fragment", "edges", "versions", "policy"
+	Label  string `json:"label"`           // e.g. "salience", "belongs_to_session", "ttl_active"
+	Detail string `json:"detail"`          // human-readable description
+	Value  string `json:"value,omitempty"` // key value if applicable
 }
 
 // assembleTraceSteps builds a flat list of human-readable proof steps.
@@ -888,12 +920,12 @@ func (g *Gateway) handleMemoryRecall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Query      string `json:"query"`
-		Scope      string `json:"scope"`
-		TopK       int    `json:"top_k"`
-		AgentID    string `json:"agent_id"`
-		SessionID  string `json:"session_id"`
-		TenantID   string `json:"tenant_id"`
+		Query       string `json:"query"`
+		Scope       string `json:"scope"`
+		TopK        int    `json:"top_k"`
+		AgentID     string `json:"agent_id"`
+		SessionID   string `json:"session_id"`
+		TenantID    string `json:"tenant_id"`
 		WorkspaceID string `json:"workspace_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -989,10 +1021,10 @@ func (g *Gateway) handleMemoryShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		MemoryID      string                 `json:"memory_id"`
-		FromAgentID   string                 `json:"from_agent_id"`
-		ToAgentID     string                 `json:"to_agent_id"`
-		ContractScope string                 `json:"contract_scope"` // "restricted_shared"
+		MemoryID      string `json:"memory_id"`
+		FromAgentID   string `json:"from_agent_id"`
+		ToAgentID     string `json:"to_agent_id"`
+		ContractScope string `json:"contract_scope"` // "restricted_shared"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1008,10 +1040,10 @@ func (g *Gateway) handleMemoryShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"status":          "ok",
+		"status":           "ok",
 		"shared_memory_id": sharedID,
-		"memory_id":       req.MemoryID,
-		"to_agent_id":     req.ToAgentID,
+		"memory_id":        req.MemoryID,
+		"to_agent_id":      req.ToAgentID,
 	})
 }
 
