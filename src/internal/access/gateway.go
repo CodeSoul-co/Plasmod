@@ -1,10 +1,13 @@
 package access
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +111,9 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if strings.TrimSpace(ev.EventID) == "" {
+		ev.EventID = generateObjectID("evt")
 	}
 	ack, err := g.runtime.SubmitIngest(ev)
 	if err != nil {
@@ -496,6 +502,9 @@ func (g *Gateway) handleAgents(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.AgentID) == "" {
+			obj.AgentID = generateObjectID("agent")
+		}
 		g.coord.Object.PutAgent(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "agent_id": obj.AgentID})
 	default:
@@ -515,6 +524,9 @@ func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if strings.TrimSpace(obj.SessionID) == "" {
+			obj.SessionID = generateObjectID("sess")
 		}
 		g.coord.Object.PutSession(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "session_id": obj.SessionID})
@@ -537,6 +549,9 @@ func (g *Gateway) handleMemory(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.MemoryID) == "" {
+			obj.MemoryID = generateObjectID("mem")
+		}
 		g.coord.Memory.Put(obj)
 		writeJSON(w, map[string]string{"status": "ok", "memory_id": obj.MemoryID})
 	default:
@@ -558,6 +573,9 @@ func (g *Gateway) handleStates(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.StateID) == "" {
+			obj.StateID = generateObjectID("state")
+		}
 		g.coord.Object.PutState(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "state_id": obj.StateID})
 	default:
@@ -578,6 +596,9 @@ func (g *Gateway) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.ArtifactID) == "" {
+			obj.ArtifactID = generateObjectID("art")
+		}
 		g.coord.Object.PutArtifact(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "artifact_id": obj.ArtifactID})
 	default:
@@ -596,6 +617,9 @@ func (g *Gateway) handleEdges(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if strings.TrimSpace(obj.EdgeID) == "" {
+			obj.EdgeID = generateObjectID("edge")
 		}
 		g.store.Edges().PutEdge(obj)
 		writeJSON(w, map[string]string{"status": "ok", "edge_id": obj.EdgeID})
@@ -620,6 +644,9 @@ func (g *Gateway) handlePolicies(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if strings.TrimSpace(obj.PolicyID) == "" {
+			obj.PolicyID = generateObjectID("policy")
 		}
 		g.coord.Policy.Append(obj)
 		writeJSON(w, map[string]string{"status": "ok", "policy_id": obj.PolicyID})
@@ -904,11 +931,25 @@ func (g *Gateway) handleShareContracts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.ContractID) == "" {
+			obj.ContractID = generateObjectID("contract")
+		}
 		g.store.Contracts().PutContract(obj)
 		writeJSON(w, map[string]string{"status": "ok", "contract_id": obj.ContractID})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func generateObjectID(prefix string) string {
+	// Keep IDs lexically time-sortable while preserving randomness:
+	// <prefix>_<unix_millis_base36>_<12hex random bytes>
+	ts := strconv.FormatInt(time.Now().UTC().UnixMilli(), 36)
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err != nil {	
+		return fmt.Sprintf("%s_%s", prefix, ts)
+	}
+	return fmt.Sprintf("%s_%s_%s", prefix, ts, hex.EncodeToString(buf[:]))
 }
 
 // ─── /v1/internal/memory/* — Agent SDK algorithm dispatch bridge ─────────────────

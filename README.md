@@ -47,6 +47,7 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, `ChainTraces`, `EvidenceCache`, and `chain_traces` (main/memory_pipeline/query/collaboration slots) on every query
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
 - `include_cold` query flag wired through planner and TieredDataPlane to force cold-tier merge even when hot satisfies TopK
+- Gateway ID autofill: when `event_id` / canonical object IDs are omitted in POST requests, the gateway auto-generates prefix-based time-sortable random IDs (`<prefix>_<ts36>_<randhex>`); caller-provided IDs are still respected as-is.
 - Algorithm dispatch: `DispatchAlgorithm`, `DispatchRecall`, `DispatchShare`, `DispatchConflictResolve` on Runtime; pluggable `MemoryManagementAlgorithm` interface with `BaselineMemoryAlgorithm` (default) and `MemoryBankAlgorithm` (8-dimension governance model)
 - **MemoryBank governance**: 8 lifecycle states (candidate→active→reinforced→compressed→stale→quarantined→archived→deleted), conflict detection (value contradiction, preference reversal, factual disagreement, entity conflict), profile management
 - All algorithm parameters externalized to `configs/algorithm_memorybank.yaml` and `configs/algorithm_baseline.yaml`
@@ -790,14 +791,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | `docs/server-migration.md` | S3 / config migration guide |
 
 **Interface boundary:** Storage contracts (`RuntimeStorage`, `GraphEdgeStore`, `ObjectStore`) are defined in `storage/contracts.go` — Member A implements warm-side behaviour only; cold-side is Member C's.
-
-#### Outstanding TODO
-
-- [√] `admin_auth.go` — fix `constantTimeEqual`: replace length-branch early-return with HMAC-SHA256 digest comparison to eliminate timing side-channel
-- [√] `dataset_match.go` — add `,` and `;` to token boundaries in `contentDatasetNameLabelEquals`
-- [√] `s3store.go` *(hot-path only)* — `selectTopScored`: sort a copy instead of mutating the caller's slice
-- [√] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate the edge race (known limitation)
-- [√] `dataset_match.go` — add doc comment: all-empty selectors match every memory in the workspace
 
 ---
 
