@@ -72,12 +72,10 @@ RUN mkdir -p /src/libs \
     && cp -a /tmp/go-llama-cpp /src/libs/go-llama.cpp
 
 COPY go.mod go.sum ./
+COPY vendor ./vendor
 COPY src ./src
-# Use the installed toolchain only — prevents downloading from proxy.golang.org.
+# Use vendored dependencies — no network access required during build.
 ENV GOTOOLCHAIN=local
-RUN if [ -n "${GOPROXY}" ]; then go env -w GOPROXY="${GOPROXY}"; fi \
-    && if [ -n "${GOSUMDB}" ]; then go env -w GOSUMDB="${GOSUMDB}"; fi \
-    && go mod download
 
 COPY . .
 
@@ -86,7 +84,7 @@ ENV LIBRARY_PATH=/tmp/go-llama-cpp
 ENV C_INCLUDE_PATH=/tmp/go-llama-cpp
 
 RUN mkdir -p /src/bin \
-    && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /src/bin/andb-server ./src/cmd/server
+    && go build -buildvcs=false -mod=vendor -trimpath -ldflags="-s -w" -o /src/bin/andb-server ./src/cmd/server
 
 # Stage 2: minimal runtime (no shell wrapper)
 FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS runtime
