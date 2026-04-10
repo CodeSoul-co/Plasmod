@@ -4,6 +4,7 @@ import "strings"
 
 // MemoryDatasetMatch reports whether m matches admin dataset delete/purge selectors.
 // workspaceID must equal m.Scope. Selectors use AND semantics: empty string means that constraint is disabled.
+// If all selectors are empty, it matches every memory in the workspace.
 //
 // When Memory.DatasetName / Memory.SourceFileName are set (from ingest payload), matching uses exact
 // string equality (and HasPrefix for prefix on SourceFileName). Otherwise matching falls back to
@@ -17,10 +18,8 @@ func MemoryDatasetMatch(m Memory, workspaceID string, fileName, datasetName, pre
 	if workspaceID == "" || m.Scope != workspaceID {
 		return false
 	}
-	// Safety guard for direct callers: require at least one selector.
-	// Gateway handlers already enforce this at request validation layer.
 	if fileName == "" && datasetName == "" && prefix == "" {
-		return false
+		return true
 	}
 	if fileName != "" {
 		if m.SourceFileName != "" {

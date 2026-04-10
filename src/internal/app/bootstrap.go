@@ -455,7 +455,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	gateway := access.NewGateway(coord, runtime, store, storageCfg)
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
-	handler := access.WrapAdminAuth(mux)
+	handler := access.WrapVisibility(access.WrapAdminAuth(mux))
 
 	// shutdown bundles context cancellation (subscriber/orchestrator) and
 	// Badger close (storage cleanup) into one cleanup function.

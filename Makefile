@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all setup
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -127,3 +127,7 @@ member-a-task4-strict:
 # Unified Member A entrypoint: verify + optional GPU check + strict task4.
 member-a-all:
 	bash scripts/e2e/member_a_all.sh
+
+# Production visibility/sanitization guard.
+prod-safety-check:
+	bash scripts/check_prod_visibility.sh
