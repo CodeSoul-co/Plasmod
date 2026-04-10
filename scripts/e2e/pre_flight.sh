@@ -33,9 +33,9 @@ FAIL=0
 WARN=0
 GPU_AVAILABLE=false
 
-_pass() { echo "[PASS] $1"; ((PASS++)); }
-_fail() { echo "[FAIL] $1"; ((FAIL++)); }
-_warn() { echo "[WARN] $1"; ((WARN++)); }
+_pass() { echo "[PASS] $1"; PASS=$((PASS+1)); }
+_fail() { echo "[FAIL] $1"; FAIL=$((FAIL+1)); }
+_warn() { echo "[WARN] $1"; WARN=$((WARN+1)); }
 _info() { echo "[INFO] $1"; }
 
 echo "========================================"
@@ -147,7 +147,7 @@ echo
 echo "── [7/8] APP_MODE=test (/v1/system/mode) ──"
 MODE_RESP=$(curl -fsS "${ANDB_BASE_URL}/v1/system/mode" 2>/dev/null || echo '{}')
 MODE_VAL=$(echo "${MODE_RESP}" | python3 -c \
-    "import sys,json; d=json.load(sys.stdin); print(d.get('mode','unknown'))" 2>/dev/null || echo "unknown")
+    "import sys,json; d=json.load(sys.stdin); print(d.get('app_mode', d.get('mode','unknown')))" 2>/dev/null || echo "unknown")
 if [ "${MODE_VAL}" = "test" ]; then
     _pass "APP_MODE=test confirmed"
 else
@@ -161,7 +161,7 @@ ECHO_RESP=$(curl -fsS -X POST "${ANDB_BASE_URL}/v1/debug/echo" \
     -H "Content-Type: application/json" \
     -d '{"ping":"pre_flight"}' 2>/dev/null || echo '{}')
 ECHO_VAL=$(echo "${ECHO_RESP}" | python3 -c \
-    "import sys,json; d=json.load(sys.stdin); print(d.get('ping',''))" 2>/dev/null || echo "")
+    "import sys,json; d=json.load(sys.stdin); e=d.get('echo',d); print(e.get('ping','') if isinstance(e,dict) else '')" 2>/dev/null || echo "")
 if [ "${ECHO_VAL}" = "pre_flight" ]; then
     _pass "/v1/debug/echo round-trip OK"
 else
@@ -184,7 +184,7 @@ import json, datetime
 print(json.dumps({
     'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
     'pass': ${PASS}, 'warn': ${WARN}, 'fail': ${FAIL},
-    'gpu_available': $(${GPU_AVAILABLE} && echo 'true' || echo 'false'),
+    'gpu_available': $(${GPU_AVAILABLE} && echo 'True' || echo 'False'),
     'mode': '$(${GPU_AVAILABLE} && echo gpu || echo cpu)'
 }, indent=2))
 " > "${OUT_DIR}/pre_flight.json"
