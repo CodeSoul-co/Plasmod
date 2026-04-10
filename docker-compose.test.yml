@@ -1,0 +1,33 @@
+# Test-mode override for docker-compose.yml.
+#
+# CPU-only (default):
+#   APP_MODE=test docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     up -d --build --force-recreate
+#
+# GPU / TensorRT (stack all three overrides):
+#   APP_MODE=test docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.test.yml \
+#     -f docker-compose.gpu.yml \
+#     -f docker-compose.test-gpu.yml \
+#     up -d --build --force-recreate
+#
+# Enables:
+#   - APP_MODE=test  (debug endpoints, relaxed visibility, /v1/debug/echo)
+#   - ONNX CPU embedder by default (override via ANDB_EMBEDDER env var)
+#   - Read-only bind-mounts for models/ and database/ (testQuery10K.fbin)
+
+services:
+  andb:
+    environment:
+      APP_MODE: test
+      # CPU default: ONNX with repo-local minilm model
+      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-onnx}
+      ANDB_EMBEDDER_MODEL_PATH: ${ANDB_EMBEDDER_MODEL_PATH:-/models/minilm-l6-v2.onnx}
+      ANDB_ONNX_VOCAB_PATH: /models/minilm-l6-v2-vocab.txt
+      ANDB_EMBEDDER_DIM: "384"
+      ANDB_EMBEDDER_BATCH_SIZE: "32"
+      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cpu}
+    volumes:
+      - ./models:/models:ro
+      - ./database:/database:ro
