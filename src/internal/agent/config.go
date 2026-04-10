@@ -38,6 +38,8 @@ type Config struct {
 	// not a full address).
 	HTTPAddr string
 
+	// HTTPClientTimeout is the timeout for CogDB HTTP requests (default 30s).
+	// Environment: ANDB_AGENT_HTTP_TIMEOUT (seconds).
 	// HTTPClient is an optional custom http.Client. When nil a default client
 	// with a 30-second request timeout is used. Useful for custom transport,
 	// proxy, or testing scenarios.
@@ -49,12 +51,12 @@ type Config struct {
 //
 // Environment variables read:
 //
-//	ANDB_AGENT_ENDPOINT    CogDBEndpoint (default "http://127.0.0.1:8080")
-//	ANDB_AGENT_ID          AgentID (required)
-//	ANDB_TENANT_ID         TenantID (required)
-//	ANDB_WORKSPACE_ID      WorkspaceID (required)
-//	ANDB_AGENT_HTTP_PORT   HTTP listen port (default ":9090")
-//	ANDB_AGENT_HTTP_TIMEOUT request timeout in seconds (default 30)
+//		ANDB_AGENT_ENDPOINT    CogDBEndpoint (default "http://127.0.0.1:8080")
+//		ANDB_AGENT_ID          AgentID (required)
+//		ANDB_TENANT_ID         TenantID (required)
+//		ANDB_WORKSPACE_ID      WorkspaceID (required)
+//		ANDB_AGENT_HTTP_PORT   HTTP listen port (default ":9090")
+//		ANDB_AGENT_HTTP_TIMEOUT request timeout in seconds (default 30)
 func LoadFromEnv() Config {
 	cfg := Config{
 		CogDBEndpoint: getEnv("ANDB_AGENT_ENDPOINT", "http://127.0.0.1:8080"),

@@ -49,3 +49,7 @@ rule
 分工情况.md
 系统分层架构图.md
 多维度数据集入库与检索规范（参考Milvus-Manu）.md
+
+# build / test artifacts
+go.sum.bak*
+out/

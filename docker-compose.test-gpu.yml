@@ -1,0 +1,23 @@
+# GPU test overlay — stack on top of docker-compose.test.yml for TensorRT inference.
+#
+# Usage (all four files):
+#   APP_MODE=test docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.test.yml \
+#     -f docker-compose.gpu.yml \
+#     -f docker-compose.test-gpu.yml \
+#     up -d --build --force-recreate
+#
+# Switches embedder from ONNX CPU → TensorRT FP16 GPU.
+# Requires: NVIDIA driver + docker --gpus support, CUDA runtime in image.
+# The pre-built FP16 engine models/minilm-l6-v2-fp16.engine must exist.
+
+services:
+  andb:
+    environment:
+      ANDB_EMBEDDER: tensorrt
+      ANDB_EMBEDDER_MODEL_PATH: /models/minilm-l6-v2-fp16.engine
+      ANDB_ONNX_VOCAB_PATH: /models/minilm-l6-v2-vocab.txt
+      ANDB_EMBEDDER_DIM: "384"
+      ANDB_EMBEDDER_DEVICE: cuda
+      CUDA_VISIBLE_DEVICES: "0"
