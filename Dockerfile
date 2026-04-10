@@ -18,7 +18,7 @@
 #     --build-arg GOSUMDB=off \
 #     -t cogdb:latest .
 ARG BASE_REGISTRY=
-ARG GOLANG_IMAGE=golang:1.24-bookworm
+ARG GOLANG_IMAGE=golang:1.25rc1-bookworm
 ARG DEBIAN_IMAGE=debian:bookworm-slim
 
 # Stage 0: provide Go toolchain files (do not execute commands here)
