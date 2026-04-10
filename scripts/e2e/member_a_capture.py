@@ -25,21 +25,26 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 DEFAULT_BASE = os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080")
-FIXTURES = Path(__file__).resolve().parents[2] / "integration_tests" / "fixtures" / "member_a"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = REPO_ROOT / "integration_tests" / "fixtures" / "member_a"
+FALLBACK_FIXTURES = REPO_ROOT / "scripts" / "e2e" / "fixtures" / "member_a"
+DEFAULT_TIMEOUT = float(os.environ.get("ANDB_CAPTURE_HTTP_TIMEOUT", "60"))
 
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _http_json(method: str, base: str, path: str, body: dict[str, Any] | None) -> tuple[int, Any]:
+def _http_json(
+    method: str, base: str, path: str, body: dict[str, Any] | None, timeout: float
+) -> tuple[int, Any]:
     url = base.rstrip("/") + path
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = Request(url, data=data, method=method)
     if body is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urlopen(req, timeout=60) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             if not raw:
                 return resp.status, None
@@ -71,7 +76,7 @@ def _load_json(path: Path) -> Any:
         return json.load(f)
 
 
-def run_scenarios(base_url: str, fixtures_dir: Path) -> list[dict[str, Any]]:
+def run_scenarios(base_url: str, fixtures_dir: Path, timeout: float) -> list[dict[str, Any]]:
     manifest_path = fixtures_dir / "manifest.json"
     if not manifest_path.is_file():
         raise SystemExit(f"missing manifest: {manifest_path}")
@@ -99,7 +104,7 @@ def run_scenarios(base_url: str, fixtures_dir: Path) -> list[dict[str, Any]]:
             if not p.is_file():
                 raise SystemExit(f"scenario {sid}: missing ingest file {p}")
             ev = _prepare_event(_load_json(p), sid, i)
-            status, ack = _http_json("POST", base_url, "/v1/ingest/events", ev)
+            status, ack = _http_json("POST", base_url, "/v1/ingest/events", ev, timeout)
             ingest_acks.append({"status": status, "request_event_id": ev["event_id"], "ack": ack})
             if status != 200:
                 raise SystemExit(f"scenario {sid}: ingest failed HTTP {status}: {ack}")
@@ -111,7 +116,7 @@ def run_scenarios(base_url: str, fixtures_dir: Path) -> list[dict[str, Any]]:
         if not isinstance(query_body, dict):
             raise SystemExit(f"scenario {sid}: query must be a JSON object")
 
-        qstatus, response = _http_json("POST", base_url, "/v1/query", query_body)
+        qstatus, response = _http_json("POST", base_url, "/v1/query", query_body, timeout)
         if qstatus != 200:
             raise SystemExit(f"scenario {sid}: query failed HTTP {qstatus}: {response}")
 
@@ -165,10 +170,19 @@ def main() -> None:
         default=None,
         help="If set, write one JSON file per scenario; otherwise print a single JSON array to stdout",
     )
+    ap.add_argument(
+        "--http-timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help="HTTP timeout (seconds) for ingest/query requests",
+    )
     args = ap.parse_args()
 
     fixtures_dir = args.fixtures.resolve()
-    results = run_scenarios(args.base_url, fixtures_dir)
+    if not fixtures_dir.exists() and args.fixtures == FIXTURES:
+        fixtures_dir = FALLBACK_FIXTURES
+        print(f"[member-a-capture] default fixtures not found; fallback to: {fixtures_dir}")
+    results = run_scenarios(args.base_url, fixtures_dir, args.http_timeout)
 
     if args.out_dir:
         args.out_dir.mkdir(parents=True, exist_ok=True)

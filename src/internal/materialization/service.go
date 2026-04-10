@@ -2,6 +2,7 @@ package materialization
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"andb/src/internal/dataplane"
@@ -73,6 +74,18 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		ProvenanceRef:  ev.EventID,
 		Version:        ev.LogicalTS,
 		IsActive:       true,
+	}
+	if ev.Payload != nil {
+		if d, ok := ev.Payload[schemas.PayloadKeyDataset]; ok {
+			if s, ok := d.(string); ok {
+				mem.DatasetName = strings.TrimSpace(s)
+			}
+		}
+		if f, ok := ev.Payload[schemas.PayloadKeyFileName]; ok {
+			if s, ok := f.(string); ok {
+				mem.SourceFileName = strings.TrimSpace(s)
+			}
+		}
 	}
 
 	version := schemas.ObjectVersion{

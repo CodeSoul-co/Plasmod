@@ -30,6 +30,9 @@ func TestMemoryToGraphNode(t *testing.T) {
 	if node.Properties["importance"] != 0.9 {
 		t.Fatalf("expected importance 0.9, got %v", node.Properties["importance"])
 	}
+	if node.Properties["join_key"] != "mem:mem_1" {
+		t.Fatalf("expected join_key mem:mem_1, got %v", node.Properties["join_key"])
+	}
 }
 
 func TestEventToGraphNode(t *testing.T) {
@@ -53,6 +56,9 @@ func TestEventToGraphNode(t *testing.T) {
 	if node.Properties["event_type"] != "user_message" {
 		t.Fatalf("expected event_type user_message, got %v", node.Properties["event_type"])
 	}
+	if node.Properties["join_key"] != "evt:evt_1" {
+		t.Fatalf("expected join_key evt:evt_1, got %v", node.Properties["join_key"])
+	}
 }
 
 func TestArtifactToGraphNode(t *testing.T) {
@@ -75,5 +81,8 @@ func TestArtifactToGraphNode(t *testing.T) {
 	}
 	if node.Properties["artifact_type"] != "document" {
 		t.Fatalf("expected artifact_type document, got %v", node.Properties["artifact_type"])
+	}
+	if node.Properties["join_key"] != "art:art_1" {
+		t.Fatalf("expected join_key art:art_1, got %v", node.Properties["join_key"])
 	}
 }

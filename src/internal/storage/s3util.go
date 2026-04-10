@@ -11,9 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -301,40 +302,79 @@ func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, object
 	return data, nil
 }
 
+func DeleteObject(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string) error {
+	objectKey = strings.TrimLeft(objectKey, "/")
+	deleteURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+
+	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodDelete, deleteURL, nil, "")
+	if err != nil {
+		return fmt.Errorf("s3 delete do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// S3/MinIO for DELETE usually successfully return 204 No Content or 200 OK
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("s3 delete status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // ListObjects returns the object keys under the given prefix using S3 ListObjectsV2.
 // The prefix must not have a leading slash.  Returns nil on any error (caller
 // should treat a nil return as "no keys found").
 func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, prefix string) ([]string, error) {
+	keys, _, _, err := ListObjectsLimited(ctx, httpClient, cfg, prefix, 0, 0)
+	return keys, err
+}
+
+// ListObjectsLimited returns object keys under prefix with optional hard limits.
+// maxPages/maxKeys <= 0 means "unlimited" for that dimension.
+// It also returns pagesScanned and whether listing stopped due to limits.
+func ListObjectsLimited(
+	ctx context.Context,
+	httpClient *http.Client,
+	cfg S3Config,
+	prefix string,
+	maxPages int,
+	maxKeys int,
+) ([]string, int, bool, error) {
 	prefix = strings.TrimLeft(prefix, "/")
 
-	// S3 ListObjectsV2 with continuation token support.
 	var allKeys []string
 	continuationToken := ""
+	pagesScanned := 0
+	truncatedByLimit := false
 
 	for {
-		listURL := fmt.Sprintf("%s/%s?list-type=2&prefix=%s",
-			cfg.baseURL(), cfg.Bucket, prefix)
-		if continuationToken != "" {
-			listURL += "&continuation-token=" + continuationToken
+		if maxPages > 0 && pagesScanned >= maxPages {
+			truncatedByLimit = true
+			break
 		}
 
+		q := url.Values{}
+		q.Set("list-type", "2")
+		q.Set("prefix", prefix)
+		if continuationToken != "" {
+			q.Set("continuation-token", continuationToken)
+		}
+
+		listURL := fmt.Sprintf("%s/%s?%s", cfg.baseURL(), cfg.Bucket, q.Encode())
 		resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, listURL, nil, "")
 		if err != nil {
-			return nil, fmt.Errorf("list objects do: %w", err)
+			return nil, pagesScanned, truncatedByLimit, fmt.Errorf("list objects do: %w", err)
 		}
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, fmt.Errorf("list objects read: %w", err)
+			return nil, pagesScanned, truncatedByLimit, fmt.Errorf("list objects read: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("list objects status %d: %s", resp.StatusCode, string(body))
+			return nil, pagesScanned, truncatedByLimit, fmt.Errorf("list objects status %d: %s", resp.StatusCode, string(body))
 		}
+		pagesScanned++
 
-		// Parse the XML response manually (stdlib xml is heavy; simple text scan is enough).
 		bodyStr := string(body)
-
-		// Extract <Key>...</Key> entries.
 		for {
 			start := strings.Index(bodyStr, "<Key>")
 			if start == -1 {
@@ -346,10 +386,16 @@ func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, pre
 				break
 			}
 			allKeys = append(allKeys, bodyStr[start:start+end])
+			if maxKeys > 0 && len(allKeys) >= maxKeys {
+				if len(allKeys) > maxKeys {
+					allKeys = allKeys[:maxKeys]
+				}
+				truncatedByLimit = true
+				return allKeys, pagesScanned, truncatedByLimit, nil
+			}
 			bodyStr = bodyStr[start+end+len("</Key>"):]
 		}
 
-		// Check for NextContinuationToken.
 		ctStart := strings.Index(string(body), "<NextContinuationToken>")
 		if ctStart == -1 {
 			break
@@ -362,7 +408,7 @@ func ListObjects(ctx context.Context, httpClient *http.Client, cfg S3Config, pre
 		continuationToken = string(body)[ctStart : ctStart+ctEnd]
 	}
 
-	return allKeys, nil
+	return allKeys, pagesScanned, truncatedByLimit, nil
 }
 
 // ─── AWS Signature V4 (stdlib only) ─────────────────────────────────────────

@@ -72,6 +72,11 @@ $outDir = Join-Path $RepoRoot "out/member_a_fullstack_verify"
 Write-Host "[acceptance-a] member_a_capture -> $outDir"
 python scripts/e2e/member_a_capture.py --out-dir $outDir
 
+Write-Host "[acceptance-a] hard-check MinIO write/read..."
+$probeKey = "andb/acceptance/acceptance_probe_$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()).json"
+docker compose run --rm --entrypoint /bin/sh minio-init -lc "set -e; mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null; mc mb local/andb-integration >/dev/null 2>&1 || true; printf '{`"ok`":true,`"source`":`"run_acceptance_scenario_a.ps1`"}\n' | mc pipe local/andb-integration/$probeKey >/dev/null; mc stat local/andb-integration/$probeKey >/dev/null"
+Write-Host "[acceptance-a] S3 probe object: s3://andb-integration/$probeKey"
+
 Write-Host "[acceptance-a] done. Stop server with:"
 Write-Host "  Get-Process -Name acceptance-andb-server -ErrorAction SilentlyContinue | Stop-Process -Force"
 Write-Host "Stop MinIO: docker compose down"

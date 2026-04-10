@@ -23,9 +23,7 @@ models/*.engine
 models/*.bin
 
 # go-llama.cpp build artifacts
-libs/go-llama.cpp/build/
-libs/go-llama.cpp/libbinding.a
-libs/go-llama.cpp/llama.cpp/*.o
+libs/go-llama.cpp/
 
 # Local env file
 .env
@@ -35,9 +33,14 @@ integration_tests/
 
 # Claude Code local config
 .claude/
+.vscode/
+.cache/
 
 # Member private docs
 devdocs/
+
+# Local issue tracker (not for version control)
+KNOWN_ISSUES.md
 
 # Rule file
 rule
@@ -46,3 +49,4 @@ rule
 分工情况.md
 系统分层架构图.md
 docs/member-b/
+多维度数据集入库与检索规范（参考Milvus-Manu）.md

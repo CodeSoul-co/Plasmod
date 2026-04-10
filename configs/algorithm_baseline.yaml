@@ -12,3 +12,22 @@ baseline:
   max_strength:       5.0
   compressed_level:    1
   summarization_level: 2
+  retrieval:
+    rrf_k: 60
+
+    cold_search:
+    batch_size: 128
+    max_candidates: 1000
+    buffer_factor: 3
+    early_stop_score: 0.95
+    no_improve_pages: 2
+    dfs_relevance_threshold: 0.2
+    weights:
+      lexical: 0.5
+      dense: 0.4
+      recency: 0.1
+
+  hnsw:
+    m: 16
+    ef_construction: 256
+    ef_search: 64
