@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"andb/src/internal/access"
+	"andb/src/internal/config"
 	"andb/src/internal/coordinator"
 	"andb/src/internal/dataplane"
 	"andb/src/internal/dataplane/embedding"
@@ -80,31 +81,42 @@ func BuildServer() (*http.Server, func() error, error) {
 		log.Printf("[bootstrap] storage: in-memory mode")
 	}
 
-	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
-	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
-	var coldStore storage.ColdObjectStore
-	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
-		coldStore = storage.NewS3ColdStore(s3Cfg)
-		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
-			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
-	} else {
-		coldStore = storage.NewInMemoryColdStore()
-		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
-	}
-	tieredObjects := storage.NewTieredObjectStore(store.HotCache(), store.Objects(), store.Edges(), coldStore)
-
-	// ── Semantic Layer ───────────────────────────────────────────────────────
-	objectModel := semantic.NewObjectModelRegistry()
-	policyEngine := semantic.NewPolicyEngine()
-	planner := semantic.NewDefaultQueryPlanner()
-
 	// ── Algorithm Config — all tunable worker parameters ─────────────────────
 	// Defaults are in schemas.DefaultAlgorithmConfig().  Environment variables
 	// override specific fields when set:
 	//   ANDB_EVIDENCE_CACHE_SIZE   (default 10000)
 	//   ANDB_MAX_PROOF_DEPTH       (default 8)
 	//   ANDB_HOT_TIER_THRESHOLD    (default 0.5)
-	algoCfg := schemas.DefaultAlgorithmConfig()
+	algoCfg, err := config.LoadSharedAlgorithmConfig()
+	if err != nil {
+		log.Printf("[bootstrap] shared algorithm config load failed, using defaults: %v", err)
+		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
+
+	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
+	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
+	var coldStore storage.ColdObjectStore
+	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
+		coldStore = storage.NewS3ColdStoreWithAlgorithmConfig(s3Cfg, algoCfg)
+		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
+			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
+	} else {
+		coldStore = storage.NewInMemoryColdStore()
+		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
+	}
+	tieredObjects := storage.NewTieredObjectStoreWithThreshold(
+		store.HotCache(),
+		store.Objects(),
+		store.Edges(),
+		coldStore,
+		algoCfg.HotTierSalienceThreshold,
+	)
+
+	// ── Semantic Layer ───────────────────────────────────────────────────────
+	objectModel := semantic.NewObjectModelRegistry()
+	policyEngine := semantic.NewPolicyEngine()
+	planner := semantic.NewDefaultQueryPlanner()
+
 	if sz := os.Getenv("ANDB_EVIDENCE_CACHE_SIZE"); sz != "" {
 		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
 			algoCfg.EvidenceCacheSize = n
@@ -149,6 +161,8 @@ func BuildServer() (*http.Server, func() error, error) {
 	//   ANDB_EMBEDDER_DIM        (expected vector dimension; 0 = skip probe)
 	//   ANDB_EMBEDDER_TIMEOUT    (per-request timeout in seconds; default 30)
 	//   ANDB_EMBEDDER_BATCH_SIZE (inputs per HTTP request; default 100)
+	// Optional:
+	//   ANDB_EMBEDDING_FAMILY    (override family label used in segment metadata)
 	var embedder embedding.Generator
 	var embedderDim int
 	embedderType := os.Getenv("ANDB_EMBEDDER")
@@ -298,8 +312,10 @@ func BuildServer() (*http.Server, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	embeddingFamily := storage.ResolveEmbeddingFamily(nil)
 	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
 		embedder.Provider(), embedderDim)
+	log.Printf("[bootstrap] embedding family: %s", embeddingFamily)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
@@ -439,6 +455,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	gateway := access.NewGateway(coord, runtime, store, storageCfg)
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
+	handler := access.WrapAdminAuth(mux)
 
 	// shutdown bundles context cancellation (subscriber/orchestrator) and
 	// Badger close (storage cleanup) into one cleanup function.
@@ -446,5 +463,5 @@ func BuildServer() (*http.Server, func() error, error) {
 		cancel()
 		return bundle.Close()
 	}
-	return &http.Server{Addr: addr, Handler: mux}, shutdown, nil
+	return &http.Server{Addr: addr, Handler: handler}, shutdown, nil
 }

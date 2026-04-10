@@ -41,9 +41,11 @@ type QueryRequest struct {
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.
 type EvidenceCacheStats struct {
-	LookedUp int `json:"looked_up"`
-	Hits     int `json:"hits"`
-	Misses   int `json:"misses"`
+	LookedUp   int `json:"looked_up"`
+	Hits       int `json:"hits"`
+	Misses     int `json:"misses"`
+	ColdHits   int `json:"cold_hits,omitempty"`
+	ColdMisses int `json:"cold_misses,omitempty"`
 }
 
 type QueryResponse struct {
@@ -56,6 +58,13 @@ type QueryResponse struct {
 	ProofTrace     []ProofStep     `json:"proof_trace"`
 	ChainTraces    ChainTraceSlots `json:"chain_traces"`
 	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
+	// QueryStatus classifies retrieval-plane seed hits (distinct from supplemental canonical IDs).
+	//   ok — retrieval returned at least one candidate before canonical supplement.
+	//   no_retrieval_hits — zero retrieval seeds and empty objects list.
+	//   no_retrieval_hits_supplemented — zero retrieval seeds but objects came from event/state/artifact listing.
+	QueryStatus string `json:"query_status,omitempty"`
+	// QueryHint is a short human-readable explanation for demos and UIs (may be localized).
+	QueryHint string `json:"query_hint,omitempty"`
 }
 
 type GraphExpandRequest struct {

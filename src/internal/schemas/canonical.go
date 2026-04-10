@@ -76,6 +76,11 @@ type Memory struct {
 	PolicyTags []string `json:"policy_tags,omitempty"`
 	// AlgorithmStateRef links to the MemoryAlgorithmState record keyed by memory_id+algorithm_id.
 	AlgorithmStateRef string `json:"algorithm_state_ref,omitempty"`
+	// DatasetName is a stable ingest label copied from Event.Payload["dataset"] when present.
+	// Admin dataset delete/purge match this field first (exact), then fall back to Content parsing.
+	DatasetName string `json:"dataset_name,omitempty"`
+	// SourceFileName is the originating file basename from Event.Payload["file_name"] when present.
+	SourceFileName string `json:"source_file_name,omitempty"`
 }
 
 type State struct {
@@ -105,19 +110,17 @@ type Artifact struct {
 }
 
 type Edge struct {
-	EdgeID        string  `json:"edge_id"`
-	SrcObjectID   string  `json:"src_object_id"`
-	SrcType       string  `json:"src_type"`
-	EdgeType      string  `json:"edge_type"`
-	DstObjectID   string  `json:"dst_object_id"`
-	DstType       string  `json:"dst_type"`
-	Weight        float64 `json:"weight"`
-	ProvenanceRef string  `json:"provenance_ref"`
-	CreatedTS     string  `json:"created_ts"`
-	// ExpiresAt is an optional RFC-3339 timestamp after which the edge is
-	// considered expired and eligible for pruning via GraphEdgeStore.PruneExpiredEdges.
-	// Empty string means the edge never expires.
-	ExpiresAt string `json:"expires_at,omitempty"`
+	EdgeID        string         `json:"edge_id"`
+	SrcObjectID   string         `json:"src_object_id"`
+	SrcType       string         `json:"src_type"`
+	EdgeType      string         `json:"edge_type"`
+	DstObjectID   string         `json:"dst_object_id"`
+	DstType       string         `json:"dst_type"`
+	Weight        float64        `json:"weight"`
+	ProvenanceRef string         `json:"provenance_ref"`
+	CreatedTS     string         `json:"created_ts"`
+	Properties    map[string]any `json:"properties,omitempty"`
+	ExpiresAt     string         `json:"expires_at,omitempty"`
 }
 
 type ObjectVersion struct {

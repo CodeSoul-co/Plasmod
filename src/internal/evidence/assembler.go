@@ -103,6 +103,36 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 		})
 	}
 
+	if strings.Contains(result.Tier, "cold") {
+		switch result.ColdSearchMode {
+		case "hnsw":
+			trace = append(trace, schemas.ProofStep{
+				StepType:    "cold",
+				Operation:   "cold_hnsw_search",
+				Description: "cold tier searched archived embeddings via HNSW index",
+			})
+		case "vector":
+			trace = append(trace,
+				schemas.ProofStep{
+					StepType:    "cold",
+					Operation:   "cold_embedding_fetch",
+					Description: "cold tier fetched archived embeddings or cold candidates",
+				},
+				schemas.ProofStep{
+					StepType:    "cold",
+					Operation:   "cold_rerank",
+					Description: "cold tier reranked results with dense similarity",
+				},
+			)
+		case "lexical":
+			trace = append(trace, schemas.ProofStep{
+				StepType:    "cold",
+				Operation:   "cold_lexical_search",
+				Description: "cold tier searched archived memories using lexical matching",
+			})
+		}
+	}
+
 	for _, seg := range result.PlannedSegments {
 		trace = append(trace, schemas.ProofStep{
 			StepType:    "shard",
@@ -121,10 +151,21 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 				hits++
 			}
 		}
+
+		misses := len(outputIDs) - hits
+		coldHits := 0
+		coldMisses := 0
+		if strings.Contains(result.Tier, "cold") {
+			coldHits = hits
+			coldMisses = misses
+		}
+
 		evStats = &schemas.EvidenceCacheStats{
-			LookedUp: len(outputIDs),
-			Hits:     hits,
-			Misses:   len(outputIDs) - hits,
+			LookedUp:   len(outputIDs),
+			Hits:       hits,
+			Misses:     misses,
+			ColdHits:   coldHits,
+			ColdMisses: coldMisses,
 		}
 		trace = append(trace, a.assembleFromFragments(frags)...)
 	}
@@ -157,10 +198,16 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 	// populate ObjectVersions for returned objects
 	versions := a.resolveVersions(outputIDs)
 
+	provenance := a.resolveProvenance(outputIDs, edges, versions)
+	if strings.Contains(result.Tier, "cold") {
+		provenance = append(provenance, "cold_tier")
+		provenance = uniqueStrings(provenance)
+	}
+
 	return schemas.QueryResponse{
 		Objects:        outputIDs,
 		Edges:          edges,
-		Provenance:     a.resolveProvenance(outputIDs, edges, versions),
+		Provenance:     provenance,
 		Versions:       versions,
 		AppliedFilters: filters,
 		ProofTrace:     trace,
@@ -348,4 +395,18 @@ func (a *Assembler) assembleFromFragments(frags []EvidenceFragment) []schemas.Pr
 		}
 	}
 	return steps
+}
+
+func uniqueStrings(in []string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
