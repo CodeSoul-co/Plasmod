@@ -31,6 +31,7 @@ ARG APT_MIRROR=
 ARG GO_LLAMACPP_REPO=https://github.com/go-skynet/go-llama.cpp.git
 ARG GOPROXY=
 ARG GOSUMDB=
+ARG ONNXRUNTIME_VERSION=1.17.3
 
 RUN if [ -n "${APT_MIRROR}" ]; then \
       sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources && \
@@ -40,9 +41,18 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     build-essential \
     ca-certificates \
     cmake \
+    curl \
     git \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
+
+# Install ONNX Runtime shared library (CPU) for embedding inference.
+RUN curl -fsSL \
+    "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz" \
+    | tar xz -C /tmp && \
+    cp /tmp/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} \
+       /usr/local/lib/libonnxruntime.so && \
+    ldconfig
 
 # Copy Go runtime/toolchain from official Go image.
 COPY --from=go-toolchain /usr/local/go /usr/local/go
@@ -90,6 +100,10 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     curl \
     libc6-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy ONNX Runtime library from builder stage.
+COPY --from=builder /usr/local/lib/libonnxruntime.so /usr/local/lib/libonnxruntime.so
+RUN ldconfig
 
 COPY --from=builder /src/bin/andb-server /usr/local/bin/andb-server
 
