@@ -1,6 +1,6 @@
 module andb
 
-go 1.25.0
+go 1.25rc1
 
 require (
 	andb/retrievalplane v0.0.0
