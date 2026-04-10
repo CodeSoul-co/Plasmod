@@ -73,6 +73,9 @@ RUN mkdir -p /src/libs \
 
 COPY go.mod go.sum ./
 COPY src ./src
+# Prevent Go from trying to download a newer toolchain from proxy.golang.org.
+# go.mod may specify `toolchain goX.Y.Z`; use the installed version instead.
+ENV GOTOOLCHAIN=local
 RUN if [ -n "${GOPROXY}" ]; then go env -w GOPROXY="${GOPROXY}"; fi \
     && if [ -n "${GOSUMDB}" ]; then go env -w GOSUMDB="${GOSUMDB}"; fi \
     && go mod download
