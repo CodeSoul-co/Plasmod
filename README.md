@@ -793,11 +793,11 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 #### Outstanding TODO
 
-- [ ] `admin_auth.go` — fix `constantTimeEqual`: replace length-branch early-return with HMAC-SHA256 digest comparison to eliminate timing side-channel
-- [ ] `dataset_match.go` — add `,` and `;` to token boundaries in `contentDatasetNameLabelEquals`
-- [ ] `s3store.go` *(hot-path only)* — `selectTopScored`: sort a copy instead of mutating the caller's slice
-- [ ] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate the edge race (known limitation)
-- [ ] `dataset_match.go` — add doc comment: all-empty selectors match every memory in the workspace
+- [√] `admin_auth.go` — fix `constantTimeEqual`: replace length-branch early-return with HMAC-SHA256 digest comparison to eliminate timing side-channel
+- [√] `dataset_match.go` — add `,` and `;` to token boundaries in `contentDatasetNameLabelEquals`
+- [√] `s3store.go` *(hot-path only)* — `selectTopScored`: sort a copy instead of mutating the caller's slice
+- [√] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate the edge race (known limitation)
+- [√] `dataset_match.go` — add doc comment: all-empty selectors match every memory in the workspace
 
 ---
 
