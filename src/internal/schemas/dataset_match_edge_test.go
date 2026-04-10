@@ -26,10 +26,10 @@ func TestMemoryDatasetMatch_WrongWorkspaceFalse(t *testing.T) {
 	}
 }
 
-func TestMemoryDatasetMatch_AllSelectorsEmpty_ReturnsFalse(t *testing.T) {
+func TestMemoryDatasetMatch_AllSelectorsEmpty_ReturnsTrue(t *testing.T) {
 	m := memWith("ws1", "anything.fbin", "anydataset", "some content")
-	if MemoryDatasetMatch(m, "ws1", "", "", "") {
-		t.Error("all selectors empty should return false")
+	if !MemoryDatasetMatch(m, "ws1", "", "", "") {
+		t.Error("all selectors empty should match every memory in workspace")
 	}
 }
 
