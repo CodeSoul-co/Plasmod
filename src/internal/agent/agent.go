@@ -59,6 +59,14 @@ type AgentSession struct {
 	// MemoryManager is pluggable. Defaults to BaselineMemoryManager on construction.
 	// Set via WithMemoryManager for custom algorithms.
 	mm MemoryManager
+
+	// llm is the optional LLM inference backend (set via WithLLM).
+	// nil means no LLM is attached; SDK helpers that require it will error.
+	llm LLMProvider
+
+	// mas is the optional multi-agent system provider (set via WithMAS).
+	// nil means the agent runs in standalone mode.
+	mas MASProvider
 }
 
 // NewAgentSession creates a new session for the given agent identity.

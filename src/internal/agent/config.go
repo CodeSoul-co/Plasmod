@@ -5,57 +5,8 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
-
-// LLMConfig holds the configuration for the LLM inference backend used by the agent
-// to generate responses. This is separate from the CogDB embedding provider.
-type LLMConfig struct {
-	// BaseURL is the OpenAI-compatible API endpoint.
-	// Examples: https://api.openai.com/v1  |  http://localhost:11434/v1 (Ollama)
-	// Environment: ANDB_AGENT_LLM_BASE_URL.
-	BaseURL string
-
-	// APIKey is the bearer token / secret key for the LLM provider.
-	// Environment: ANDB_AGENT_LLM_API_KEY.
-	APIKey string
-
-	// Model is the model identifier, e.g. "gpt-4o", "qwen2.5:14b", "deepseek-chat".
-	// Environment: ANDB_AGENT_LLM_MODEL.
-	Model string
-
-	// MaxTokens caps the number of completion tokens (0 = provider default).
-	// Environment: ANDB_AGENT_LLM_MAX_TOKENS.
-	MaxTokens int
-
-	// Temperature controls response randomness: 0.0–2.0 (default 0.7).
-	// Environment: ANDB_AGENT_LLM_TEMPERATURE.
-	Temperature float64
-
-	// Timeout is the per-request deadline (default 120s).
-	// Environment: ANDB_AGENT_LLM_TIMEOUT.
-	Timeout time.Duration
-}
-
-// MASConfig holds topology and peer information for a Multi-Agent System.
-type MASConfig struct {
-	// Peers is the list of sibling agent CogDB endpoints (each running their
-	// own AgentGateway). Populated from comma-separated ANDB_MAS_PEERS.
-	// Example: "http://agent-beta:9090,http://agent-gamma:9090"
-	// Environment: ANDB_MAS_PEERS.
-	Peers []string
-
-	// Topology describes how agents interact: "mesh" | "hub" | "hierarchical".
-	// Default: "mesh" (every agent can share with every peer).
-	// Environment: ANDB_MAS_TOPOLOGY.
-	Topology string
-
-	// HubAgentID is the designated hub in a hub-and-spoke topology.
-	// Ignored when Topology != "hub".
-	// Environment: ANDB_MAS_HUB_AGENT_ID.
-	HubAgentID string
-}
 
 // Config holds the configuration for an AgentSession or AgentGateway.
 // Fields are populated from environment variables by LoadFromEnv, or set
@@ -89,15 +40,10 @@ type Config struct {
 
 	// HTTPClientTimeout is the timeout for CogDB HTTP requests (default 30s).
 	// Environment: ANDB_AGENT_HTTP_TIMEOUT (seconds).
+	// HTTPClient is an optional custom http.Client. When nil a default client
+	// with a 30-second request timeout is used. Useful for custom transport,
+	// proxy, or testing scenarios.
 	HTTPClientTimeout time.Duration
-
-	// LLM holds the inference backend configuration (API key, model, base URL).
-	// Populated by LoadFromEnv; may also be set directly.
-	LLM LLMConfig
-
-	// MAS holds multi-agent system topology (peers, topology type).
-	// Populated by LoadFromEnv; may also be set directly.
-	MAS MASConfig
 }
 
 // LoadFromEnv populates Config from environment variables.
@@ -105,23 +51,12 @@ type Config struct {
 //
 // Environment variables read:
 //
-//		ANDB_AGENT_ENDPOINT         CogDBEndpoint (default "http://127.0.0.1:8080")
-//		ANDB_AGENT_ID               AgentID (required)
-//		ANDB_TENANT_ID              TenantID (required)
-//		ANDB_WORKSPACE_ID           WorkspaceID (required)
-//		ANDB_AGENT_HTTP_PORT        HTTP listen port (default ":9090")
-//		ANDB_AGENT_HTTP_TIMEOUT     CogDB request timeout in seconds (default 30)
-//
-//		ANDB_AGENT_LLM_BASE_URL     LLM API base URL (OpenAI-compatible)
-//		ANDB_AGENT_LLM_API_KEY      LLM API key / bearer token
-//		ANDB_AGENT_LLM_MODEL        LLM model identifier
-//		ANDB_AGENT_LLM_MAX_TOKENS   Max completion tokens (default 0 = provider default)
-//		ANDB_AGENT_LLM_TEMPERATURE  Sampling temperature 0.0–2.0 (default 0.7)
-//		ANDB_AGENT_LLM_TIMEOUT      LLM request timeout in seconds (default 120)
-//
-//		ANDB_MAS_PEERS              Comma-separated peer agent gateway URLs
-//		ANDB_MAS_TOPOLOGY           Topology: mesh|hub|hierarchical (default mesh)
-//		ANDB_MAS_HUB_AGENT_ID       Hub agent ID (only for topology=hub)
+//		ANDB_AGENT_ENDPOINT    CogDBEndpoint (default "http://127.0.0.1:8080")
+//		ANDB_AGENT_ID          AgentID (required)
+//		ANDB_TENANT_ID         TenantID (required)
+//		ANDB_WORKSPACE_ID      WorkspaceID (required)
+//		ANDB_AGENT_HTTP_PORT   HTTP listen port (default ":9090")
+//		ANDB_AGENT_HTTP_TIMEOUT request timeout in seconds (default 30)
 func LoadFromEnv() Config {
 	cfg := Config{
 		CogDBEndpoint: getEnv("ANDB_AGENT_ENDPOINT", "http://127.0.0.1:8080"),
@@ -135,40 +70,6 @@ func LoadFromEnv() Config {
 			cfg.HTTPClientTimeout = time.Duration(sec) * time.Second
 		}
 	}
-
-	// ── LLM inference config ─────────────────────────────────────────────────
-	cfg.LLM = LLMConfig{
-		BaseURL:     os.Getenv("ANDB_AGENT_LLM_BASE_URL"),
-		APIKey:      os.Getenv("ANDB_AGENT_LLM_API_KEY"),
-		Model:       getEnv("ANDB_AGENT_LLM_MODEL", ""),
-		Temperature: 0.7,
-		Timeout:     120 * time.Second,
-	}
-	if v := os.Getenv("ANDB_AGENT_LLM_MAX_TOKENS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.LLM.MaxTokens = n
-		}
-	}
-	if v := os.Getenv("ANDB_AGENT_LLM_TEMPERATURE"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.LLM.Temperature = f
-		}
-	}
-	if v := os.Getenv("ANDB_AGENT_LLM_TIMEOUT"); v != "" {
-		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
-			cfg.LLM.Timeout = time.Duration(sec) * time.Second
-		}
-	}
-
-	// ── MAS topology config ──────────────────────────────────────────────────
-	cfg.MAS = MASConfig{
-		Topology:   getEnv("ANDB_MAS_TOPOLOGY", "mesh"),
-		HubAgentID: os.Getenv("ANDB_MAS_HUB_AGENT_ID"),
-	}
-	if peers := os.Getenv("ANDB_MAS_PEERS"); peers != "" {
-		cfg.MAS.Peers = splitTrimmed(peers, ",")
-	}
-
 	return cfg
 }
 
@@ -199,17 +100,4 @@ func getEnv(key, defaultValue string) string {
 		return v
 	}
 	return defaultValue
-}
-
-// splitTrimmed splits s by sep and trims whitespace from each element,
-// omitting empty strings.
-func splitTrimmed(s, sep string) []string {
-	parts := strings.Split(s, sep)
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
 }
