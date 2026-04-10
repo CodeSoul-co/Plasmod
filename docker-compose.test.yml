@@ -21,13 +21,14 @@ services:
   andb:
     environment:
       APP_MODE: test
-      # CPU default: ONNX with repo-local minilm model
-      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-onnx}
-      ANDB_EMBEDDER_MODEL_PATH: ${ANDB_EMBEDDER_MODEL_PATH:-/models/minilm-l6-v2.onnx}
+      # Hardcoded ONNX CPU embedder — overrides .env tfidf default
+      ANDB_EMBEDDER: onnx
+      ANDB_EMBEDDER_MODEL_PATH: /models/minilm-l6-v2.onnx
       ANDB_ONNX_VOCAB_PATH: /models/minilm-l6-v2-vocab.txt
       ANDB_EMBEDDER_DIM: "384"
       ANDB_EMBEDDER_BATCH_SIZE: "32"
-      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cpu}
+      ANDB_EMBEDDER_DEVICE: cpu
+      ANDB_HTTP_ADDR: "0.0.0.0:8080"
     volumes:
       - ./models:/models:ro
-      - ./database:/database:ro
+      - /home/duanzhenke/database:/database:ro
