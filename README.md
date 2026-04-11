@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/cogdb.png" alt="CogDB Logo" width="480"/>
+  <img src="assets/plasmod.png" alt="Plasmod Logo" width="480"/>
 </div>
 
 <div align="center">
@@ -20,20 +20,19 @@
 </div>
 
 # Plasmod — Agent-Native Database for Multi-Agent Systems
-> **Branch:** `dev` (integration) · **Pass 9** (2026-03-28)
 
-CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combines a tiered segment-oriented retrieval plane, an event backbone with an append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
+Plasmod is an agent-native database for multi-agent systems. Inspired by the adaptive, decentralized organization of slime mold networks, it unifies cognitive object storage, event-driven materialization, and structured evidence retrieval in a single runnable system. Plasmod integrates a tiered segment-oriented retrieval plane, an event backbone built on an append-only WAL, a canonical object materialization layer, precomputed evidence fragments, lightweight 1-hop graph expansion, and structured evidence assembly, all wired together as a single Go server for agent-native workloads.
 
 > **Core thesis:** agent memory, state, event, artifact, and relation should be modeled as first-class database objects, and query results should return structured evidence rather than only top-k text fragments.
 
 ## What is implemented
 
-- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with 14 HTTP routes, graceful shutdown via `context.WithCancel`
-- Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). **`workspace_id` is required.** At least one of `file_name`, `dataset_name`, or `prefix` is required. `dry_run` only reports matches without mutating. After soft delete, cold-tier embeddings for those memories are best-effort removed via the tiered store.
-  - Matching rules: if `file_name` is set, content must contain `dataset=<file_name>`; if `dataset_name` is set, content must contain `dataset_name:<dataset_name>`; if `prefix` is set, content must contain `dataset=<prefix` (prefix-style substring on the `dataset=` marker).
+- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with **25 HTTP paths** registered in [`Gateway.RegisterRoutes`](src/internal/access/gateway.go) (see [HTTP API surface](#http-api-surface-v1)), graceful shutdown via `context.WithCancel`
+- Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). **`workspace_id` is required.** At least one of `file_name`, `dataset_name`, or `prefix` is required. `dry_run` only reports matches without mutating. Soft delete sets `IsActive=false` and evicts the hot-tier **cache** copy so stale rows are not served; **cold-tier embeddings are kept** until hard delete (`purge`) so metadata and vectors stay consistent. Query paths filter inactive memories.
+  - Matching rules (**AND**): prefer structured fields on `Memory` when ingest provided them — `dataset` → `Memory.dataset_name`, `file_name` → `Memory.source_file_name` (from `Event.Payload`). Otherwise selectors fall back to **token-safe** parsing of `Memory.Content` (exact file token after `dataset=`, exact `dataset_name:` label without matching a longer label prefix, prefix on the file token).
   - Example bodies: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}` · `{"file_name":"base.10M.fbin","dataset_name":"deep1B","workspace_id":"w_demo","dry_run":false}`
   - Response fields include `matched`, `deleted`, and `memory_ids` (all memory IDs that matched the selectors; in `dry_run`, `deleted` stays `0` while `memory_ids` still lists matches).
-- Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. It physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting. Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
+- Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. When a tiered object store is wired, it physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. If the runtime has **no** `TieredObjectStore`, purge falls back to **warm-only** removal (`purge_backend` in the JSON response is `warm_only`; cold embeddings may remain orphaned until a later cold GC or a deployment that wires tiered storage). By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting. Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
@@ -41,7 +40,7 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Event store: `ObjectStore` supports Event CRUD; `QueryChain.Run` routes `evt_`/`art_` IDs to load Event/Artifact GraphNodes
 - Three-tier data plane: **hot** (in-memory LRU) → **warm** (segment index, hybrid when embedder set) → **cold** (S3 or in-mem), behind a unified `DataPlane` interface
 - **RRF fusion** across hot + warm + cold candidate lists for rank fusion
-- Dual storage backends: in-memory (default) and Badger-backed persistent storage (`ANDB_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
+- Dual storage backends: in-memory (default) and Badger-backed persistent storage (`PLASMOD_STORAGE=disk`), with per-store hybrid mode; `GET /v1/admin/storage` reports resolved config
 - Pre-computed `EvidenceFragment` cache populated at ingest, merged into proof traces at query time; `QueryResponse.EvidenceCache` reports hit/miss stats
 - 1-hop graph expansion via `GraphEdgeStore.BulkEdges` in the `Assembler.Build` path
 - `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, `ChainTraces`, `EvidenceCache`, and `chain_traces` (main/memory_pipeline/query/collaboration slots) on every query
@@ -56,14 +55,30 @@ CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combi
 - Python SDK (`sdk/python`) and demo scripts
 - Full architecture, schema, and API documentation
 
+## HTTP API surface (v1)
+
+Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.go). Content type for JSON bodies: `application/json`.
+
+| Group | Endpoints |
+|-------|-----------|
+| **Health** | `GET /healthz` |
+| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` |
+| **Core** | `POST /v1/ingest/events` · `POST /v1/query` |
+| **Canonical CRUD** | `GET` / `POST` — `/v1/agents`, `/v1/sessions`, `/v1/memory`, `/v1/states`, `/v1/artifacts`, `/v1/edges`, `/v1/policies`, `/v1/share-contracts` (list/filter via query params; POST creates or replaces per handler) |
+| **Traces** | `GET /v1/traces/{object_id}` |
+| **Internal (Agent SDK bridge)** | `POST` — `/v1/internal/memory/recall`, `/v1/internal/memory/ingest`, `/v1/internal/memory/compress`, `/v1/internal/memory/summarize`, `/v1/internal/memory/decay`, `/v1/internal/memory/share`, `/v1/internal/memory/conflict/resolve` |
+
+**Operational notes:** `/v1/admin/*` is protected when `PLASMOD_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response).
+
 ## Dataset bulk import and CLI delete / purge (E2E)
 
-Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`).
+Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into Plasmod via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`).
 
+- **Ingest is not transactional:** use `--concurrency 1` with `--checkpoint PATH` for resumable imports after failures, plus `--ingest-retries` / `--retry-backoff` for transient HTTP errors (see script `--help`).
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
 - **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.
-- **Examples** (set `ANDB_BASE_URL` if the server is not `http://127.0.0.1:8080`):
+- **Examples** (set `PLASMOD_BASE_URL` if the server is not `http://127.0.0.1:8080`):
 
 ```bash
 # Ingest (limit rows per file)
@@ -100,7 +115,7 @@ These approaches are useful but incomplete for MAS workloads that need:
 - relation expansion and traceable derivation
 - version-aware reasoning context
 
-ANDB treats the database as cognitive infrastructure, not only as storage.
+Plasmod treats the database as cognitive infrastructure, not only as storage.
 
 ## v1 Design Goals
 
@@ -132,7 +147,7 @@ HTTP API (access)
 
 Code layout:
 
-- [`src/internal/access`](src/internal/access): HTTP gateway, 14 routes including ingest, query, and canonical CRUD
+- [`src/internal/access`](src/internal/access): HTTP gateway (`RegisterRoutes`), ingest, query, admin, canonical CRUD, traces, internal SDK bridge
 - [`src/internal/coordinator`](src/internal/coordinator): 9 coordinators (schema, object, policy, version, worker, memory, index, shard, query) + module registry
 - [`src/internal/eventbackbone`](src/internal/eventbackbone): WAL (`Append`/`Scan`/`LatestLSN`), Bus, HybridClock, WatermarkPublisher, DerivationLog
 - [`src/internal/worker`](src/internal/worker): `Runtime.SubmitIngest` and `Runtime.ExecuteQuery` wiring
@@ -432,7 +447,7 @@ pip install -e ./sdk/python
 make dev
 ```
 
-By default the server listens on `127.0.0.1:8080`. You can override it with `ANDB_HTTP_ADDR`.
+By default the server listens on `127.0.0.1:8080`. You can override it with `PLASMOD_HTTP_ADDR`.
 
 ### Seed a mock event
 
@@ -468,7 +483,7 @@ The integration test suite lives under `integration_tests/` (gitignored — for 
 
 ### Full stack via Docker 
 
-Root [`docker-compose.yml`](docker-compose.yml) starts **MinIO** (S3 API on port 9000), creates bucket `andb-integration`, and runs the Go server with **`ANDB_STORAGE=disk`**, **`ANDB_DATA_DIR=/data`**, and **`S3_*` pointing at MinIO** (cold tier uses real S3). Server listens on **`0.0.0.0:8080`** inside the container and is published as **http://127.0.0.1:8080**.
+Root [`docker-compose.yml`](docker-compose.yml) starts **MinIO** (S3 API on port 9000), creates bucket `andb-integration`, and runs the Go server with **`PLASMOD_STORAGE=disk`**, **`ANDB_DATA_DIR=/data`**, and **`S3_*` pointing at MinIO** (cold tier uses real S3). Server listens on **`0.0.0.0:8080`** inside the container and is published as **http://127.0.0.1:8080**.
 
 If `go mod` fails inside the `andb` container with TLS/x509 errors (corporate HTTPS inspection), add your CA as `.crt`/`.pem` under [`docker/custom-ca/`](docker/custom-ca/) (ignored by git) and optionally set **`GOPROXY`** / **`GOSUMDB`** in a repo-root `.env` for `docker compose`. The compose file wires an entrypoint that runs `update-ca-certificates` before `go run`.
 
@@ -476,10 +491,17 @@ If `go mod` fails inside the `andb` container with TLS/x509 errors (corporate HT
 docker compose up -d
 # optional: fixture-driven JSON captures (stdlib HTTP only; no SDK install required)
 python scripts/e2e/member_a_capture.py --out-dir ./out/member_a
-make integration-test   # still expects a server at ANDB_BASE_URL (same URL)
+# or explicitly point fixtures:
+python scripts/e2e/member_a_capture.py --fixtures ./scripts/e2e/fixtures/member_a --out-dir ./out/member_a
+make integration-test   # still expects a server at PLASMOD_BASE_URL (same URL)
 ```
 
-Fixture sets and manifest: [`integration_tests/fixtures/member_a/`](integration_tests/fixtures/member_a/). Capture script: [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py). Convenience targets: `make docker-up`, `make docker-down`, `make member-a-capture`.
+Fixture-driven capture entrypoint: [`scripts/e2e/member_a_capture.py`](scripts/e2e/member_a_capture.py).  
+Default fixture lookup order is:
+1) `integration_tests/fixtures/member_a/`
+2) `scripts/e2e/fixtures/member_a/` (fallback)
+Use `--fixtures` to force a concrete path in CI or local verification.
+Convenience targets: `make docker-up`, `make docker-down`, `make member-a-capture`.
 
 ### Run all integration tests
 
@@ -512,7 +534,7 @@ cd integration_tests/python && python run_all.py
 | `protocol_test.go` | `Content-Type: application/json` on all response paths |
 | `dataflow_test.go` | `provenance`, `proof_trace`, `applied_filters`, `edges`, `versions` after ingest→query |
 | `topology_test.go` | `/v1/admin/topology` node count, `state=ready`, field presence, 405 |
-| `s3_dataflow_test.go` | Ingest→query capture round-trip to S3 (**skipped** unless `ANDB_RUN_S3_TESTS=true`) |
+| `s3_dataflow_test.go` | Ingest→query capture round-trip to S3 (**skipped** unless `PLASMOD_RUN_S3_TESTS=true`) |
 
 ### Optional: S3/MinIO dataflow test
 
@@ -535,7 +557,7 @@ MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin minio server /tmp/mini
 **Run with S3 enabled:**
 
 ```bash
-export ANDB_RUN_S3_TESTS=true
+export PLASMOD_RUN_S3_TESTS=true
 export S3_ENDPOINT=127.0.0.1:9000
 export S3_ACCESS_KEY=minioadmin
 export S3_SECRET_KEY=minioadmin
@@ -549,9 +571,9 @@ make integration-test
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANDB_BASE_URL` | `http://127.0.0.1:8080` | Server address for all tests |
-| `ANDB_HTTP_TIMEOUT` | `10` | HTTP timeout in seconds (Python SDK) |
-| `ANDB_RUN_S3_TESTS` | _(empty)_ | Set to `true` to enable S3 dataflow tests |
+| `PLASMOD_BASE_URL` | `http://127.0.0.1:8080` | Server address for all tests |
+| `PLASMOD_HTTP_TIMEOUT` | `10` | HTTP timeout in seconds (Python SDK) |
+| `PLASMOD_RUN_S3_TESTS` | _(empty)_ | Set to `true` to enable S3 dataflow tests |
 | `S3_ENDPOINT` | — | MinIO/S3 host:port |
 | `S3_ACCESS_KEY` | — | Access key |
 | `S3_SECRET_KEY` | — | Secret key |
@@ -559,6 +581,99 @@ make integration-test
 | `S3_SECURE` | `false` | Use TLS |
 | `S3_REGION` | `us-east-1` | Region (MinIO ignores this) |
 | `S3_PREFIX` | `andb/integration_tests` | Object key prefix |
+| `APP_MODE` | `prod` | Runtime visibility profile: `test` (transparent debug) / `prod` (sanitized minimal output) |
+
+### Dual Entry Points + Visibility Control
+
+To support both QA validation and production rollout from a single codebase, Plasmod uses one environment switch: `APP_MODE`.
+
+#### 1) Mode matrix
+
+| Mode | Primary user | API/UI visibility | Debug endpoints |
+|---|---|---|---|
+| `APP_MODE=test` | Testers, developers | Transparent diagnostics (request/response metadata, timing, debug payload) | Enabled (for example `/v1/debug/echo`) |
+| `APP_MODE=prod` | End users | Sanitized business-only output (debug/raw/internal fields removed) | Disabled (not registered; returns 404) |
+
+#### 2) How testers use the test entry point
+
+Use this mode when validating end-to-end behavior, capturing diagnostics, or reproducing defects.
+
+```bash
+# Local dev entry (tester)
+export APP_MODE=test
+make dev
+```
+
+```bash
+# Docker entry (tester)
+APP_MODE=test docker compose up -d --build
+```
+
+Validation checks for testers:
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/system/mode
+# expected: {"app_mode":"test","debug_enabled":true}
+
+curl -sS http://127.0.0.1:8080/v1/debug/echo \
+  -H 'Content-Type: application/json' \
+  -d '{"hello":"world"}'
+# expected: 200 OK in test mode
+```
+
+#### 3) How production users use the production entry point
+
+Use this mode for real user traffic. The server only exposes business-safe fields and blocks debug routes.
+
+```bash
+# Local dev entry (production profile)
+export APP_MODE=prod
+make dev
+```
+
+```bash
+# Docker entry (production profile)
+APP_MODE=prod docker compose up -d --build
+```
+
+Validation checks for production profile:
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/system/mode
+# expected: {"app_mode":"prod","debug_enabled":false}
+
+curl -i -sS http://127.0.0.1:8080/v1/debug/echo \
+  -H 'Content-Type: application/json' \
+  -d '{"hello":"world"}'
+# expected: 404 Not Found in prod mode
+```
+
+#### 4) Implementation binding (single codebase, no hardcoded branch copies)
+
+- Mode resolution: `src/internal/access/visibility.go` via `CurrentAppMode()` (default `prod`).
+- Visibility middleware: `WrapVisibility(...)`
+  - `test`: appends `_debug` metadata on JSON object responses.
+  - `prod`: recursively removes debug/internal fields (`_debug`, `debug`, `raw_*`, `chain_traces`, `intermediate`, etc.).
+- Server wiring: `src/internal/app/bootstrap.go`
+  - `handler := access.WrapVisibility(access.WrapAdminAuth(mux))`
+- Runtime probe endpoint: `GET /v1/system/mode`
+
+#### 5) Production safety gate (automation)
+
+Pre-release safety script: `scripts/check_prod_visibility.sh`  
+Make target: `make prod-safety-check`
+
+The check verifies:
+
+1. Access-layer tests under `APP_MODE=prod` (sanitization + route gating)
+2. Static guard that debug routes remain mode-gated
+3. Static scan for known debug leakage symbols in SDK-facing code
+
+```bash
+make prod-safety-check
+```
+
+If any check fails, the script exits non-zero and should block CI/CD promotion.
 
 To run only the Go internal module tests:
 
@@ -615,7 +730,7 @@ Additional supporting docs already in the repo:
 - Tiered hot → warm → cold retrieval with RRF fusion 
 - 1-hop graph expansion in every `QueryResponse` 
 - Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time 
-- Go HTTP API with 14 routes, Python SDK, and integration test suite 
+- Go HTTP API (25 paths in `RegisterRoutes`), Python SDK, and integration test suite 
 - Pluggable memory governance algorithms (Baseline + MemoryBank) 
 - 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) 
 - `include_cold` query flag fully wired 
@@ -640,3 +755,130 @@ Additional supporting docs already in the repo:
 For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs/v1-scope.md) and [`docs/contributing.md`](docs/contributing.md).
 
 ---
+
+## Code Review — Known Issues (Pass 9, 2026-04-07)
+
+> No outstanding issues remain from this pass.
+
+---
+
+## Team Member Responsibilities
+
+
+| 层 | 负责人 | 核心文件 |
+|---|---|---|
+| 部署 / 鉴权 / 数据安全 | **Member A** | `Dockerfile`, `admin_auth.go`, `purge_warm.go`, `dataset_match.go` |
+| GPU 推理 / Embedding 提供商 | **Member B** | `tensorrt_cuda.go`, `onnx_*.go`, `gguf_*.go`, `onnx_tokenizer.go` |
+| 冷层搜索 / 图遍历 / 算法配置 | **Member C** | `s3store.go`, `tiered.go`, `tiered_adapter.go`, `algorithm_shared.go` |
+
+---
+
+### Member A — Deployment · Auth · Storage Safety
+
+**Scope:** Docker runtime, admin API security, warm-tier purge lifecycle, and dataset selector logic. Does **not** touch GPU/embedding code or cold-search algorithms.
+
+**Owned files**
+
+| File | Responsibility |
+|---|---|
+| `Dockerfile`, `docker-compose.yml` | Multi-stage Go server build and compose stack |
+| `src/internal/access/admin_auth.go` | Admin API key middleware |
+| `src/internal/storage/purge_warm.go` | Warm-tier eviction with bulk-delete and retry |
+| `src/internal/schemas/dataset_match.go` | Dataset selector (workspace / file / prefix matching) |
+| `scripts/e2e/member_a_*.sh` / `*.py` | E2E verification scripts |
+| `docs/server-migration.md` | S3 / config migration guide |
+
+**Interface boundary:** Storage contracts (`RuntimeStorage`, `GraphEdgeStore`, `ObjectStore`) are defined in `storage/contracts.go` — Member A implements warm-side behaviour only; cold-side is Member C's.
+
+#### Outstanding TODO
+
+- [√] `admin_auth.go` — fix `constantTimeEqual`: replace length-branch early-return with HMAC-SHA256 digest comparison to eliminate timing side-channel
+- [√] `dataset_match.go` — add `,` and `;` to token boundaries in `contentDatasetNameLabelEquals`
+- [√] `s3store.go` *(hot-path only)* — `selectTopScored`: sort a copy instead of mutating the caller's slice
+- [√] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate the edge race (known limitation)
+- [√] `dataset_match.go` — add doc comment: all-empty selectors match every memory in the workspace
+
+---
+
+### Member B — GPU Embedding Providers · Inference Runtime
+
+**Scope:** All embedding provider implementations (CPU and GPU), BERT tokenizer, TensorRT / ONNX / GGUF inference, and the CGO retrieval bridge. Does **not** touch S3 storage, graph queries, or admin auth.
+
+**Owned files**
+
+| File | Responsibility |
+|---|---|
+| `src/internal/dataplane/embedding/tensorrt_cuda.go` | TensorRT 10.x GPU embedder (CGO) |
+| `src/internal/dataplane/embedding/onnx_cpu.go` / `onnx_cuda.go` | ONNX CPU + CUDA embedder |
+| `src/internal/dataplane/embedding/gguf_cpu.go` / `gguf_cuda.go` | GGUF llama.cpp embedder |
+| `src/internal/dataplane/embedding/onnx_tokenizer.go` | BERT WordPiece tokenizer |
+| `libs/go-llama.cpp/` | go-llama.cpp binding (pinned commit) |
+| `cpp/tensorrt_bridge.cpp`, `scripts/build_cpp.sh` | Native build scripts |
+| `docker-compose.gpu.yml` | GPU service overlay (NVIDIA device reservation) |
+
+**Interface boundary:** All embedding providers implement `embedding.Generator` (defined in `dataplane/contracts.go`). Member C's `TieredDataPlane` calls `Generator.BatchGenerate` — B owns the implementation, C owns the call-site.
+
+#### Outstanding TODO
+
+- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput
+- [ ] `tensorrt_cuda.go` — add `dim <= 0` guard in `NewTensorRT` (zero-size GPU buffer → panic on first batch)
+- [ ] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) on adversarial tokens
+- [ ] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning error (align with ONNX CPU)
+
+---
+
+### Member C — Cold Tier Search · Graph Traversal · Algorithm Config
+
+**Scope:** S3 cold-tier CRUD and search, tiered hot→cold orchestration, DFS/HNSW cold search, algorithm parameter externalisation, and query-side evidence assembly. Does **not** touch GPU inference code or auth middleware.
+
+**Owned files**
+
+| File | Responsibility |
+|---|---|
+| `src/internal/storage/s3store.go` / `s3util.go` | S3 cold store: CRUD, caching, vector/lexical search |
+| `src/internal/storage/tiered.go` / `tiered_adapter.go` | Hot→cold tiered orchestration and DFS search |
+| `src/internal/config/algorithm_shared.go` | `LoadSharedAlgorithmConfig` from YAML + env |
+| `configs/algorithm_*.yaml` | Default algorithm parameters |
+| `src/internal/evidence/assembler.go` | Evidence assembly including cold-tier hits |
+| `src/internal/worker/benchmark_e2e_test.go` | Cold-tier recall and throughput benchmarks |
+
+**Interface boundary:** `ColdObjectStore` (in `storage/contracts.go`) is the boundary with Member A's warm layer. `embedding.Generator.BatchGenerate` is the boundary with Member B's GPU layer.
+
+#### Outstanding TODO
+
+```
+[ ] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
+[ ] Memory reactivated -> S3 embeddings/{id}.npy deleted
+[ ] include_cold=true query returns cold memories ranked via vector similarity
+[ ] ColdSearch latency < 500ms for 10K archived memories (benchmark target)
+[ ] HNSW cold index loads from S3 and produces correct scores
+[ ] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
+[ ] EvidenceCache reports cold_hits and cold_misses
+[ ] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
+[ ] End-to-end: archive 10K memories -> query include_cold=true -> correct results
+```
+
+---
+
+#### Cross-Member Integration
+
+```
+Member A                    Member B                    Member C
+Dockerfile / compose        GPU embedders               S3 + tiered search
+      |                           |                           |
+      |  RuntimeStorage           |  Generator.BatchGenerate  |  ColdObjectStore
+      v                           v                           v
+TieredDataPlane.Ingest --> EmbeddingGenerator ---------> S3ColdStore
+      |                           |                           |
+      v                           v                           v
+TieredDataPlane.Search --> RRF fusion -----------------> ColdHNSWIndex
+                                                              |
+                                                              v
+                                               QueryResponse { proof_trace,
+                                                 evidence_cache, cold_tier }
+```
+
+Interface contracts (do not cross these without a PR reviewed by the owning member):
+- `storage/contracts.go` — `ColdObjectStore`, `RuntimeStorage`, `GraphEdgeStore`
+- `dataplane/contracts.go` — `EmbeddingGenerator`, `TieredDataPlane`
+
