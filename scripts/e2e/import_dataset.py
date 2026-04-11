@@ -340,6 +340,8 @@ def _run_dataset_delete(
     dataset: str,
     dry_run: bool,
     file_name: str | None = None,
+    *,
+    timeout: float = 30.0,
 ) -> dict:
     """POST /v1/admin/dataset/delete. If file_name is set, matches dataset=<file_name> AND dataset_name:...; if omitted, only dataset_name + workspace."""
     body: dict = {
@@ -349,7 +351,7 @@ def _run_dataset_delete(
     }
     if file_name:
         body["file_name"] = file_name
-    status, ack = _http_post_json(base_url, "/v1/admin/dataset/delete", body)
+    status, ack = _http_post_json(base_url, "/v1/admin/dataset/delete", body, timeout=timeout)
     if status != 200:
         raise RuntimeError(f"unexpected status={status} ack={ack}")
     return ack
@@ -362,6 +364,8 @@ def _run_dataset_purge(
     dry_run: bool,
     only_if_inactive: bool,
     file_name: str | None = None,
+    *,
+    timeout: float = 30.0,
 ) -> dict:
     """POST /v1/admin/dataset/purge. Hard-remove inactive memories matching selectors (see server docs)."""
     body: dict = {
@@ -372,7 +376,7 @@ def _run_dataset_purge(
     }
     if file_name:
         body["file_name"] = file_name
-    status, ack = _http_post_json(base_url, "/v1/admin/dataset/purge", body)
+    status, ack = _http_post_json(base_url, "/v1/admin/dataset/purge", body, timeout=timeout)
     if status != 200:
         raise RuntimeError(f"unexpected status={status} ack={ack}")
     return ack
@@ -428,7 +432,7 @@ def main() -> None:
         type=float,
         default=30.0,
         metavar="SEC",
-        help="Per-request timeout for ingest POST (default 30)",
+        help="Per-request timeout for ingest and admin delete/purge POSTs (default 30; purge large+S3 may need 300–600+)",
     )
     ap.add_argument(
         "--checkpoint",
@@ -513,6 +517,7 @@ def main() -> None:
                 args.purge_dry_run,
                 only_if_inactive,
                 file_name=None,
+                timeout=args.http_timeout,
             )
             print(
                 f"  matched={int(ack.get('matched', 0))} skipped_active={int(ack.get('skipped_active', 0))} "
@@ -538,6 +543,7 @@ def main() -> None:
                 args.purge_dry_run,
                 only_if_inactive,
                 file_name=path.name,
+                timeout=args.http_timeout,
             )
             matched = int(ack.get("matched", 0))
             skipped = int(ack.get("skipped_active", 0))
@@ -570,6 +576,7 @@ def main() -> None:
                 args.dataset,
                 args.delete_dry_run,
                 file_name=None,
+                timeout=args.http_timeout,
             )
             print(
                 f"  matched={int(ack.get('matched', 0))} deleted={int(ack.get('deleted', 0))}"
@@ -591,6 +598,7 @@ def main() -> None:
                 args.dataset,
                 args.delete_dry_run,
                 file_name=path.name,
+                timeout=args.http_timeout,
             )
             matched = int(ack.get("matched", 0))
             deleted = int(ack.get("deleted", 0))
