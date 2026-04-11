@@ -46,6 +46,19 @@ func (s *FileDerivationStore) Append(entry DerivationEntry) error {
 	return nil
 }
 
+// Truncate removes the on-disk derivation log (admin wipe).
+func (s *FileDerivationStore) Truncate() error {
+	if s == nil || s.path == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func (s *FileDerivationStore) Load() ([]DerivationEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

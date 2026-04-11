@@ -62,7 +62,7 @@ func buildTestGatewayWithDeps() gatewayDeps {
 	runtime.RegisterDefaults()
 
 	return gatewayDeps{
-		gw:      NewGateway(coord, runtime, store, nil),
+		gw:      NewGateway(coord, runtime, store, nil, nil),
 		store:   store,
 		runtime: runtime,
 		cold:    cold,
@@ -105,7 +105,7 @@ func buildTestGatewayNoTieredRuntime() gatewayDeps {
 	runtime.RegisterDefaults()
 
 	return gatewayDeps{
-		gw:      NewGateway(coord, runtime, store, nil),
+		gw:      NewGateway(coord, runtime, store, nil, nil),
 		store:   store,
 		runtime: runtime,
 		cold:    cold,
@@ -630,5 +630,35 @@ func TestGateway_DatasetPurge_WarmOnlyWithoutTieredRuntime(t *testing.T) {
 	}
 	if _, ok := deps.store.Objects().GetMemory(memID); ok {
 		t.Fatalf("memory should be removed from warm store")
+	}
+}
+
+func TestGateway_AdminDataWipe(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	_ = deps.store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_wipe_test", Content: "keep"})
+	if _, ok := deps.store.Objects().GetMemory("mem_wipe_test"); !ok {
+		t.Fatal("expected memory before wipe")
+	}
+
+	body, _ := json.Marshal(map[string]string{"confirm": "delete_all_data"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/data/wipe", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("wipe: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Fatalf("status: %+v", resp)
+	}
+	if _, ok := deps.store.Objects().GetMemory("mem_wipe_test"); ok {
+		t.Fatal("memory should be removed after wipe")
 	}
 }
