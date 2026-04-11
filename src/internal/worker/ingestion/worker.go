@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"andb/src/internal/schemas"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // InMemoryIngestWorker validates a raw Event against mandatory schema fields

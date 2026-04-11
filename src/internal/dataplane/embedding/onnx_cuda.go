@@ -210,13 +210,13 @@ func NewOnnx(_ context.Context, cfg OnnxConfig, dim int) (*OnnxEmbedder, error) 
 
 // NewOnnxFromEnv creates an ONNX (CUDA) embedder from environment variables.
 //
-//	ANDB_EMBEDDER_MODEL_PATH  — path to the .onnx model file (required)
+//	PLASMOD_EMBEDDER_MODEL_PATH  — path to the .onnx model file (required)
 //	ONNXRUNTIME_LIB_PATH      — path to libonnxruntime GPU build
-//	ANDB_EMBEDDER_DEVICE       — "cuda" (default) or "cpu"
+//	PLASMOD_EMBEDDER_DEVICE       — "cuda" (default) or "cpu"
 //	CUDA_VISIBLE_DEVICES       — first digit used as CUDA device ID
-//	ANDB_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
+//	PLASMOD_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
 func NewOnnxFromEnv(ctx context.Context, dim int) (*OnnxEmbedder, error) {
-	device := os.Getenv("ANDB_EMBEDDER_DEVICE")
+	device := os.Getenv("PLASMOD_EMBEDDER_DEVICE")
 	if device == "" {
 		device = "cuda"
 	}
@@ -227,7 +227,7 @@ func NewOnnxFromEnv(ctx context.Context, dim int) (*OnnxEmbedder, error) {
 		}
 	}
 	return NewOnnx(ctx, OnnxConfig{
-		ModelPath:    os.Getenv("ANDB_EMBEDDER_MODEL_PATH"),
+		ModelPath:    os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"),
 		LibraryPath:  os.Getenv("ONNXRUNTIME_LIB_PATH"),
 		VocabPath:    os.Getenv(vocabPathEnv),
 		Device:       device,

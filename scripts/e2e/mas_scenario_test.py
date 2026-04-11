@@ -532,16 +532,16 @@ def main() -> None:
     _load_env(args.env_file)
 
     base = (args.base_url
-            or os.environ.get("ANDB_AGENT_ENDPOINT", "")
+            or os.environ.get("PLASMOD_AGENT_ENDPOINT", "")
             or "http://127.0.0.1:8080").rstrip("/")
 
-    llm_base  = os.environ.get("ANDB_AGENT_LLM_BASE_URL", "").rstrip("/")
-    llm_key   = os.environ.get("ANDB_AGENT_LLM_API_KEY",  "")
-    llm_model = os.environ.get("ANDB_AGENT_LLM_MODEL",    "gpt-4o")
-    llm_timeout = float(os.environ.get("ANDB_AGENT_LLM_TIMEOUT", "300"))
+    llm_base  = os.environ.get("PLASMOD_AGENT_LLM_BASE_URL", "").rstrip("/")
+    llm_key   = os.environ.get("PLASMOD_AGENT_LLM_API_KEY",  "")
+    llm_model = os.environ.get("PLASMOD_AGENT_LLM_MODEL",    "gpt-4o")
+    llm_timeout = float(os.environ.get("PLASMOD_AGENT_LLM_TIMEOUT", "300"))
 
     if not llm_base or not llm_key:
-        print("ERROR: ANDB_AGENT_LLM_BASE_URL and ANDB_AGENT_LLM_API_KEY must be set")
+        print("ERROR: PLASMOD_AGENT_LLM_BASE_URL and PLASMOD_AGENT_LLM_API_KEY must be set")
         sys.exit(1)
 
     llm = LLM(llm_base, llm_key, llm_model, llm_timeout, max_tokens=1024)

@@ -38,8 +38,8 @@ baseline:
 	}
 
 	// 只走 baseline 配置路径
-	t.Setenv("ANDB_ALGORITHM_BASELINE_CONFIG", path)
-	t.Setenv("ANDB_ALGORITHM_MEMORYBANK_CONFIG", "")
+	t.Setenv("PLASMOD_ALGORITHM_BASELINE_CONFIG", path)
+	t.Setenv("PLASMOD_ALGORITHM_MEMORYBANK_CONFIG", "")
 
 	cfg, err := LoadSharedAlgorithmConfig()
 	if err != nil {

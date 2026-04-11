@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/chain"
-	baseline "andb/src/internal/worker/cognitive/baseline"
-	"andb/src/internal/worker/coordination"
-	"andb/src/internal/worker/indexing"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/chain"
+	baseline "plasmod/src/internal/worker/cognitive/baseline"
+	"plasmod/src/internal/worker/coordination"
+	"plasmod/src/internal/worker/indexing"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // buildSubscriberRuntime creates a minimal set of components sufficient to

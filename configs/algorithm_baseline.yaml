@@ -2,7 +2,7 @@
 # Establishes the YAML config pattern for all algorithm packages.
 #
 # Environment variable override:
-#   ANDB_ALGORITHM_BASELINE_CONFIG=/path/to/this/file
+#   PLASMOD_ALGORITHM_BASELINE_CONFIG=/path/to/this/file
 
 baseline:
   initial_strength:    1.0

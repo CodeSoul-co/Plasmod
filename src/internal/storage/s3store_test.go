@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 func TestLoadS3ColdSearchConfigFromEnv_NewLimitVars(t *testing.T) {

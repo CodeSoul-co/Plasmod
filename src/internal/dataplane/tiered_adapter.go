@@ -3,9 +3,9 @@ package dataplane
 import (
 	"sort"
 
-	"andb/src/internal/dataplane/segmentstore"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/dataplane/segmentstore"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // TieredDataPlane implements the three-tier search path with optional hybrid vector search:

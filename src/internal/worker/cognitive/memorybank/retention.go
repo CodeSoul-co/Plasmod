@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ComputeRetentionScore returns a multi-factor retention score in [0,1].

@@ -400,7 +400,7 @@ def main() -> None:
         help="Dataset file path or directory path (required for ingest; for --delete, omit to delete by --dataset + --workspace-id only)",
     )
     ap.add_argument("--dataset", required=True, help="Dataset name label, e.g. ABC")
-    ap.add_argument("--base-url", default=os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080"))
+    ap.add_argument("--base-url", default=os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080"))
     ap.add_argument("--tenant-id", default="t_demo")
     ap.add_argument("--workspace-id", default="w_demo")
     ap.add_argument("--agent-id", default="a_loader")

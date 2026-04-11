@@ -12,7 +12,7 @@ import (
 // TestTensorRTEmbedder_Integration loads the test engine and runs Generate.
 // Run with: go test -tags cuda,tensorrt,linux,integration -run TestTensorRT ./src/internal/dataplane/embedding/
 func TestTensorRTEmbedder_Integration(t *testing.T) {
-	enginePath := os.Getenv("ANDB_TRT_TEST_ENGINE")
+	enginePath := os.Getenv("PLASMOD_TRT_TEST_ENGINE")
 	if enginePath == "" {
 		enginePath = "/home/duanzhenke/models/test_embed.engine"
 	}
@@ -59,7 +59,7 @@ func TestTensorRTEmbedder_Integration(t *testing.T) {
 }
 
 func TestTensorRTEmbedder_BatchGenerate_Integration(t *testing.T) {
-	enginePath := os.Getenv("ANDB_TRT_TEST_ENGINE")
+	enginePath := os.Getenv("PLASMOD_TRT_TEST_ENGINE")
 	if enginePath == "" {
 		enginePath = "/home/duanzhenke/models/test_embed.engine"
 	}

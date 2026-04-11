@@ -7,17 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/coordinator"
-	"andb/src/internal/dataplane"
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/evidence"
-	"andb/src/internal/materialization"
-	"andb/src/internal/schemas"
-	"andb/src/internal/semantic"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/indexing"
-	matworker "andb/src/internal/worker/materialization"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/evidence"
+	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/semantic"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/indexing"
+	matworker "plasmod/src/internal/worker/materialization"
+	"plasmod/src/internal/worker/nodes"
 )
 
 type failingPlane struct{}

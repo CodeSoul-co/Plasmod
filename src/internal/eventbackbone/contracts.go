@@ -1,6 +1,6 @@
 package eventbackbone
 
-import "andb/src/internal/schemas"
+import "plasmod/src/internal/schemas"
 
 // WAL is the write-ahead log interface — the single source of truth for all
 // state-changing requests in the system.
