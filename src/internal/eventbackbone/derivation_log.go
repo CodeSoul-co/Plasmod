@@ -87,3 +87,21 @@ func (d *DerivationLog) ForDerived(derivedID string) []DerivationEntry {
 	}
 	return out
 }
+
+// Wipe clears in-memory entries and truncates the file-backed store when present.
+func (d *DerivationLog) Wipe() error {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	d.entries = nil
+	st := d.store
+	d.mu.Unlock()
+	if st == nil {
+		return nil
+	}
+	if fs, ok := st.(*FileDerivationStore); ok {
+		return fs.Truncate()
+	}
+	return nil
+}

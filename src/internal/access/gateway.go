@@ -22,12 +22,14 @@ type Gateway struct {
 	runtime    *worker.Runtime
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
+	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
 }
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
 // GET /v1/admin/storage returns the resolved backend configuration.
-func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot) *Gateway {
-	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg}
+// bundle may be nil in tests; admin data wipe still clears in-memory state and omits Badger.DropAll.
+func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
+	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg, bundle: bundle}
 }
 
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
@@ -43,6 +45,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
+	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
 	if isTestMode() {
 		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
 	}
@@ -353,6 +356,38 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"memory_ids":        ids,
 		"purged_memory_ids": purgeIDs,
 	})
+}
+
+// handleAdminDataWipe clears all application data (Badger DropAll when enabled, in-memory stores,
+// retrieval planes, tier caches, WAL/derivation logs, evidence cache). Destructive: requires confirm token.
+func (g *Gateway) handleAdminDataWipe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	const adminWipeConfirm = "delete_all_data"
+	if strings.TrimSpace(body.Confirm) != adminWipeConfirm {
+		http.Error(w, `confirm must be "delete_all_data"`, http.StatusBadRequest)
+		return
+	}
+	algoCfg := schemas.DefaultAlgorithmConfig()
+	out, err := g.runtime.AdminWipeAll(g.bundle, algoCfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, out)
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────

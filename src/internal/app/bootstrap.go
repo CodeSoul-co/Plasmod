@@ -452,7 +452,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	coord.Registry.Register("orchestrator", orch)
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
-	gateway := access.NewGateway(coord, runtime, store, storageCfg)
+	gateway := access.NewGateway(coord, runtime, store, storageCfg, bundle)
 	mux := http.NewServeMux()
 	gateway.RegisterRoutes(mux)
 	handler := access.WrapVisibility(access.WrapAdminAuth(mux))

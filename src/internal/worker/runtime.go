@@ -44,6 +44,7 @@ type Runtime struct {
 	// can fire synchronously in SubmitIngest (not only async via subscriber).
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
+	wipeMu    sync.Mutex
 }
 
 func CreateRuntime(
@@ -824,4 +825,84 @@ func payloadVectorLen(payload map[string]any) (int, bool) {
 		return len(v), true
 	}
 	return 0, false
+}
+
+// AdminWipeAll clears durable stores, retrieval indexes, tier caches, WAL/derivation logs,
+// and evidence fragments. When bundle.Badger is set, Badger.DropAll runs first.
+// S3/MinIO cold objects are not deleted; see response "cold_tier" and "note".
+func (r *Runtime) AdminWipeAll(bundle *storage.RuntimeBundle, algoCfg schemas.AlgorithmConfig) (map[string]any, error) {
+	if r == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	r.wipeMu.Lock()
+	defer r.wipeMu.Unlock()
+
+	out := map[string]any{"status": "ok"}
+	if bundle != nil && bundle.Badger != nil {
+		if err := bundle.Badger.DropAll(); err != nil {
+			return nil, err
+		}
+		out["badger_drop_all"] = true
+	} else {
+		out["badger_drop_all"] = false
+	}
+
+	storage.WipeMutableRuntimeState(r.storage)
+
+	if r.tieredObjects != nil {
+		out["cold_tier"] = r.tieredObjects.ClearColdIfInMemory()
+	} else {
+		out["cold_tier"] = "none"
+	}
+
+	if tp, ok := r.plane.(*dataplane.TieredDataPlane); ok {
+		if err := tp.AdminResetRetrieval(algoCfg); err != nil {
+			return nil, err
+		}
+		out["retrieval_plane"] = "tiered_reset"
+	} else {
+		out["retrieval_plane"] = "skipped_non_tiered"
+	}
+
+	out["wal"] = r.adminWipeWAL()
+
+	if r.derivationLog != nil {
+		if err := r.derivationLog.Wipe(); err != nil {
+			return nil, err
+		}
+		out["derivation_log"] = "cleared"
+	}
+	if r.policyDecisionLog != nil {
+		r.policyDecisionLog.Wipe()
+		out["policy_decision_log"] = "cleared"
+	}
+	if r.evCache != nil {
+		r.evCache.Clear()
+		out["evidence_cache"] = "cleared"
+	}
+
+	r.lastMemMu.Lock()
+	r.lastMem = make(map[string]string)
+	r.lastMemMu.Unlock()
+
+	out["note"] = "S3/MinIO cold objects are not deleted by this endpoint; re-ingest or use bucket tools if needed."
+	return out, nil
+}
+
+func (r *Runtime) adminWipeWAL() string {
+	if r == nil || r.wal == nil {
+		return "none"
+	}
+	switch w := r.wal.(type) {
+	case *eventbackbone.FileWAL:
+		if err := w.Wipe(); err != nil {
+			return "file_error:" + err.Error()
+		}
+		return "file_removed"
+	case *eventbackbone.InMemoryWAL:
+		w.Wipe()
+		return "memory_cleared"
+	default:
+		return "unknown_skipped"
+	}
 }

@@ -100,3 +100,20 @@ func (w *FileWAL) loadFromDisk() {
 		}
 	}
 }
+
+// Wipe clears the in-memory replay buffer and deletes the WAL file on disk (admin full data wipe).
+func (w *FileWAL) Wipe() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	w.entries = nil
+	w.mu.Unlock()
+	if w.path == "" {
+		return nil
+	}
+	if err := os.Remove(w.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
