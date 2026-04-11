@@ -13,8 +13,8 @@
 package chain
 
 import (
-	"andb/src/internal/schemas"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/worker/nodes"
 	"strings"
 )
 

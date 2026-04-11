@@ -3,12 +3,12 @@ package nodes_test
 import (
 	"testing"
 
-	"andb/src/internal/dataplane"
-	"andb/src/internal/storage"
-	baseline "andb/src/internal/worker/cognitive/baseline"
-	"andb/src/internal/worker/coordination"
-	"andb/src/internal/worker/indexing"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/storage"
+	baseline "plasmod/src/internal/worker/cognitive/baseline"
+	"plasmod/src/internal/worker/coordination"
+	"plasmod/src/internal/worker/indexing"
+	"plasmod/src/internal/worker/nodes"
 )
 
 func TestManager_RegisterAndTopology(t *testing.T) {

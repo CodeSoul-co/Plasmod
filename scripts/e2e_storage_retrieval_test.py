@@ -16,7 +16,7 @@ Usage:
   python scripts/e2e_storage_retrieval_test.py
 
   # Or point at a remote server:
-  ANDB_BASE_URL=http://10.0.0.1:8080 python scripts/e2e_storage_retrieval_test.py
+  PLASMOD_BASE_URL=http://10.0.0.1:8080 python scripts/e2e_storage_retrieval_test.py
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ import uuid
 
 import requests
 
-BASE_URL = os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
-TIMEOUT = float(os.environ.get("ANDB_HTTP_TIMEOUT", "10"))
+BASE_URL = os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+TIMEOUT = float(os.environ.get("PLASMOD_HTTP_TIMEOUT", "10"))
 
 PASS = "\033[32mPASS\033[0m"
 FAIL = "\033[31mFAIL\033[0m"

@@ -1,8 +1,8 @@
 package storage
 
 import (
-	"andb/retrievalplane"
-	"andb/src/internal/schemas"
+	"plasmod/retrievalplane"
+	"plasmod/src/internal/schemas"
 	"bytes"
 	"context"
 	"encoding/binary"

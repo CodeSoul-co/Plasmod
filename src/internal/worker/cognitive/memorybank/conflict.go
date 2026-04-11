@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ConflictType categorises the kind of memory conflict detected.

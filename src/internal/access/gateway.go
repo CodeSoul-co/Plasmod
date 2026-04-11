@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/coordinator"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker"
+	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker"
 )
 
 type Gateway struct {

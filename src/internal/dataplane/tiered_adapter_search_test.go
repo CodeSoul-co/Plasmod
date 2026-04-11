@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // Regression: when the hot tier already returns TopK hits, cold must still run if IncludeCold is set.

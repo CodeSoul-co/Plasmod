@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"andb/src/internal/storage"
+	"plasmod/src/internal/storage"
 )
 
 func TestWrapVisibility_Prod_StripsDebugFields(t *testing.T) {

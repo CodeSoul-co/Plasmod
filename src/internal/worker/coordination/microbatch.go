@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"andb/src/internal/schemas"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // InMemoryMicroBatchScheduler buffers retrieval task payloads and flushes

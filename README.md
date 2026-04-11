@@ -19,10 +19,9 @@
 
 </div>
 
-# CogDB — Agent-Native Database for Multi-Agent Systems
-> **Branch:** `dev` (integration) · **Pass 9** (2026-03-28)
+# Plasmod — Agent-Native Database for Multi-Agent Systems
 
-CogDB (ANDB) is an agent-native database for multi-agent systems (MAS). It combines a tiered segment-oriented retrieval plane, an event backbone with an append-only WAL, a canonical object materialization layer, pre-computed evidence fragments, 1-hop graph expansion, and structured evidence assembly — all wired together as a single runnable Go server.
+Plasmod is an agent-native database for multi-agent systems. Inspired by the adaptive, decentralized organization of slime mold networks, it unifies cognitive object storage, event-driven materialization, and structured evidence retrieval in a single runnable system. Plasmod integrates a tiered segment-oriented retrieval plane, an event backbone built on an append-only WAL, a canonical object materialization layer, precomputed evidence fragments, lightweight 1-hop graph expansion, and structured evidence assembly, all wired together as a single Go server for agent-native workloads.
 
 > **Core thesis:** agent memory, state, event, artifact, and relation should be modeled as first-class database objects, and query results should return structured evidence rather than only top-k text fragments.
 

@@ -75,20 +75,20 @@ func NewVertexAI(ctx context.Context, cfg VertexAIConfig, dim int) (*VertexAIEmb
 
 // NewVertexAIFromEnv creates a VertexAI embedder using environment variables:
 //
-//	GOOGLE_CLOUD_PROJECT or ANDB_VERTEXAI_PROJECT -> ProjectID
-//	ANDB_VERTEXAI_LOCATION -> Location (default: us-central1)
-//	ANDB_VERTEXAI_MODEL -> Model (default: text-embedding-004)
+//	GOOGLE_CLOUD_PROJECT or PLASMOD_VERTEXAI_PROJECT -> ProjectID
+//	PLASMOD_VERTEXAI_LOCATION -> Location (default: us-central1)
+//	PLASMOD_VERTEXAI_MODEL -> Model (default: text-embedding-004)
 //	GOOGLE_ACCESS_TOKEN -> AccessToken (optional)
 func NewVertexAIFromEnv(ctx context.Context, dim int) (*VertexAIEmbedder, error) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
-		projectID = os.Getenv("ANDB_VERTEXAI_PROJECT")
+		projectID = os.Getenv("PLASMOD_VERTEXAI_PROJECT")
 	}
-	location := os.Getenv("ANDB_VERTEXAI_LOCATION")
+	location := os.Getenv("PLASMOD_VERTEXAI_LOCATION")
 	if location == "" {
 		location = "us-central1"
 	}
-	model := os.Getenv("ANDB_VERTEXAI_MODEL")
+	model := os.Getenv("PLASMOD_VERTEXAI_MODEL")
 	if model == "" {
 		model = "text-embedding-004"
 	}

@@ -4,7 +4,7 @@ CogDB Live Agent Test
 =====================
 Full end-to-end test using:
   - Real ONNX embedding (via the running CogDB server)
-  - Real LLM inference (ANDB_AGENT_LLM_* env vars)
+  - Real LLM inference (PLASMOD_AGENT_LLM_* env vars)
   - Real disk storage (BadgerDB inside the server)
   - All 4 chains: MainChain / MemoryPipelineChain / QueryChain / CollaborationChain
   - MAS: two agents collaborating via memory sharing
@@ -14,7 +14,7 @@ Usage:
     python3 scripts/e2e/live_agent_test.py [options]
 
 Options:
-    --base-url URL      CogDB server (default: ANDB_AGENT_ENDPOINT or http://127.0.0.1:8080)
+    --base-url URL      CogDB server (default: PLASMOD_AGENT_ENDPOINT or http://127.0.0.1:8080)
     --skip-query        Skip QueryChain step (ONNX query takes ~120s)
     --out-dir DIR       Write report + request log (default: out/live_agent_test)
     --env-file FILE     Load env vars from file (default: .env)
@@ -592,20 +592,20 @@ def main() -> None:
         os.environ.setdefault(k, v)
 
     base = (args.base_url
-            or os.environ.get("ANDB_AGENT_ENDPOINT")
+            or os.environ.get("PLASMOD_AGENT_ENDPOINT")
             or "http://127.0.0.1:8080").rstrip("/")
 
-    llm_base  = os.environ.get("ANDB_AGENT_LLM_BASE_URL", "").rstrip("/")
-    llm_key   = os.environ.get("ANDB_AGENT_LLM_API_KEY", "")
-    llm_model = os.environ.get("ANDB_AGENT_LLM_MODEL", "gpt-4o")
-    llm_timeout = float(os.environ.get("ANDB_AGENT_LLM_TIMEOUT", "300"))
-    llm_max_tokens = int(os.environ.get("ANDB_AGENT_LLM_MAX_TOKENS", "512"))
+    llm_base  = os.environ.get("PLASMOD_AGENT_LLM_BASE_URL", "").rstrip("/")
+    llm_key   = os.environ.get("PLASMOD_AGENT_LLM_API_KEY", "")
+    llm_model = os.environ.get("PLASMOD_AGENT_LLM_MODEL", "gpt-4o")
+    llm_timeout = float(os.environ.get("PLASMOD_AGENT_LLM_TIMEOUT", "300"))
+    llm_max_tokens = int(os.environ.get("PLASMOD_AGENT_LLM_MAX_TOKENS", "512"))
 
     llm: LLMClient | None = None
     if llm_base and llm_key:
         llm = LLMClient(llm_base, llm_key, llm_model, llm_timeout, llm_max_tokens)
     else:
-        print("  \033[33m[WARN]\033[0m ANDB_AGENT_LLM_BASE_URL / ANDB_AGENT_LLM_API_KEY not set "
+        print("  \033[33m[WARN]\033[0m PLASMOD_AGENT_LLM_BASE_URL / PLASMOD_AGENT_LLM_API_KEY not set "
               "— LLM steps will use static content")
 
     # ── health check ──────────────────────────────────────────────

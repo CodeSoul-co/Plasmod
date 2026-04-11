@@ -1,9 +1,9 @@
-module andb
+module plasmod
 
 go 1.25rc1
 
 require (
-	andb/retrievalplane v0.0.0
+	plasmod/retrievalplane v0.0.0
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/go-skynet/go-llama.cpp v0.0.0-20240314183750-6a8041ef6b46
 	github.com/hamba/avro/v2 v2.31.0
@@ -38,6 +38,6 @@ require (
 	google.golang.org/protobuf v1.36.7 // indirect
 )
 
-replace andb/retrievalplane => ./src/internal/dataplane/retrievalplane
+replace plasmod/retrievalplane => ./src/internal/dataplane/retrievalplane
 
 replace github.com/go-skynet/go-llama.cpp => ./libs/go-llama.cpp

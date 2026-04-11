@@ -14,7 +14,7 @@
 #
 # Enables:
 #   - APP_MODE=test  (debug endpoints, relaxed visibility, /v1/debug/echo)
-#   - ONNX CPU embedder by default (override via ANDB_EMBEDDER env var)
+#   - ONNX CPU embedder by default (override via PLASMOD_EMBEDDER env var)
 #   - Read-only bind-mounts for models/ and database/ (testQuery10K.fbin)
 
 services:
@@ -22,13 +22,13 @@ services:
     environment:
       APP_MODE: test
       # Hardcoded ONNX CPU embedder — overrides .env tfidf default
-      ANDB_EMBEDDER: onnx
-      ANDB_EMBEDDER_MODEL_PATH: /models/minilm-l6-v2.onnx
-      ANDB_ONNX_VOCAB_PATH: /models/minilm-l6-v2-vocab.txt
-      ANDB_EMBEDDER_DIM: "384"
-      ANDB_EMBEDDER_BATCH_SIZE: "32"
-      ANDB_EMBEDDER_DEVICE: cpu
-      ANDB_HTTP_ADDR: "0.0.0.0:8080"
+      PLASMOD_EMBEDDER: onnx
+      PLASMOD_EMBEDDER_MODEL_PATH: /models/minilm-l6-v2.onnx
+      PLASMOD_ONNX_VOCAB_PATH: /models/minilm-l6-v2-vocab.txt
+      PLASMOD_EMBEDDER_DIM: "384"
+      PLASMOD_EMBEDDER_BATCH_SIZE: "32"
+      PLASMOD_EMBEDDER_DEVICE: cpu
+      PLASMOD_HTTP_ADDR: "0.0.0.0:8080"
     volumes:
       - ./models:/models:ro
       - /home/duanzhenke/database:/database:ro

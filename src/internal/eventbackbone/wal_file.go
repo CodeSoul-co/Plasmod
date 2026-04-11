@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // FileWAL persists WALEntry as JSONL and rebuilds memory index on startup.

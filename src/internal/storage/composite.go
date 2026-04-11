@@ -1,6 +1,6 @@
 package storage
 
-import "andb/src/internal/schemas"
+import "plasmod/src/internal/schemas"
 
 // compositeRuntimeStorage wires independent SegmentStore / ObjectStore / … implementations
 // behind a single RuntimeStorage (memory, Badger, or mixed per sub-store).

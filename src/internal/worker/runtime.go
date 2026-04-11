@@ -10,16 +10,16 @@ import (
 	"strings"
 	"sync"
 
-	"andb/src/internal/coordinator"
-	"andb/src/internal/dataplane"
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/evidence"
-	"andb/src/internal/materialization"
-	"andb/src/internal/schemas"
-	"andb/src/internal/semantic"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/chain"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/evidence"
+	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/semantic"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/chain"
+	"plasmod/src/internal/worker/nodes"
 	"time"
 )
 
@@ -696,12 +696,12 @@ func formatQueryChainTraceLines(res chain.ChainResult, out chain.QueryChainOutpu
 }
 
 func currentEmbeddingDim() int {
-	if dimStr := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER_DIM")); dimStr != "" {
+	if dimStr := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER_DIM")); dimStr != "" {
 		if dim, err := strconv.Atoi(dimStr); err == nil && dim > 0 {
 			return dim
 		}
 	}
-	embedder := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER"))
+	embedder := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER"))
 	if embedder == "" || embedder == "tfidf" {
 		return dataplane.DefaultEmbeddingDim
 	}
