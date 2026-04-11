@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"andb/src/internal/config"
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/config"
+	"plasmod/src/internal/schemas"
 )
 
 // AlgorithmID is the stable identifier for the baseline algorithm.
@@ -80,7 +80,7 @@ type BaselineConfig struct {
 
 // LoadFromYAML reads configs/algorithm_baseline.yaml and merges it with defaults.
 // If the file does not exist, returns defaults. Any missing YAML keys retain default values.
-// Environment variable ANDB_ALGORITHM_BASELINE_CONFIG overrides the path.
+// Environment variable PLASMOD_ALGORITHM_BASELINE_CONFIG overrides the path.
 func LoadFromYAML() (Config, error) {
 	defaults := DefaultConfig()
 	yc := BaselineConfig{
@@ -92,7 +92,7 @@ func LoadFromYAML() (Config, error) {
 		CompressedLevel:   defaults.CompressedLevel,
 		SummarizationLevel: defaults.SummarizationLevel,
 	}
-	path := os.Getenv("ANDB_ALGORITHM_BASELINE_CONFIG")
+	path := os.Getenv("PLASMOD_ALGORITHM_BASELINE_CONFIG")
 	if path == "" {
 		path = "configs/algorithm_baseline.yaml"
 	}

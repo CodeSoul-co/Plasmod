@@ -242,9 +242,9 @@ func NewTensorRT(_ context.Context, cfg TensorRTConfig, dim int) (*TensorRTEmbed
 
 // NewTensorRTFromEnv creates a TensorRT embedder from environment variables.
 //
-//	ANDB_EMBEDDER_MODEL_PATH  — path to the .engine/.trt file (required)
+//	PLASMOD_EMBEDDER_MODEL_PATH  — path to the .engine/.trt file (required)
 //	CUDA_VISIBLE_DEVICES       — first digit used as CUDA device ID
-//	ANDB_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
+//	PLASMOD_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
 func NewTensorRTFromEnv(ctx context.Context, dim int) (*TensorRTEmbedder, error) {
 	deviceID := 0
 	if devices := os.Getenv("CUDA_VISIBLE_DEVICES"); devices != "" {
@@ -253,7 +253,7 @@ func NewTensorRTFromEnv(ctx context.Context, dim int) (*TensorRTEmbedder, error)
 		}
 	}
 	return NewTensorRT(ctx, TensorRTConfig{
-		EnginePath: os.Getenv("ANDB_EMBEDDER_MODEL_PATH"),
+		EnginePath: os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"),
 		VocabPath:  os.Getenv(vocabPathEnv),
 		DeviceID:   deviceID,
 		FP16:       true,

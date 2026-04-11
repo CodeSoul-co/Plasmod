@@ -14,16 +14,16 @@ package agent
 // Environment variables consumed by NewLLMProviderFromEnv / NewMASProviderFromEnv
 // are documented here (and in .env.example) so the SDK knows which vars to read.
 //
-//   ANDB_AGENT_LLM_BASE_URL     OpenAI-compatible API base URL
-//   ANDB_AGENT_LLM_API_KEY      Bearer token / API key
-//   ANDB_AGENT_LLM_MODEL        Model identifier (gpt-4o, qwen-max, …)
-//   ANDB_AGENT_LLM_MAX_TOKENS   Max completion tokens (0 = provider default)
-//   ANDB_AGENT_LLM_TEMPERATURE  Sampling temperature 0.0–2.0 (default 0.7)
-//   ANDB_AGENT_LLM_TIMEOUT      Per-request timeout seconds (default 120)
+//   PLASMOD_AGENT_LLM_BASE_URL     OpenAI-compatible API base URL
+//   PLASMOD_AGENT_LLM_API_KEY      Bearer token / API key
+//   PLASMOD_AGENT_LLM_MODEL        Model identifier (gpt-4o, qwen-max, …)
+//   PLASMOD_AGENT_LLM_MAX_TOKENS   Max completion tokens (0 = provider default)
+//   PLASMOD_AGENT_LLM_TEMPERATURE  Sampling temperature 0.0–2.0 (default 0.7)
+//   PLASMOD_AGENT_LLM_TIMEOUT      Per-request timeout seconds (default 120)
 //
-//   ANDB_MAS_PEERS              Comma-separated sibling AgentGateway URLs
-//   ANDB_MAS_TOPOLOGY           mesh | hub | hierarchical (default mesh)
-//   ANDB_MAS_HUB_AGENT_ID       Hub agent ID (topology=hub only)
+//   PLASMOD_MAS_PEERS              Comma-separated sibling AgentGateway URLs
+//   PLASMOD_MAS_TOPOLOGY           mesh | hub | hierarchical (default mesh)
+//   PLASMOD_MAS_HUB_AGENT_ID       Hub agent ID (topology=hub only)
 
 import "context"
 
@@ -83,7 +83,7 @@ const (
 
 // MASPeer represents a single sibling agent reachable via its AgentGateway.
 type MASPeer struct {
-	AgentID  string // the peer's ANDB_AGENT_ID
+	AgentID  string // the peer's PLASMOD_AGENT_ID
 	Endpoint string // the peer's AgentGateway base URL, e.g. "http://agent-beta:9090"
 }
 

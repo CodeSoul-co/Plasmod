@@ -16,8 +16,8 @@ Usage:
       --out-dir out/integration_test
 
 Env:
-  ANDB_BASE_URL   overrides --base-url
-  ANDB_ADMIN_KEY  admin API key (optional, sent as X-Admin-Key header)
+  PLASMOD_BASE_URL   overrides --base-url
+  PLASMOD_ADMIN_KEY  admin API key (optional, sent as X-Admin-Key header)
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ from urllib.request import Request, urlopen
 
 # ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
-BASE = os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
-ADMIN_KEY = os.environ.get("ANDB_ADMIN_KEY", "")
+BASE = os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+ADMIN_KEY = os.environ.get("PLASMOD_ADMIN_KEY", "")
 TIMEOUT = 60.0
 QUERY_TIMEOUT = 360.0  # ONNX CPU inference ~120s per query under load
 REQUESTS_LOG: list[dict] = []
@@ -553,7 +553,7 @@ def write_report(out_dir: Path, args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CogDB integration fixture")
-    parser.add_argument("--base-url",  default=os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080"))
+    parser.add_argument("--base-url",  default=os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080"))
     parser.add_argument("--data-file", default=os.path.expanduser("~/database/testQuery10K.fbin"))
     parser.add_argument("--out-dir",   default="out/integration_test")
     parser.add_argument("--skip-purge", action="store_true", help="Skip Phase E cleanup")

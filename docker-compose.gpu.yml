@@ -1,8 +1,8 @@
 services:
   andb:
     environment:
-      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-onnx}
-      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cuda}
+      PLASMOD_EMBEDDER: ${PLASMOD_EMBEDDER:-onnx}
+      PLASMOD_EMBEDDER_DEVICE: ${PLASMOD_EMBEDDER_DEVICE:-cuda}
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
     deploy:
@@ -10,6 +10,6 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: ${ANDB_GPU_COUNT:-1}
+              count: ${PLASMOD_GPU_COUNT:-1}
               capabilities: [gpu]
 

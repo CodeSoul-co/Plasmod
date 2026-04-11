@@ -57,7 +57,7 @@ func openBadger(path string) (*badger.DB, error) {
 }
 
 // openBadgerInMemory opens an ephemeral Badger instance (no disk I/O).
-// Used by tests and optional dev mode via ANDB_BADGER_INMEMORY=true.
+// Used by tests and optional dev mode via PLASMOD_BADGER_INMEMORY=true.
 func openBadgerInMemory() (*badger.DB, error) {
 	opts := badger.DefaultOptions("")
 	opts.InMemory = true

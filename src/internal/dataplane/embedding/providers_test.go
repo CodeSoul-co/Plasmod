@@ -15,21 +15,21 @@ import (
 // Run all tests: go test -v -run TestProvider ./src/internal/dataplane/embedding/
 //
 // Run specific provider:
-//   ANDB_OPENAI_API_KEY=sk-xxx go test -v -run TestProvider_OpenAI
-//   ANDB_ZHIPUAI_API_KEY=xxx go test -v -run TestProvider_ZhipuAI
-//   ANDB_AZURE_API_KEY=xxx ANDB_AZURE_ENDPOINT=xxx ANDB_AZURE_DEPLOYMENT=xxx go test -v -run TestProvider_Azure
+//   PLASMOD_OPENAI_API_KEY=sk-xxx go test -v -run TestProvider_OpenAI
+//   PLASMOD_ZHIPUAI_API_KEY=xxx go test -v -run TestProvider_ZhipuAI
+//   PLASMOD_AZURE_API_KEY=xxx PLASMOD_AZURE_ENDPOINT=xxx PLASMOD_AZURE_DEPLOYMENT=xxx go test -v -run TestProvider_Azure
 //   go test -v -run TestProvider_Ollama  # requires local Ollama running
 // ============================================================================
 
 // TestProvider_OpenAI tests the OpenAI embedding API.
 // Model: text-embedding-3-small (1536 dim) or text-embedding-ada-002 (1536 dim)
 func TestProvider_OpenAI(t *testing.T) {
-	apiKey := os.Getenv("ANDB_OPENAI_API_KEY")
+	apiKey := os.Getenv("PLASMOD_OPENAI_API_KEY")
 	if apiKey == "" {
-		t.Skip("ANDB_OPENAI_API_KEY not set, skipping OpenAI test")
+		t.Skip("PLASMOD_OPENAI_API_KEY not set, skipping OpenAI test")
 	}
 
-	model := os.Getenv("ANDB_OPENAI_MODEL")
+	model := os.Getenv("PLASMOD_OPENAI_MODEL")
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
@@ -53,12 +53,12 @@ func TestProvider_OpenAI(t *testing.T) {
 // TestProvider_ZhipuAI tests the ZhipuAI/GLM embedding API.
 // Model: embedding-3 (2048 dim)
 func TestProvider_ZhipuAI(t *testing.T) {
-	apiKey := os.Getenv("ANDB_ZHIPUAI_API_KEY")
+	apiKey := os.Getenv("PLASMOD_ZHIPUAI_API_KEY")
 	if apiKey == "" {
-		t.Skip("ANDB_ZHIPUAI_API_KEY not set, skipping ZhipuAI test")
+		t.Skip("PLASMOD_ZHIPUAI_API_KEY not set, skipping ZhipuAI test")
 	}
 
-	model := os.Getenv("ANDB_ZHIPUAI_MODEL")
+	model := os.Getenv("PLASMOD_ZHIPUAI_MODEL")
 	if model == "" {
 		model = "embedding-3"
 	}
@@ -76,14 +76,14 @@ func TestProvider_ZhipuAI(t *testing.T) {
 }
 
 // TestProvider_Azure tests Azure OpenAI embedding API.
-// Requires: ANDB_AZURE_API_KEY, ANDB_AZURE_ENDPOINT, ANDB_AZURE_DEPLOYMENT
+// Requires: PLASMOD_AZURE_API_KEY, PLASMOD_AZURE_ENDPOINT, PLASMOD_AZURE_DEPLOYMENT
 func TestProvider_Azure(t *testing.T) {
-	apiKey := os.Getenv("ANDB_AZURE_API_KEY")
-	endpoint := os.Getenv("ANDB_AZURE_ENDPOINT")
-	deployment := os.Getenv("ANDB_AZURE_DEPLOYMENT")
+	apiKey := os.Getenv("PLASMOD_AZURE_API_KEY")
+	endpoint := os.Getenv("PLASMOD_AZURE_ENDPOINT")
+	deployment := os.Getenv("PLASMOD_AZURE_DEPLOYMENT")
 
 	if apiKey == "" || endpoint == "" || deployment == "" {
-		t.Skip("Azure env vars not set (ANDB_AZURE_API_KEY, ANDB_AZURE_ENDPOINT, ANDB_AZURE_DEPLOYMENT)")
+		t.Skip("Azure env vars not set (PLASMOD_AZURE_API_KEY, PLASMOD_AZURE_ENDPOINT, PLASMOD_AZURE_DEPLOYMENT)")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -109,12 +109,12 @@ func TestProvider_Azure(t *testing.T) {
 // Start Ollama: ollama serve
 // Pull model: ollama pull nomic-embed-text
 func TestProvider_Ollama(t *testing.T) {
-	baseURL := os.Getenv("ANDB_OLLAMA_BASE_URL")
+	baseURL := os.Getenv("PLASMOD_OLLAMA_BASE_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:11434/v1"
 	}
 
-	model := os.Getenv("ANDB_OLLAMA_MODEL")
+	model := os.Getenv("PLASMOD_OLLAMA_MODEL")
 	if model == "" {
 		model = "nomic-embed-text"
 	}

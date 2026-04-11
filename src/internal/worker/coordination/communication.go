@@ -3,9 +3,9 @@ package coordination
 import (
 	"fmt"
 
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // InMemoryCommunicationWorker broadcasts a Memory object from one agent to

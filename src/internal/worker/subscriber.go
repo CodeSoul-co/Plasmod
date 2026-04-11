@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // DeadLetterEntry describes a WAL entry that could not be processed because the

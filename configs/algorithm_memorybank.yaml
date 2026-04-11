@@ -3,7 +3,7 @@
 # Operators override via this YAML or environment variables.
 #
 # Environment variable override:
-#   ANDB_ALGORITHM_MEMORYBANK_CONFIG=/path/to/this/file
+#   PLASMOD_ALGORITHM_MEMORYBANK_CONFIG=/path/to/this/file
 
 memorybank:
   # ── Admission thresholds ─────────────────────────────────────────────────────

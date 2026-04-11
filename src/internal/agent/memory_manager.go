@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // MemoryManager is the pluggable algorithm interface for memory lifecycle.

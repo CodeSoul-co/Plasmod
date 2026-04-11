@@ -1,8 +1,8 @@
 package coordinator
 
 import (
-	"andb/src/internal/schemas"
-	"andb/src/internal/semantic"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/semantic"
 )
 
 // QueryCoordinator is the entry-point for query planning inside the Control
