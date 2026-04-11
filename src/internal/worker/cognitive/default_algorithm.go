@@ -1,7 +1,7 @@
 package cognitive
 
 import (
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // defaultAlgorithm is a no-op MemoryManagementAlgorithm used when no custom

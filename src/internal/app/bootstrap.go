@@ -10,26 +10,26 @@ import (
 	"strconv"
 	"time"
 
-	"andb/src/internal/access"
-	"andb/src/internal/config"
-	"andb/src/internal/coordinator"
-	"andb/src/internal/dataplane"
-	"andb/src/internal/dataplane/embedding"
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/evidence"
-	"andb/src/internal/materialization"
-	"andb/src/internal/schemas"
-	"andb/src/internal/semantic"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker"
-	cognitive "andb/src/internal/worker/cognitive"
-	baseline "andb/src/internal/worker/cognitive/baseline"
-	"andb/src/internal/worker/cognitive/memorybank"
-	"andb/src/internal/worker/coordination"
-	"andb/src/internal/worker/indexing"
-	"andb/src/internal/worker/ingestion"
-	matworker "andb/src/internal/worker/materialization"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/access"
+	"plasmod/src/internal/config"
+	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/dataplane/embedding"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/evidence"
+	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/semantic"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker"
+	cognitive "plasmod/src/internal/worker/cognitive"
+	baseline "plasmod/src/internal/worker/cognitive/baseline"
+	"plasmod/src/internal/worker/cognitive/memorybank"
+	"plasmod/src/internal/worker/coordination"
+	"plasmod/src/internal/worker/indexing"
+	"plasmod/src/internal/worker/ingestion"
+	matworker "plasmod/src/internal/worker/materialization"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // BuildServer constructs and wires all ANDB server components.
@@ -44,7 +44,7 @@ import (
 //	defer cleanup()
 //	if err := srv.ListenAndServe(); err != nil { ... }
 func BuildServer() (*http.Server, func() error, error) {
-	addr := os.Getenv("ANDB_HTTP_ADDR")
+	addr := os.Getenv("PLASMOD_HTTP_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
@@ -55,9 +55,9 @@ func BuildServer() (*http.Server, func() error, error) {
 	watermark := eventbackbone.NewWatermarkPublisher(clock, bus)
 
 	// ── Storage Layer (memory / Badger / hybrid — see STORAGE_BACKEND.md) ────
-	// BuildRuntimeFromEnv selects the backend based on ANDB_STORAGE env var.
-	// Default mode is "memory" (all stores in-process).  Set ANDB_STORAGE=disk
-	// for Badger-backed persistent storage under ANDB_DATA_DIR.
+	// BuildRuntimeFromEnv selects the backend based on PLASMOD_STORAGE env var.
+	// Default mode is "memory" (all stores in-process).  Set PLASMOD_STORAGE=disk
+	// for Badger-backed persistent storage under PLASMOD_DATA_DIR.
 	bundle, err := storage.BuildRuntimeFromEnv()
 	if err != nil {
 		return nil, nil, err
@@ -84,9 +84,9 @@ func BuildServer() (*http.Server, func() error, error) {
 	// ── Algorithm Config — all tunable worker parameters ─────────────────────
 	// Defaults are in schemas.DefaultAlgorithmConfig().  Environment variables
 	// override specific fields when set:
-	//   ANDB_EVIDENCE_CACHE_SIZE   (default 10000)
-	//   ANDB_MAX_PROOF_DEPTH       (default 8)
-	//   ANDB_HOT_TIER_THRESHOLD    (default 0.5)
+	//   PLASMOD_EVIDENCE_CACHE_SIZE   (default 10000)
+	//   PLASMOD_MAX_PROOF_DEPTH       (default 8)
+	//   PLASMOD_HOT_TIER_THRESHOLD    (default 0.5)
 	algoCfg, err := config.LoadSharedAlgorithmConfig()
 	if err != nil {
 		log.Printf("[bootstrap] shared algorithm config load failed, using defaults: %v", err)
@@ -117,17 +117,17 @@ func BuildServer() (*http.Server, func() error, error) {
 	policyEngine := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
 
-	if sz := os.Getenv("ANDB_EVIDENCE_CACHE_SIZE"); sz != "" {
+	if sz := os.Getenv("PLASMOD_EVIDENCE_CACHE_SIZE"); sz != "" {
 		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
 			algoCfg.EvidenceCacheSize = n
 		}
 	}
-	if d := os.Getenv("ANDB_MAX_PROOF_DEPTH"); d != "" {
+	if d := os.Getenv("PLASMOD_MAX_PROOF_DEPTH"); d != "" {
 		if n, err := strconv.Atoi(d); err == nil && n > 0 {
 			algoCfg.MaxProofDepth = n
 		}
 	}
-	if t := os.Getenv("ANDB_HOT_TIER_THRESHOLD"); t != "" {
+	if t := os.Getenv("PLASMOD_HOT_TIER_THRESHOLD"); t != "" {
 		if f, err := strconv.ParseFloat(t, 64); err == nil && f > 0 {
 			algoCfg.HotTierSalienceThreshold = f
 		}
@@ -148,45 +148,45 @@ func BuildServer() (*http.Server, func() error, error) {
 	// Warm tier performs hybrid search: lexical (segmentstore.Index) + vector (CGO Knowhere/HNSW)
 	// via an EmbeddingGenerator + RRF fusion.
 	//
-	// Embedder selection (set ANDB_EMBEDDER):
+	// Embedder selection (set PLASMOD_EMBEDDER):
 	//   tfidf  (default)  — pure-Go word-hashed TF-IDF, no external dependency
 	//   openai           — OpenAI-compatible HTTP API (Ollama, local server, Azure OpenAI)
 	//   zhipuai          — ZhipuAI / 智谱AI (api-key auth, OpenAI-compatible schema)
 	//   cohere           — Cohere /v2/embed API
 	//
-	// When ANDB_EMBEDDER is "openai" or "zhipuai", also set:
-	//   ANDB_EMBEDDER_BASE_URL   (defaults per provider)
-	//   ANDB_EMBEDDER_MODEL      (e.g. text-embedding-3-small, embedding-3)
-	//   ANDB_EMBEDDER_API_KEY
-	//   ANDB_EMBEDDER_DIM        (expected vector dimension; 0 = skip probe)
-	//   ANDB_EMBEDDER_TIMEOUT    (per-request timeout in seconds; default 30)
-	//   ANDB_EMBEDDER_BATCH_SIZE (inputs per HTTP request; default 100)
+	// When PLASMOD_EMBEDDER is "openai" or "zhipuai", also set:
+	//   PLASMOD_EMBEDDER_BASE_URL   (defaults per provider)
+	//   PLASMOD_EMBEDDER_MODEL      (e.g. text-embedding-3-small, embedding-3)
+	//   PLASMOD_EMBEDDER_API_KEY
+	//   PLASMOD_EMBEDDER_DIM        (expected vector dimension; 0 = skip probe)
+	//   PLASMOD_EMBEDDER_TIMEOUT    (per-request timeout in seconds; default 30)
+	//   PLASMOD_EMBEDDER_BATCH_SIZE (inputs per HTTP request; default 100)
 	// Optional:
-	//   ANDB_EMBEDDING_FAMILY    (override family label used in segment metadata)
+	//   PLASMOD_EMBEDDING_FAMILY    (override family label used in segment metadata)
 	var embedder embedding.Generator
 	var embedderDim int
-	embedderType := os.Getenv("ANDB_EMBEDDER")
+	embedderType := os.Getenv("PLASMOD_EMBEDDER")
 	if embedderType == "" {
 		embedderType = "tfidf"
 	}
 	switch embedderType {
 	case "openai", "zhipuai":
-		baseURL := os.Getenv("ANDB_EMBEDDER_BASE_URL")
-		model := os.Getenv("ANDB_EMBEDDER_MODEL")
-		apiKey := os.Getenv("ANDB_EMBEDDER_API_KEY")
-		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+		baseURL := os.Getenv("PLASMOD_EMBEDDER_BASE_URL")
+		model := os.Getenv("PLASMOD_EMBEDDER_MODEL")
+		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
 			if n, err := strconv.Atoi(dimStr); err == nil {
 				embedderDim = n
 			}
 		}
 		timeoutSec := 30
-		if ts := os.Getenv("ANDB_EMBEDDER_TIMEOUT"); ts != "" {
+		if ts := os.Getenv("PLASMOD_EMBEDDER_TIMEOUT"); ts != "" {
 			if n, err := strconv.Atoi(ts); err == nil {
 				timeoutSec = n
 			}
 		}
 		batchSize := 100
-		if bs := os.Getenv("ANDB_EMBEDDER_BATCH_SIZE"); bs != "" {
+		if bs := os.Getenv("PLASMOD_EMBEDDER_BATCH_SIZE"); bs != "" {
 			if n, err := strconv.Atoi(bs); err == nil {
 				batchSize = n
 			}
@@ -206,37 +206,37 @@ func BuildServer() (*http.Server, func() error, error) {
 		}
 		log.Printf("[bootstrap] embedder: %s model=%s dim=%d", embedderType, model, embedderDim)
 	case "cohere":
-		model := os.Getenv("ANDB_EMBEDDER_MODEL")
+		model := os.Getenv("PLASMOD_EMBEDDER_MODEL")
 		if model == "" {
 			model = "embed-english-v3.0"
 		}
-		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
 			if n, err := strconv.Atoi(dimStr); err == nil {
 				embedderDim = n
 			}
 		}
 		if embedderDim <= 0 {
-			return nil, nil, fmt.Errorf("ANDB_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
+			return nil, nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
 		}
-		apiKey := os.Getenv("ANDB_EMBEDDER_API_KEY")
+		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		embedder, err = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", err)
 		}
 		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
 	case "huggingface":
-		model := os.Getenv("ANDB_EMBEDDER_MODEL")
+		model := os.Getenv("PLASMOD_EMBEDDER_MODEL")
 		if model == "" {
 			model = "sentence-transformers/all-MiniLM-L6-v2"
 		}
-		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
 			if n, err := strconv.Atoi(dimStr); err == nil {
 				embedderDim = n
 			}
 		}
-		apiKey := os.Getenv("ANDB_EMBEDDER_API_KEY")
+		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		timeoutSec := 60
-		if ts := os.Getenv("ANDB_EMBEDDER_TIMEOUT"); ts != "" {
+		if ts := os.Getenv("PLASMOD_EMBEDDER_TIMEOUT"); ts != "" {
 			if n, err := strconv.Atoi(ts); err == nil {
 				timeoutSec = n
 			}
@@ -256,7 +256,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		}
 		log.Printf("[bootstrap] embedder: huggingface model=%s dim=%d", model, embedderDim)
 	case "vertexai":
-		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
 			if n, err := strconv.Atoi(dimStr); err == nil {
 				embedderDim = n
 			}
@@ -272,7 +272,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		log.Printf("[bootstrap] embedder: vertexai project=%s dim=%d",
 			os.Getenv("GOOGLE_CLOUD_PROJECT"), embedderDim)
 	case "onnx":
-		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
 			if n, err := strconv.Atoi(dimStr); err == nil {
 				embedderDim = n
 			}
@@ -286,9 +286,9 @@ func BuildServer() (*http.Server, func() error, error) {
 			embedderDim = onnxEmbedder.Dim()
 		}
 		log.Printf("[bootstrap] embedder: onnx model=%s dim=%d",
-			os.Getenv("ANDB_EMBEDDER_MODEL_PATH"), embedderDim)
+			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
 	case "tensorrt":
-		if dimStr := os.Getenv("ANDB_EMBEDDER_DIM"); dimStr != "" {
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
 			if n, err := strconv.Atoi(dimStr); err == nil {
 				embedderDim = n
 			}
@@ -302,7 +302,7 @@ func BuildServer() (*http.Server, func() error, error) {
 			embedderDim = trtEmbedder.Dim()
 		}
 		log.Printf("[bootstrap] embedder: tensorrt engine=%s dim=%d",
-			os.Getenv("ANDB_EMBEDDER_MODEL_PATH"), embedderDim)
+			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
 	default:
 		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
 		embedderDim = dataplane.DefaultEmbeddingDim

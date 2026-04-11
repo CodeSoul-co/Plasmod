@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ProfileState captures stable user traits and preferences derived from memory

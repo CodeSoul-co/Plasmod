@@ -115,14 +115,14 @@ func NewGGUF(_ context.Context, cfg GGUFConfig, dim int) (*GGUFEmbedder, error) 
 
 // NewGGUFFromEnv creates a GGUF embedder using environment variables.
 func NewGGUFFromEnv(ctx context.Context, dim int) (*GGUFEmbedder, error) {
-	modelPath := os.Getenv("ANDB_EMBEDDER_MODEL_PATH")
-	device := os.Getenv("ANDB_EMBEDDER_DEVICE")
+	modelPath := os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH")
+	device := os.Getenv("PLASMOD_EMBEDDER_DEVICE")
 	if device == "" {
 		device = "cuda"
 	}
 
 	gpuLayers := 99 // Full GPU offload by default
-	if s := os.Getenv("ANDB_EMBEDDER_GPU_LAYERS"); s != "" {
+	if s := os.Getenv("PLASMOD_EMBEDDER_GPU_LAYERS"); s != "" {
 		if v, err := strconv.Atoi(s); err == nil {
 			gpuLayers = v
 		}

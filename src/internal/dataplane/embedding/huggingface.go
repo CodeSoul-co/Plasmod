@@ -71,13 +71,13 @@ func NewHuggingFace(ctx context.Context, cfg HuggingFaceConfig, dim int) (*Huggi
 // NewHuggingFaceFromEnv creates a HuggingFace embedder using environment variables:
 //
 //	HF_TOKEN or HUGGINGFACE_API_KEY -> APIKey
-//	ANDB_HUGGINGFACE_MODEL -> Model (default: sentence-transformers/all-MiniLM-L6-v2)
+//	PLASMOD_HUGGINGFACE_MODEL -> Model (default: sentence-transformers/all-MiniLM-L6-v2)
 func NewHuggingFaceFromEnv(ctx context.Context, dim int) (*HuggingFaceEmbedder, error) {
 	apiKey := os.Getenv("HF_TOKEN")
 	if apiKey == "" {
 		apiKey = os.Getenv("HUGGINGFACE_API_KEY")
 	}
-	model := os.Getenv("ANDB_HUGGINGFACE_MODEL")
+	model := os.Getenv("PLASMOD_HUGGINGFACE_MODEL")
 	if model == "" {
 		model = "sentence-transformers/all-MiniLM-L6-v2"
 	}

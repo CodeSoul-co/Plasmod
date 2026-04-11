@@ -1,6 +1,6 @@
 #
 # Multi-stage build for CogDB / ANDB API server (README Member A task 1).
-#   docker build -t cogdb:latest .
+#   docker build -t plasmod:latest .
 #
 # Notes:
 # - go.mod replaces github.com/go-skynet/go-llama.cpp with /tmp/go-llama-cpp.
@@ -16,7 +16,7 @@
 #     --build-arg GO_LLAMACPP_REPO=https://git.company.local/mirror/go-llama.cpp.git \
 #     --build-arg GOPROXY=https://goproxy.company.local,direct \
 #     --build-arg GOSUMDB=off \
-#     -t cogdb:latest .
+#     -t plasmod:latest .
 ARG BASE_REGISTRY=
 ARG GOLANG_IMAGE=golang:1.25rc1-bookworm
 ARG DEBIAN_IMAGE=debian:bookworm-slim
@@ -24,7 +24,7 @@ ARG DEBIAN_IMAGE=debian:bookworm-slim
 # Stage 0: provide Go toolchain files (do not execute commands here)
 FROM ${BASE_REGISTRY}${GOLANG_IMAGE} AS go-toolchain
 
-# Stage 1: build andb-server
+# Stage 1: build plasmod-server
 FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS builder
 
 ARG APT_MIRROR=
@@ -84,7 +84,7 @@ ENV LIBRARY_PATH=/tmp/go-llama-cpp
 ENV C_INCLUDE_PATH=/tmp/go-llama-cpp
 
 RUN mkdir -p /src/bin \
-    && go build -buildvcs=false -mod=vendor -trimpath -ldflags="-s -w" -o /src/bin/andb-server ./src/cmd/server
+    && go build -buildvcs=false -mod=vendor -trimpath -ldflags="-s -w" -o /src/bin/plasmod-server ./src/cmd/server
 
 # Stage 2: minimal runtime (no shell wrapper)
 FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS runtime
@@ -105,9 +105,9 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
 COPY --from=builder /usr/local/lib/libonnxruntime.so /usr/local/lib/libonnxruntime.so
 RUN ldconfig
 
-COPY --from=builder /src/bin/andb-server /usr/local/bin/andb-server
+COPY --from=builder /src/bin/plasmod-server /usr/local/bin/plasmod-server
 
 ENV ANDB_HTTP_ADDR=0.0.0.0:8080
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/andb-server"]
+ENTRYPOINT ["/usr/local/bin/plasmod-server"]

@@ -3,7 +3,7 @@ package ingestion
 import (
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ─── IngestWorker ─────────────────────────────────────────────────────────────

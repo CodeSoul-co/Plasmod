@@ -1,9 +1,9 @@
 package coordinator
 
 import (
-	"andb/src/internal/schemas"
-	"andb/src/internal/semantic"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/semantic"
+	"plasmod/src/internal/storage"
 )
 
 // PolicyCoordinator applies governance rules to objects and persists policy

@@ -210,12 +210,12 @@ func NewOnnx(_ context.Context, cfg OnnxConfig, dim int) (*OnnxEmbedder, error) 
 
 // NewOnnxFromEnv creates an ONNX (CPU) embedder from environment variables.
 //
-//	ANDB_EMBEDDER_MODEL_PATH  — path to the .onnx model file (required)
+//	PLASMOD_EMBEDDER_MODEL_PATH  — path to the .onnx model file (required)
 //	ONNXRUNTIME_LIB_PATH      — path to libonnxruntime (auto-detect if unset)
-//	ANDB_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
+//	PLASMOD_ONNX_VOCAB_PATH       — BERT vocab.txt for WordPiece tokenization
 func NewOnnxFromEnv(ctx context.Context, dim int) (*OnnxEmbedder, error) {
 	return NewOnnx(ctx, OnnxConfig{
-		ModelPath:   os.Getenv("ANDB_EMBEDDER_MODEL_PATH"),
+		ModelPath:   os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"),
 		LibraryPath: os.Getenv("ONNXRUNTIME_LIB_PATH"),
 		VocabPath:   os.Getenv(vocabPathEnv),
 	}, dim)

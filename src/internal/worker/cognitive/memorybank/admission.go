@@ -3,7 +3,7 @@ package memorybank
 import (
 	"math"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // MemorySignals holds the raw governance signals for a single memory.
