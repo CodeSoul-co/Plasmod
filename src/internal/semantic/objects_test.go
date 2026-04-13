@@ -3,7 +3,7 @@ package semantic
 import (
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 func TestObjectModelRegistry_DefaultTypes(t *testing.T) {

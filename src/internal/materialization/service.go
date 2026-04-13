@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/dataplane"
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/schemas"
 )
 
 // MaterializationResult is the full output of a single event materialization.

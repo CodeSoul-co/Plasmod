@@ -12,13 +12,13 @@
 //
 // Configuration: all tunable parameters are loaded from configs/algorithm_memorybank.yaml
 // at startup. Code-level defaults in DefaultConfig() are safe fallbacks when the YAML
-// file is absent. Environment variable ANDB_ALGORITHM_MEMORYBANK_CONFIG overrides the path.
+// file is absent. Environment variable PLASMOD_ALGORITHM_MEMORYBANK_CONFIG overrides the path.
 package memorybank
 
 import (
 	"os"
 
-	"andb/src/internal/config"
+	"plasmod/src/internal/config"
 )
 
 // AlgorithmID is the stable identifier for the MemoryBank algorithm.
@@ -142,10 +142,10 @@ func DefaultConfig() Config {
 
 // LoadFromYAML reads configs/algorithm_memorybank.yaml and merges it with defaults.
 // If the file does not exist, returns defaults. Any missing YAML keys retain default values.
-// ANDB_ALGORITHM_MEMORYBANK_CONFIG overrides the default path.
+// PLASMOD_ALGORITHM_MEMORYBANK_CONFIG overrides the default path.
 func LoadFromYAML() (Config, error) {
 	cfg := DefaultConfig()
-	path := os.Getenv("ANDB_ALGORITHM_MEMORYBANK_CONFIG")
+	path := os.Getenv("PLASMOD_ALGORITHM_MEMORYBANK_CONFIG")
 	if path == "" {
 		path = "configs/algorithm_memorybank.yaml"
 	}

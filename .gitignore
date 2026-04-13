@@ -50,11 +50,14 @@ rule
 系统分层架构图.md
 多维度数据集入库与检索规范（参考Milvus-Manu）.md
 TESTING.md
-.andb_data/00001.mem
+# Local runtime data
 .andb_data/00001.mem
 .andb_data/000001.vlog
 .andb_data/KEYREGISTRY
-.gitignore
 .andb_data/LOCK
 .andb_data/MANIFEST
 .andb_data/DISCARD
+
+# build / test artifacts
+go.sum.bak*
+out/

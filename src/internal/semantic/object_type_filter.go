@@ -3,7 +3,7 @@ package semantic
 import (
 	"strings"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // defaultQueryableObjectTypes is used when the client omits object_types or

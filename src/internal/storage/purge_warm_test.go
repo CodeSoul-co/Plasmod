@@ -3,7 +3,7 @@ package storage
 import (
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 func TestPurgeMemoryWarmOnly(t *testing.T) {

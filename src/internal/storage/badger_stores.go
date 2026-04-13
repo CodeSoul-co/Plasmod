@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 
 	"github.com/dgraph-io/badger/v4"
 )

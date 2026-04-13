@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // InMemorySummarizationWorker produces level-1 (summary) and level-2

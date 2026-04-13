@@ -1,6 +1,6 @@
 package coordinator
 
-import "andb/src/internal/semantic"
+import "plasmod/src/internal/semantic"
 
 type SchemaCoordinator struct {
 	model *semantic.ObjectModelRegistry

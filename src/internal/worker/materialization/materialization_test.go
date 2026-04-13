@@ -3,9 +3,9 @@ package materialization
 import (
 	"testing"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // ─── ObjectMaterializationWorker ─────────────────────────────────────────────

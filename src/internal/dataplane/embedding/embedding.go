@@ -32,7 +32,7 @@ import (
 	"os"
 	"time"
 
-	"andb/src/internal/dataplane"
+	"plasmod/src/internal/dataplane"
 )
 
 // ErrProviderUnavailable is returned when the embedding service is unreachable
@@ -405,20 +405,20 @@ func parseOpenAIResponse(resp openAIResponse, expect int) ([][]float32, error) {
 
 // ─── Factory from environment variables ──────────────────────────────────────
 
-// NewFromEnv creates an embedder based on ANDB_EMBEDDER environment variable.
+// NewFromEnv creates an embedder based on PLASMOD_EMBEDDER environment variable.
 // Supported values: tfidf, openai, zhipuai, cohere, vertexai, huggingface, onnx, gguf, tensorrt
 //
 // Each provider reads its own environment variables:
-//   - openai:      ANDB_OPENAI_API_KEY, ANDB_OPENAI_BASE_URL, ANDB_OPENAI_MODEL
-//   - zhipuai:     ANDB_ZHIPUAI_API_KEY, ANDB_ZHIPUAI_MODEL
-//   - cohere:      ANDB_COHERE_API_KEY
-//   - vertexai:    ANDB_VERTEXAI_API_KEY, ANDB_VERTEXAI_PROJECT, ANDB_VERTEXAI_LOCATION
-//   - huggingface: ANDB_HUGGINGFACE_API_KEY, ANDB_HUGGINGFACE_MODEL
-//   - onnx:        ANDB_EMBEDDER_MODEL_PATH, ONNXRUNTIME_LIB_PATH
-//   - gguf:        ANDB_EMBEDDER_MODEL_PATH, ANDB_EMBEDDER_DEVICE
-//   - tensorrt:    ANDB_EMBEDDER_MODEL_PATH
+//   - openai:      PLASMOD_OPENAI_API_KEY, PLASMOD_OPENAI_BASE_URL, PLASMOD_OPENAI_MODEL
+//   - zhipuai:     PLASMOD_ZHIPUAI_API_KEY, PLASMOD_ZHIPUAI_MODEL
+//   - cohere:      PLASMOD_COHERE_API_KEY
+//   - vertexai:    PLASMOD_VERTEXAI_API_KEY, PLASMOD_VERTEXAI_PROJECT, PLASMOD_VERTEXAI_LOCATION
+//   - huggingface: PLASMOD_HUGGINGFACE_API_KEY, PLASMOD_HUGGINGFACE_MODEL
+//   - onnx:        PLASMOD_EMBEDDER_MODEL_PATH, ONNXRUNTIME_LIB_PATH
+//   - gguf:        PLASMOD_EMBEDDER_MODEL_PATH, PLASMOD_EMBEDDER_DEVICE
+//   - tensorrt:    PLASMOD_EMBEDDER_MODEL_PATH
 func NewFromEnv(ctx context.Context, dim int) (Generator, error) {
-	provider := os.Getenv("ANDB_EMBEDDER")
+	provider := os.Getenv("PLASMOD_EMBEDDER")
 	if provider == "" {
 		provider = "tfidf"
 	}
@@ -428,44 +428,44 @@ func NewFromEnv(ctx context.Context, dim int) (Generator, error) {
 		return NewTfidf(dim), nil
 
 	case "openai":
-		baseURL := os.Getenv("ANDB_OPENAI_BASE_URL")
+		baseURL := os.Getenv("PLASMOD_OPENAI_BASE_URL")
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		model := os.Getenv("ANDB_OPENAI_MODEL")
+		model := os.Getenv("PLASMOD_OPENAI_MODEL")
 		if model == "" {
 			model = "text-embedding-3-small"
 		}
 		return NewOpenAI(ctx, OpenAIConfig{
 			BaseURL: baseURL,
 			Model:   model,
-			APIKey:  os.Getenv("ANDB_OPENAI_API_KEY"),
+			APIKey:  os.Getenv("PLASMOD_OPENAI_API_KEY"),
 		}, dim)
 
 	case "zhipuai":
-		model := os.Getenv("ANDB_ZHIPUAI_MODEL")
+		model := os.Getenv("PLASMOD_ZHIPUAI_MODEL")
 		if model == "" {
 			model = "embedding-3"
 		}
-		return NewZhipuAI(ctx, os.Getenv("ANDB_ZHIPUAI_API_KEY"), model, dim)
+		return NewZhipuAI(ctx, os.Getenv("PLASMOD_ZHIPUAI_API_KEY"), model, dim)
 
 	case "cohere":
-		return NewCohere(ctx, os.Getenv("ANDB_COHERE_API_KEY"), "embed-multilingual-v3.0", dim)
+		return NewCohere(ctx, os.Getenv("PLASMOD_COHERE_API_KEY"), "embed-multilingual-v3.0", dim)
 
 	case "vertexai":
 		return NewVertexAI(ctx, VertexAIConfig{
-			ProjectID:   os.Getenv("ANDB_VERTEXAI_PROJECT"),
-			Location:    os.Getenv("ANDB_VERTEXAI_LOCATION"),
-			AccessToken: os.Getenv("ANDB_VERTEXAI_ACCESS_TOKEN"),
+			ProjectID:   os.Getenv("PLASMOD_VERTEXAI_PROJECT"),
+			Location:    os.Getenv("PLASMOD_VERTEXAI_LOCATION"),
+			AccessToken: os.Getenv("PLASMOD_VERTEXAI_ACCESS_TOKEN"),
 		}, dim)
 
 	case "huggingface":
-		model := os.Getenv("ANDB_HUGGINGFACE_MODEL")
+		model := os.Getenv("PLASMOD_HUGGINGFACE_MODEL")
 		if model == "" {
 			model = "sentence-transformers/all-MiniLM-L6-v2"
 		}
 		return NewHuggingFace(ctx, HuggingFaceConfig{
-			APIKey: os.Getenv("ANDB_HUGGINGFACE_API_KEY"),
+			APIKey: os.Getenv("PLASMOD_HUGGINGFACE_API_KEY"),
 			Model:  model,
 		}, dim)
 

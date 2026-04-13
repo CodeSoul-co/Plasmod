@@ -9,14 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ─── Config tests ──────────────────────────────────────────────────────────────
 
 func TestLoadFromEnv_Defaults(t *testing.T) {
 	// Clear relevant env vars before test
-	for _, k := range []string{"ANDB_AGENT_ENDPOINT", "ANDB_AGENT_ID", "ANDB_TENANT_ID", "ANDB_WORKSPACE_ID", "ANDB_AGENT_HTTP_PORT"} {
+	for _, k := range []string{"PLASMOD_AGENT_ENDPOINT", "PLASMOD_AGENT_ID", "PLASMOD_TENANT_ID", "PLASMOD_WORKSPACE_ID", "PLASMOD_AGENT_HTTP_PORT"} {
 		_ = k // note: we don't actually clear in this test to avoid side-effects;
 		// LoadFromEnv reads os.Getenv so the test reflects whatever env is set.
 	}

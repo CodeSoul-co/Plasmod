@@ -1,6 +1,6 @@
 package semantic
 
-import "andb/src/internal/schemas"
+import "plasmod/src/internal/schemas"
 
 // objectMeta describes the properties of a canonical object type.
 type objectMeta struct {

@@ -3,7 +3,7 @@ package config
 import (
 	"os"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 type sharedAlgorithmSection struct {
@@ -42,18 +42,18 @@ type sharedAlgorithmConfigDoc struct {
 //
 // Priority:
 //  1. code defaults (schemas.DefaultAlgorithmConfig())
-//  2. YAML file (baseline by default; memorybank if ANDB_ALGORITHM_MEMORYBANK_CONFIG is set)
+//  2. YAML file (baseline by default; memorybank if PLASMOD_ALGORITHM_MEMORYBANK_CONFIG is set)
 //  3. caller may still apply env overrides afterwards
 func LoadSharedAlgorithmConfig() (schemas.AlgorithmConfig, error) {
 	cfg := schemas.DefaultAlgorithmConfig()
 
-	path := os.Getenv("ANDB_ALGORITHM_BASELINE_CONFIG")
+	path := os.Getenv("PLASMOD_ALGORITHM_BASELINE_CONFIG")
 	root := "baseline"
 	if path == "" {
 		path = "configs/algorithm_baseline.yaml"
 	}
 
-	if mbPath := os.Getenv("ANDB_ALGORITHM_MEMORYBANK_CONFIG"); mbPath != "" {
+	if mbPath := os.Getenv("PLASMOD_ALGORITHM_MEMORYBANK_CONFIG"); mbPath != "" {
 		path = mbPath
 		root = "memorybank"
 	}

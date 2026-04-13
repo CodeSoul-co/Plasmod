@@ -1,8 +1,8 @@
 package coordinator
 
 import (
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // MemoryCoordinator manages the lifecycle of Memory objects: creation,
