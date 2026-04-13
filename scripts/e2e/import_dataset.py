@@ -410,7 +410,16 @@ def main() -> None:
     ap.add_argument("--agent-id", default="a_loader")
     ap.add_argument("--session-prefix", default="s")
     ap.add_argument("--event-type", default="dataset_record")
-    ap.add_argument("--source", default="dataset_loader")
+    ap.add_argument(
+        "--source",
+        default="dataset_loader",
+        help="Event source tag. Keep dataset_loader for bulk imports to enable conflict-merge isolation.",
+    )
+    ap.add_argument(
+        "--ingest-mode",
+        default="bulk_dataset",
+        help="Payload ingest_mode marker for bulk import contracts (default bulk_dataset)",
+    )
     ap.add_argument("--version", type=int, default=1)
     ap.add_argument(
         "--limit",
@@ -634,7 +643,8 @@ def main() -> None:
     print(
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
         f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
-        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries}"
+        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} "
+        f"source={args.source} ingest_mode={args.ingest_mode}"
     )
     try:
         for path in files:
@@ -707,6 +717,7 @@ def main() -> None:
                         "row_index": row_i,
                         "dim": dim,
                         "dtype": dtype,
+                        "ingest_mode": args.ingest_mode,
                     },
                     "source": args.source,
                     "version": args.version,

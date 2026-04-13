@@ -238,6 +238,48 @@ func TestRuntime_SubmitIngest_RejectsEmbeddingDimMismatchWhenVectorProvided(t *t
 	}
 }
 
+func TestRuntime_SubmitIngest_SkipsConflictMergeForDatasetLoader(t *testing.T) {
+	t.Setenv("ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER", "true")
+	r := buildTestRuntime(t)
+
+	events := []schemas.Event{
+		{
+			EventID:   "evt_bulk_runtime_1",
+			AgentID:   "agent_bulk_runtime",
+			SessionID: "session_bulk_runtime",
+			Source:    "dataset_loader",
+			Payload: map[string]any{
+				"text":        "dataset=testQuery10K.fbin row:1",
+				"ingest_mode": "bulk_dataset",
+			},
+		},
+		{
+			EventID:   "evt_bulk_runtime_2",
+			AgentID:   "agent_bulk_runtime",
+			SessionID: "session_bulk_runtime",
+			Source:    "dataset_loader",
+			Payload: map[string]any{
+				"text":        "dataset=testQuery10K.fbin row:2",
+				"ingest_mode": "bulk_dataset",
+			},
+		},
+	}
+	for _, ev := range events {
+		if _, err := r.SubmitIngest(ev); err != nil {
+			t.Fatalf("SubmitIngest failed: %v", err)
+		}
+	}
+
+	m1, ok1 := r.storage.Objects().GetMemory("mem_evt_bulk_runtime_1")
+	m2, ok2 := r.storage.Objects().GetMemory("mem_evt_bulk_runtime_2")
+	if !ok1 || !ok2 {
+		t.Fatalf("expected both ingested memories to exist")
+	}
+	if !m1.IsActive || !m2.IsActive {
+		t.Fatalf("dataset_loader ingest should keep all rows active, got m1=%v m2=%v", m1.IsActive, m2.IsActive)
+	}
+}
+
 // TestRuntime_SubgraphExpand_NodesPopulated is a regression test for the
 // SubgraphExecutorWorker nodes pre-fetch gap.
 //

@@ -80,6 +80,7 @@ Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.g
 Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`; tune purge throughput via `ANDB_DATASET_PURGE_*` env vars above).
 
 - **Ingest is not transactional:** use `--concurrency 1` with `--checkpoint PATH` for resumable imports after failures, plus `--ingest-retries` / `--retry-backoff` for transient HTTP errors (see script `--help`).
+- **Bulk import anti-soft-delete contract (default-on):** importer now writes `source=dataset_loader` and `payload.ingest_mode=bulk_dataset` by default. Subscriber conflict merge skips this marked traffic when `ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER=true` (default behavior), so large dataset rows are append-only and keep `IsActive=true`.
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
 - **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.
@@ -87,7 +88,8 @@ Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vec
 
 ```bash
 # Ingest (limit rows per file)
-python3 scripts/e2e/import_dataset.py --file /path/to/base.10M.fbin --dataset deep1B --limit 200 --workspace-id w_demo
+python3 scripts/e2e/import_dataset.py --file /path/to/base.10M.fbin --dataset deep1B --limit 200 --workspace-id w_demo \
+  --source dataset_loader --ingest-mode bulk_dataset
 
 # Delete dry-run (per file under --file: sends file_name + dataset_name + workspace_id)
 python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/base.10M.fbin --dataset deep1B --workspace-id w_demo
