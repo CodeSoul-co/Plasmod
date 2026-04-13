@@ -3,8 +3,8 @@ package coordinator
 import (
 	"strconv"
 
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // IndexCoordinator manages the lifecycle of retrieval segments and index

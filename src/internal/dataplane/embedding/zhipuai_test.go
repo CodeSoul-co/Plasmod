@@ -8,11 +8,11 @@ import (
 )
 
 // TestZhipuAI_RealAPI tests the ZhipuAI/GLM embedding API with a real API key.
-// Run with: ANDB_ZHIPUAI_API_KEY=xxx go test -v -run TestZhipuAI_RealAPI
+// Run with: PLASMOD_ZHIPUAI_API_KEY=xxx go test -v -run TestZhipuAI_RealAPI
 func TestZhipuAI_RealAPI(t *testing.T) {
-	apiKey := os.Getenv("ANDB_ZHIPUAI_API_KEY")
+	apiKey := os.Getenv("PLASMOD_ZHIPUAI_API_KEY")
 	if apiKey == "" {
-		t.Skip("ANDB_ZHIPUAI_API_KEY not set, skipping real API test")
+		t.Skip("PLASMOD_ZHIPUAI_API_KEY not set, skipping real API test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -13,18 +13,18 @@ import (
 
 const (
 	// EnvAdminAPIKey enables admin auth when set.
-	EnvAdminAPIKey = "ANDB_ADMIN_API_KEY"
+	EnvAdminAPIKey = "PLASMOD_ADMIN_API_KEY"
 )
 
 var adminAuthWarnOnce sync.Once
 
-// WrapAdminAuth protects /v1/admin/* with a shared secret when ANDB_ADMIN_API_KEY is set.
+// WrapAdminAuth protects /v1/admin/* with a shared secret when PLASMOD_ADMIN_API_KEY is set.
 //
 // Accepted credentials:
 // - X-Admin-Key: <key>
 // - Authorization: Bearer <key>
 //
-// If ANDB_ADMIN_API_KEY is not set, the handler is returned unchanged (dev default).
+// If PLASMOD_ADMIN_API_KEY is not set, the handler is returned unchanged (dev default).
 func WrapAdminAuth(next http.Handler) http.Handler {
 	key := strings.TrimSpace(os.Getenv(EnvAdminAPIKey))
 	if key == "" {

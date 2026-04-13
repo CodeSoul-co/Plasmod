@@ -13,7 +13,7 @@
 # - Keep these empty to use upstream defaults.
 #
 # Run capture script against the composed server (after `pip install -r requirements.txt`):
-#   ANDB_BASE_URL=http://127.0.0.1:8080 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
+#   PLASMOD_BASE_URL=http://127.0.0.1:8080 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
 
 services:
   minio:
@@ -57,20 +57,20 @@ services:
         GO_LLAMACPP_REPO: ${GO_LLAMACPP_REPO:-https://github.com/go-skynet/go-llama.cpp.git}
         GOPROXY: ${GOPROXY:-}
         GOSUMDB: ${GOSUMDB:-}
-    image: cogdb:latest
+    image: plasmod:latest
     volumes:
       - andb_data:/data
     ports:
       - "8080:8080"
     environment:
-      ANDB_HTTP_ADDR: 0.0.0.0:8080
+      PLASMOD_HTTP_ADDR: 0.0.0.0:8080
       APP_MODE: ${APP_MODE:-prod}
-      ANDB_STORAGE: disk
-      ANDB_DATA_DIR: /data
+      PLASMOD_STORAGE: disk
+      PLASMOD_DATA_DIR: /data
       # CPU-safe defaults for Member A baseline stack.
-      # Override via env when validating GPU paths (e.g. ANDB_EMBEDDER=onnx, ANDB_EMBEDDER_DEVICE=cuda).
-      ANDB_EMBEDDER: ${ANDB_EMBEDDER:-tfidf}
-      ANDB_EMBEDDER_DEVICE: ${ANDB_EMBEDDER_DEVICE:-cpu}
+      # Override via env when validating GPU paths (e.g. PLASMOD_EMBEDDER=onnx, PLASMOD_EMBEDDER_DEVICE=cuda).
+      PLASMOD_EMBEDDER: ${PLASMOD_EMBEDDER:-tfidf}
+      PLASMOD_EMBEDDER_DEVICE: ${PLASMOD_EMBEDDER_DEVICE:-cpu}
       S3_ENDPOINT: minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin

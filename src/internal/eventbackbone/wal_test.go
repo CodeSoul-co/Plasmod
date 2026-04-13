@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 func TestInMemoryWAL_AppendAndLatestLSN(t *testing.T) {

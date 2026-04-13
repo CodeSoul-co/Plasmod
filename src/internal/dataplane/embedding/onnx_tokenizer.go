@@ -12,7 +12,7 @@ import (
 )
 
 // vocabPathEnv is the environment variable for the BERT vocabulary file path.
-const vocabPathEnv = "ANDB_ONNX_VOCAB_PATH"
+const vocabPathEnv = "PLASMOD_ONNX_VOCAB_PATH"
 
 const (
 	bertTokCLS = int64(101)

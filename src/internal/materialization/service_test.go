@@ -3,7 +3,7 @@ package materialization
 import (
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 func TestService_MaterializeEvent_Basic(t *testing.T) {

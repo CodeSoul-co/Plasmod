@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"andb/retrievalplane"
+	"plasmod/retrievalplane"
 )
 
 // BatchEmbeddingGenerator is an optional extension of EmbeddingGenerator.

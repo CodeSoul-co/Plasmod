@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"andb/src/internal/dataplane"
-	"andb/src/internal/evidence"
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/evidence"
+	"plasmod/src/internal/schemas"
 )
 
 // PreComputeService runs at ingest time and builds an EvidenceFragment for
