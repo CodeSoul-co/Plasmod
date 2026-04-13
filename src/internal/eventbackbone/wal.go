@@ -3,7 +3,7 @@ package eventbackbone
 import (
 	"sync"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 type WALEntry struct {

@@ -8,7 +8,7 @@ Usage (server already up, e.g. `make dev` or `docker compose up -d`):
   python scripts/e2e/member_a_capture.py --out-dir ./out/member_a
 
 Env:
-  ANDB_BASE_URL  default http://127.0.0.1:8080
+  PLASMOD_BASE_URL  default http://127.0.0.1:8080
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-DEFAULT_BASE = os.environ.get("ANDB_BASE_URL", "http://127.0.0.1:8080")
+DEFAULT_BASE = os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "integration_tests" / "fixtures" / "member_a"
 FALLBACK_FIXTURES = REPO_ROOT / "scripts" / "e2e" / "fixtures" / "member_a"
-DEFAULT_TIMEOUT = float(os.environ.get("ANDB_CAPTURE_HTTP_TIMEOUT", "60"))
+DEFAULT_TIMEOUT = float(os.environ.get("PLASMOD_CAPTURE_HTTP_TIMEOUT", "60"))
 
 
 def _now_iso() -> str:

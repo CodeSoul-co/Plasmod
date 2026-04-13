@@ -3,15 +3,15 @@ package worker
 import (
 	"testing"
 
-	"andb/src/internal/coordinator"
-	"andb/src/internal/dataplane"
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/materialization"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/cognitive"
-	baseline "andb/src/internal/worker/cognitive/baseline"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/cognitive"
+	baseline "plasmod/src/internal/worker/cognitive/baseline"
+	"plasmod/src/internal/worker/nodes"
 )
 
 func TestPipelineIngestWorker_Accept_requiresEventID(t *testing.T) {

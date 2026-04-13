@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/dataplane"
+	"plasmod/src/internal/dataplane"
 )
 
 func TestTfidfEmbedder_ImplementsGenerator(t *testing.T) {

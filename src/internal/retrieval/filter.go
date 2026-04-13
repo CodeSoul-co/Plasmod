@@ -3,7 +3,7 @@ package retrieval
 import (
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // SafetyFilter applies the 7 governance rules that mirror the Python

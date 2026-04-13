@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ─── Collaboration ─────────────────────────────────────────────────────────────

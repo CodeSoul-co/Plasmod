@@ -3,8 +3,8 @@ package nodes
 import (
 	"sync"
 
-	"andb/src/internal/dataplane"
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/schemas"
 )
 
 type Manager struct {

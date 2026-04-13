@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // InMemoryObjectMaterializationWorker routes a raw Event to the correct

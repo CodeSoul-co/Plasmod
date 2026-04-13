@@ -3,8 +3,8 @@ package dataplane
 import (
 	"sort"
 
-	"andb/src/internal/dataplane/segmentstore"
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/dataplane/segmentstore"
+	"plasmod/src/internal/schemas"
 )
 
 const defaultRRFK = 60

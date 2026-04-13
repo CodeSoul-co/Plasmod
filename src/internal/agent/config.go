@@ -14,11 +14,11 @@ import (
 type Config struct {
 	// CogDBEndpoint is the base URL of the CogDB HTTP gateway.
 	// Default: "http://127.0.0.1:8080".
-	// Environment: ANDB_AGENT_ENDPOINT.
+	// Environment: PLASMOD_AGENT_ENDPOINT.
 	CogDBEndpoint string
 
 	// AgentID uniquely identifies the agent process. Required.
-	// Environment: ANDB_AGENT_ID.
+	// Environment: PLASMOD_AGENT_ID.
 	AgentID string
 
 	// SessionID is the current session identifier. Set by StartSession; not
@@ -26,18 +26,20 @@ type Config struct {
 	SessionID string
 
 	// TenantID is the billing/organizational unit. Required.
-	// Environment: ANDB_TENANT_ID.
+	// Environment: PLASMOD_TENANT_ID.
 	TenantID string
 
 	// WorkspaceID is the agent's workspace within the tenant. Required.
-	// Environment: ANDB_WORKSPACE_ID.
+	// Environment: PLASMOD_WORKSPACE_ID.
 	WorkspaceID string
 
 	// HTTPAddr is the listen address for AgentGateway (":9090" by default).
-	// Environment: ANDB_AGENT_HTTP_PORT (value is port number, e.g. "9090",
+	// Environment: PLASMOD_AGENT_HTTP_PORT (value is port number, e.g. "9090",
 	// not a full address).
 	HTTPAddr string
 
+	// HTTPClientTimeout is the timeout for CogDB HTTP requests (default 30s).
+	// Environment: PLASMOD_AGENT_HTTP_TIMEOUT (seconds).
 	// HTTPClient is an optional custom http.Client. When nil a default client
 	// with a 30-second request timeout is used. Useful for custom transport,
 	// proxy, or testing scenarios.
@@ -49,21 +51,21 @@ type Config struct {
 //
 // Environment variables read:
 //
-//	ANDB_AGENT_ENDPOINT    CogDBEndpoint (default "http://127.0.0.1:8080")
-//	ANDB_AGENT_ID          AgentID (required)
-//	ANDB_TENANT_ID         TenantID (required)
-//	ANDB_WORKSPACE_ID      WorkspaceID (required)
-//	ANDB_AGENT_HTTP_PORT   HTTP listen port (default ":9090")
-//	ANDB_AGENT_HTTP_TIMEOUT request timeout in seconds (default 30)
+//		PLASMOD_AGENT_ENDPOINT    CogDBEndpoint (default "http://127.0.0.1:8080")
+//		PLASMOD_AGENT_ID          AgentID (required)
+//		PLASMOD_TENANT_ID         TenantID (required)
+//		PLASMOD_WORKSPACE_ID      WorkspaceID (required)
+//		PLASMOD_AGENT_HTTP_PORT   HTTP listen port (default ":9090")
+//		PLASMOD_AGENT_HTTP_TIMEOUT request timeout in seconds (default 30)
 func LoadFromEnv() Config {
 	cfg := Config{
-		CogDBEndpoint: getEnv("ANDB_AGENT_ENDPOINT", "http://127.0.0.1:8080"),
-		AgentID:       os.Getenv("ANDB_AGENT_ID"),
-		TenantID:      os.Getenv("ANDB_TENANT_ID"),
-		WorkspaceID:   os.Getenv("ANDB_WORKSPACE_ID"),
-		HTTPAddr:      ":" + getEnv("ANDB_AGENT_HTTP_PORT", "9090"),
+		CogDBEndpoint: getEnv("PLASMOD_AGENT_ENDPOINT", "http://127.0.0.1:8080"),
+		AgentID:       os.Getenv("PLASMOD_AGENT_ID"),
+		TenantID:      os.Getenv("PLASMOD_TENANT_ID"),
+		WorkspaceID:   os.Getenv("PLASMOD_WORKSPACE_ID"),
+		HTTPAddr:      ":" + getEnv("PLASMOD_AGENT_HTTP_PORT", "9090"),
 	}
-	if t := os.Getenv("ANDB_AGENT_HTTP_TIMEOUT"); t != "" {
+	if t := os.Getenv("PLASMOD_AGENT_HTTP_TIMEOUT"); t != "" {
 		if sec, err := strconv.Atoi(t); err == nil && sec > 0 {
 			cfg.HTTPClientTimeout = time.Duration(sec) * time.Second
 		}
@@ -81,13 +83,13 @@ func (c Config) Validate() error {
 		return fmt.Errorf("CogDBEndpoint is not a valid URL: %w", err)
 	}
 	if c.AgentID == "" {
-		return fmt.Errorf("AgentID is required (set ANDB_AGENT_ID)")
+		return fmt.Errorf("AgentID is required (set PLASMOD_AGENT_ID)")
 	}
 	if c.TenantID == "" {
-		return fmt.Errorf("TenantID is required (set ANDB_TENANT_ID)")
+		return fmt.Errorf("TenantID is required (set PLASMOD_TENANT_ID)")
 	}
 	if c.WorkspaceID == "" {
-		return fmt.Errorf("WorkspaceID is required (set ANDB_WORKSPACE_ID)")
+		return fmt.Errorf("WorkspaceID is required (set PLASMOD_WORKSPACE_ID)")
 	}
 	return nil
 }

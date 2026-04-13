@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ─── Event submission helpers ─────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 package nodes
 
-import "andb/src/internal/dataplane"
+import "plasmod/src/internal/dataplane"
 
 // InMemoryQueryNode delegates search requests to the attached DataPlane,
 // enabling multi-tier (hot → warm → cold) retrieval behind a single interface.

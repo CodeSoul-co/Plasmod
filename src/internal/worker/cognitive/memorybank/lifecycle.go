@@ -1,7 +1,7 @@
 package memorybank
 
 import (
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // LifecycleTransition records a state change for audit/debugging purposes.

@@ -175,7 +175,7 @@ func TestWrapAdminAuth_LogsWarningOnceWhenEnvMissing(t *testing.T) {
 	_ = WrapAdminAuth(okHandler())
 
 	out := buf.String()
-	want := "admin routes are unprotected because ANDB_ADMIN_API_KEY is not set"
+	want := "admin routes are unprotected because PLASMOD_ADMIN_API_KEY is not set"
 	if strings.Count(out, want) != 1 {
 		t.Fatalf("expected warning once, got logs: %q", out)
 	}

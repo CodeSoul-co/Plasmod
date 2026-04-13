@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"andb/src/internal/app"
+	"plasmod/src/internal/app"
 )
 
 func main() {

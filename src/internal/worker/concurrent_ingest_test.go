@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // TestRuntime_ConcurrentIngest_NoRace verifies that concurrent SubmitIngest

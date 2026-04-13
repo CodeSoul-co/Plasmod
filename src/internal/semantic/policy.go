@@ -3,7 +3,7 @@ package semantic
 import (
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // PolicyEngine evaluates governance rules against objects and queries.
