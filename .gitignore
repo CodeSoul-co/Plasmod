@@ -61,3 +61,4 @@ TESTING.md
 # build / test artifacts
 go.sum.bak*
 out/
+go.mod
