@@ -56,9 +56,10 @@ func TestService_MaterializeEvent_PayloadDatasetAndFileName(t *testing.T) {
 		EventType:   "dataset_record",
 		LogicalTS:   1,
 		Payload: map[string]any{
-			"text":      "dataset=f.bin dataset_name:DS row:0",
-			"dataset":   "DS",
-			"file_name": "f.bin",
+			"text":            "dataset=f.bin dataset_name:DS row:0",
+			"dataset":         "DS",
+			"file_name":       "f.bin",
+			"import_batch_id": "batch_20260413T120000Z",
 		},
 	}
 	res := svc.MaterializeEvent(ev)
@@ -67,6 +68,9 @@ func TestService_MaterializeEvent_PayloadDatasetAndFileName(t *testing.T) {
 	}
 	if res.Memory.SourceFileName != "f.bin" {
 		t.Errorf("Memory.SourceFileName: want f.bin, got %q", res.Memory.SourceFileName)
+	}
+	if res.Memory.ImportBatchID != "batch_20260413T120000Z" {
+		t.Errorf("Memory.ImportBatchID: want batch_20260413T120000Z, got %q", res.Memory.ImportBatchID)
 	}
 }
 

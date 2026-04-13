@@ -54,6 +54,9 @@ SUPPORTED_EXTS = {".fvecs", ".ivecs", ".ibin", ".fbin", ".arrow"}
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+def _default_import_batch_id() -> str:
+    return "batch_" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
 
 def _http_post_json(
     base_url: str, path: str, body: dict, timeout: float = 30.0
@@ -420,6 +423,11 @@ def main() -> None:
         default="bulk_dataset",
         help="Payload ingest_mode marker for bulk import contracts (default bulk_dataset)",
     )
+    ap.add_argument(
+        "--import-batch-id",
+        default=None,
+        help="Stable import batch id written to payload.import_batch_id (default auto-generated per run)",
+    )
     ap.add_argument("--version", type=int, default=1)
     ap.add_argument(
         "--limit",
@@ -640,11 +648,12 @@ def main() -> None:
 
     lim_disp = "none" if args.limit is None else args.limit
     ck_disp = checkpoint_path or "none"
+    import_batch_id = args.import_batch_id or _default_import_batch_id()
     print(
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
         f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
         f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} "
-        f"source={args.source} ingest_mode={args.ingest_mode}"
+        f"source={args.source} ingest_mode={args.ingest_mode} import_batch_id={import_batch_id}"
     )
     try:
         for path in files:
@@ -718,6 +727,7 @@ def main() -> None:
                         "dim": dim,
                         "dtype": dtype,
                         "ingest_mode": args.ingest_mode,
+                        "import_batch_id": import_batch_id,
                     },
                     "source": args.source,
                     "version": args.version,

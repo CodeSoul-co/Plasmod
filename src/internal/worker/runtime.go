@@ -259,6 +259,15 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+	if queryUsesStructuredMemorySelectors(req) {
+		selectorIDs := r.fetchMemoryIDsByStructuredSelectors(req)
+		if req.LatestBatchOnly {
+			result.ObjectIDs = selectorIDs
+		} else {
+			result.ObjectIDs = filterObjectIDsByStructuredSelectors(r.storage.Objects(), result.ObjectIDs, req)
+			result.ObjectIDs = appendMissing(result.ObjectIDs, selectorIDs)
+		}
+	}
 	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs)
 	retrievalHitCount := len(result.ObjectIDs)
 
@@ -353,6 +362,167 @@ func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []stri
 		out = append(out, id)
 	}
 	return out
+}
+
+func queryUsesStructuredMemorySelectors(req schemas.QueryRequest) bool {
+	return strings.TrimSpace(req.DatasetName) != "" ||
+		strings.TrimSpace(req.SourceFileName) != "" ||
+		strings.TrimSpace(req.ImportBatchID) != "" ||
+		req.LatestBatchOnly
+}
+
+func appendMissing(base []string, extras []string) []string {
+	if len(extras) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base))
+	for _, id := range base {
+		seen[id] = struct{}{}
+	}
+	for _, id := range extras {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		base = append(base, id)
+		seen[id] = struct{}{}
+	}
+	return base
+}
+
+func filterObjectIDsByStructuredSelectors(os storage.ObjectStore, ids []string, req schemas.QueryRequest) []string {
+	if os == nil || len(ids) == 0 || !queryUsesStructuredMemorySelectors(req) {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		mem, ok := os.GetMemory(id)
+		if !ok {
+			continue
+		}
+		if !memoryMatchesStructuredSelectorsBase(mem, req) {
+			continue
+		}
+		if req.ImportBatchID != "" && mem.ImportBatchID != strings.TrimSpace(req.ImportBatchID) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (r *Runtime) fetchMemoryIDsByStructuredSelectors(req schemas.QueryRequest) []string {
+	if r.storage == nil || r.storage.Objects() == nil {
+		return nil
+	}
+	all := r.storage.Objects().ListMemories("", "")
+	if len(all) == 0 {
+		return nil
+	}
+	matched := make([]schemas.Memory, 0, len(all))
+	for _, mem := range all {
+		if !memoryMatchesStructuredSelectorsBase(mem, req) {
+			continue
+		}
+		matched = append(matched, mem)
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+	if batchID := strings.TrimSpace(req.ImportBatchID); batchID != "" {
+		filtered := make([]schemas.Memory, 0, len(matched))
+		for _, mem := range matched {
+			if mem.ImportBatchID == batchID {
+				filtered = append(filtered, mem)
+			}
+		}
+		matched = filtered
+		if len(matched) == 0 {
+			return nil
+		}
+	}
+	if req.LatestBatchOnly {
+		latestBatchID := resolveLatestImportBatchID(matched)
+		if latestBatchID != "" {
+			filtered := make([]schemas.Memory, 0, len(matched))
+			for _, mem := range matched {
+				if mem.ImportBatchID == latestBatchID {
+					filtered = append(filtered, mem)
+				}
+			}
+			matched = filtered
+		}
+		if len(matched) == 0 {
+			return nil
+		}
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, matched[i].ValidFrom)
+		tj, _ := time.Parse(time.RFC3339, matched[j].ValidFrom)
+		return ti.After(tj)
+	})
+	limit := req.TopK
+	if limit <= 0 || limit > len(matched) {
+		limit = len(matched)
+	}
+	ids := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		ids = append(ids, matched[i].MemoryID)
+	}
+	return ids
+}
+
+func memoryMatchesStructuredSelectorsBase(mem schemas.Memory, req schemas.QueryRequest) bool {
+	workspaceID := strings.TrimSpace(req.WorkspaceID)
+	if workspaceID != "" && mem.Scope != workspaceID {
+		return false
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && mem.AgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && mem.SessionID != sessionID {
+		return false
+	}
+	datasetName := strings.TrimSpace(req.DatasetName)
+	if datasetName != "" && mem.DatasetName != datasetName {
+		return false
+	}
+	sourceFile := strings.TrimSpace(req.SourceFileName)
+	if sourceFile != "" && mem.SourceFileName != sourceFile {
+		return false
+	}
+	return true
+}
+
+func resolveLatestImportBatchID(mems []schemas.Memory) string {
+	latestBatchID := ""
+	latestVersion := int64(-1)
+	latestTS := time.Time{}
+	for _, mem := range mems {
+		if strings.TrimSpace(mem.ImportBatchID) == "" {
+			continue
+		}
+		if mem.Version > latestVersion {
+			latestBatchID = mem.ImportBatchID
+			latestVersion = mem.Version
+			ts, _ := time.Parse(time.RFC3339, mem.ValidFrom)
+			latestTS = ts
+			continue
+		}
+		if mem.Version < latestVersion {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339, mem.ValidFrom)
+		if err != nil {
+			continue
+		}
+		if latestBatchID == "" || ts.After(latestTS) {
+			latestBatchID = mem.ImportBatchID
+			latestTS = ts
+		}
+	}
+	return latestBatchID
 }
 
 // fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical
