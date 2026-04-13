@@ -632,3 +632,33 @@ func TestGateway_DatasetPurge_WarmOnlyWithoutTieredRuntime(t *testing.T) {
 		t.Fatalf("memory should be removed from warm store")
 	}
 }
+
+func TestGateway_ListMemory_WorkspaceIDFilter(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem-ws1", Scope: "ws-target", IsActive: true,
+	})
+	deps.store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem-ws2", Scope: "ws-other", IsActive: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/memory?workspace_id=ws-target", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var mems []schemas.Memory
+	if err := json.Unmarshal(w.Body.Bytes(), &mems); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(mems) != 1 {
+		t.Fatalf("expected 1 memory for ws-target, got %d", len(mems))
+	}
+	if mems[0].MemoryID != "mem-ws1" {
+		t.Fatalf("expected mem-ws1, got %s", mems[0].MemoryID)
+	}
+}

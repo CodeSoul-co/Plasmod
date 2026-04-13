@@ -14,15 +14,15 @@
 # Usage:
 #   bash scripts/e2e/pre_flight.sh
 # Env:
-#   ANDB_BASE_URL  (default http://127.0.0.1:8080)
-#   CONTAINER      (default cogdb-andb-1)
+#   PLASMOD_BASE_URL  (default http://127.0.0.1:8080)
+#   CONTAINER      (default plasmod-andb-1)
 #   HEALTHZ_RETRIES / HEALTHZ_INTERVAL_SEC
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ANDB_BASE_URL="${ANDB_BASE_URL:-http://127.0.0.1:8080}"
-CONTAINER="${CONTAINER:-cogdb-andb-1}"
+PLASMOD_BASE_URL="${PLASMOD_BASE_URL:-http://127.0.0.1:8080}"
+CONTAINER="${CONTAINER:-plasmod-andb-1}"
 HEALTHZ_RETRIES="${HEALTHZ_RETRIES:-60}"
 HEALTHZ_INTERVAL_SEC="${HEALTHZ_INTERVAL_SEC:-2}"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/out/integration_test}"
@@ -57,37 +57,37 @@ fi
 # ── 2. llamacpp libbinding.a ─────────────────────────────────────────────────
 echo
 echo "── [2/8] llamacpp libbinding.a inside image ──"
-if docker image inspect cogdb:latest >/dev/null 2>&1; then
-    if docker run --rm --entrypoint /bin/sh cogdb:latest -c \
+if docker image inspect plasmod:latest >/dev/null 2>&1; then
+    if docker run --rm --entrypoint /bin/sh plasmod:latest -c \
         "ls /src/libs/go-llama.cpp/libbinding.a" >/dev/null 2>&1; then
-        _pass "libbinding.a present in cogdb:latest"
+        _pass "libbinding.a present in plasmod:latest"
     else
         # libbinding.a might have been cleaned; check the binary compiles
-        if docker run --rm --entrypoint /bin/sh cogdb:latest -c \
-            "ls /usr/local/bin/andb-server" >/dev/null 2>&1; then
+        if docker run --rm --entrypoint /bin/sh plasmod:latest -c \
+            "ls /usr/local/bin/plasmod-server" >/dev/null 2>&1; then
             _warn "libbinding.a not found (static-linked into binary — OK)"
         else
-            _fail "andb-server binary not found in image"
+            _fail "plasmod-server binary not found in image"
         fi
     fi
 else
-    _warn "cogdb:latest not built yet — run docker compose build first"
+    _warn "plasmod:latest not built yet — run docker compose build first"
 fi
 
 # ── 3. onnxruntime .so ───────────────────────────────────────────────────────
 echo
 echo "── [3/8] libonnxruntime.so inside image ──"
-if docker image inspect cogdb:latest >/dev/null 2>&1; then
-    if docker run --rm --entrypoint /bin/sh cogdb:latest -c \
+if docker image inspect plasmod:latest >/dev/null 2>&1; then
+    if docker run --rm --entrypoint /bin/sh plasmod:latest -c \
         "ls /usr/local/lib/libonnxruntime.so" >/dev/null 2>&1; then
-        ORT_SIZE=$(docker run --rm --entrypoint /bin/sh cogdb:latest -c \
+        ORT_SIZE=$(docker run --rm --entrypoint /bin/sh plasmod:latest -c \
             "du -sh /usr/local/lib/libonnxruntime.so" 2>/dev/null | awk '{print $1}')
         _pass "libonnxruntime.so present (${ORT_SIZE})"
     else
         _fail "libonnxruntime.so NOT found — Dockerfile Phase 0 patch needed"
     fi
 else
-    _warn "cogdb:latest not built yet — skipping onnxruntime check"
+    _warn "plasmod:latest not built yet — skipping onnxruntime check"
 fi
 
 # ── 4. NVIDIA GPU availability (host) ────────────────────────────────────────
@@ -110,10 +110,10 @@ fi
 # ── 5. CUDA inside container (GPU mode only) ──────────────────────────────────
 echo
 echo "── [5/8] CUDA inside container ──"
-if ${GPU_AVAILABLE} && docker image inspect cogdb:latest >/dev/null 2>&1; then
-    if docker run --rm --gpus all --entrypoint /bin/sh cogdb:latest -c \
+if ${GPU_AVAILABLE} && docker image inspect plasmod:latest >/dev/null 2>&1; then
+    if docker run --rm --gpus all --entrypoint /bin/sh plasmod:latest -c \
         "nvidia-smi" >/dev/null 2>&1; then
-        CUDA_VER=$(docker run --rm --gpus all --entrypoint /bin/sh cogdb:latest -c \
+        CUDA_VER=$(docker run --rm --gpus all --entrypoint /bin/sh plasmod:latest -c \
             "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1")
         _pass "CUDA accessible inside container (driver ${CUDA_VER})"
     else
@@ -122,7 +122,7 @@ if ${GPU_AVAILABLE} && docker image inspect cogdb:latest >/dev/null 2>&1; then
 elif ! ${GPU_AVAILABLE}; then
     _info "Skipped (CPU-only mode)"
 else
-    _warn "cogdb:latest not built — skipping CUDA container check"
+    _warn "plasmod:latest not built — skipping CUDA container check"
 fi
 
 # ── 6. Server healthz ────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ echo
 echo "── [6/8] Server /healthz ──"
 _healthz_ok=false
 for i in $(seq 1 "${HEALTHZ_RETRIES}"); do
-    if curl -fsS "${ANDB_BASE_URL}/healthz" >/dev/null 2>&1; then
+    if curl -fsS "${PLASMOD_BASE_URL}/healthz" >/dev/null 2>&1; then
         _healthz_ok=true
         break
     fi
@@ -145,7 +145,7 @@ fi
 # ── 7. APP_MODE=test via /v1/system/mode ─────────────────────────────────────
 echo
 echo "── [7/8] APP_MODE=test (/v1/system/mode) ──"
-MODE_RESP=$(curl -fsS "${ANDB_BASE_URL}/v1/system/mode" 2>/dev/null || echo '{}')
+MODE_RESP=$(curl -fsS "${PLASMOD_BASE_URL}/v1/system/mode" 2>/dev/null || echo '{}')
 MODE_VAL=$(echo "${MODE_RESP}" | python3 -c \
     "import sys,json; d=json.load(sys.stdin); print(d.get('app_mode', d.get('mode','unknown')))" 2>/dev/null || echo "unknown")
 if [ "${MODE_VAL}" = "test" ]; then
@@ -157,7 +157,7 @@ fi
 # ── 8. /v1/debug/echo (test-only endpoint) ───────────────────────────────────
 echo
 echo "── [8/8] /v1/debug/echo (test-only) ──"
-ECHO_RESP=$(curl -fsS -X POST "${ANDB_BASE_URL}/v1/debug/echo" \
+ECHO_RESP=$(curl -fsS -X POST "${PLASMOD_BASE_URL}/v1/debug/echo" \
     -H "Content-Type: application/json" \
     -d '{"ping":"pre_flight"}' 2>/dev/null || echo '{}')
 ECHO_VAL=$(echo "${ECHO_RESP}" | python3 -c \

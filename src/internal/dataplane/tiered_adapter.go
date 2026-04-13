@@ -214,11 +214,13 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		coldIDs, coldMode := t.resolveColdIDs(input)
 		coldOutput := SearchOutput{
 			ObjectIDs:      coldIDs,
+			ColdObjectIDs:  coldIDs,
 			Tier:           "cold",
 			ColdSearchMode: coldMode,
 		}
 		merged := mergeOutputs(hotOut, coldOutput, input.TopK)
 		merged.Tier = "hot+cold"
+		merged.ColdObjectIDs = coldIDs
 		merged.ColdSearchMode = coldMode
 		return merged
 	}
@@ -243,6 +245,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		coldIDs, coldMode := t.resolveColdIDs(input)
 		coldOut = SearchOutput{
 			ObjectIDs:      coldIDs,
+			ColdObjectIDs:  coldIDs,
 			Tier:           "cold",
 			ColdSearchMode: coldMode,
 		}
@@ -266,6 +269,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 
 	return SearchOutput{
 		ObjectIDs:       fusedIDs,
+		ColdObjectIDs:   coldOut.ColdObjectIDs,
 		ScannedSegments: scanned,
 		PlannedSegments: planned,
 		Tier:            tierLabel,
