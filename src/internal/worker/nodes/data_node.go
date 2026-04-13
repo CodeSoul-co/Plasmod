@@ -1,8 +1,8 @@
 package nodes
 
 import (
-	"andb/src/internal/dataplane"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/dataplane"
+	"plasmod/src/internal/storage"
 )
 
 // InMemoryDataNode handles raw segment storage for ingested objects.

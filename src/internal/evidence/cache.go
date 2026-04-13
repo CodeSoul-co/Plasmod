@@ -3,7 +3,7 @@ package evidence
 import (
 	"sync"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // Cache stores pre-computed EvidenceFragments keyed by object ID.

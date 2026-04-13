@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
-	baseline "andb/src/internal/worker/cognitive/baseline"
-	"andb/src/internal/worker/coordination"
-	"andb/src/internal/worker/indexing"
-	"andb/src/internal/worker/nodes"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
+	baseline "plasmod/src/internal/worker/cognitive/baseline"
+	"plasmod/src/internal/worker/coordination"
+	"plasmod/src/internal/worker/indexing"
+	"plasmod/src/internal/worker/nodes"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────

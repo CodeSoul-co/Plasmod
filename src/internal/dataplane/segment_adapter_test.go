@@ -3,7 +3,7 @@ package dataplane
 import (
 	"testing"
 
-	"andb/src/internal/storage"
+	"plasmod/src/internal/storage"
 )
 
 func TestSegmentDataPlane_IngestAndSearch(t *testing.T) {

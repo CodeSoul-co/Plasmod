@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 func TestBuildRuntime_defaultIsDisk(t *testing.T) {

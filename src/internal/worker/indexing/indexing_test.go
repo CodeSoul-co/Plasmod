@@ -3,8 +3,8 @@ package indexing
 import (
 	"testing"
 
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // ─── IndexBuildWorker ────────────────────────────────────────────────────────

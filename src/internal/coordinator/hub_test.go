@@ -3,9 +3,9 @@ package coordinator
 import (
 	"testing"
 
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/semantic"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/semantic"
+	"plasmod/src/internal/storage"
 )
 
 func TestNewCoordinatorHub_FieldsInitialized(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // MemoryBankAlgorithm implements schemas.MemoryManagementAlgorithm using the

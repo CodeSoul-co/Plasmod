@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"andb/src/internal/schemas"
+	"plasmod/src/internal/schemas"
 )
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

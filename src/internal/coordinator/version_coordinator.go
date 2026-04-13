@@ -1,9 +1,9 @@
 package coordinator
 
 import (
-	"andb/src/internal/eventbackbone"
-	"andb/src/internal/schemas"
-	"andb/src/internal/storage"
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 // VersionCoordinator advances logical time and manages object visibility.

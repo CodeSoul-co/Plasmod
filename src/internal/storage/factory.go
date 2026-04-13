@@ -11,17 +11,17 @@ import (
 
 // Environment variable names (see STORAGE_BACKEND.md).
 const (
-	EnvStorage        = "ANDB_STORAGE"
-	EnvDataDir        = "ANDB_DATA_DIR"
-	EnvStoreSegments  = "ANDB_STORE_SEGMENTS"
-	EnvStoreIndexes   = "ANDB_STORE_INDEXES"
-	EnvStoreObjects   = "ANDB_STORE_OBJECTS"
-	EnvStoreEdges     = "ANDB_STORE_EDGES"
-	EnvStoreVersions  = "ANDB_STORE_VERSIONS"
-	EnvStorePolicies  = "ANDB_STORE_POLICIES"
-	EnvStoreContracts = "ANDB_STORE_CONTRACTS"
+	EnvStorage        = "PLASMOD_STORAGE"
+	EnvDataDir        = "PLASMOD_DATA_DIR"
+	EnvStoreSegments  = "PLASMOD_STORE_SEGMENTS"
+	EnvStoreIndexes   = "PLASMOD_STORE_INDEXES"
+	EnvStoreObjects   = "PLASMOD_STORE_OBJECTS"
+	EnvStoreEdges     = "PLASMOD_STORE_EDGES"
+	EnvStoreVersions  = "PLASMOD_STORE_VERSIONS"
+	EnvStorePolicies  = "PLASMOD_STORE_POLICIES"
+	EnvStoreContracts = "PLASMOD_STORE_CONTRACTS"
 	// EnvBadgerInMemory forces Badger to use in-RAM tables only (tests / constrained disks).
-	EnvBadgerInMemory = "ANDB_BADGER_INMEMORY"
+	EnvBadgerInMemory = "PLASMOD_BADGER_INMEMORY"
 )
 
 const (
@@ -30,8 +30,8 @@ const (
 )
 
 // BuildRuntimeFromEnv constructs RuntimeStorage from process environment.
-// Default mode is "disk" (Badger-backed persistent storage under ANDB_DATA_DIR).
-// Set ANDB_STORAGE=memory to opt into ephemeral in-process mode (tests / CI).
+// Default mode is "disk" (Badger-backed persistent storage under PLASMOD_DATA_DIR).
+// Set PLASMOD_STORAGE=memory to opt into ephemeral in-process mode (tests / CI).
 func BuildRuntimeFromEnv() (*RuntimeBundle, error) {
 	return buildRuntime(os.Getenv)
 }

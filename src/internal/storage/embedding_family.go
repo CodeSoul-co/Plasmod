@@ -8,8 +8,8 @@ import (
 // ResolveEmbeddingFamily normalizes the embedding family identifier used in
 // segment metadata. Priority:
 // 1) explicit attr["embedding_family"] from ingest record
-// 2) ANDB_EMBEDDING_FAMILY env override
-// 3) ANDB_EMBEDDER + ANDB_EMBEDDER_MODEL composed value
+// 2) PLASMOD_EMBEDDING_FAMILY env override
+// 3) PLASMOD_EMBEDDER + PLASMOD_EMBEDDER_MODEL composed value
 // 4) fallback to "tfidf"
 func ResolveEmbeddingFamily(attrs map[string]string) string {
 	if attrs != nil {
@@ -17,14 +17,14 @@ func ResolveEmbeddingFamily(attrs map[string]string) string {
 			return v
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("ANDB_EMBEDDING_FAMILY")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDING_FAMILY")); v != "" {
 		return v
 	}
-	provider := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER"))
+	provider := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER"))
 	if provider == "" {
 		provider = "tfidf"
 	}
-	model := strings.TrimSpace(os.Getenv("ANDB_EMBEDDER_MODEL"))
+	model := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER_MODEL"))
 	if model == "" || provider == "tfidf" {
 		return provider
 	}

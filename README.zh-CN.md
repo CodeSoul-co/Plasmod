@@ -19,10 +19,10 @@
 
 </div>
 
-# CogDB — 面向多智能体系统的原生智能体数据库
-> **分支：** `dev`（集成分支）· **Pass 9**（2026-03-28）
+# Plasmod — 面向多智能体系统的原生智能体数据库
 
-CogDB（ANDB）是一款专为多智能体系统（MAS）设计的原生智能体数据库。它将分层段式检索平面、基于追加写 WAL 的事件骨干、规范对象物化层、预计算证据片段缓存、单跳图扩展以及结构化证据组装整合为单一可运行的 Go 服务。
+Plasmod 是一个面向多智能体系统的 agent-native database。受黏菌网络去中心化、自适应、自组织机制的启发，它将认知对象管理、事件驱动的物化过程与结构化证据检索统一到一个可运行的系统中。Plasmod 集成了分层的 segment-oriented retrieval plane、基于 append-only WAL 的事件主干、canonical object materialization layer、预计算 evidence fragments、1-hop 图扩展以及 structured evidence assembly，并将这些能力整合为一个单体可运行的 Go server，以支撑面向智能体的记忆管理与推理工作负载。
+
 
 > **核心论点：** 智能体的记忆、状态、事件、产物与关系应当作为一等数据库对象建模，查询结果应返回结构化证据包，而非仅有 top-k 文本片段。
 
