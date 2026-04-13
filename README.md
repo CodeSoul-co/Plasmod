@@ -81,6 +81,7 @@ Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vec
 
 - **Ingest is not transactional:** use `--concurrency 1` with `--checkpoint PATH` for resumable imports after failures, plus `--ingest-retries` / `--retry-backoff` for transient HTTP errors (see script `--help`).
 - **Bulk import anti-soft-delete contract (default-on):** importer now writes `source=dataset_loader` and `payload.ingest_mode=bulk_dataset` by default. Subscriber conflict merge skips this marked traffic when `ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER=true` (default behavior), so large dataset rows are append-only and keep `IsActive=true`.
+- **Long-term append-only ID strategy (default):** event IDs now include `import_batch_id` (`--event-id-scope batch`) so re-importing the same dataset/file creates new `event_id`/`memory_id` instead of reusing prior IDs. Use `--event-id-scope legacy` only for backward-compat replay.
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
 - **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.

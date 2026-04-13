@@ -28,6 +28,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -56,6 +57,10 @@ def _now_iso() -> str:
 
 def _default_import_batch_id() -> str:
     return "batch_" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+def _slug_token(value: str, fallback: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
+    return token or fallback
 
 
 def _http_post_json(
@@ -428,6 +433,12 @@ def main() -> None:
         default=None,
         help="Stable import batch id written to payload.import_batch_id (default auto-generated per run)",
     )
+    ap.add_argument(
+        "--event-id-scope",
+        choices=("batch", "legacy"),
+        default="batch",
+        help="Event ID generation scope: batch (default, includes import_batch_id) or legacy (old format)",
+    )
     ap.add_argument("--version", type=int, default=1)
     ap.add_argument(
         "--limit",
@@ -649,11 +660,13 @@ def main() -> None:
     lim_disp = "none" if args.limit is None else args.limit
     ck_disp = checkpoint_path or "none"
     import_batch_id = args.import_batch_id or _default_import_batch_id()
+    event_scope = args.event_id_scope
     print(
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
         f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
         f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} "
-        f"source={args.source} ingest_mode={args.ingest_mode} import_batch_id={import_batch_id}"
+        f"source={args.source} ingest_mode={args.ingest_mode} import_batch_id={import_batch_id} "
+        f"event_id_scope={event_scope}"
     )
     try:
         for path in files:
@@ -702,7 +715,13 @@ def main() -> None:
                 seq_val: int,
             ) -> dict:
                 ts = _now_iso()
-                ev_id = f"evt_{args.dataset}_{path.stem}_{seq_val:08d}"
+                dataset_token = _slug_token(args.dataset, "dataset")
+                file_token = _slug_token(path.stem, "file")
+                if event_scope == "batch":
+                    batch_token = _slug_token(import_batch_id, "batch")
+                    ev_id = f"evt_{dataset_token}_{batch_token}_{file_token}_{seq_val:08d}"
+                else:
+                    ev_id = f"evt_{dataset_token}_{file_token}_{seq_val:08d}"
                 txt = (
                     f"dataset={path.name} dataset_name:{args.dataset} row:{row_i} "
                     f"dim:{dim} dtype:{dtype} head:{_preview(vals, args.preview_k)}"
