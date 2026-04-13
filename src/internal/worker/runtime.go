@@ -203,7 +203,10 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	// cross-event races); this synchronous pass ensures the conflict_resolved
 	// edge is present before SubmitIngest returns — critical for test queries
 	// and any caller that reads edges immediately after ingest.
-	if mat.Memory.AgentID != "" && mat.Memory.SessionID != "" && mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) {
+	if mat.Memory.AgentID != "" &&
+		mat.Memory.SessionID != "" &&
+		mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) &&
+		!shouldSkipConflictMergeForEvent(ev) {
 		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
 		r.lastMemMu.RLock()
 		prevID, hasPrev := r.lastMem[key]
