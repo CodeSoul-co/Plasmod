@@ -389,6 +389,15 @@ def _run_dataset_purge(
         raise RuntimeError(f"unexpected status={status} ack={ack}")
     return ack
 
+def _render_progress(done: int, total: int) -> str:
+    if total <= 0:
+        return "[----------] 0%"
+    ratio = max(0.0, min(1.0, float(done) / float(total)))
+    width = 20
+    filled = int(ratio * width)
+    bar = "#" * filled + "-" * (width - filled)
+    return f"[{bar}] {int(ratio * 100)}%"
+
 
 def _collect_files(file_arg: str) -> list[Path]:
     p = Path(file_arg).expanduser().resolve()
@@ -551,6 +560,7 @@ def main() -> None:
                 f"  matched={int(ack.get('matched', 0))} skipped_active={int(ack.get('skipped_active', 0))} "
                 f"purgeable={int(ack.get('purgeable', 0))} purged={int(ack.get('purged', 0))}"
             )
+            print(f"  data_presence={ack.get('data_presence', 'unknown')} status={ack.get('status', 'ok')}")
             print(f"[purge:{mode}] done")
             return
 
@@ -564,15 +574,81 @@ def main() -> None:
         total_purgeable = 0
         total_purged = 0
         for path in files:
-            ack = _run_dataset_purge(
+            if args.purge_dry_run:
+                ack = _run_dataset_purge(
+                    args.base_url,
+                    args.workspace_id,
+                    args.dataset,
+                    True,
+                    only_if_inactive,
+                    file_name=path.name,
+                    timeout=args.http_timeout,
+                )
+                matched = int(ack.get("matched", 0))
+                skipped = int(ack.get("skipped_active", 0))
+                purgeable = int(ack.get("purgeable", 0))
+                purged = int(ack.get("purged", 0))
+                total_matched += matched
+                total_skipped += skipped
+                total_purgeable += purgeable
+                total_purged += purged
+                print(
+                    f"  [file] {path.name} matched={matched} skipped_active={skipped} "
+                    f"purgeable={purgeable} purged={purged} data_presence={ack.get('data_presence', 'unknown')}"
+                )
+                continue
+
+            pre = _run_dataset_purge(
                 args.base_url,
                 args.workspace_id,
                 args.dataset,
-                args.purge_dry_run,
+                True,
                 only_if_inactive,
                 file_name=path.name,
                 timeout=args.http_timeout,
             )
+            pre_purgeable = int(pre.get("purgeable", 0))
+            print(
+                f"  [precheck] {path.name} data_presence={pre.get('data_presence', 'unknown')} "
+                f"matched={int(pre.get('matched', 0))} purgeable={pre_purgeable}"
+            )
+            if pre_purgeable == 0:
+                print(f"  [file] {path.name} {_render_progress(0, 0)} (no data to purge)")
+                continue
+
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(
+                    _run_dataset_purge,
+                    args.base_url,
+                    args.workspace_id,
+                    args.dataset,
+                    False,
+                    only_if_inactive,
+                    file_name=path.name,
+                    timeout=args.http_timeout,
+                )
+                last_done = -1
+                while not fut.done():
+                    time.sleep(2)
+                    probe = _run_dataset_purge(
+                        args.base_url,
+                        args.workspace_id,
+                        args.dataset,
+                        True,
+                        only_if_inactive,
+                        file_name=path.name,
+                        timeout=min(args.http_timeout, 30.0),
+                    )
+                    remaining = int(probe.get("purgeable", 0))
+                    done = max(0, pre_purgeable - remaining)
+                    if done != last_done:
+                        print(
+                            f"  [file] {path.name} progress {_render_progress(done, pre_purgeable)} "
+                            f"({done}/{pre_purgeable})"
+                        )
+                        last_done = done
+                ack = fut.result()
+
             matched = int(ack.get("matched", 0))
             skipped = int(ack.get("skipped_active", 0))
             purgeable = int(ack.get("purgeable", 0))
@@ -583,7 +659,8 @@ def main() -> None:
             total_purged += purged
             print(
                 f"  [file] {path.name} matched={matched} skipped_active={skipped} "
-                f"purgeable={purgeable} purged={purged}"
+                f"purgeable={purgeable} purged={purged} "
+                f"data_presence={ack.get('data_presence', 'unknown')} status={ack.get('status', 'ok')}"
             )
         print(
             f"[purge:{mode}] done total_matched={total_matched} total_skipped_active={total_skipped} "

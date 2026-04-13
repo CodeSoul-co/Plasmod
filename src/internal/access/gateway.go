@@ -536,8 +536,20 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if cancelled {
 		status = "cancelled"
 	}
+	dataPresence := "has_data"
+	if matched == 0 || purgeable == 0 {
+		dataPresence = "no_data"
+	}
+	progressPercent := 0
+	if purgeable > 0 {
+		progressPercent = int((float64(purged) / float64(purgeable)) * 100)
+		if progressPercent > 100 {
+			progressPercent = 100
+		}
+	}
 	writeJSON(w, map[string]any{
 		"status":            status,
+		"data_presence":     dataPresence,
 		"file_name":         req.FileName,
 		"dataset_name":      req.DatasetName,
 		"prefix":            req.Prefix,
@@ -557,6 +569,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"purge_batch_size":  purgeBatchSize,
 		"purge_queue_size":  purgeQueueSize,
 		"purge_elapsed_ms":  time.Since(startedAt).Milliseconds(),
+		"purge_progress_percent": progressPercent,
 		"memory_ids":        ids,
 		"purged_memory_ids": purgeIDs,
 	})
