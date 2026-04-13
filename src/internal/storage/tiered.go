@@ -295,6 +295,15 @@ func NewTieredObjectStoreWithThreshold(hot *HotObjectCache, warm ObjectStore, wa
 	return NewTieredObjectStoreWithEmbedder(hot, warm, warmEdge, cold, nil, hotThreshold)
 }
 
+// SetEmbedder wires an embedder into an already-constructed TieredObjectStore.
+// Call this after the embedder is initialized (e.g. in bootstrap after the
+// embedder selection block) so that ArchiveMemory writes cold-tier embeddings.
+func (t *TieredObjectStore) SetEmbedder(e MemoryEmbedder) {
+	if t != nil {
+		t.embedder = e
+	}
+}
+
 // GetMemoryActivated returns a Memory with tier-aware activation.
 // Hot cache hit → immediate return.
 // Warm miss → warm store → promote to hot.
