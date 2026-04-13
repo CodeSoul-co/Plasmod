@@ -53,6 +53,10 @@ type SearchOutput struct {
 	// ColdSearchMode records how the cold tier was queried when IncludeCold=true.
 	// Allowed values: "", "hnsw", "vector", "lexical".
 	ColdSearchMode string
+	// ColdObjectIDs tracks IDs that originated from the cold tier.
+	// Used by the runtime to exempt cold-sourced IDs from the warm-store
+	// inactive-memory filter (archived memories may be soft-deleted in warm).
+	ColdObjectIDs []string
 }
 
 // DataPlane is the interface satisfied by all retrieval execution modules
