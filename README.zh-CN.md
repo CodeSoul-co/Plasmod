@@ -343,50 +343,7 @@ python scripts/run_demo.py
 make test
 ```
 
-## 集成测试
-
-集成测试套件位于 `integration_tests/`（已 gitignore，仅用于本地开发），分为两层：
-
-| 层 | 位置 | 测试内容 |
-|---|---|---|
-| **Go HTTP 测试** | `integration_tests/*_test.go` | 所有 HTTP API 路由、协议、数据流、拓扑——纯标准库，无额外依赖 |
-| **Python SDK 测试** | `integration_tests/python/` | `AndbClient.ingest_event()` / `.query()` SDK 封装 + 可选 S3 数据流 |
-
-### 通过 Docker 运行完整栈
-
-根目录 [`docker-compose.yml`](docker-compose.yml) 启动 **MinIO**（S3 API 端口 9000），创建 `andb-integration` 桶，并以 **`PLASMOD_STORAGE=disk`**、**`ANDB_DATA_DIR=/data`** 和 **`S3_*` 指向 MinIO** 运行 Go 服务。服务器在容器内监听 **`0.0.0.0:8080`**，对外发布为 **http://127.0.0.1:8080**。
-
-```bash
-docker compose up -d
-make integration-test
-```
-
-### 运行所有集成测试
-
-```bash
-make integration-test
-```
-
-### 运行 Go 单元测试
-
-```bash
-go test ./src/internal/... -count=1 -timeout 30s
-```
-
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `PLASMOD_BASE_URL` | `http://127.0.0.1:8080` | 所有测试使用的服务器地址 |
-| `PLASMOD_HTTP_TIMEOUT` | `10` | HTTP 超时（秒，Python SDK）|
-| `PLASMOD_RUN_S3_TESTS` | _（空）_ | 设为 `true` 启用 S3 数据流测试 |
-| `S3_ENDPOINT` | — | MinIO/S3 host:port |
-| `S3_ACCESS_KEY` | — | 访问密钥 |
-| `S3_SECRET_KEY` | — | 秘密密钥 |
-| `S3_BUCKET` | — | 桶名称 |
-| `S3_SECURE` | `false` | 使用 TLS |
-| `S3_REGION` | `us-east-1` | 区域（MinIO 忽略此项）|
-| `S3_PREFIX` | `andb/integration_tests` | 对象键前缀 |
+> 完整集成测试套件（Docker + MinIO + Fixture 驱动抓取）位于 `dev` 分支的 `integration_tests/` 和 `scripts/e2e/`，详见 `dev` 分支 README。
 
 ## 仓库结构
 
