@@ -308,6 +308,10 @@ func BuildServer() (*http.Server, func() error, error) {
 		embedderDim = dataplane.DefaultEmbeddingDim
 		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
 	}
+	// Wire embedder into tieredObjects so ArchiveMemory writes cold-tier embeddings.
+	// tieredObjects was constructed before the embedder was known; SetEmbedder patches it in.
+	tieredObjects.SetEmbedder(embedder)
+
 	plane, err := dataplane.NewTieredDataPlaneWithEmbedderAndConfig(tieredObjects, embedder, algoCfg)
 	if err != nil {
 		return nil, nil, err

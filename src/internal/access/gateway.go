@@ -530,7 +530,19 @@ func (g *Gateway) handleMemory(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		agentID := r.URL.Query().Get("agent_id")
 		sessionID := r.URL.Query().Get("session_id")
-		writeJSON(w, g.store.Objects().ListMemories(agentID, sessionID))
+		workspaceID := r.URL.Query().Get("workspace_id")
+		all := g.store.Objects().ListMemories(agentID, sessionID)
+		if workspaceID == "" {
+			writeJSON(w, all)
+			return
+		}
+		filtered := all[:0]
+		for _, m := range all {
+			if m.Scope == workspaceID {
+				filtered = append(filtered, m)
+			}
+		}
+		writeJSON(w, filtered)
 	case http.MethodPost:
 		var obj schemas.Memory
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {

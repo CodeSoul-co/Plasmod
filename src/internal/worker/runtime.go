@@ -255,7 +255,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
-	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs)
+	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs, result.ColdObjectIDs)
 	retrievalHitCount := len(result.ObjectIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
@@ -337,12 +337,23 @@ func applyQueryOutcomeHint(resp *schemas.QueryResponse, retrievalHits int) {
 
 // filterObjectIDsExcludingInactiveMemories drops memory IDs whose canonical Memory
 // exists in ObjectStore with IsActive=false (soft-deleted dataset rows).
-func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []string) []string {
+// coldIDs is a set of IDs that originated from the cold tier; those are exempted
+// because archived memories may be soft-deleted in warm but must still be surfaced
+// when include_cold=true is requested.
+func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []string, coldIDs []string) []string {
 	if os == nil || len(ids) == 0 {
 		return ids
 	}
+	coldSet := make(map[string]bool, len(coldIDs))
+	for _, id := range coldIDs {
+		coldSet[id] = true
+	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
+		if coldSet[id] {
+			out = append(out, id)
+			continue
+		}
 		if m, ok := os.GetMemory(id); ok && !m.IsActive {
 			continue
 		}
