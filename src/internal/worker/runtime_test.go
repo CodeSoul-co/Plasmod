@@ -280,6 +280,95 @@ func TestRuntime_SubmitIngest_SkipsConflictMergeForDatasetLoader(t *testing.T) {
 	}
 }
 
+func TestRuntime_ExecuteQuery_FilterByImportBatchID(t *testing.T) {
+	r := buildTestRuntime(t)
+	for i, batch := range []string{"batch_old", "batch_new"} {
+		ev := schemas.Event{
+			EventID:     fmt.Sprintf("evt_batch_filter_%d", i),
+			WorkspaceID: "w_batch",
+			AgentID:     "agent_batch",
+			SessionID:   "session_batch",
+			Payload: map[string]any{
+				"text":            "dataset=testQuery10K.fbin row:1",
+				"dataset":         "testQuery10K.fbin",
+				"file_name":       "testQuery10K.fbin",
+				"import_batch_id": batch,
+			},
+		}
+		if _, err := r.SubmitIngest(ev); err != nil {
+			t.Fatalf("SubmitIngest failed: %v", err)
+		}
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:      "dataset=testQuery10K.fbin",
+		QueryScope:     "w_batch",
+		WorkspaceID:    "w_batch",
+		AgentID:        "agent_batch",
+		SessionID:      "session_batch",
+		TopK:           10,
+		ResponseMode:   schemas.ResponseModeStructuredEvidence,
+		DatasetName:    "testQuery10K.fbin",
+		SourceFileName: "testQuery10K.fbin",
+		ImportBatchID:  "batch_new",
+	})
+	if len(resp.Objects) != 1 || resp.Objects[0] != "mem_evt_batch_filter_1" {
+		t.Fatalf("expected only latest selected batch memory, got objects=%v", resp.Objects)
+	}
+}
+
+func TestRuntime_ExecuteQuery_LatestBatchOnly(t *testing.T) {
+	r := buildTestRuntime(t)
+	events := []schemas.Event{
+		{
+			EventID:     "evt_latest_batch_old_1",
+			WorkspaceID: "w_latest",
+			AgentID:     "agent_latest",
+			SessionID:   "session_latest",
+			Payload: map[string]any{
+				"text":            "dataset=deep1B.ibin row:1",
+				"dataset":         "deep1B",
+				"file_name":       "deep1B.ibin",
+				"import_batch_id": "batch_old",
+			},
+		},
+		{
+			EventID:     "evt_latest_batch_new_1",
+			WorkspaceID: "w_latest",
+			AgentID:     "agent_latest",
+			SessionID:   "session_latest",
+			Payload: map[string]any{
+				"text":            "dataset=deep1B.ibin row:2",
+				"dataset":         "deep1B",
+				"file_name":       "deep1B.ibin",
+				"import_batch_id": "batch_new",
+			},
+		},
+	}
+	for _, ev := range events {
+		if _, err := r.SubmitIngest(ev); err != nil {
+			t.Fatalf("SubmitIngest failed: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:        "dataset=deep1B.ibin",
+		QueryScope:       "w_latest",
+		WorkspaceID:      "w_latest",
+		AgentID:          "agent_latest",
+		SessionID:        "session_latest",
+		TopK:             10,
+		ResponseMode:     schemas.ResponseModeStructuredEvidence,
+		DatasetName:      "deep1B",
+		SourceFileName:   "deep1B.ibin",
+		LatestBatchOnly:  true,
+	})
+	if len(resp.Objects) != 1 || resp.Objects[0] != "mem_evt_latest_batch_new_1" {
+		t.Fatalf("expected only latest batch memory, got objects=%v", resp.Objects)
+	}
+}
+
 // TestRuntime_SubgraphExpand_NodesPopulated is a regression test for the
 // SubgraphExecutorWorker nodes pre-fetch gap.
 //
