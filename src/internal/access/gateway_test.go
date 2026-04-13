@@ -638,7 +638,7 @@ func TestGateway_AdminDataWipe(t *testing.T) {
 	mux := http.NewServeMux()
 	deps.gw.RegisterRoutes(mux)
 
-	_ = deps.store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_wipe_test", Content: "keep"})
+	deps.store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_wipe_test", Content: "keep"})
 	if _, ok := deps.store.Objects().GetMemory("mem_wipe_test"); !ok {
 		t.Fatal("expected memory before wipe")
 	}

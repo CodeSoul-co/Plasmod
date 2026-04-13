@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"plasmod/src/internal/coordinator"
@@ -23,6 +26,99 @@ type Gateway struct {
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
 	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
+}
+
+func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
+	const (
+		defaultTieredWorkers = 8
+		defaultWarmWorkers   = 1
+		maxWorkers           = 64
+	)
+	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_WORKERS"))
+	if raw == "" {
+		if tieredEnabled {
+			return defaultTieredWorkers
+		}
+		return defaultWarmWorkers
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultWarmWorkers
+	}
+	if n > maxWorkers {
+		return maxWorkers
+	}
+	return n
+}
+
+func resolveDatasetPurgeBatchSize() int {
+	const (
+		defaultBatchSize = 512
+		maxBatchSize     = 20000
+	)
+	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_BATCH_SIZE"))
+	if raw == "" {
+		return defaultBatchSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultBatchSize
+	}
+	if n > maxBatchSize {
+		return maxBatchSize
+	}
+	return n
+}
+
+func resolveDatasetPurgeQueueSize(workers int) int {
+	const maxQueueSize = 20000
+	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_QUEUE_SIZE"))
+	if raw == "" {
+		q := workers * 4
+		if q < 16 {
+			return 16
+		}
+		if q > maxQueueSize {
+			return maxQueueSize
+		}
+		return q
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		q := workers * 4
+		if q < 16 {
+			return 16
+		}
+		if q > maxQueueSize {
+			return maxQueueSize
+		}
+		return q
+	}
+	if n > maxQueueSize {
+		return maxQueueSize
+	}
+	return n
+}
+
+func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectStore) {
+	if tiered != nil {
+		tiered.HardDeleteMemory(memoryID)
+	} else {
+		storage.PurgeMemoryWarmOnly(g.store, memoryID)
+	}
+	if g.store.Audits() != nil {
+		now := time.Now().UTC().Format(time.RFC3339)
+		g.store.Audits().AppendAudit(schemas.AuditRecord{
+			RecordID:       fmt.Sprintf("audit_purge_%s_%d", memoryID, time.Now().UnixNano()),
+			TargetMemoryID: memoryID,
+			OperationType:  string(schemas.AuditOpDelete),
+			ActorType:      "system",
+			ActorID:        "admin_api",
+			Decision:       "allow",
+			ReasonCode:     "dataset_purge",
+			Timestamp:      now,
+		})
+	}
 }
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
@@ -298,14 +394,36 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if tiered == nil {
 		purgeBackend = "warm_only"
 	}
+	ctx := r.Context()
 	mems := g.store.Objects().ListMemories("", "")
+	scanned := len(mems)
+	workspaceCandidates := 0
 	matched := 0
 	skippedActive := 0
 	purgeable := 0
 	purged := 0
+	cancelled := false
+	cancelReason := ""
 	ids := make([]string, 0)
 	purgeIDs := make([]string, 0)
-	for _, m := range mems {
+	for i, m := range mems {
+		if i%256 == 0 {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				cancelReason = ctx.Err().Error()
+				break
+			default:
+			}
+			if cancelled {
+				break
+			}
+		}
+		// Fast path: workspace_id is required; skip cross-workspace rows early.
+		if m.Scope != req.WorkspaceID {
+			continue
+		}
+		workspaceCandidates++
 		if !schemas.MemoryDatasetMatch(m, req.WorkspaceID, req.FileName, req.DatasetName, req.Prefix) {
 			continue
 		}
@@ -317,31 +435,109 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		}
 		purgeable++
 		purgeIDs = append(purgeIDs, m.MemoryID)
-		if req.DryRun {
-			continue
+	}
+	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
+	purgeBatchSize := resolveDatasetPurgeBatchSize()
+	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
+	startedAt := time.Now()
+	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
+		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				cancelReason = ctx.Err().Error()
+			default:
+			}
+			if cancelled {
+				break
+			}
+			end := start + purgeBatchSize
+			if end > len(purgeIDs) {
+				end = len(purgeIDs)
+			}
+			batch := purgeIDs[start:end]
+			workerCount := purgeWorkers
+			if workerCount > len(batch) {
+				workerCount = len(batch)
+			}
+			if workerCount <= 1 {
+				for _, id := range batch {
+					select {
+					case <-ctx.Done():
+						cancelled = true
+						cancelReason = ctx.Err().Error()
+					default:
+					}
+					if cancelled {
+						break
+					}
+					g.purgeOneMemory(id, tiered)
+					purged++
+				}
+			} else {
+				jobs := make(chan string, purgeQueueSize)
+				var wg sync.WaitGroup
+				var mu sync.Mutex
+				batchPurged := 0
+				for i := 0; i < workerCount; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case id, ok := <-jobs:
+								if !ok {
+									return
+								}
+								g.purgeOneMemory(id, tiered)
+								mu.Lock()
+								batchPurged++
+								mu.Unlock()
+							}
+						}
+					}()
+				}
+				for _, id := range batch {
+					select {
+					case <-ctx.Done():
+						cancelled = true
+						cancelReason = ctx.Err().Error()
+					case jobs <- id:
+					}
+					if cancelled {
+						break
+					}
+				}
+				close(jobs)
+				wg.Wait()
+				purged += batchPurged
+			}
+			log.Printf(
+				"admin purge progress: workspace=%s dataset=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
+				req.WorkspaceID,
+				req.DatasetName,
+				(start/purgeBatchSize)+1,
+				(len(purgeIDs)+purgeBatchSize-1)/purgeBatchSize,
+				purged,
+				len(purgeIDs),
+				workerCount,
+				purgeQueueSize,
+				time.Since(startedAt).Milliseconds(),
+				cancelled,
+			)
+			if cancelled {
+				break
+			}
 		}
-		if tiered != nil {
-			tiered.HardDeleteMemory(m.MemoryID)
-		} else {
-			storage.PurgeMemoryWarmOnly(g.store, m.MemoryID)
-		}
-		if g.store.Audits() != nil {
-			now := time.Now().UTC().Format(time.RFC3339)
-			g.store.Audits().AppendAudit(schemas.AuditRecord{
-				RecordID:       fmt.Sprintf("audit_purge_%s_%d", m.MemoryID, time.Now().UnixNano()),
-				TargetMemoryID: m.MemoryID,
-				OperationType:  string(schemas.AuditOpDelete),
-				ActorType:      "system",
-				ActorID:        "admin_api",
-				Decision:       "allow",
-				ReasonCode:     "dataset_purge",
-				Timestamp:      now,
-			})
-		}
-		purged++
+	}
+	status := "ok"
+	if cancelled {
+		status = "cancelled"
 	}
 	writeJSON(w, map[string]any{
-		"status":            "ok",
+		"status":            status,
 		"file_name":         req.FileName,
 		"dataset_name":      req.DatasetName,
 		"prefix":            req.Prefix,
@@ -349,10 +545,18 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"dry_run":           req.DryRun,
 		"only_if_inactive":  onlyIfInactive,
 		"purge_backend":     purgeBackend,
+		"scanned":           scanned,
+		"workspace_scanned": workspaceCandidates,
 		"matched":           matched,
 		"skipped_active":    skippedActive,
 		"purgeable":         purgeable,
 		"purged":            purged,
+		"cancelled":         cancelled,
+		"cancel_reason":     cancelReason,
+		"purge_workers":     purgeWorkers,
+		"purge_batch_size":  purgeBatchSize,
+		"purge_queue_size":  purgeQueueSize,
+		"purge_elapsed_ms":  time.Since(startedAt).Milliseconds(),
 		"memory_ids":        ids,
 		"purged_memory_ids": purgeIDs,
 	})
