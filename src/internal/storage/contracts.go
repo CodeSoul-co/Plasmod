@@ -122,6 +122,22 @@ type AuditStore interface {
 	ListAudits() []schemas.AuditRecord
 }
 
+// ColdTierDiagnostics is an optional benchmark-facing summary exposed by cold
+// storage implementations that want to surface candidate counts / fallback
+// behavior without forcing callers to parse logs.
+type ColdTierDiagnostics struct {
+	SearchMode     string `json:"search_mode,omitempty"`
+	CandidateCount int    `json:"candidate_count,omitempty"`
+	UsedFallback   bool   `json:"used_fallback,omitempty"`
+	TierRequested  bool   `json:"tier_requested,omitempty"`
+}
+
+// ColdTierDiagnosticsProvider is an optional interface for cold-store related
+// components. Member C benchmark runners may use it when present.
+type ColdTierDiagnosticsProvider interface {
+	ColdTierDiagnostics() ColdTierDiagnostics
+}
+
 // MemoryAlgorithmStateStore persists per-memory, per-algorithm state records.
 // Keyed by (memoryID, algorithmID) so multiple algorithms can coexist.
 type MemoryAlgorithmStateStore interface {
