@@ -18,6 +18,7 @@ Options:
     --skip-query        Skip QueryChain step (ONNX query takes ~120s)
     --out-dir DIR       Write report + request log (default: out/live_agent_test)
     --env-file FILE     Load env vars from file (default: .env)
+    --backend-profile   Baseline profile: plain_vector | vector_metadata | plasmod_full
 """
 from __future__ import annotations
 
@@ -60,6 +61,7 @@ def _load_env_file(path: str) -> dict[str, str]:
 RESULTS: list[dict] = []
 REQ_LOG: list[dict] = []
 _lock = Lock()
+BASELINE_PROFILES = ("plain_vector", "vector_metadata", "plasmod_full")
 
 def _req(base: str, method: str, path: str, body: dict | None = None,
          timeout: float = 60.0) -> tuple[int, Any]:
@@ -154,9 +156,16 @@ def _now() -> str:
 
 def ingest_event(base: str, agent_id: str, workspace_id: str,
                  text: str, event_type: str = "user_message",
-                 importance: float = 0.8) -> tuple[str, str]:
+                 importance: float = 0.8, profile: str = "plasmod_full") -> tuple[str, str]:
     """Returns (event_id, memory_id)."""
     eid = f"live-{uuid.uuid4().hex[:12]}"
+    payload: dict[str, Any] = {"text": text, "dataset": "live_test"}
+    if profile in ("vector_metadata", "plasmod_full"):
+        payload.update({
+            "tags": ["agent-memory", "baseline-e2e"],
+            "source_file_name": "live_agent_test.py",
+            "dataset_name": "live_test",
+        })
     body = {
         "event_id":   eid,
         "agent_id":   agent_id,
@@ -164,7 +173,7 @@ def ingest_event(base: str, agent_id: str, workspace_id: str,
         "event_type": event_type,
         "source":     "live_agent_test",
         "importance": importance,
-        "payload":    {"text": text, "dataset": "live_test"},
+        "payload":    payload,
     }
     status, resp = _req(base, "POST", "/v1/ingest/events", body, timeout=30.0)
     if status in (200, 201):
@@ -176,7 +185,7 @@ def ingest_event(base: str, agent_id: str, workspace_id: str,
 # Phase 1 — Setup
 # ══════════════════════════════════════════════════════════════════════════════
 
-def phase_setup(base: str, ws: str) -> dict[str, str]:
+def phase_setup(base: str, ws: str, profile: str) -> dict[str, str]:
     _header("Phase 1 — Agent Setup & MAS Topology")
     agents: dict[str, str] = {"_workspace": ws}
 
@@ -194,18 +203,21 @@ def phase_setup(base: str, ws: str) -> dict[str, str]:
             _fail(f"Create {name}", f"status={status} resp={str(resp)[:80]}")
             agents[name] = aid
 
-    # share contract alpha → beta
-    status, _ = _req(base, "POST", "/v1/share-contracts", {
-        "from_agent_id": agents["agent-alpha"],
-        "to_agent_id":   agents["agent-beta"],
-        "workspace_id":  ws,
-        "bidirectional": True,
-        "memory_types":  ["user_message", "agent_thought", "tool_call", "semantic_memory"],
-    })
-    if status in (200, 201):
-        _pass("MAS share contract alpha↔beta")
+    # share contract alpha → beta (only for full profile)
+    if profile == "plasmod_full":
+        status, _ = _req(base, "POST", "/v1/share-contracts", {
+            "from_agent_id": agents["agent-alpha"],
+            "to_agent_id":   agents["agent-beta"],
+            "workspace_id":  ws,
+            "bidirectional": True,
+            "memory_types":  ["user_message", "agent_thought", "tool_call", "semantic_memory"],
+        })
+        if status in (200, 201):
+            _pass("MAS share contract alpha↔beta")
+        else:
+            _fail("MAS share contract alpha↔beta", f"status={status}")
     else:
-        _fail("MAS share contract alpha↔beta", f"status={status}")
+        _info(f"Skip share-contract for profile={profile}")
 
     return agents
 
@@ -214,7 +226,7 @@ def phase_setup(base: str, ws: str) -> dict[str, str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def phase_llm_ingest(base: str, llm: LLMClient | None,
-                     agents: dict[str, str]) -> list[str]:
+                     agents: dict[str, str], profile: str) -> list[str]:
     _header("Phase 2 — LLM Generation + Ingest  [MainChain write path]")
     ws      = agents["_workspace"]
     alpha   = agents["agent-alpha"]
@@ -259,7 +271,8 @@ def phase_llm_ingest(base: str, llm: LLMClient | None,
     for i, fact in enumerate(facts):
         _, mem_id = ingest_event(base, alpha, ws, fact,
                                   event_type="semantic_memory",
-                                  importance=round(0.7 + 0.05 * i, 2))
+                                  importance=round(0.7 + 0.05 * i, 2),
+                                  profile=profile)
         if mem_id:
             mem_ids.append(mem_id)
             ok_count += 1
@@ -286,7 +299,7 @@ def phase_llm_ingest(base: str, llm: LLMClient | None,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def phase_memory_pipeline(base: str, agents: dict[str, str],
-                           mem_ids: list[str]) -> str:
+                           mem_ids: list[str], profile: str) -> str:
     _header("Phase 3 — MemoryPipelineChain  [cognitive path]")
     ws    = agents["_workspace"]
     alpha = agents["agent-alpha"]
@@ -302,14 +315,17 @@ def phase_memory_pipeline(base: str, agents: dict[str, str],
         _fail("MemoryPipelineChain — materialization",
               f"expected≥{len(mem_ids)} got {len(mems)}")
 
-    # Summarization trigger
+    # Summarization trigger (skip for plain vector baseline)
     if sample_id:
-        status, _ = _req(base, "POST", "/v1/internal/memory/summarize",
-                          {"memory_id": sample_id, "agent_id": alpha}, timeout=30.0)
-        if status in (200, 201, 204):
-            _pass("MemoryPipelineChain — summarization triggered", f"status={status}")
+        if profile == "plain_vector":
+            _info("Skip summarize for plain_vector profile")
         else:
-            _fail("MemoryPipelineChain — summarization triggered", f"status={status}")
+            status, _ = _req(base, "POST", "/v1/internal/memory/summarize",
+                              {"memory_id": sample_id, "agent_id": alpha}, timeout=30.0)
+            if status in (200, 201, 204):
+                _pass("MemoryPipelineChain — summarization triggered", f"status={status}")
+            else:
+                _fail("MemoryPipelineChain — summarization triggered", f"status={status}")
     else:
         _fail("MemoryPipelineChain — summarization triggered", "no sample memory id")
 
@@ -328,7 +344,7 @@ def phase_memory_pipeline(base: str, agents: dict[str, str],
 # ══════════════════════════════════════════════════════════════════════════════
 
 def phase_query_chain(base: str, agents: dict[str, str],
-                      llm: LLMClient | None, skip: bool) -> None:
+                      llm: LLMClient | None, skip: bool, profile: str) -> None:
     _header("Phase 4 — QueryChain  [ONNX embedding + proof_trace]")
     ws = agents["_workspace"]
 
@@ -351,12 +367,30 @@ def phase_query_chain(base: str, agents: dict[str, str],
 
     _info(f"Sending query (ONNX inference ~120s)…")
     t0 = time.monotonic()
-    status, resp = _req(base, "POST", "/v1/query", {
-        "query_text":       query_text,
-        "workspace_id":     ws,
-        "top_k":            5,
-        "include_evidence": True,
-    }, timeout=360.0)
+    if profile == "plain_vector":
+        qbody = {
+            "query_text": query_text,
+            "workspace_id": ws,
+            "top_k": 5,
+            "include_evidence": False,
+        }
+    elif profile == "vector_metadata":
+        qbody = {
+            "query_text": query_text,
+            "workspace_id": ws,
+            "top_k": 5,
+            "include_evidence": False,
+            "query_scope": "workspace",
+            "time_window": {"from": "2020-01-01T00:00:00Z", "to": "2099-12-31T23:59:59Z"},
+        }
+    else:
+        qbody = {
+            "query_text": query_text,
+            "workspace_id": ws,
+            "top_k": 5,
+            "include_evidence": True,
+        }
+    status, resp = _req(base, "POST", "/v1/query", qbody, timeout=360.0)
     elapsed = time.monotonic() - t0
 
     if status == 200:
@@ -384,8 +418,11 @@ def phase_query_chain(base: str, agents: dict[str, str],
 # ══════════════════════════════════════════════════════════════════════════════
 
 def phase_collaboration_chain(base: str, agents: dict[str, str],
-                               mem_ids: list[str]) -> None:
+                               mem_ids: list[str], profile: str) -> None:
     _header("Phase 5 — CollaborationChain  [MAS: conflict resolve + share]")
+    if profile != "plasmod_full":
+        _info(f"Skip collaboration chain for profile={profile}")
+        return
     ws    = agents["_workspace"]
     alpha = agents["agent-alpha"]
     beta  = agents["agent-beta"]
@@ -435,7 +472,7 @@ def phase_collaboration_chain(base: str, agents: dict[str, str],
 # Phase 6 — MemoryBank governance
 # ══════════════════════════════════════════════════════════════════════════════
 
-def phase_memorybank(base: str, agents: dict[str, str], mem_ids: list[str]) -> None:
+def phase_memorybank(base: str, agents: dict[str, str], mem_ids: list[str], profile: str) -> None:
     _header("Phase 6 — MemoryBank Governance  [admission / retention / recall]")
     ws    = agents["_workspace"]
     alpha = agents["agent-alpha"]
@@ -482,7 +519,7 @@ def phase_memorybank(base: str, agents: dict[str, str], mem_ids: list[str]) -> N
         indexes  = (resp or {}).get("indexes", 0)
         segments = (resp or {}).get("segments", 0)
         _pass("MemoryBank — ANN index active",
-              f"indexes={indexes} segments={segments}")
+              f"indexes={indexes} segments={segments} profile={profile}")
     else:
         _fail("MemoryBank — ANN index active", f"status={status}")
 
@@ -584,6 +621,7 @@ def main() -> None:
     parser.add_argument("--skip-query",  action="store_true")
     parser.add_argument("--out-dir",     default="out/live_agent_test")
     parser.add_argument("--env-file",    default=".env")
+    parser.add_argument("--backend-profile", default="plasmod_full", choices=BASELINE_PROFILES)
     args = parser.parse_args()
 
     # ── load env ──────────────────────────────────────────────────
@@ -618,15 +656,16 @@ def main() -> None:
     print(f"\n  Server    : {base}")
     print(f"  LLM       : {llm_model if llm else 'static content'}")
     print(f"  Workspace : {ws}")
+    print(f"  Profile   : {args.backend_profile}")
 
     t_start = time.monotonic()
 
-    agents  = phase_setup(base, ws)
-    mem_ids = phase_llm_ingest(base, llm, agents)
-    sample_id = phase_memory_pipeline(base, agents, mem_ids)
-    phase_query_chain(base, agents, llm, skip=args.skip_query)
-    phase_collaboration_chain(base, agents, mem_ids)
-    phase_memorybank(base, agents, mem_ids)
+    agents  = phase_setup(base, ws, args.backend_profile)
+    mem_ids = phase_llm_ingest(base, llm, agents, args.backend_profile)
+    sample_id = phase_memory_pipeline(base, agents, mem_ids, args.backend_profile)
+    phase_query_chain(base, agents, llm, skip=args.skip_query, profile=args.backend_profile)
+    phase_collaboration_chain(base, agents, mem_ids, args.backend_profile)
+    phase_memorybank(base, agents, mem_ids, args.backend_profile)
 
     total_elapsed = time.monotonic() - t_start
     fails = write_report(Path(args.out_dir), llm, total_elapsed, args)
