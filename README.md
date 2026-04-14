@@ -27,12 +27,16 @@ Plasmod is an agent-native database for multi-agent systems. Inspired by the ada
 
 ## What is implemented
 
-- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with **25 HTTP paths** registered in [`Gateway.RegisterRoutes`](src/internal/access/gateway.go) (see [HTTP API surface](#http-api-surface-v1)), graceful shutdown via `context.WithCancel`
+- Go server ([`src/cmd/server/main.go`](src/cmd/server/main.go)) with **26 HTTP paths** registered in [`Gateway.RegisterRoutes`](src/internal/access/gateway.go) (see [HTTP API surface](#http-api-surface-v1)), graceful shutdown via `context.WithCancel`
 - Admin dataset cleanup: `POST /v1/admin/dataset/delete` soft-deletes **Memory** records whose `Memory.Content` matches the given selectors (**AND** semantics). **`workspace_id` is required.** At least one of `file_name`, `dataset_name`, or `prefix` is required. `dry_run` only reports matches without mutating. Soft delete sets `IsActive=false` and evicts the hot-tier **cache** copy so stale rows are not served; **cold-tier embeddings are kept** until hard delete (`purge`) so metadata and vectors stay consistent. Query paths filter inactive memories.
   - Matching rules (**AND**): prefer structured fields on `Memory` when ingest provided them — `dataset` → `Memory.dataset_name`, `file_name` → `Memory.source_file_name` (from `Event.Payload`). Otherwise selectors fall back to **token-safe** parsing of `Memory.Content` (exact file token after `dataset=`, exact `dataset_name:` label without matching a longer label prefix, prefix on the file token).
   - Example bodies: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}` · `{"file_name":"base.10M.fbin","dataset_name":"deep1B","workspace_id":"w_demo","dry_run":false}`
   - Response fields include `matched`, `deleted`, and `memory_ids` (all memory IDs that matched the selectors; in `dry_run`, `deleted` stays `0` while `memory_ids` still lists matches).
-- Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. When a tiered object store is wired, it physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. If the runtime has **no** `TieredObjectStore`, purge falls back to **warm-only** removal (`purge_backend` in the JSON response is `warm_only`; cold embeddings may remain orphaned until a later cold GC or a deployment that wires tiered storage). By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting. Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
+- Admin **full data wipe** (destructive): `POST /v1/admin/data/wipe` clears the entire runtime dataset in one shot — Badger `DropAll` when disk storage is enabled, in-place memory store reset, tiered retrieval plane reset, WAL / derivation log truncation or clear, policy-decision and evidence caches, and `lastMem`. Request body must be **exactly** `{"confirm":"delete_all_data"}`. **S3/MinIO cold objects are not deleted** by this handler (use bucket lifecycle or manual cleanup); the JSON response reports `cold_tier` (e.g. `in_memory_cleared` vs `s3_not_cleared`) and includes a note reminding that bucket-side cleanup is separate.
+- Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. When a tiered object store is wired, it physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. If the runtime has **no** `TieredObjectStore`, purge falls back to **warm-only** removal (`purge_backend` in the JSON response is `warm_only`; cold embeddings may remain orphaned until a later cold GC or a deployment that wires tiered storage). By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting.
+  - Performance/observability fields now include `scanned`, `workspace_scanned`, `purge_workers`, `purge_batch_size`, `purge_queue_size`, `purge_elapsed_ms`, and cancellation status (`status=cancelled`, `cancel_reason`) when the client request is aborted.
+  - Throughput knobs (env): `ANDB_DATASET_PURGE_WORKERS`, `ANDB_DATASET_PURGE_BATCH_SIZE`, `ANDB_DATASET_PURGE_QUEUE_SIZE`.
+  - Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
@@ -46,6 +50,7 @@ Plasmod is an agent-native database for multi-agent systems. Inspired by the ada
 - `QueryResponse` with `Objects`, `Edges`, `Provenance`, `ProofTrace`, `Versions`, `AppliedFilters`, `ChainTraces`, `EvidenceCache`, and `chain_traces` (main/memory_pipeline/query/collaboration slots) on every query
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
 - `include_cold` query flag wired through planner and TieredDataPlane to force cold-tier merge even when hot satisfies TopK
+- Gateway ID autofill: when `event_id` / canonical object IDs are omitted in POST requests, the gateway auto-generates prefix-based time-sortable random IDs (`<prefix>_<ts36>_<randhex>`); caller-provided IDs are still respected as-is.
 - Algorithm dispatch: `DispatchAlgorithm`, `DispatchRecall`, `DispatchShare`, `DispatchConflictResolve` on Runtime; pluggable `MemoryManagementAlgorithm` interface with `BaselineMemoryAlgorithm` (default) and `MemoryBankAlgorithm` (8-dimension governance model)
 - **MemoryBank governance**: 8 lifecycle states (candidate→active→reinforced→compressed→stale→quarantined→archived→deleted), conflict detection (value contradiction, preference reversal, factual disagreement, entity conflict), profile management
 - All algorithm parameters externalized to `configs/algorithm_memorybank.yaml` and `configs/algorithm_baseline.yaml`
@@ -62,19 +67,21 @@ Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.g
 | Group | Endpoints |
 |-------|-----------|
 | **Health** | `GET /healthz` |
-| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` |
+| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` · `POST /v1/admin/data/wipe` |
 | **Core** | `POST /v1/ingest/events` · `POST /v1/query` |
 | **Canonical CRUD** | `GET` / `POST` — `/v1/agents`, `/v1/sessions`, `/v1/memory`, `/v1/states`, `/v1/artifacts`, `/v1/edges`, `/v1/policies`, `/v1/share-contracts` (list/filter via query params; POST creates or replaces per handler) |
 | **Traces** | `GET /v1/traces/{object_id}` |
 | **Internal (Agent SDK bridge)** | `POST` — `/v1/internal/memory/recall`, `/v1/internal/memory/ingest`, `/v1/internal/memory/compress`, `/v1/internal/memory/summarize`, `/v1/internal/memory/decay`, `/v1/internal/memory/share`, `/v1/internal/memory/conflict/resolve` |
 
-**Operational notes:** `/v1/admin/*` is protected when `ANDB_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response).
+**Operational notes:** `/v1/admin/*` is protected when `ANDB_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response). `POST /v1/admin/data/wipe` requires `{"confirm":"delete_all_data"}` and removes **all** application data in-process/Badger/retrieval caches, but intentionally does **not** delete existing S3/MinIO cold objects (`cold_tier: "s3_not_cleared"`).
 
 ## Dataset bulk import and CLI delete / purge (E2E)
 
-Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`).
+Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vector-style files into ANDB via `POST /v1/ingest/events`, or to call `POST /v1/admin/dataset/delete` / `POST /v1/admin/dataset/purge` in a loop over matched files (purge only removes rows that are already soft-deleted unless you pass `--purge-include-active`; tune purge throughput via `ANDB_DATASET_PURGE_*` env vars above).
 
 - **Ingest is not transactional:** use `--concurrency 1` with `--checkpoint PATH` for resumable imports after failures, plus `--ingest-retries` / `--retry-backoff` for transient HTTP errors (see script `--help`).
+- **Bulk import anti-soft-delete contract (default-on):** importer now writes `source=dataset_loader` and `payload.ingest_mode=bulk_dataset` by default. Subscriber conflict merge skips this marked traffic when `ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER=true` (default behavior), so large dataset rows are append-only and keep `IsActive=true`.
+- **Long-term append-only ID strategy (default):** event IDs now include `import_batch_id` (`--event-id-scope batch`) so re-importing the same dataset/file creates new `event_id`/`memory_id` instead of reusing prior IDs. Use `--event-id-scope legacy` only for backward-compat replay.
 - **Supported suffixes:** `.fvecs`, `.ivecs`, `.ibin`, `.fbin`, `.arrow` (`.arrow` requires `pyarrow` from [`requirements.txt`](requirements.txt)).
 - **Markers in ingested text:** each event’s `payload.text` includes `dataset=<file_basename>` and `dataset_name:<--dataset>` so you can delete either by file name, by dataset label, or both together (aligned with the admin delete API above).
 - **`.ibin` dtype:** use `--ibin-dtype auto|float32|int32` when auto-detection by filename is wrong for your file.
@@ -82,7 +89,8 @@ Use [`scripts/e2e/import_dataset.py`](scripts/e2e/import_dataset.py) to push vec
 
 ```bash
 # Ingest (limit rows per file)
-python3 scripts/e2e/import_dataset.py --file /path/to/base.10M.fbin --dataset deep1B --limit 200 --workspace-id w_demo
+python3 scripts/e2e/import_dataset.py --file /path/to/base.10M.fbin --dataset deep1B --limit 200 --workspace-id w_demo \
+  --source dataset_loader --ingest-mode bulk_dataset
 
 # Delete dry-run (per file under --file: sends file_name + dataset_name + workspace_id)
 python3 scripts/e2e/import_dataset.py --delete --delete-dry-run --file /path/to/base.10M.fbin --dataset deep1B --workspace-id w_demo
@@ -730,7 +738,7 @@ Additional supporting docs already in the repo:
 - Tiered hot → warm → cold retrieval with RRF fusion 
 - 1-hop graph expansion in every `QueryResponse` 
 - Pre-computed `EvidenceFragment` cache merged into `ProofTrace` at query time 
-- Go HTTP API (25 paths in `RegisterRoutes`), Python SDK, and integration test suite 
+- Go HTTP API (26 paths in `RegisterRoutes`), Python SDK, and integration test suite 
 - Pluggable memory governance algorithms (Baseline + MemoryBank) 
 - 10 embedding provider implementations (TF-IDF, OpenAI, Cohere, VertexAI, HuggingFace, ONNX, GGUF, TensorRT) 
 - `include_cold` query flag fully wired 
@@ -789,14 +797,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | `docs/server-migration.md` | S3 / config migration guide |
 
 **Interface boundary:** Storage contracts (`RuntimeStorage`, `GraphEdgeStore`, `ObjectStore`) are defined in `storage/contracts.go` — Member A implements warm-side behaviour only; cold-side is Member C's.
-
-#### Outstanding TODO
-
-- [√] `admin_auth.go` — fix `constantTimeEqual`: replace length-branch early-return with HMAC-SHA256 digest comparison to eliminate timing side-channel
-- [√] `dataset_match.go` — add `,` and `;` to token boundaries in `contentDatasetNameLabelEquals`
-- [√] `s3store.go` *(hot-path only)* — `selectTopScored`: sort a copy instead of mutating the caller's slice
-- [√] `purge_warm.go` — add doc comment: 2-pass retry reduces but does not eliminate the edge race (known limitation)
-- [√] `dataset_match.go` — add doc comment: all-empty selectors match every memory in the workspace
 
 ---
 

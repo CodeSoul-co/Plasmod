@@ -73,3 +73,13 @@ func (l *PolicyDecisionLog) Since(fromLSN int64) []PolicyDecisionEntry {
 	}
 	return out
 }
+
+// Wipe clears all policy decision entries (admin full data wipe).
+func (l *PolicyDecisionLog) Wipe() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = nil
+}

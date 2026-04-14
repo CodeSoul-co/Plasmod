@@ -15,7 +15,7 @@ set -euo pipefail
 #   COMPOSE_SERVICES (default "minio minio-init andb")
 #   HEALTHZ_RETRIES / HEALTHZ_INTERVAL_SEC
 #   CAPTURE_HTTP_TIMEOUT (default 180)
-#   TEST_DOCKER_NETWORK (default cogdb_default)
+#   TEST_DOCKER_NETWORK (default: auto from running andb container; override if needed)
 #   TEST_BUILDER_IMAGE (default cogdb:test-builder)
 #   TEST_S3_* for container test env
 
@@ -26,12 +26,13 @@ ma_enable_failure_diagnostics "task4-strict"
 
 ANDB_BASE_URL="${ANDB_BASE_URL:-http://127.0.0.1:8080}"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/out/member_a_task4_strict}"
-STRICT_FIXTURES="${STRICT_FIXTURES:-${REPO_ROOT}/scripts/e2e/fixtures/member_a_strict}"
+# Same defaults as member_a_verify / member_a_capture (integration_tests fixtures).
+STRICT_FIXTURES="${STRICT_FIXTURES:-${REPO_ROOT}/integration_tests/fixtures/member_a}"
 COMPOSE_SERVICES="${COMPOSE_SERVICES:-minio minio-init andb}"
 HEALTHZ_RETRIES="${HEALTHZ_RETRIES:-60}"
 HEALTHZ_INTERVAL_SEC="${HEALTHZ_INTERVAL_SEC:-2}"
 CAPTURE_HTTP_TIMEOUT="${CAPTURE_HTTP_TIMEOUT:-180}"
-TEST_DOCKER_NETWORK="${TEST_DOCKER_NETWORK:-cogdb_default}"
+TEST_DOCKER_NETWORK="${TEST_DOCKER_NETWORK:-}"
 TEST_BUILDER_IMAGE="${TEST_BUILDER_IMAGE:-cogdb:test-builder}"
 TEST_S3_ENDPOINT="${TEST_S3_ENDPOINT:-minio:9000}"
 TEST_S3_ACCESS_KEY="${TEST_S3_ACCESS_KEY:-minioadmin}"
@@ -46,6 +47,11 @@ ma_compose up -d ${COMPOSE_SERVICES}
 
 echo "[task4-strict] wait /healthz..."
 ma_wait_healthz "${ANDB_BASE_URL}" "${HEALTHZ_RETRIES}" "${HEALTHZ_INTERVAL_SEC}" "task4-strict"
+
+if [[ -z "${TEST_DOCKER_NETWORK}" ]]; then
+  TEST_DOCKER_NETWORK="$(ma_compose_default_network)"
+fi
+echo "[task4-strict] docker network for S3 roundtrip tests: ${TEST_DOCKER_NETWORK}"
 
 echo "[task4-strict] run fixture capture..."
 ANDB_BASE_URL="${ANDB_BASE_URL}" python3 scripts/e2e/member_a_capture.py \

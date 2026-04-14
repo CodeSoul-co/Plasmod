@@ -35,6 +35,10 @@ type QueryRequest struct {
 	EdgeTypes           []string   `json:"edge_types,omitempty"`
 	RelationConstraints []string   `json:"relation_constraints"`
 	ResponseMode        string     `json:"response_mode"`
+	DatasetName         string     `json:"dataset_name,omitempty"`
+	SourceFileName      string     `json:"source_file_name,omitempty"`
+	ImportBatchID       string     `json:"import_batch_id,omitempty"`
+	LatestBatchOnly     bool       `json:"latest_batch_only,omitempty"`
 	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
 	IncludeCold bool `json:"include_cold,omitempty"`
 }
