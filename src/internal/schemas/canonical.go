@@ -81,6 +81,8 @@ type Memory struct {
 	DatasetName string `json:"dataset_name,omitempty"`
 	// SourceFileName is the originating file basename from Event.Payload["file_name"] when present.
 	SourceFileName string `json:"source_file_name,omitempty"`
+	// ImportBatchID groups one bulk-import run; used by snapshot-like query filtering.
+	ImportBatchID string `json:"import_batch_id,omitempty"`
 }
 
 type State struct {

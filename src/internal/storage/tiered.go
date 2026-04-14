@@ -152,6 +152,17 @@ func (c *HotObjectCache) Len() int {
 	return len(c.entries)
 }
 
+// Clear removes all entries (used by admin full data wipe).
+func (c *HotObjectCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]*HotEntry)
+	c.order = c.order[:0]
+}
+
 // evictOne removes the entry with the lowest hotness score.
 // Must be called with c.mu held (write).
 func (c *HotObjectCache) evictOne() {
@@ -259,6 +270,19 @@ func (t *TieredObjectStore) HardDeleteMemory(memoryID string) {
 	if t.warm != nil {
 		t.warm.DeleteMemory(memoryID)
 	}
+}
+
+// ClearColdIfInMemory wipes the in-process cold tier when present. S3-backed cold stores
+// are not enumerated/deleted; returns "s3_not_cleared" in that case.
+func (t *TieredObjectStore) ClearColdIfInMemory() string {
+	if t == nil || t.cold == nil {
+		return "none"
+	}
+	if im, ok := t.cold.(*InMemoryColdStore); ok {
+		im.ClearAll()
+		return "in_memory_cleared"
+	}
+	return "s3_not_cleared"
 }
 
 func NewTieredObjectStore(hot *HotObjectCache, warm ObjectStore, warmEdge GraphEdgeStore, cold ColdObjectStore) *TieredObjectStore {
@@ -553,6 +577,21 @@ func NewInMemoryColdStore() *InMemoryColdStore {
 		embeddings: map[string][]float32{},
 		edges:      map[string]schemas.Edge{},
 	}
+}
+
+// ClearAll wipes the simulated cold tier in memory (admin wipe; keeps the same store pointer).
+func (s *InMemoryColdStore) ClearAll() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.memories = map[string]schemas.Memory{}
+	s.agents = map[string]schemas.Agent{}
+	s.states = map[string]schemas.State{}
+	s.artifacts = map[string]schemas.Artifact{}
+	s.embeddings = map[string][]float32{}
+	s.edges = map[string]schemas.Edge{}
 }
 
 func (s *InMemoryColdStore) PutMemory(m schemas.Memory) {

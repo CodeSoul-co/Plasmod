@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
@@ -62,7 +63,7 @@ func buildTestGatewayWithDeps() gatewayDeps {
 	runtime.RegisterDefaults()
 
 	return gatewayDeps{
-		gw:      NewGateway(coord, runtime, store, nil),
+		gw:      NewGateway(coord, runtime, store, nil, nil),
 		store:   store,
 		runtime: runtime,
 		cold:    cold,
@@ -105,7 +106,7 @@ func buildTestGatewayNoTieredRuntime() gatewayDeps {
 	runtime.RegisterDefaults()
 
 	return gatewayDeps{
-		gw:      NewGateway(coord, runtime, store, nil),
+		gw:      NewGateway(coord, runtime, store, nil, nil),
 		store:   store,
 		runtime: runtime,
 		cold:    cold,
@@ -375,6 +376,169 @@ func TestGateway_DatasetDelete_DeletedMemoryNotReturnedInQuery(t *testing.T) {
 	objects, _ := resp["objects"].([]any)
 	if len(objects) != 0 {
 		t.Fatalf("expected deleted dataset memory not returned, got objects=%v", objects)
+	}
+}
+
+func TestGateway_Query_BulkDatasetLoaderKeepsMultipleActiveRows(t *testing.T) {
+	t.Setenv("ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER", "true")
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	events := []schemas.Event{
+		{
+			EventID:     "evt_bulk_query_1",
+			TenantID:    "t_bulk",
+			WorkspaceID: "w_bulk",
+			AgentID:     "agent_loader",
+			SessionID:   "sess_bulk_query",
+			EventType:   "dataset_record",
+			Payload: map[string]any{
+				"text":        "dataset=bulk.fbin dataset_name:bulk_ds row:1 dim:4 head:1 2 3 4",
+				"dataset":     "bulk_ds",
+				"file_name":   "bulk.fbin",
+				"ingest_mode": "bulk_dataset",
+			},
+			Source:  "dataset_loader",
+			Version: 1,
+		},
+		{
+			EventID:     "evt_bulk_query_2",
+			TenantID:    "t_bulk",
+			WorkspaceID: "w_bulk",
+			AgentID:     "agent_loader",
+			SessionID:   "sess_bulk_query",
+			EventType:   "dataset_record",
+			Payload: map[string]any{
+				"text":        "dataset=bulk.fbin dataset_name:bulk_ds row:2 dim:4 head:5 6 7 8",
+				"dataset":     "bulk_ds",
+				"file_name":   "bulk.fbin",
+				"ingest_mode": "bulk_dataset",
+			},
+			Source:  "dataset_loader",
+			Version: 1,
+		},
+	}
+	for _, ev := range events {
+		if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+			t.Fatalf("ingest failed: %v", err)
+		}
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	activeCount := 0
+	for _, m := range deps.store.Objects().ListMemories("agent_loader", "sess_bulk_query") {
+		if m.Scope == "w_bulk" && m.IsActive {
+			activeCount++
+		}
+	}
+	if activeCount < 2 {
+		t.Fatalf("expected at least 2 active memories for bulk dataset rows, got %d", activeCount)
+	}
+
+	qBody, _ := json.Marshal(map[string]any{
+		"query_text":    "dataset_name:bulk_ds",
+		"query_scope":   "w_bulk",
+		"session_id":    "sess_bulk_query",
+		"agent_id":      "agent_loader",
+		"tenant_id":     "t_bulk",
+		"workspace_id":  "w_bulk",
+		"top_k":         10,
+		"response_mode": "structured_evidence",
+		"include_cold":  true,
+	})
+	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
+	qReq.Header.Set("Content-Type", "application/json")
+	qW := httptest.NewRecorder()
+	mux.ServeHTTP(qW, qReq)
+	if qW.Code != http.StatusOK {
+		t.Fatalf("query: want 200, got %d", qW.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(qW.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	objects, _ := resp["objects"].([]any)
+	if len(objects) < 2 {
+		t.Fatalf("expected query to return multiple active bulk rows, got %d objects: %v", len(objects), resp)
+	}
+}
+
+func TestGateway_Query_LatestBatchOnlySelector(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	events := []schemas.Event{
+		{
+			EventID:     "evt_query_batch_old",
+			TenantID:    "t_batch",
+			WorkspaceID: "w_batch_query",
+			AgentID:     "a_loader",
+			SessionID:   "s_batch_query",
+			EventType:   "dataset_record",
+			Payload: map[string]any{
+				"text":            "dataset=deep1B.ibin row:1",
+				"dataset":         "deep1B",
+				"file_name":       "deep1B.ibin",
+				"import_batch_id": "batch_old",
+			},
+			Source:  "dataset_loader",
+			Version: 1,
+		},
+		{
+			EventID:     "evt_query_batch_new",
+			TenantID:    "t_batch",
+			WorkspaceID: "w_batch_query",
+			AgentID:     "a_loader",
+			SessionID:   "s_batch_query",
+			EventType:   "dataset_record",
+			Payload: map[string]any{
+				"text":            "dataset=deep1B.ibin row:2",
+				"dataset":         "deep1B",
+				"file_name":       "deep1B.ibin",
+				"import_batch_id": "batch_new",
+			},
+			Source:  "dataset_loader",
+			Version: 1,
+		},
+	}
+	for _, ev := range events {
+		if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+			t.Fatalf("ingest failed: %v", err)
+		}
+	}
+
+	qBody, _ := json.Marshal(map[string]any{
+		"query_text":       "dataset=deep1B.ibin",
+		"query_scope":      "w_batch_query",
+		"session_id":       "s_batch_query",
+		"agent_id":         "a_loader",
+		"tenant_id":        "t_batch",
+		"workspace_id":     "w_batch_query",
+		"top_k":            10,
+		"response_mode":    "structured_evidence",
+		"dataset_name":     "deep1B",
+		"source_file_name": "deep1B.ibin",
+		"latest_batch_only": true,
+	})
+	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
+	qReq.Header.Set("Content-Type", "application/json")
+	qW := httptest.NewRecorder()
+	mux.ServeHTTP(qW, qReq)
+	if qW.Code != http.StatusOK {
+		t.Fatalf("query: want 200, got %d", qW.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(qW.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode query response: %v", err)
+	}
+	objects, _ := resp["objects"].([]any)
+	if len(objects) != 1 || objects[0] != "mem_evt_query_batch_new" {
+		t.Fatalf("expected latest batch object only, got objects=%v", objects)
 	}
 }
 
@@ -660,5 +824,35 @@ func TestGateway_ListMemory_WorkspaceIDFilter(t *testing.T) {
 	}
 	if mems[0].MemoryID != "mem-ws1" {
 		t.Fatalf("expected mem-ws1, got %s", mems[0].MemoryID)
+	}
+}
+
+func TestGateway_AdminDataWipe(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_wipe_test", Content: "keep"})
+	if _, ok := deps.store.Objects().GetMemory("mem_wipe_test"); !ok {
+		t.Fatal("expected memory before wipe")
+	}
+
+	body, _ := json.Marshal(map[string]string{"confirm": "delete_all_data"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/data/wipe", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("wipe: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Fatalf("status: %+v", resp)
+	}
+	if _, ok := deps.store.Objects().GetMemory("mem_wipe_test"); ok {
+		t.Fatal("memory should be removed after wipe")
 	}
 }

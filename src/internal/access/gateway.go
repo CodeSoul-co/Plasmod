@@ -1,11 +1,17 @@
 package access
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"plasmod/src/internal/coordinator"
@@ -19,12 +25,107 @@ type Gateway struct {
 	runtime    *worker.Runtime
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
+	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
+}
+
+func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
+	const (
+		defaultTieredWorkers = 8
+		defaultWarmWorkers   = 1
+		maxWorkers           = 64
+	)
+	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_WORKERS"))
+	if raw == "" {
+		if tieredEnabled {
+			return defaultTieredWorkers
+		}
+		return defaultWarmWorkers
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultWarmWorkers
+	}
+	if n > maxWorkers {
+		return maxWorkers
+	}
+	return n
+}
+
+func resolveDatasetPurgeBatchSize() int {
+	const (
+		defaultBatchSize = 512
+		maxBatchSize     = 20000
+	)
+	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_BATCH_SIZE"))
+	if raw == "" {
+		return defaultBatchSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultBatchSize
+	}
+	if n > maxBatchSize {
+		return maxBatchSize
+	}
+	return n
+}
+
+func resolveDatasetPurgeQueueSize(workers int) int {
+	const maxQueueSize = 20000
+	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_QUEUE_SIZE"))
+	if raw == "" {
+		q := workers * 4
+		if q < 16 {
+			return 16
+		}
+		if q > maxQueueSize {
+			return maxQueueSize
+		}
+		return q
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		q := workers * 4
+		if q < 16 {
+			return 16
+		}
+		if q > maxQueueSize {
+			return maxQueueSize
+		}
+		return q
+	}
+	if n > maxQueueSize {
+		return maxQueueSize
+	}
+	return n
+}
+
+func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectStore) {
+	if tiered != nil {
+		tiered.HardDeleteMemory(memoryID)
+	} else {
+		storage.PurgeMemoryWarmOnly(g.store, memoryID)
+	}
+	if g.store.Audits() != nil {
+		now := time.Now().UTC().Format(time.RFC3339)
+		g.store.Audits().AppendAudit(schemas.AuditRecord{
+			RecordID:       fmt.Sprintf("audit_purge_%s_%d", memoryID, time.Now().UnixNano()),
+			TargetMemoryID: memoryID,
+			OperationType:  string(schemas.AuditOpDelete),
+			ActorType:      "system",
+			ActorID:        "admin_api",
+			Decision:       "allow",
+			ReasonCode:     "dataset_purge",
+			Timestamp:      now,
+		})
+	}
 }
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
 // GET /v1/admin/storage returns the resolved backend configuration.
-func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot) *Gateway {
-	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg}
+// bundle may be nil in tests; admin data wipe still clears in-memory state and omits Badger.DropAll.
+func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
+	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg, bundle: bundle}
 }
 
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
@@ -40,6 +141,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
+	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
 	if isTestMode() {
 		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
 	}
@@ -108,6 +210,9 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if strings.TrimSpace(ev.EventID) == "" {
+		ev.EventID = generateObjectID("evt")
 	}
 	ack, err := g.runtime.SubmitIngest(ev)
 	if err != nil {
@@ -289,14 +394,36 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if tiered == nil {
 		purgeBackend = "warm_only"
 	}
+	ctx := r.Context()
 	mems := g.store.Objects().ListMemories("", "")
+	scanned := len(mems)
+	workspaceCandidates := 0
 	matched := 0
 	skippedActive := 0
 	purgeable := 0
 	purged := 0
+	cancelled := false
+	cancelReason := ""
 	ids := make([]string, 0)
 	purgeIDs := make([]string, 0)
-	for _, m := range mems {
+	for i, m := range mems {
+		if i%256 == 0 {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				cancelReason = ctx.Err().Error()
+				break
+			default:
+			}
+			if cancelled {
+				break
+			}
+		}
+		// Fast path: workspace_id is required; skip cross-workspace rows early.
+		if m.Scope != req.WorkspaceID {
+			continue
+		}
+		workspaceCandidates++
 		if !schemas.MemoryDatasetMatch(m, req.WorkspaceID, req.FileName, req.DatasetName, req.Prefix) {
 			continue
 		}
@@ -308,31 +435,121 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		}
 		purgeable++
 		purgeIDs = append(purgeIDs, m.MemoryID)
-		if req.DryRun {
-			continue
+	}
+	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
+	purgeBatchSize := resolveDatasetPurgeBatchSize()
+	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
+	startedAt := time.Now()
+	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
+		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				cancelReason = ctx.Err().Error()
+			default:
+			}
+			if cancelled {
+				break
+			}
+			end := start + purgeBatchSize
+			if end > len(purgeIDs) {
+				end = len(purgeIDs)
+			}
+			batch := purgeIDs[start:end]
+			workerCount := purgeWorkers
+			if workerCount > len(batch) {
+				workerCount = len(batch)
+			}
+			if workerCount <= 1 {
+				for _, id := range batch {
+					select {
+					case <-ctx.Done():
+						cancelled = true
+						cancelReason = ctx.Err().Error()
+					default:
+					}
+					if cancelled {
+						break
+					}
+					g.purgeOneMemory(id, tiered)
+					purged++
+				}
+			} else {
+				jobs := make(chan string, purgeQueueSize)
+				var wg sync.WaitGroup
+				var mu sync.Mutex
+				batchPurged := 0
+				for i := 0; i < workerCount; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case id, ok := <-jobs:
+								if !ok {
+									return
+								}
+								g.purgeOneMemory(id, tiered)
+								mu.Lock()
+								batchPurged++
+								mu.Unlock()
+							}
+						}
+					}()
+				}
+				for _, id := range batch {
+					select {
+					case <-ctx.Done():
+						cancelled = true
+						cancelReason = ctx.Err().Error()
+					case jobs <- id:
+					}
+					if cancelled {
+						break
+					}
+				}
+				close(jobs)
+				wg.Wait()
+				purged += batchPurged
+			}
+			log.Printf(
+				"admin purge progress: workspace=%s dataset=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
+				req.WorkspaceID,
+				req.DatasetName,
+				(start/purgeBatchSize)+1,
+				(len(purgeIDs)+purgeBatchSize-1)/purgeBatchSize,
+				purged,
+				len(purgeIDs),
+				workerCount,
+				purgeQueueSize,
+				time.Since(startedAt).Milliseconds(),
+				cancelled,
+			)
+			if cancelled {
+				break
+			}
 		}
-		if tiered != nil {
-			tiered.HardDeleteMemory(m.MemoryID)
-		} else {
-			storage.PurgeMemoryWarmOnly(g.store, m.MemoryID)
+	}
+	status := "ok"
+	if cancelled {
+		status = "cancelled"
+	}
+	dataPresence := "has_data"
+	if matched == 0 || purgeable == 0 {
+		dataPresence = "no_data"
+	}
+	progressPercent := 0
+	if purgeable > 0 {
+		progressPercent = int((float64(purged) / float64(purgeable)) * 100)
+		if progressPercent > 100 {
+			progressPercent = 100
 		}
-		if g.store.Audits() != nil {
-			now := time.Now().UTC().Format(time.RFC3339)
-			g.store.Audits().AppendAudit(schemas.AuditRecord{
-				RecordID:       fmt.Sprintf("audit_purge_%s_%d", m.MemoryID, time.Now().UnixNano()),
-				TargetMemoryID: m.MemoryID,
-				OperationType:  string(schemas.AuditOpDelete),
-				ActorType:      "system",
-				ActorID:        "admin_api",
-				Decision:       "allow",
-				ReasonCode:     "dataset_purge",
-				Timestamp:      now,
-			})
-		}
-		purged++
 	}
 	writeJSON(w, map[string]any{
-		"status":            "ok",
+		"status":            status,
+		"data_presence":     dataPresence,
 		"file_name":         req.FileName,
 		"dataset_name":      req.DatasetName,
 		"prefix":            req.Prefix,
@@ -340,13 +557,54 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"dry_run":           req.DryRun,
 		"only_if_inactive":  onlyIfInactive,
 		"purge_backend":     purgeBackend,
+		"scanned":           scanned,
+		"workspace_scanned": workspaceCandidates,
 		"matched":           matched,
 		"skipped_active":    skippedActive,
 		"purgeable":         purgeable,
 		"purged":            purged,
+		"cancelled":         cancelled,
+		"cancel_reason":     cancelReason,
+		"purge_workers":     purgeWorkers,
+		"purge_batch_size":  purgeBatchSize,
+		"purge_queue_size":  purgeQueueSize,
+		"purge_elapsed_ms":  time.Since(startedAt).Milliseconds(),
+		"purge_progress_percent": progressPercent,
 		"memory_ids":        ids,
 		"purged_memory_ids": purgeIDs,
 	})
+}
+
+// handleAdminDataWipe clears all application data (Badger DropAll when enabled, in-memory stores,
+// retrieval planes, tier caches, WAL/derivation logs, evidence cache). Destructive: requires confirm token.
+func (g *Gateway) handleAdminDataWipe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	const adminWipeConfirm = "delete_all_data"
+	if strings.TrimSpace(body.Confirm) != adminWipeConfirm {
+		http.Error(w, `confirm must be "delete_all_data"`, http.StatusBadRequest)
+		return
+	}
+	algoCfg := schemas.DefaultAlgorithmConfig()
+	out, err := g.runtime.AdminWipeAll(g.bundle, algoCfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, out)
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────
@@ -496,6 +754,9 @@ func (g *Gateway) handleAgents(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.AgentID) == "" {
+			obj.AgentID = generateObjectID("agent")
+		}
 		g.coord.Object.PutAgent(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "agent_id": obj.AgentID})
 	default:
@@ -515,6 +776,9 @@ func (g *Gateway) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if strings.TrimSpace(obj.SessionID) == "" {
+			obj.SessionID = generateObjectID("sess")
 		}
 		g.coord.Object.PutSession(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "session_id": obj.SessionID})
@@ -549,6 +813,9 @@ func (g *Gateway) handleMemory(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.MemoryID) == "" {
+			obj.MemoryID = generateObjectID("mem")
+		}
 		g.coord.Memory.Put(obj)
 		writeJSON(w, map[string]string{"status": "ok", "memory_id": obj.MemoryID})
 	default:
@@ -570,6 +837,9 @@ func (g *Gateway) handleStates(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.StateID) == "" {
+			obj.StateID = generateObjectID("state")
+		}
 		g.coord.Object.PutState(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "state_id": obj.StateID})
 	default:
@@ -590,6 +860,9 @@ func (g *Gateway) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.ArtifactID) == "" {
+			obj.ArtifactID = generateObjectID("art")
+		}
 		g.coord.Object.PutArtifact(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "artifact_id": obj.ArtifactID})
 	default:
@@ -608,6 +881,9 @@ func (g *Gateway) handleEdges(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if strings.TrimSpace(obj.EdgeID) == "" {
+			obj.EdgeID = generateObjectID("edge")
 		}
 		g.store.Edges().PutEdge(obj)
 		writeJSON(w, map[string]string{"status": "ok", "edge_id": obj.EdgeID})
@@ -632,6 +908,9 @@ func (g *Gateway) handlePolicies(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if strings.TrimSpace(obj.PolicyID) == "" {
+			obj.PolicyID = generateObjectID("policy")
 		}
 		g.coord.Policy.Append(obj)
 		writeJSON(w, map[string]string{"status": "ok", "policy_id": obj.PolicyID})
@@ -916,11 +1195,25 @@ func (g *Gateway) handleShareContracts(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(obj.ContractID) == "" {
+			obj.ContractID = generateObjectID("contract")
+		}
 		g.store.Contracts().PutContract(obj)
 		writeJSON(w, map[string]string{"status": "ok", "contract_id": obj.ContractID})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func generateObjectID(prefix string) string {
+	// Keep IDs lexically time-sortable while preserving randomness:
+	// <prefix>_<unix_millis_base36>_<12hex random bytes>
+	ts := strconv.FormatInt(time.Now().UTC().UnixMilli(), 36)
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err != nil {	
+		return fmt.Sprintf("%s_%s", prefix, ts)
+	}
+	return fmt.Sprintf("%s_%s_%s", prefix, ts, hex.EncodeToString(buf[:]))
 }
 
 // ─── /v1/internal/memory/* — Agent SDK algorithm dispatch bridge ─────────────────

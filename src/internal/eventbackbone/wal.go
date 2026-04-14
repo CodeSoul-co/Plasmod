@@ -55,3 +55,13 @@ func (w *InMemoryWAL) LatestLSN() int64 {
 	}
 	return w.entries[len(w.entries)-1].LSN
 }
+
+// Wipe clears all buffered WAL entries (admin full data wipe).
+func (w *InMemoryWAL) Wipe() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.entries = nil
+}

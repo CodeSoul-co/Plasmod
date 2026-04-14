@@ -65,6 +65,7 @@ services:
     environment:
       PLASMOD_HTTP_ADDR: 0.0.0.0:8080
       APP_MODE: ${APP_MODE:-prod}
+      ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER: "true"
       PLASMOD_STORAGE: disk
       PLASMOD_DATA_DIR: /data
       # CPU-safe defaults for Member A baseline stack.

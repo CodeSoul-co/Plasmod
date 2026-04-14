@@ -3,6 +3,9 @@ package worker
 import (
 	"context"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,6 +116,40 @@ func (s *EventSubscriber) SetPollInterval(d time.Duration) { s.pollInterval = d 
 // SetConsolidateEvery sets how many events per agent+session trigger a
 // MemoryConsolidation pass.  Pass 0 to disable automatic consolidation.
 func (s *EventSubscriber) SetConsolidateEvery(n int) { s.consolidateEvery = n }
+
+func conflictMergeSkipDatasetLoaderEnabled() bool {
+	// Default on: bulk dataset imports should not be treated as conversational conflicts.
+	raw := strings.TrimSpace(os.Getenv("ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER"))
+	if raw == "" {
+		return true
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return true
+	}
+	return v
+}
+
+func shouldSkipConflictMergeForEvent(ev schemas.Event) bool {
+	if !conflictMergeSkipDatasetLoaderEnabled() {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(ev.Source), "dataset_loader") {
+		return true
+	}
+	if ev.Payload == nil {
+		return false
+	}
+	ingestMode, ok := ev.Payload["ingest_mode"]
+	if !ok {
+		return false
+	}
+	mode, ok := ingestMode.(string)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(mode), "bulk_dataset")
+}
 
 // DeadLetterChannel returns the dead-letter channel.  Entries sent here
 // originated from handler panics.  The channel has capacity 64; if the
@@ -288,6 +325,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
 		ev := entry.Event
 		if ev.AgentID == "" {
+			return
+		}
+		if shouldSkipConflictMergeForEvent(ev) {
 			return
 		}
 		key := ev.AgentID + ":" + ev.SessionID
