@@ -49,6 +49,9 @@ func TestTieredObjectStore_ArchiveMemory_WritesColdEmbedding(t *testing.T) {
 	if _, ok := cold.GetMemory(mem.MemoryID); !ok {
 		t.Fatal("expected archived memory to exist in cold store")
 	}
+	if _, ok := warm.GetMemory(mem.MemoryID); ok {
+		t.Fatal("expected archived memory to be evicted from warm store")
+	}
 
 	// 2) embedding should also exist in cold store
 	vec, ok, err := cold.GetMemoryEmbedding(mem.MemoryID)
@@ -102,6 +105,9 @@ func TestTieredObjectStore_GetMemoryActivated_DeletesColdEmbedding(t *testing.T)
 	// 1) memory should be promoted back to warm
 	if _, ok := warm.GetMemory(mem.MemoryID); !ok {
 		t.Fatal("expected reactivated memory to be promoted to warm store")
+	}
+	if !hot.Contains(mem.MemoryID) {
+		t.Fatal("expected reactivated memory to be promoted to hot cache")
 	}
 
 	// 2) embedding should be deleted from cold store
@@ -214,6 +220,9 @@ func TestTieredObjectStore_ArchiveMemory_WritesS3ColdEmbedding(t *testing.T) {
 	if gotMem.MemoryID != mem.MemoryID {
 		t.Fatalf("unexpected memory id: got %q want %q", gotMem.MemoryID, mem.MemoryID)
 	}
+	if _, ok := warm.GetMemory(mem.MemoryID); ok {
+		t.Fatal("expected archived memory to be evicted from warm store")
+	}
 
 	// 2) embedding should also exist in S3 cold store
 	vec, ok, err := cold.GetMemoryEmbedding(mem.MemoryID)
@@ -281,6 +290,9 @@ func TestTieredObjectStore_GetMemoryActivated_DeletesS3ColdEmbedding(t *testing.
 	// 1) memory should be promoted back to warm
 	if _, ok := warm.GetMemory(mem.MemoryID); !ok {
 		t.Fatal("expected reactivated memory to be promoted to warm store")
+	}
+	if !hot.Contains(mem.MemoryID) {
+		t.Fatal("expected reactivated memory to be promoted to hot cache")
 	}
 
 	// 2) embedding should be deleted from cold tier

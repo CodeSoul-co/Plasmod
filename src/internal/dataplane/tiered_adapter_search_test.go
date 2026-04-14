@@ -102,6 +102,15 @@ func TestTieredDataPlane_Search_IncludeColdUsesVectorSearch(t *testing.T) {
 	if out.ColdSearchMode != "vector" {
 		t.Fatalf("expected ColdSearchMode=vector, got %q", out.ColdSearchMode)
 	}
+	if !out.ColdTierRequested {
+		t.Fatal("expected ColdTierRequested=true")
+	}
+	if out.ColdCandidateCount < 1 {
+		t.Fatalf("expected ColdCandidateCount >= 1, got %d", out.ColdCandidateCount)
+	}
+	if !out.ColdUsedFallback {
+		t.Fatal("expected fallback when hnsw path is attempted before vector mode")
+	}
 }
 
 func TestTieredDataPlane_Search_IncludeColdFallsBackToLexicalWhenNoEmbedder(t *testing.T) {
@@ -135,6 +144,12 @@ func TestTieredDataPlane_Search_IncludeColdFallsBackToLexicalWhenNoEmbedder(t *t
 	}
 	if out.ColdSearchMode != "lexical" {
 		t.Fatalf("expected ColdSearchMode=lexical, got %q", out.ColdSearchMode)
+	}
+	if !out.ColdTierRequested {
+		t.Fatal("expected ColdTierRequested=true")
+	}
+	if !out.ColdUsedFallback {
+		t.Fatal("expected ColdUsedFallback=true for lexical fallback")
 	}
 }
 
@@ -213,7 +228,7 @@ func TestTieredDataPlane_resolveColdIDs_PrefersHNSWOverVector(t *testing.T) {
 		},
 	}
 
-	got, mode := tp.resolveColdIDs(SearchInput{
+	got, mode, fallback := tp.resolveColdIDs(SearchInput{
 		QueryText: "hello",
 		TopK:      5,
 	})
@@ -223,6 +238,9 @@ func TestTieredDataPlane_resolveColdIDs_PrefersHNSWOverVector(t *testing.T) {
 	}
 	if mode != "hnsw" {
 		t.Fatalf("expected mode hnsw, got %q", mode)
+	}
+	if fallback {
+		t.Fatal("did not expect fallback in hnsw mode")
 	}
 }
 
@@ -243,7 +261,7 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToVectorWhenHNSWEmpty(t *testin
 		},
 	}
 
-	got, mode := tp.resolveColdIDs(SearchInput{
+	got, mode, fallback := tp.resolveColdIDs(SearchInput{
 		QueryText: "hello",
 		TopK:      5,
 	})
@@ -253,6 +271,9 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToVectorWhenHNSWEmpty(t *testin
 	}
 	if mode != "vector" {
 		t.Fatalf("expected mode vector, got %q", mode)
+	}
+	if !fallback {
+		t.Fatal("expected fallback=true when vector is used after empty hnsw")
 	}
 }
 
@@ -265,7 +286,7 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToLexicalWithoutEmbedder(t *tes
 		},
 	}
 
-	got, mode := tp.resolveColdIDs(SearchInput{
+	got, mode, fallback := tp.resolveColdIDs(SearchInput{
 		QueryText: "hello",
 		TopK:      5,
 	})
@@ -275,6 +296,9 @@ func TestTieredDataPlane_resolveColdIDs_FallsBackToLexicalWithoutEmbedder(t *tes
 	}
 	if mode != "lexical" {
 		t.Fatalf("expected mode lexical, got %q", mode)
+	}
+	if fallback {
+		t.Fatal("did not expect fallback without embedder or vector search")
 	}
 }
 

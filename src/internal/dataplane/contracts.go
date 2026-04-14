@@ -57,6 +57,15 @@ type SearchOutput struct {
 	// Used by the runtime to exempt cold-sourced IDs from the warm-store
 	// inactive-memory filter (archived memories may be soft-deleted in warm).
 	ColdObjectIDs []string
+	// ColdCandidateCount reports how many cold-tier candidates were produced
+	// before final fusion / truncation. This is useful for benchmark analysis.
+	ColdCandidateCount int
+	// ColdTierRequested records whether the caller explicitly asked for the
+	// cold tier via IncludeCold=true.
+	ColdTierRequested bool
+	// ColdUsedFallback indicates that cold retrieval fell back from a preferred
+	// mode (e.g. HNSW) to a cheaper/safer alternative (vector or lexical).
+	ColdUsedFallback bool
 }
 
 // DataPlane is the interface satisfied by all retrieval execution modules

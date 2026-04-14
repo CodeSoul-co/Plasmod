@@ -393,6 +393,9 @@ func (t *TieredObjectStore) ArchiveMemory(memoryID string) {
 		}
 
 		t.hot.Evict(memoryID)
+		// Archive semantics for cold-tier benchmarking should produce a true
+		// cold-only object rather than keeping a second warm copy alive.
+		t.warm.DeleteMemory(memoryID)
 	}
 }
 
