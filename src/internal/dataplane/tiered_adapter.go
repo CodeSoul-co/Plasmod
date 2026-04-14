@@ -121,6 +121,26 @@ func (t *TieredDataPlane) HotIndex() *segmentstore.Index { return t.hot }
 // WarmPlane exposes the warm-tier plane for node registration.
 func (t *TieredDataPlane) WarmPlane() *SegmentDataPlane { return t.warm }
 
+// AdminResetRetrieval rebuilds hot/warm retrieval state (lexical + optional hybrid index).
+// Call after durable store wipe so search planes match empty backing data.
+func (t *TieredDataPlane) AdminResetRetrieval(cfg schemas.AlgorithmConfig) error {
+	if t == nil {
+		return nil
+	}
+	t.hot = segmentstore.NewIndex()
+	t.rrfK = normalizeTieredRRFK(cfg)
+	if t.embedder == nil {
+		t.warm = NewSegmentDataPlaneWithConfig(cfg)
+		return nil
+	}
+	warm, err := NewSegmentDataPlaneWithEmbedderAndConfig(t.embedder, cfg)
+	if err != nil {
+		return err
+	}
+	t.warm = warm
+	return nil
+}
+
 // Flush flushes the hot-tier index state to the warm plane and builds the
 // vector index (when hybrid mode is enabled).
 func (t *TieredDataPlane) Flush() error {

@@ -81,6 +81,17 @@ func (c *Cache) Invalidate(objectID string) {
 	}
 }
 
+// Clear removes all cached fragments (admin full data wipe).
+func (c *Cache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fragments = make(map[string]EvidenceFragment)
+	c.lruOrder = c.lruOrder[:0]
+}
+
 // Len returns the current number of cached fragments.
 func (c *Cache) Len() int {
 	c.mu.RLock()

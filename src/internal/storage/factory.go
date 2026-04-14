@@ -78,6 +78,7 @@ func buildRuntime(get func(string) string) (*RuntimeBundle, error) {
 		return &RuntimeBundle{
 			RuntimeStorage: mem,
 			Config:         snap,
+			Badger:         nil,
 			Close:          func() error { return nil },
 		}, nil
 	}
@@ -113,6 +114,7 @@ func buildRuntime(get func(string) string) (*RuntimeBundle, error) {
 	return &RuntimeBundle{
 		RuntimeStorage: rt,
 		Config:         snap,
+		Badger:         db,
 		Close: func() error {
 			return db.Close()
 		},

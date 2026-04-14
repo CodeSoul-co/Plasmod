@@ -680,6 +680,86 @@ func (s *MemoryRuntimeStorage) PutEventWithBaseEdges(obj schemas.Event) {
 	}
 }
 
+// wipe* methods clear in-memory maps in place so existing store pointers held by
+// coordinators remain valid.
+
+func (s *memorySegmentStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items = map[string]SegmentRecord{}
+}
+
+func (s *memoryIndexStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items = map[string]IndexRecord{}
+}
+
+func (s *memoryObjectStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agents = map[string]schemas.Agent{}
+	s.sessions = map[string]schemas.Session{}
+	s.events = map[string]schemas.Event{}
+	s.memories = map[string]schemas.Memory{}
+	s.states = map[string]schemas.State{}
+	s.artifacts = map[string]schemas.Artifact{}
+	s.users = map[string]schemas.User{}
+}
+
+func (s *memoryGraphEdgeStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.edges = map[string]schemas.Edge{}
+	s.srcIdx = map[string]map[string]bool{}
+	s.dstIdx = map[string]map[string]bool{}
+}
+
+func (s *memorySnapshotVersionStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.versions = map[string][]schemas.ObjectVersion{}
+}
+
+func (s *memoryPolicyStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policies = map[string][]schemas.PolicyRecord{}
+}
+
+func (s *memoryShareContractStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contracts = map[string]schemas.ShareContract{}
+}
+
+func (s *inMemoryAuditStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = map[string][]schemas.AuditRecord{}
+}
+
+func (s *inMemoryAlgorithmStateStore) wipe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states = map[string]schemas.MemoryAlgorithmState{}
+}
+
+func (m *MemoryRuntimeStorage) wipeAllData() {
+	m.segmentStore.wipe()
+	m.indexStore.wipe()
+	m.objectStore.wipe()
+	m.edgeStore.wipe()
+	m.versionStore.wipe()
+	m.policyStore.wipe()
+	m.contractStore.wipe()
+	m.auditStore.wipe()
+	m.algoStore.wipe()
+	if m.hotCache != nil {
+		m.hotCache.Clear()
+	}
+}
+
 // ─── Exported constructors for hybrid / composite runtimes ───────────────────
 // Used by BuildRuntimeFromEnv when selecting per-store backends (memory vs Badger).
 

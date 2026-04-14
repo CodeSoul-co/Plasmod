@@ -28,6 +28,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -53,6 +54,13 @@ SUPPORTED_EXTS = {".fvecs", ".ivecs", ".ibin", ".fbin", ".arrow"}
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def _default_import_batch_id() -> str:
+    return "batch_" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+def _slug_token(value: str, fallback: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
+    return token or fallback
 
 
 def _http_post_json(
@@ -340,6 +348,8 @@ def _run_dataset_delete(
     dataset: str,
     dry_run: bool,
     file_name: str | None = None,
+    *,
+    timeout: float = 30.0,
 ) -> dict:
     """POST /v1/admin/dataset/delete. If file_name is set, matches dataset=<file_name> AND dataset_name:...; if omitted, only dataset_name + workspace."""
     body: dict = {
@@ -349,7 +359,7 @@ def _run_dataset_delete(
     }
     if file_name:
         body["file_name"] = file_name
-    status, ack = _http_post_json(base_url, "/v1/admin/dataset/delete", body)
+    status, ack = _http_post_json(base_url, "/v1/admin/dataset/delete", body, timeout=timeout)
     if status != 200:
         raise RuntimeError(f"unexpected status={status} ack={ack}")
     return ack
@@ -362,6 +372,8 @@ def _run_dataset_purge(
     dry_run: bool,
     only_if_inactive: bool,
     file_name: str | None = None,
+    *,
+    timeout: float = 30.0,
 ) -> dict:
     """POST /v1/admin/dataset/purge. Hard-remove inactive memories matching selectors (see server docs)."""
     body: dict = {
@@ -372,10 +384,19 @@ def _run_dataset_purge(
     }
     if file_name:
         body["file_name"] = file_name
-    status, ack = _http_post_json(base_url, "/v1/admin/dataset/purge", body)
+    status, ack = _http_post_json(base_url, "/v1/admin/dataset/purge", body, timeout=timeout)
     if status != 200:
         raise RuntimeError(f"unexpected status={status} ack={ack}")
     return ack
+
+def _render_progress(done: int, total: int) -> str:
+    if total <= 0:
+        return "[----------] 0%"
+    ratio = max(0.0, min(1.0, float(done) / float(total)))
+    width = 20
+    filled = int(ratio * width)
+    bar = "#" * filled + "-" * (width - filled)
+    return f"[{bar}] {int(ratio * 100)}%"
 
 
 def _collect_files(file_arg: str) -> list[Path]:
@@ -406,7 +427,27 @@ def main() -> None:
     ap.add_argument("--agent-id", default="a_loader")
     ap.add_argument("--session-prefix", default="s")
     ap.add_argument("--event-type", default="dataset_record")
-    ap.add_argument("--source", default="dataset_loader")
+    ap.add_argument(
+        "--source",
+        default="dataset_loader",
+        help="Event source tag. Keep dataset_loader for bulk imports to enable conflict-merge isolation.",
+    )
+    ap.add_argument(
+        "--ingest-mode",
+        default="bulk_dataset",
+        help="Payload ingest_mode marker for bulk import contracts (default bulk_dataset)",
+    )
+    ap.add_argument(
+        "--import-batch-id",
+        default=None,
+        help="Stable import batch id written to payload.import_batch_id (default auto-generated per run)",
+    )
+    ap.add_argument(
+        "--event-id-scope",
+        choices=("batch", "legacy"),
+        default="batch",
+        help="Event ID generation scope: batch (default, includes import_batch_id) or legacy (old format)",
+    )
     ap.add_argument("--version", type=int, default=1)
     ap.add_argument(
         "--limit",
@@ -428,7 +469,7 @@ def main() -> None:
         type=float,
         default=30.0,
         metavar="SEC",
-        help="Per-request timeout for ingest POST (default 30)",
+        help="Per-request timeout for ingest and admin delete/purge POSTs (default 30; purge large+S3 may need 300–600+)",
     )
     ap.add_argument(
         "--checkpoint",
@@ -513,11 +554,13 @@ def main() -> None:
                 args.purge_dry_run,
                 only_if_inactive,
                 file_name=None,
+                timeout=args.http_timeout,
             )
             print(
                 f"  matched={int(ack.get('matched', 0))} skipped_active={int(ack.get('skipped_active', 0))} "
                 f"purgeable={int(ack.get('purgeable', 0))} purged={int(ack.get('purged', 0))}"
             )
+            print(f"  data_presence={ack.get('data_presence', 'unknown')} status={ack.get('status', 'ok')}")
             print(f"[purge:{mode}] done")
             return
 
@@ -531,14 +574,81 @@ def main() -> None:
         total_purgeable = 0
         total_purged = 0
         for path in files:
-            ack = _run_dataset_purge(
+            if args.purge_dry_run:
+                ack = _run_dataset_purge(
+                    args.base_url,
+                    args.workspace_id,
+                    args.dataset,
+                    True,
+                    only_if_inactive,
+                    file_name=path.name,
+                    timeout=args.http_timeout,
+                )
+                matched = int(ack.get("matched", 0))
+                skipped = int(ack.get("skipped_active", 0))
+                purgeable = int(ack.get("purgeable", 0))
+                purged = int(ack.get("purged", 0))
+                total_matched += matched
+                total_skipped += skipped
+                total_purgeable += purgeable
+                total_purged += purged
+                print(
+                    f"  [file] {path.name} matched={matched} skipped_active={skipped} "
+                    f"purgeable={purgeable} purged={purged} data_presence={ack.get('data_presence', 'unknown')}"
+                )
+                continue
+
+            pre = _run_dataset_purge(
                 args.base_url,
                 args.workspace_id,
                 args.dataset,
-                args.purge_dry_run,
+                True,
                 only_if_inactive,
                 file_name=path.name,
+                timeout=args.http_timeout,
             )
+            pre_purgeable = int(pre.get("purgeable", 0))
+            print(
+                f"  [precheck] {path.name} data_presence={pre.get('data_presence', 'unknown')} "
+                f"matched={int(pre.get('matched', 0))} purgeable={pre_purgeable}"
+            )
+            if pre_purgeable == 0:
+                print(f"  [file] {path.name} {_render_progress(0, 0)} (no data to purge)")
+                continue
+
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(
+                    _run_dataset_purge,
+                    args.base_url,
+                    args.workspace_id,
+                    args.dataset,
+                    False,
+                    only_if_inactive,
+                    file_name=path.name,
+                    timeout=args.http_timeout,
+                )
+                last_done = -1
+                while not fut.done():
+                    time.sleep(2)
+                    probe = _run_dataset_purge(
+                        args.base_url,
+                        args.workspace_id,
+                        args.dataset,
+                        True,
+                        only_if_inactive,
+                        file_name=path.name,
+                        timeout=min(args.http_timeout, 30.0),
+                    )
+                    remaining = int(probe.get("purgeable", 0))
+                    done = max(0, pre_purgeable - remaining)
+                    if done != last_done:
+                        print(
+                            f"  [file] {path.name} progress {_render_progress(done, pre_purgeable)} "
+                            f"({done}/{pre_purgeable})"
+                        )
+                        last_done = done
+                ack = fut.result()
+
             matched = int(ack.get("matched", 0))
             skipped = int(ack.get("skipped_active", 0))
             purgeable = int(ack.get("purgeable", 0))
@@ -549,7 +659,8 @@ def main() -> None:
             total_purged += purged
             print(
                 f"  [file] {path.name} matched={matched} skipped_active={skipped} "
-                f"purgeable={purgeable} purged={purged}"
+                f"purgeable={purgeable} purged={purged} "
+                f"data_presence={ack.get('data_presence', 'unknown')} status={ack.get('status', 'ok')}"
             )
         print(
             f"[purge:{mode}] done total_matched={total_matched} total_skipped_active={total_skipped} "
@@ -570,6 +681,7 @@ def main() -> None:
                 args.dataset,
                 args.delete_dry_run,
                 file_name=None,
+                timeout=args.http_timeout,
             )
             print(
                 f"  matched={int(ack.get('matched', 0))} deleted={int(ack.get('deleted', 0))}"
@@ -591,6 +703,7 @@ def main() -> None:
                 args.dataset,
                 args.delete_dry_run,
                 file_name=path.name,
+                timeout=args.http_timeout,
             )
             matched = int(ack.get("matched", 0))
             deleted = int(ack.get("deleted", 0))
@@ -623,10 +736,14 @@ def main() -> None:
 
     lim_disp = "none" if args.limit is None else args.limit
     ck_disp = checkpoint_path or "none"
+    import_batch_id = args.import_batch_id or _default_import_batch_id()
+    event_scope = args.event_id_scope
     print(
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
         f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
-        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries}"
+        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} "
+        f"source={args.source} ingest_mode={args.ingest_mode} import_batch_id={import_batch_id} "
+        f"event_id_scope={event_scope}"
     )
     try:
         for path in files:
@@ -675,7 +792,13 @@ def main() -> None:
                 seq_val: int,
             ) -> dict:
                 ts = _now_iso()
-                ev_id = f"evt_{args.dataset}_{path.stem}_{seq_val:08d}"
+                dataset_token = _slug_token(args.dataset, "dataset")
+                file_token = _slug_token(path.stem, "file")
+                if event_scope == "batch":
+                    batch_token = _slug_token(import_batch_id, "batch")
+                    ev_id = f"evt_{dataset_token}_{batch_token}_{file_token}_{seq_val:08d}"
+                else:
+                    ev_id = f"evt_{dataset_token}_{file_token}_{seq_val:08d}"
                 txt = (
                     f"dataset={path.name} dataset_name:{args.dataset} row:{row_i} "
                     f"dim:{dim} dtype:{dtype} head:{_preview(vals, args.preview_k)}"
@@ -699,6 +822,8 @@ def main() -> None:
                         "row_index": row_i,
                         "dim": dim,
                         "dtype": dtype,
+                        "ingest_mode": args.ingest_mode,
+                        "import_batch_id": import_batch_id,
                     },
                     "source": args.source,
                     "version": args.version,

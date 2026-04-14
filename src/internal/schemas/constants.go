@@ -240,6 +240,8 @@ const (
 	PayloadKeyDataset = "dataset"
 	// PayloadKeyFileName is the originating file basename when ingesting file-backed rows.
 	PayloadKeyFileName = "file_name"
+	// PayloadKeyImportBatchID groups one import run for stable "latest snapshot" queries.
+	PayloadKeyImportBatchID = "import_batch_id"
 )
 
 // Numeric defaults shared across worker implementations.
