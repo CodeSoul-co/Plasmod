@@ -125,6 +125,40 @@ def ok_row(name: str, ok: bool, detail: str) -> dict[str, Any]:
     return {"task": name, "ok": ok, "detail": detail}
 
 
+def score_trace_quality(trace_resp: dict[str, Any]) -> dict[str, Any]:
+    """
+    Auto-score provenance/trace quality for 5-T3.
+    Score is [0, 100], based on the presence of major trace components.
+    """
+    score = 0
+    parts: list[str] = []
+
+    steps = trace_resp.get("steps")
+    if isinstance(steps, list) and len(steps) > 0:
+        score += 25
+        parts.append("steps")
+
+    versions = trace_resp.get("versions")
+    if isinstance(versions, list):
+        score += 15
+        parts.append("versions")
+
+    edges = trace_resp.get("edges")
+    if isinstance(edges, list):
+        score += 15
+        parts.append("edges")
+
+    # proof-like signals
+    for key, w in (("object_type", 10), ("trace_id", 10), ("derivation_log", 10), ("policy_decisions", 5), ("policy_annotations", 10)):
+        if key in trace_resp:
+            score += w
+            parts.append(key)
+
+    if score > 100:
+        score = 100
+    return {"score": score, "covered_parts": sorted(set(parts))}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Layer-5 task suite (5-T1~5-T8)")
     ap.add_argument("--base-url", default=base_url())
@@ -164,12 +198,15 @@ def main() -> int:
         sum_ok = st_s in (200, 201, 204)
     results.append(ok_row("5-T2", sum_ok, f"ingested={len(mids)} summarize={sum_ok}"))
 
-    # 5-T3 provenance trace
+    # 5-T3 provenance trace + auto scoring
     trace_ok = False
+    trace_score: dict[str, Any] = {"score": 0, "covered_parts": []}
     if mids:
         st_t, tr = req("GET", f"{base}/v1/traces/{mids[0]}", None, timeout=60.0)
-        trace_ok = st_t == 200 and isinstance(tr, dict) and ("steps" in tr or "versions" in tr)
-    results.append(ok_row("5-T3", trace_ok, f"trace_ok={trace_ok}"))
+        if st_t == 200 and isinstance(tr, dict):
+            trace_score = score_trace_quality(tr)
+            trace_ok = trace_score["score"] >= 50
+    results.append(ok_row("5-T3", trace_ok, f"trace_ok={trace_ok} score={trace_score['score']} parts={','.join(trace_score['covered_parts'])}"))
 
     # 5-T4 multi-round correction
     ingest(base, args.agent_id, args.session_id, args.workspace_id, "Initial claim: Model X was released in 2022.")
@@ -233,6 +270,7 @@ def main() -> int:
         "pass": pass_n,
         "total": len(results),
         "results": results,
+        "trace_scoring": trace_score,
     }
     (out_dir / "layer5_t1_t8.json").write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -248,6 +286,12 @@ def main() -> int:
     ]
     for r in results:
         md.append(f"| {r['task']} | {'✅' if r['ok'] else '❌'} | {r['detail']} |")
+    md += [
+        "",
+        "## 5-T3 Auto Scoring",
+        f"- trace_score: `{trace_score['score']}`",
+        f"- covered_parts: `{', '.join(trace_score['covered_parts'])}`",
+    ]
     (out_dir / "layer5_t1_t8.md").write_text("\n".join(md) + "\n", encoding="utf-8")
 
     print(f"[layer5-task-suite] pass={pass_n}/{len(results)}")
