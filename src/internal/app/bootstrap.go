@@ -49,6 +49,14 @@ func BuildServer() (*http.Server, func() error, error) {
 		addr = "127.0.0.1:8080"
 	}
 
+	// ── Vector-only mode (Baseline 1) ────────────────────────────────────────
+	// When PLASMOD_VECTOR_ONLY_MODE=true, disable graph expansion, policy
+	// enforcement, and provenance tracking to create a pure vector-search baseline.
+	vectorOnlyMode := os.Getenv("PLASMOD_VECTOR_ONLY_MODE") == "true"
+	if vectorOnlyMode {
+		log.Printf("[bootstrap] VECTOR-ONLY MODE enabled (baseline: no graph/policy/provenance)")
+	}
+
 	// ── Event Backbone ───────────────────────────────────────────────────────
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
@@ -426,6 +434,7 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
+	runtime.VectorOnlyMode = vectorOnlyMode
 	runtime.RegisterDefaults()
 
 	// ── QueryChain (post-retrieval reasoning: ProofTrace + SubgraphExpand) ───
