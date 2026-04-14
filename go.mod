@@ -1,6 +1,6 @@
 module andb
 
-go 1.25.0
+go 1.24.0
 
 require (
 	andb/retrievalplane v0.0.0
@@ -9,11 +9,6 @@ require (
 	github.com/hamba/avro/v2 v2.31.0
 	github.com/yalue/onnxruntime_go v1.9.0
 	gopkg.in/yaml.v2 v2.4.0
-)
-
-require (
-	github.com/onsi/ginkgo/v2 v2.28.1 // indirect
-	github.com/onsi/gomega v1.39.1 // indirect
 )
 
 require (
@@ -34,7 +29,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/text v0.35.0
+	golang.org/x/text v0.33.0
 	google.golang.org/protobuf v1.36.7 // indirect
 )
 
