@@ -83,11 +83,11 @@ acurl "$BASE_URL/v1/admin/storage"
 ## 5. §2.6 实验一：写入速率阶梯
 
 ```bash
-python3 docs/plasmod-md/tools/layer2_exp26.py --base-url "$BASE_URL" exp1 \
+python3 docs/plasmod-fix/tools/layer2_exp26.py --base-url "$BASE_URL" exp1 \
   --ladder "1,4,8,16" \
   --step-seconds 20 \
   --w2v-probes 8 \
-  --json-out docs/plasmod-md/experiments/out-exp1.json
+  --json-out docs/plasmod-fix/experiments/out-exp1.json
 ```
 
 关注指标（对应 §2.5）：
@@ -116,8 +116,8 @@ acurl -X POST "$BASE_URL/v1/admin/consistency-mode" -d '{"mode":"eventual_visibi
 ### 6.3 在固定档位做基线复测
 
 ```bash
-python3 docs/plasmod-md/tools/layer2_exp26.py --base-url "$BASE_URL" exp2 --baseline-ladder-step 8 \
-  | tee docs/plasmod-md/experiments/out-exp2.txt
+python3 docs/plasmod-fix/tools/layer2_exp26.py --base-url "$BASE_URL" exp2 --baseline-ladder-step 8 \
+  | tee docs/plasmod-fix/experiments/out-exp2.txt
 ```
 
 说明：当前实现中模式主要用于控制面编排与实验记录，查询路径仍是单路径行为；报告中请明确写出这点。
@@ -129,10 +129,10 @@ python3 docs/plasmod-md/tools/layer2_exp26.py --base-url "$BASE_URL" exp2 --base
 > 破坏性操作：会清空数据。
 
 ```bash
-python3 docs/plasmod-md/tools/layer2_exp26.py --base-url "$BASE_URL" exp3 \
+python3 docs/plasmod-fix/tools/layer2_exp26.py --base-url "$BASE_URL" exp3 \
   --golden-n 80 \
   --i-understand-wipe \
-  --json-out docs/plasmod-md/experiments/out-exp3.json
+  --json-out docs/plasmod-fix/experiments/out-exp3.json
 ```
 
 你也可以直接手工验证 replay：

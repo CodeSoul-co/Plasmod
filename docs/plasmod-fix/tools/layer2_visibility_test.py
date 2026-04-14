@@ -6,8 +6,8 @@
 
 用法：
   终端1: make dev   （或 ANDB_HTTP_ADDR=127.0.0.1:8081 make dev）
-  终端2: python3 docs/plasmod-md/tools/layer2_visibility_test.py
-        python3 docs/plasmod-md/tools/layer2_visibility_test.py --full
+  终端2: python3 docs/plasmod-fix/tools/layer2_visibility_test.py
+        python3 docs/plasmod-fix/tools/layer2_visibility_test.py --full
 
 环境：
   ANDB_BASE_URL / PLASMOD_BASE_URL
@@ -714,7 +714,7 @@ def main() -> int:
         )
 
     print()
-    print("[layer2] 提示: 完整 2.5 一键跑: python3 docs/plasmod-md/tools/layer2_visibility_test.py --full")
+    print("[layer2] 提示: 完整 2.5 一键跑: python3 docs/plasmod-fix/tools/layer2_visibility_test.py --full")
     return 0 if ok_main else 1
 
 
