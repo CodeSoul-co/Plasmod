@@ -775,7 +775,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 | 层 | 负责人 | 核心文件 |
 |---|---|---|
-| 部署 / 鉴权 / 数据安全 | **Member A** | `Dockerfile`, `admin_auth.go`, `purge_warm.go`, `dataset_match.go` |
+| 部署 / 鉴权 / 数据安全 / E2E 验收脚本 | **Member A** | `Dockerfile`, `admin_auth.go`, `purge_warm.go`, `dataset_match.go`, `scripts/e2e/*`, `docs/plasmod-fix/*` |
 | GPU 推理 / Embedding 提供商 | **Member B** | `tensorrt_cuda.go`, `onnx_*.go`, `gguf_*.go`, `onnx_tokenizer.go` |
 | 冷层搜索 / 图遍历 / 算法配置 | **Member C** | `s3store.go`, `tiered.go`, `tiered_adapter.go`, `algorithm_shared.go` |
 
@@ -783,7 +783,7 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ### Member A — Deployment · Auth · Storage Safety
 
-**Scope:** Docker runtime, admin API security, warm-tier purge lifecycle, and dataset selector logic. Does **not** touch GPU/embedding code or cold-search algorithms.
+**Scope:** Docker runtime, admin API security, warm-tier purge lifecycle, dataset selector logic, and E2E validation/tooling delivery (including `scripts/e2e/*` + `docs/plasmod-fix/*`). Does **not** touch GPU/embedding code or cold-search algorithms.
 
 **Owned files**
 

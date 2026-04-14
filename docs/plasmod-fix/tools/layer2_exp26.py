@@ -6,11 +6,11 @@ Plasmod.md §2.6 实验方法 — 可执行入口
   exp2  一致性模式：协议说明 + 可选单路径基线复测
   exp3  恢复与重放：golden ingest → wipe → recovery_time → 再 ingest → 校验条数（破坏性）
 
-  python3 docs/plasmod-md/tools/layer2_exp26.py exp1
-  python3 docs/plasmod-md/tools/layer2_exp26.py exp2
-  python3 docs/plasmod-md/tools/layer2_exp26.py exp3 --golden-n 80 --i-understand-wipe
+  python3 docs/plasmod-fix/tools/layer2_exp26.py exp1
+  python3 docs/plasmod-fix/tools/layer2_exp26.py exp2
+  python3 docs/plasmod-fix/tools/layer2_exp26.py exp3 --golden-n 80 --i-understand-wipe
 
-详见: docs/plasmod-md/experiments/layer2-section-2-6.md
+详见: docs/plasmod-fix/experiments/layer2-section-2-6.md
 """
 
 from __future__ import annotations
