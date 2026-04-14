@@ -67,7 +67,7 @@ Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.g
 | Group | Endpoints |
 |-------|-----------|
 | **Health** | `GET /healthz` |
-| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` · `POST /v1/admin/data/wipe` |
+| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `GET/POST /v1/admin/consistency-mode` · `POST /v1/admin/replay` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/s3/cold-purge` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` · `POST /v1/admin/data/wipe` |
 | **Core** | `POST /v1/ingest/events` · `POST /v1/query` |
 | **Canonical CRUD** | `GET` / `POST` — `/v1/agents`, `/v1/sessions`, `/v1/memory`, `/v1/states`, `/v1/artifacts`, `/v1/edges`, `/v1/policies`, `/v1/share-contracts` (list/filter via query params; POST creates or replaces per handler) |
 | **Traces** | `GET /v1/traces/{object_id}` |

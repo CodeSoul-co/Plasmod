@@ -26,6 +26,8 @@ type Gateway struct {
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
 	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
+	modeMu     sync.RWMutex
+	consistencyMode string
 }
 
 func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
@@ -125,7 +127,14 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 // GET /v1/admin/storage returns the resolved backend configuration.
 // bundle may be nil in tests; admin data wipe still clears in-memory state and omits Badger.DropAll.
 func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
-	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg, bundle: bundle}
+	return &Gateway{
+		coord:           coord,
+		runtime:         runtime,
+		store:           store,
+		storageCfg:      storageCfg,
+		bundle:          bundle,
+		consistencyMode: "strict_visible",
+	}
 }
 
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
@@ -139,9 +148,12 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/storage", g.handleStorage)
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
+	mux.HandleFunc("/v1/admin/s3/cold-purge", g.handleS3ColdPurge)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
+	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
+	mux.HandleFunc("/v1/admin/replay", g.handleAdminReplay)
 	if isTestMode() {
 		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
 	}
@@ -605,6 +617,130 @@ func (g *Gateway) handleAdminDataWipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+
+func isSupportedConsistencyMode(mode string) bool {
+	switch mode {
+	case "strict_visible", "bounded_staleness", "eventual_visibility":
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *Gateway) handleAdminConsistencyMode(w http.ResponseWriter, r *http.Request) {
+	supported := []string{"strict_visible", "bounded_staleness", "eventual_visibility"}
+	switch r.Method {
+	case http.MethodGet:
+		g.modeMu.RLock()
+		mode := g.consistencyMode
+		g.modeMu.RUnlock()
+		writeJSON(w, map[string]any{
+			"status":          "ok",
+			"mode":            mode,
+			"supported_modes": supported,
+			"note":            "control-plane mode exposed; query path currently remains single-mode",
+		})
+	case http.MethodPost:
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mode := strings.TrimSpace(req.Mode)
+		if !isSupportedConsistencyMode(mode) {
+			http.Error(w, "unsupported mode", http.StatusBadRequest)
+			return
+		}
+		g.modeMu.Lock()
+		g.consistencyMode = mode
+		g.modeMu.Unlock()
+		writeJSON(w, map[string]any{
+			"status":          "ok",
+			"mode":            mode,
+			"supported_modes": supported,
+			"note":            "control-plane mode exposed; query path currently remains single-mode",
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (g *Gateway) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		FromLSN int64 `json:"from_lsn"`
+		Limit   int   `json:"limit"`
+		DryRun  bool  `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	summary, err := g.runtime.AdminReplayPreview(req.FromLSN, req.Limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	summary["dry_run"] = true
+	summary["requested_dry_run"] = req.DryRun
+	writeJSON(w, summary)
+}
+
+func (g *Gateway) handleS3ColdPurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Confirm string `json:"confirm"`
+		DryRun  bool   `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Confirm) != "purge_cold_tier" {
+		http.Error(w, `confirm must be "purge_cold_tier"`, http.StatusBadRequest)
+		return
+	}
+	tiered := g.runtime.TieredObjects()
+	if tiered == nil {
+		writeJSON(w, map[string]any{
+			"status":   "ok",
+			"dry_run":  req.DryRun,
+			"result":   "no_tiered_store",
+			"purged":   false,
+			"note":     "tiered object store not configured",
+		})
+		return
+	}
+	if req.DryRun {
+		writeJSON(w, map[string]any{
+			"status":  "ok",
+			"dry_run": true,
+			"purged":  false,
+			"note":    "dry-run only; no mutation performed",
+		})
+		return
+	}
+	result := tiered.ClearColdIfInMemory()
+	writeJSON(w, map[string]any{
+		"status":  "ok",
+		"dry_run": false,
+		"result":  result,
+		"purged":  result == "in_memory_cleared",
+		"note":    "S3-backed cold objects require bucket-side lifecycle/manual cleanup",
+	})
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────

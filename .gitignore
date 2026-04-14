@@ -38,6 +38,7 @@ integration_tests/
 
 # Member private docs
 devdocs/
+plasmod-md/
 
 # Local issue tracker (not for version control)
 KNOWN_ISSUES.md
@@ -63,3 +64,8 @@ go.sum.bak*
 out/
 go.mod
 Plasmod.md
+.andb_data/00006.mem
+.gitignore
+.andb_data/wal.log
+.gitignore
+.andb_data/derivation.log
