@@ -70,3 +70,4 @@ go.mod
 .andb_data/00008.mem
 docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
+new.md

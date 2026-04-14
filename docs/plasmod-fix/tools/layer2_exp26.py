@@ -123,13 +123,43 @@ def cmd_exp2(args: argparse.Namespace, L: Any) -> int:
   • bounded staleness（有界陈旧）
   • eventual visibility（最终可见）
 
-当前 Plasmod 若未在 HTTP/API 层暴露可切换的「一致性级别」，建议报告写法：
-  1) 用表格列出三种模式的操作化定义与计划观测指标；
-  2) 本节报告「现有实现单一路径」下的基线：重复固定负载 2～3 次，给出均值±方差。
+本脚本会直接调用 /v1/admin/consistency-mode：
+  1) GET 当前模式；
+  2) 依次 POST strict_visible / bounded_staleness / eventual_visibility；
+  3) 每次 POST 后 GET 校验；
+  4) 结束后恢复初始模式。
 
 可选：使用 --baseline-ladder-step 在某一固定写入速率下自动跑与 exp1 相同的一档（需服务可用）。
 """
     )
+    if not args.skip_consistency_api:
+        print("[exp26 exp2] exercise /v1/admin/consistency-mode …")
+        st0, b0 = _admin_consistency_get(args.base_url.rstrip("/"), L)
+        if st0 != 200 or not isinstance(b0, dict):
+            print(f"[exp26 exp2] consistency GET failed {st0} {b0!r}", file=sys.stderr)
+            return 1
+        original = str(b0.get("mode", "strict_visible"))
+        print(f"  current_mode={original}")
+        modes = ["strict_visible", "bounded_staleness", "eventual_visibility"]
+        for mode in modes:
+            st1, b1 = _admin_consistency_set(args.base_url.rstrip("/"), L, mode)
+            if st1 != 200:
+                print(f"[exp26 exp2] consistency POST {mode} failed {st1} {b1!r}", file=sys.stderr)
+                return 1
+            st2, b2 = _admin_consistency_get(args.base_url.rstrip("/"), L)
+            got = b2.get("mode") if isinstance(b2, dict) else None
+            print(f"  set={mode} verify_mode={got}")
+            if st2 != 200 or got != mode:
+                print(f"[exp26 exp2] consistency verify mismatch for {mode}: {st2} {b2!r}", file=sys.stderr)
+                return 1
+        if original not in modes:
+            original = "strict_visible"
+        st3, b3 = _admin_consistency_set(args.base_url.rstrip("/"), L, original)
+        if st3 != 200:
+            print(f"[exp26 exp2] consistency restore failed {st3} {b3!r}", file=sys.stderr)
+            return 1
+        print(f"  restored_mode={original}")
+
     if args.baseline_ladder_step <= 0:
         return 0
     base = args.base_url.rstrip("/")
@@ -160,16 +190,53 @@ def cmd_exp2(args: argparse.Namespace, L: Any) -> int:
 
 
 def _admin_wipe(base: str, L: Any) -> tuple[int, Any]:
-    h: dict[str, str] = {}
-    k = L._admin_key()
-    if k:
-        h["X-Admin-Key"] = k
+    h = _admin_headers(L)
     return L._http_json(
         "POST",
         f"{base}/v1/admin/data/wipe",
         {"confirm": "delete_all_data"},
         timeout=120.0,
         extra_headers=h if h else None,
+    )
+
+
+def _admin_headers(L: Any) -> dict[str, str]:
+    h: dict[str, str] = {}
+    k = L._admin_key()
+    if k:
+        h["X-Admin-Key"] = k
+    return h
+
+
+def _admin_consistency_get(base: str, L: Any) -> tuple[int, Any]:
+    return L._http_json("GET", f"{base}/v1/admin/consistency-mode", None, timeout=30.0, extra_headers=_admin_headers(L))
+
+
+def _admin_consistency_set(base: str, L: Any, mode: str) -> tuple[int, Any]:
+    return L._http_json(
+        "POST",
+        f"{base}/v1/admin/consistency-mode",
+        {"mode": mode},
+        timeout=30.0,
+        extra_headers=_admin_headers(L),
+    )
+
+
+def _admin_replay(base: str, L: Any, *, from_lsn: int, limit: int, dry_run: bool, apply: bool) -> tuple[int, Any]:
+    body: dict[str, Any] = {
+        "from_lsn": int(from_lsn),
+        "limit": int(limit),
+        "dry_run": bool(dry_run),
+        "apply": bool(apply),
+    }
+    if apply and not dry_run:
+        body["confirm"] = "apply_replay"
+    return L._http_json(
+        "POST",
+        f"{base}/v1/admin/replay",
+        body,
+        timeout=120.0,
+        extra_headers=_admin_headers(L),
     )
 
 
@@ -250,6 +317,35 @@ def cmd_exp3(args: argparse.Namespace, L: Any) -> int:
     cnt1 = len(rows) if st == 200 else -1
     print(f"  ingest_ok={got}/{n}  list_memories_count={cnt1}")
 
+    if not args.skip_replay_check:
+        print(f"[exp26 exp3] replay dry-run from_lsn={args.replay_from_lsn} limit={args.replay_limit} …")
+        stp, bp = _admin_replay(
+            base,
+            L,
+            from_lsn=args.replay_from_lsn,
+            limit=args.replay_limit,
+            dry_run=True,
+            apply=False,
+        )
+        if stp != 200:
+            print(f"[exp26 exp3] replay dry-run failed {stp} {bp!r}", file=sys.stderr)
+            return 1
+        print(f"  replay_preview_ok status={stp}")
+
+        print(f"[exp26 exp3] replay apply from_lsn={args.replay_from_lsn} limit={args.replay_limit} …")
+        sta, ba = _admin_replay(
+            base,
+            L,
+            from_lsn=args.replay_from_lsn,
+            limit=args.replay_limit,
+            dry_run=False,
+            apply=True,
+        )
+        if sta != 200:
+            print(f"[exp26 exp3] replay apply failed {sta} {ba!r}", file=sys.stderr)
+            return 1
+        print(f"  replay_apply_ok status={sta}")
+
     print("[exp26 exp3] disaster wipe + measure recovery_time …")
     rec_s, rec_ok = _recovery_seconds_after_wipe(base, L, ids)
     print(f"  recovery_time_s={rec_s:.3f}  recovery_ok={rec_ok}")
@@ -292,6 +388,7 @@ def main() -> int:
     p1.add_argument("--json-out", default="", dest="json_out")
 
     p2 = sub.add_parser("exp2", help="一致性模式说明 + 可选基线（§2.6 实验二）")
+    p2.add_argument("--skip-consistency-api", action="store_true", dest="skip_consistency_api")
     p2.add_argument("--baseline-ladder-step", type=float, default=0.0, dest="baseline_ladder_step")
     p2.add_argument("--baseline-repeats", type=int, default=3, dest="baseline_repeats")
     p2.add_argument("--step-seconds", type=float, default=12.0, dest="step_seconds")
@@ -300,6 +397,9 @@ def main() -> int:
     p3.add_argument("--golden-n", type=int, default=60, dest="golden_n")
     p3.add_argument("--i-understand-wipe", action="store_true", dest="i_understand_wipe")
     p3.add_argument("--skip-initial-wipe", action="store_true", dest="skip_initial_wipe")
+    p3.add_argument("--skip-replay-check", action="store_true", dest="skip_replay_check")
+    p3.add_argument("--replay-from-lsn", type=int, default=0, dest="replay_from_lsn")
+    p3.add_argument("--replay-limit", type=int, default=120, dest="replay_limit")
     args = ap.parse_args()
     L = _load_layer2()
     if args.base_url is None:

@@ -487,6 +487,35 @@ def run_replay_sim_ingest_throughput(base: str, n: int, agent_id: str, session_i
     return n / elapsed if elapsed > 0 else 0.0
 
 
+def run_admin_replay_preview_throughput(base: str, *, from_lsn: int = 0, limit: int = 1000) -> tuple[float, int, int]:
+    """
+    通过 /v1/admin/replay dry-run 估算 replay preview 吞吐（events/s）。
+    返回: (events_per_s, scanned, http_status)。
+    """
+    h: dict[str, str] = {}
+    k = _admin_key()
+    if k:
+        h["X-Admin-Key"] = k
+    t0 = time.perf_counter()
+    st, body = _http_json(
+        "POST",
+        f"{base}/v1/admin/replay",
+        {"from_lsn": int(from_lsn), "limit": int(limit), "dry_run": True, "apply": False},
+        timeout=120.0,
+        extra_headers=h if h else None,
+    )
+    elapsed = max(time.perf_counter() - t0, 1e-9)
+    scanned = 0
+    if isinstance(body, dict):
+        # 兼容不同字段命名
+        for key in ("scanned", "events_scanned", "preview_count", "total"):
+            v = body.get(key)
+            if isinstance(v, int):
+                scanned = v
+                break
+    return (scanned / elapsed), scanned, st
+
+
 def run_recovery_after_wipe(base: str, agent_id: str, session_id: str, tenant_id: str, workspace_id: str) -> tuple[float, bool]:
     """2.5 recovery time：admin wipe 后到 health + 一次 ingest 成功。"""
     headers = {}
@@ -549,7 +578,7 @@ def main() -> int:
   materialization lag    → state_materialization_lag_ms (state_update)
   retrieval under load   → query_latency_ms under write (后台 ingest)
   stale result rate      → stale_probe (立即 list memory 是否可见)
-  replay throughput      → synthetic_ingest_events_per_s (非 WAL 重放，见输出说明)
+  replay throughput      → admin_replay_preview_events_per_s（/v1/admin/replay dry-run）+ synthetic_ingest_events_per_s
   recovery time          → --wipe-recovery
         """,
     )
@@ -578,6 +607,7 @@ def main() -> int:
     ap.add_argument("--write-load-query-hz", type=float, default=4.0)
     ap.add_argument("--stale-samples", type=int, default=30)
     ap.add_argument("--replay-sim-n", type=int, default=400)
+    ap.add_argument("--replay-preview-limit", type=int, default=1000)
     ap.add_argument("--wipe-recovery", action="store_true", help="destructive: POST /v1/admin/data/wipe then measure recovery")
     ap.add_argument("--i-understand-wipe", action="store_true", help="required with --wipe-recovery")
     ap.add_argument(
@@ -674,7 +704,19 @@ def main() -> int:
         print(f"  stale={stale} ok={good} stale_result_rate={rate:.4f}")
 
         print()
-        print(f"[layer2] §2.5 — synthetic ingest throughput (n={args.replay_sim_n}, not WAL replay)")
+        print(f"[layer2] §2.5 — admin replay preview throughput (limit={args.replay_preview_limit})")
+        rrps, scanned, st = run_admin_replay_preview_throughput(
+            base,
+            from_lsn=0,
+            limit=args.replay_preview_limit,
+        )
+        if st == 200:
+            print(f"  admin_replay_preview_events_per_s≈{rrps:.1f} (scanned={scanned})")
+        else:
+            print(f"  admin_replay_preview failed status={st} (fallback to synthetic only)")
+
+        print()
+        print(f"[layer2] §2.5 — synthetic ingest throughput (n={args.replay_sim_n}, non-replay baseline)")
         rps = run_replay_sim_ingest_throughput(
             base,
             args.replay_sim_n,
