@@ -1141,3 +1141,61 @@ func (r *Runtime) AdminReplayPreview(fromLSN int64, limit int) (map[string]any, 
 		"note":                 "preview only; no state mutation performed",
 	}, nil
 }
+
+// AdminReplayApply replays WAL entries by re-submitting events through the ingest path.
+// This mutates runtime state and appends new WAL entries for the replayed events.
+func (r *Runtime) AdminReplayApply(fromLSN int64, limit int) (map[string]any, error) {
+	if r == nil || r.wal == nil {
+		return nil, errors.New("wal not configured")
+	}
+	if fromLSN < 0 {
+		fromLSN = 0
+	}
+	entries := r.wal.Scan(fromLSN)
+	total := len(entries)
+	if total == 0 {
+		return map[string]any{
+			"status":           "ok",
+			"from_lsn":         fromLSN,
+			"latest_lsn":       r.wal.LatestLSN(),
+			"scanned_entries":  0,
+			"attempted":        0,
+			"applied":          0,
+			"failed":           0,
+			"failed_event_ids": []string{},
+			"note":             "no WAL entries to replay",
+		}, nil
+	}
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	target := entries[:limit]
+	applied := 0
+	failed := 0
+	failedIDs := make([]string, 0)
+	for _, entry := range target {
+		ev := entry.Event
+		if strings.TrimSpace(ev.EventID) == "" {
+			failed++
+			failedIDs = append(failedIDs, "")
+			continue
+		}
+		if _, err := r.SubmitIngest(ev); err != nil {
+			failed++
+			failedIDs = append(failedIDs, ev.EventID)
+			continue
+		}
+		applied++
+	}
+	return map[string]any{
+		"status":           "ok",
+		"from_lsn":         fromLSN,
+		"latest_lsn":       r.wal.LatestLSN(),
+		"scanned_entries":  total,
+		"attempted":        len(target),
+		"applied":          applied,
+		"failed":           failed,
+		"failed_event_ids": failedIDs,
+		"note":             "replay apply re-submits events via ingest path",
+	}, nil
+}

@@ -104,7 +104,7 @@ Control-plane consistency mode endpoint for Layer-2 experiment orchestration.
 
 ### `POST /v1/admin/replay`
 
-WAL replay preview endpoint for recovery experiments.
+WAL replay endpoint for recovery experiments (supports preview and apply).
 
 Body:
 
@@ -112,11 +112,37 @@ Body:
 {
   "from_lsn": 0,
   "limit": 1000,
-  "dry_run": true
+  "dry_run": true,
+  "apply": false,
+  "confirm": ""
 }
 ```
 
-Returns scan summary (`latest_lsn`, `scanned_entries`, sampled event IDs/type counts). This endpoint is preview-only and does not mutate runtime state.
+Behavior:
+- Preview mode (default): `dry_run=true` (or omit `apply`) returns scan summary only.
+- Apply mode: set `apply=true` (or `dry_run=false`) and must set `confirm` to `"apply_replay"`.
+- Apply mode re-submits WAL events through ingest path and mutates runtime state.
+
+### `POST /v1/admin/rollback`
+
+Operational rollback endpoint for memory active-state correction.
+
+Body:
+
+```json
+{
+  "memory_id": "mem_123",
+  "action": "reactivate",
+  "dry_run": true,
+  "reason": "operator rollback"
+}
+```
+
+Supported `action` values:
+- `reactivate`: set `IsActive=true` and clear `valid_to`
+- `deactivate`: set `IsActive=false` and set `valid_to` if empty
+
+When `dry_run=false`, mutation is applied and an audit record is appended.
 
 ### `POST /v1/admin/s3/cold-purge`
 
@@ -146,7 +172,7 @@ Hard-deletes memories that match the same selector keys as delete. JSON body: **
 
 When a **`TieredObjectStore`** is wired, removal uses **`HardDeleteMemory`** (hot/warm/cold as applicable). If tiered storage is **not** configured, the handler falls back to **warm-only** purge (`PurgeMemoryWarmOnly`); the JSON response includes **`purge_backend`**: `"tiered"` or `"warm_only"`.
 
-> **Security:** these admin routes are protected when `ANDB_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is **not** set, the default dev server does **not** authenticate `/v1/admin/*`. Always restrict by network or put a reverse proxy in front in production.
+> **Security:** these admin routes are protected when `PLASMOD_ADMIN_API_KEY` is set (legacy alias `ANDB_ADMIN_API_KEY`). Clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`. If neither env var is set, the default dev server does **not** authenticate `/v1/admin/*`. Always restrict by network or put a reverse proxy in front in production.
 
 ## Not Yet Implemented
 
