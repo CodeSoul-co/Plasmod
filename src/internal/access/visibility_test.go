@@ -78,7 +78,7 @@ func TestGateway_DebugEndpoint_ModeGated(t *testing.T) {
 	t.Run("prod_no_debug_route", func(t *testing.T) {
 		t.Setenv(AppModeEnv, AppModeProd)
 		mux := http.NewServeMux()
-		NewGateway(nil, nil, store, nil).RegisterRoutes(mux)
+		NewGateway(nil, nil, store, nil, nil).RegisterRoutes(mux)
 
 		req := httptest.NewRequest(http.MethodPost, "/v1/debug/echo", strings.NewReader(`{"x":1}`))
 		rr := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestGateway_DebugEndpoint_ModeGated(t *testing.T) {
 	t.Run("test_has_debug_route", func(t *testing.T) {
 		t.Setenv(AppModeEnv, AppModeTest)
 		mux := http.NewServeMux()
-		NewGateway(nil, nil, store, nil).RegisterRoutes(mux)
+		NewGateway(nil, nil, store, nil, nil).RegisterRoutes(mux)
 
 		req := httptest.NewRequest(http.MethodPost, "/v1/debug/echo", strings.NewReader(`{"x":1}`))
 		req.Header.Set("Content-Type", "application/json")

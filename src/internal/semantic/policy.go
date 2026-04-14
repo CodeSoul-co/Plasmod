@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"strings"
 	"time"
 
 	"plasmod/src/internal/schemas"
@@ -26,6 +27,12 @@ func (p *PolicyEngine) ApplyQueryFilters(req schemas.QueryRequest) []string {
 	}
 	if len(req.RelationConstraints) > 0 {
 		filters = append(filters, "relation_constraints")
+	}
+	if strings.TrimSpace(req.DatasetName) != "" || strings.TrimSpace(req.SourceFileName) != "" {
+		filters = append(filters, "dataset_selector")
+	}
+	if strings.TrimSpace(req.ImportBatchID) != "" || req.LatestBatchOnly {
+		filters = append(filters, "import_batch")
 	}
 	filters = append(filters, "ttl_active", "quarantine_excluded", "salience_threshold")
 	return filters

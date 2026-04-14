@@ -44,6 +44,7 @@ type Runtime struct {
 	// can fire synchronously in SubmitIngest (not only async via subscriber).
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
+	wipeMu    sync.Mutex
 }
 
 func CreateRuntime(
@@ -202,7 +203,10 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	// cross-event races); this synchronous pass ensures the conflict_resolved
 	// edge is present before SubmitIngest returns — critical for test queries
 	// and any caller that reads edges immediately after ingest.
-	if mat.Memory.AgentID != "" && mat.Memory.SessionID != "" && mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) {
+	if mat.Memory.AgentID != "" &&
+		mat.Memory.SessionID != "" &&
+		mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) &&
+		!shouldSkipConflictMergeForEvent(ev) {
 		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
 		r.lastMemMu.RLock()
 		prevID, hasPrev := r.lastMem[key]
@@ -255,6 +259,15 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
+	if queryUsesStructuredMemorySelectors(req) {
+		selectorIDs := r.fetchMemoryIDsByStructuredSelectors(req)
+		if req.LatestBatchOnly {
+			result.ObjectIDs = selectorIDs
+		} else {
+			result.ObjectIDs = filterObjectIDsByStructuredSelectors(r.storage.Objects(), result.ObjectIDs, req)
+			result.ObjectIDs = appendMissing(result.ObjectIDs, selectorIDs)
+		}
+	}
 	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs, result.ColdObjectIDs)
 	retrievalHitCount := len(result.ObjectIDs)
 
@@ -360,6 +373,167 @@ func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []stri
 		out = append(out, id)
 	}
 	return out
+}
+
+func queryUsesStructuredMemorySelectors(req schemas.QueryRequest) bool {
+	return strings.TrimSpace(req.DatasetName) != "" ||
+		strings.TrimSpace(req.SourceFileName) != "" ||
+		strings.TrimSpace(req.ImportBatchID) != "" ||
+		req.LatestBatchOnly
+}
+
+func appendMissing(base []string, extras []string) []string {
+	if len(extras) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base))
+	for _, id := range base {
+		seen[id] = struct{}{}
+	}
+	for _, id := range extras {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		base = append(base, id)
+		seen[id] = struct{}{}
+	}
+	return base
+}
+
+func filterObjectIDsByStructuredSelectors(os storage.ObjectStore, ids []string, req schemas.QueryRequest) []string {
+	if os == nil || len(ids) == 0 || !queryUsesStructuredMemorySelectors(req) {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		mem, ok := os.GetMemory(id)
+		if !ok {
+			continue
+		}
+		if !memoryMatchesStructuredSelectorsBase(mem, req) {
+			continue
+		}
+		if req.ImportBatchID != "" && mem.ImportBatchID != strings.TrimSpace(req.ImportBatchID) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (r *Runtime) fetchMemoryIDsByStructuredSelectors(req schemas.QueryRequest) []string {
+	if r.storage == nil || r.storage.Objects() == nil {
+		return nil
+	}
+	all := r.storage.Objects().ListMemories("", "")
+	if len(all) == 0 {
+		return nil
+	}
+	matched := make([]schemas.Memory, 0, len(all))
+	for _, mem := range all {
+		if !memoryMatchesStructuredSelectorsBase(mem, req) {
+			continue
+		}
+		matched = append(matched, mem)
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+	if batchID := strings.TrimSpace(req.ImportBatchID); batchID != "" {
+		filtered := make([]schemas.Memory, 0, len(matched))
+		for _, mem := range matched {
+			if mem.ImportBatchID == batchID {
+				filtered = append(filtered, mem)
+			}
+		}
+		matched = filtered
+		if len(matched) == 0 {
+			return nil
+		}
+	}
+	if req.LatestBatchOnly {
+		latestBatchID := resolveLatestImportBatchID(matched)
+		if latestBatchID != "" {
+			filtered := make([]schemas.Memory, 0, len(matched))
+			for _, mem := range matched {
+				if mem.ImportBatchID == latestBatchID {
+					filtered = append(filtered, mem)
+				}
+			}
+			matched = filtered
+		}
+		if len(matched) == 0 {
+			return nil
+		}
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, matched[i].ValidFrom)
+		tj, _ := time.Parse(time.RFC3339, matched[j].ValidFrom)
+		return ti.After(tj)
+	})
+	limit := req.TopK
+	if limit <= 0 || limit > len(matched) {
+		limit = len(matched)
+	}
+	ids := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		ids = append(ids, matched[i].MemoryID)
+	}
+	return ids
+}
+
+func memoryMatchesStructuredSelectorsBase(mem schemas.Memory, req schemas.QueryRequest) bool {
+	workspaceID := strings.TrimSpace(req.WorkspaceID)
+	if workspaceID != "" && mem.Scope != workspaceID {
+		return false
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && mem.AgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && mem.SessionID != sessionID {
+		return false
+	}
+	datasetName := strings.TrimSpace(req.DatasetName)
+	if datasetName != "" && mem.DatasetName != datasetName {
+		return false
+	}
+	sourceFile := strings.TrimSpace(req.SourceFileName)
+	if sourceFile != "" && mem.SourceFileName != sourceFile {
+		return false
+	}
+	return true
+}
+
+func resolveLatestImportBatchID(mems []schemas.Memory) string {
+	latestBatchID := ""
+	latestVersion := int64(-1)
+	latestTS := time.Time{}
+	for _, mem := range mems {
+		if strings.TrimSpace(mem.ImportBatchID) == "" {
+			continue
+		}
+		if mem.Version > latestVersion {
+			latestBatchID = mem.ImportBatchID
+			latestVersion = mem.Version
+			ts, _ := time.Parse(time.RFC3339, mem.ValidFrom)
+			latestTS = ts
+			continue
+		}
+		if mem.Version < latestVersion {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339, mem.ValidFrom)
+		if err != nil {
+			continue
+		}
+		if latestBatchID == "" || ts.After(latestTS) {
+			latestBatchID = mem.ImportBatchID
+			latestTS = ts
+		}
+	}
+	return latestBatchID
 }
 
 // fetchCanonicalObjects retrieves State and Artifact object IDs from the canonical
@@ -835,4 +1009,84 @@ func payloadVectorLen(payload map[string]any) (int, bool) {
 		return len(v), true
 	}
 	return 0, false
+}
+
+// AdminWipeAll clears durable stores, retrieval indexes, tier caches, WAL/derivation logs,
+// and evidence fragments. When bundle.Badger is set, Badger.DropAll runs first.
+// S3/MinIO cold objects are not deleted; see response "cold_tier" and "note".
+func (r *Runtime) AdminWipeAll(bundle *storage.RuntimeBundle, algoCfg schemas.AlgorithmConfig) (map[string]any, error) {
+	if r == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	r.wipeMu.Lock()
+	defer r.wipeMu.Unlock()
+
+	out := map[string]any{"status": "ok"}
+	if bundle != nil && bundle.Badger != nil {
+		if err := bundle.Badger.DropAll(); err != nil {
+			return nil, err
+		}
+		out["badger_drop_all"] = true
+	} else {
+		out["badger_drop_all"] = false
+	}
+
+	storage.WipeMutableRuntimeState(r.storage)
+
+	if r.tieredObjects != nil {
+		out["cold_tier"] = r.tieredObjects.ClearColdIfInMemory()
+	} else {
+		out["cold_tier"] = "none"
+	}
+
+	if tp, ok := r.plane.(*dataplane.TieredDataPlane); ok {
+		if err := tp.AdminResetRetrieval(algoCfg); err != nil {
+			return nil, err
+		}
+		out["retrieval_plane"] = "tiered_reset"
+	} else {
+		out["retrieval_plane"] = "skipped_non_tiered"
+	}
+
+	out["wal"] = r.adminWipeWAL()
+
+	if r.derivationLog != nil {
+		if err := r.derivationLog.Wipe(); err != nil {
+			return nil, err
+		}
+		out["derivation_log"] = "cleared"
+	}
+	if r.policyDecisionLog != nil {
+		r.policyDecisionLog.Wipe()
+		out["policy_decision_log"] = "cleared"
+	}
+	if r.evCache != nil {
+		r.evCache.Clear()
+		out["evidence_cache"] = "cleared"
+	}
+
+	r.lastMemMu.Lock()
+	r.lastMem = make(map[string]string)
+	r.lastMemMu.Unlock()
+
+	out["note"] = "S3/MinIO cold objects are not deleted by this endpoint; re-ingest or use bucket tools if needed."
+	return out, nil
+}
+
+func (r *Runtime) adminWipeWAL() string {
+	if r == nil || r.wal == nil {
+		return "none"
+	}
+	switch w := r.wal.(type) {
+	case *eventbackbone.FileWAL:
+		if err := w.Wipe(); err != nil {
+			return "file_error:" + err.Error()
+		}
+		return "file_removed"
+	case *eventbackbone.InMemoryWAL:
+		w.Wipe()
+		return "memory_cleared"
+	default:
+		return "unknown_skipped"
+	}
 }

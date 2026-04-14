@@ -80,3 +80,36 @@ func (c *compositeRuntimeStorage) PutEventWithBaseEdges(obj schemas.Event) {
 		c.edg.PutEdge(e)
 	}
 }
+
+func (c *compositeRuntimeStorage) wipeAllData() {
+	if s, ok := c.seg.(*memorySegmentStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.idx.(*memoryIndexStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.obj.(*memoryObjectStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.edg.(*memoryGraphEdgeStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.ver.(*memorySnapshotVersionStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.pol.(*memoryPolicyStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.ctr.(*memoryShareContractStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.audits.(*inMemoryAuditStore); ok {
+		s.wipe()
+	}
+	if s, ok := c.algo.(*inMemoryAlgorithmStateStore); ok {
+		s.wipe()
+	}
+	if c.hot != nil {
+		c.hot.Clear()
+	}
+}

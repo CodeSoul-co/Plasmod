@@ -209,6 +209,113 @@ func TestEventSubscriber_NoConsolidation_WhenDisabled(t *testing.T) {
 	}
 }
 
+func TestEventSubscriber_ConflictMergeSkippedForDatasetLoader(t *testing.T) {
+	t.Setenv("ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER", "true")
+	wal, mgr, store, _ := buildSubscriberRuntime(t)
+
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_evt_bulk_1",
+		AgentID:   "agent_bulk",
+		SessionID: "sess_bulk",
+		Version:   1,
+		IsActive:  true,
+		Content:   "bulk row 1",
+	})
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_evt_bulk_2",
+		AgentID:   "agent_bulk",
+		SessionID: "sess_bulk",
+		Version:   2,
+		IsActive:  true,
+		Content:   "bulk row 2",
+	})
+
+	sub := CreateEventSubscriber(wal, mgr)
+	sub.SetPollInterval(20 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go sub.Run(ctx)
+
+	_, _ = wal.Append(schemas.Event{
+		EventID:   "evt_bulk_1",
+		AgentID:   "agent_bulk",
+		SessionID: "sess_bulk",
+		Source:    "dataset_loader",
+		Payload:   map[string]any{"ingest_mode": "bulk_dataset"},
+	})
+	_, _ = wal.Append(schemas.Event{
+		EventID:   "evt_bulk_2",
+		AgentID:   "agent_bulk",
+		SessionID: "sess_bulk",
+		Source:    "dataset_loader",
+		Payload:   map[string]any{"ingest_mode": "bulk_dataset"},
+	})
+	<-ctx.Done()
+
+	m1, ok1 := store.Objects().GetMemory("mem_evt_bulk_1")
+	m2, ok2 := store.Objects().GetMemory("mem_evt_bulk_2")
+	if !ok1 || !ok2 {
+		t.Fatalf("expected both pre-seeded memories to exist")
+	}
+	if !m1.IsActive || !m2.IsActive {
+		t.Fatalf("bulk dataset rows should not be conflict-merged: m1_active=%v m2_active=%v", m1.IsActive, m2.IsActive)
+	}
+}
+
+func TestEventSubscriber_ConflictMergeStillRunsForNonBulk(t *testing.T) {
+	t.Setenv("ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER", "true")
+	wal, mgr, store, _ := buildSubscriberRuntime(t)
+
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_evt_nb_1",
+		AgentID:   "agent_nb",
+		SessionID: "sess_nb",
+		Version:   1,
+		IsActive:  true,
+		Content:   "non-bulk row 1",
+	})
+	store.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_evt_nb_2",
+		AgentID:   "agent_nb",
+		SessionID: "sess_nb",
+		Version:   2,
+		IsActive:  true,
+		Content:   "non-bulk row 2",
+	})
+
+	sub := CreateEventSubscriber(wal, mgr)
+	sub.SetPollInterval(20 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go sub.Run(ctx)
+
+	_, _ = wal.Append(schemas.Event{
+		EventID:   "evt_nb_1",
+		AgentID:   "agent_nb",
+		SessionID: "sess_nb",
+		Source:    "chat_gateway",
+	})
+	_, _ = wal.Append(schemas.Event{
+		EventID:   "evt_nb_2",
+		AgentID:   "agent_nb",
+		SessionID: "sess_nb",
+		Source:    "chat_gateway",
+	})
+	<-ctx.Done()
+
+	m1, ok1 := store.Objects().GetMemory("mem_evt_nb_1")
+	m2, ok2 := store.Objects().GetMemory("mem_evt_nb_2")
+	if !ok1 || !ok2 {
+		t.Fatalf("expected both pre-seeded memories to exist")
+	}
+	if m1.IsActive {
+		t.Fatalf("non-bulk conflict merge should deactivate older memory")
+	}
+	if !m2.IsActive {
+		t.Fatalf("newer memory should remain active after non-bulk conflict merge")
+	}
+}
+
 // TestMicroBatch_FlushIntegration verifies the full MicroBatch accumulate-and-
 // drain cycle end-to-end:
 //

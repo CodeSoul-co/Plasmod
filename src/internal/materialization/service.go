@@ -86,6 +86,11 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 				mem.SourceFileName = strings.TrimSpace(s)
 			}
 		}
+		if b, ok := ev.Payload[schemas.PayloadKeyImportBatchID]; ok {
+			if s, ok := b.(string); ok {
+				mem.ImportBatchID = strings.TrimSpace(s)
+			}
+		}
 	}
 
 	version := schemas.ObjectVersion{
