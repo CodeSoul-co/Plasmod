@@ -152,6 +152,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
+	mux.HandleFunc("/v1/admin/rollback", g.handleAdminRollback)
 	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
 	mux.HandleFunc("/v1/admin/replay", g.handleAdminReplay)
 	if isTestMode() {
@@ -680,20 +681,128 @@ func (g *Gateway) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FromLSN int64 `json:"from_lsn"`
 		Limit   int   `json:"limit"`
-		DryRun  bool  `json:"dry_run"`
+		DryRun  *bool `json:"dry_run,omitempty"`
+		Apply   bool  `json:"apply,omitempty"`
+		Confirm string `json:"confirm,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	summary, err := g.runtime.AdminReplayPreview(req.FromLSN, req.Limit)
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	applyRequested := req.Apply || !dryRun
+	var (
+		summary map[string]any
+		err     error
+	)
+	if applyRequested {
+		if strings.TrimSpace(req.Confirm) != "apply_replay" {
+			http.Error(w, `confirm must be "apply_replay" when apply=true`, http.StatusBadRequest)
+			return
+		}
+		summary, err = g.runtime.AdminReplayApply(req.FromLSN, req.Limit)
+	} else {
+		summary, err = g.runtime.AdminReplayPreview(req.FromLSN, req.Limit)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	summary["dry_run"] = true
-	summary["requested_dry_run"] = req.DryRun
+	summary["dry_run"] = !applyRequested
+	summary["apply"] = applyRequested
 	writeJSON(w, summary)
+}
+
+// handleAdminRollback performs a minimal memory-level rollback action for
+// operational recovery: reactivate or deactivate one memory record.
+func (g *Gateway) handleAdminRollback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		MemoryID string `json:"memory_id"`
+		Action   string `json:"action"` // reactivate | deactivate
+		DryRun   bool   `json:"dry_run,omitempty"`
+		Reason   string `json:"reason,omitempty"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.MemoryID = strings.TrimSpace(req.MemoryID)
+	req.Action = strings.TrimSpace(req.Action)
+	if req.MemoryID == "" {
+		http.Error(w, "memory_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Action != "reactivate" && req.Action != "deactivate" {
+		http.Error(w, `action must be "reactivate" or "deactivate"`, http.StatusBadRequest)
+		return
+	}
+	mem, ok := g.store.Objects().GetMemory(req.MemoryID)
+	if !ok {
+		http.Error(w, "memory not found", http.StatusNotFound)
+		return
+	}
+	beforeActive := mem.IsActive
+	afterActive := beforeActive
+	switch req.Action {
+	case "reactivate":
+		afterActive = true
+	case "deactivate":
+		afterActive = false
+	}
+	if req.DryRun {
+		writeJSON(w, map[string]any{
+			"status":        "ok",
+			"dry_run":       true,
+			"memory_id":     req.MemoryID,
+			"action":        req.Action,
+			"before_active": beforeActive,
+			"after_active":  afterActive,
+			"note":          "dry-run only; no mutation performed",
+		})
+		return
+	}
+
+	mem.IsActive = afterActive
+	if afterActive {
+		mem.ValidTo = ""
+	} else if mem.ValidTo == "" {
+		mem.ValidTo = time.Now().UTC().Format(time.RFC3339)
+	}
+	g.store.Objects().PutMemory(mem)
+	if !afterActive {
+		if tiered := g.runtime.TieredObjects(); tiered != nil {
+			tiered.SoftDeleteMemoryTierCleanup(mem.MemoryID)
+		}
+	}
+	if g.store.Audits() != nil {
+		g.store.Audits().AppendAudit(schemas.AuditRecord{
+			RecordID:       fmt.Sprintf("audit_rollback_%s_%d", mem.MemoryID, time.Now().UnixNano()),
+			TargetMemoryID: mem.MemoryID,
+			OperationType:  string(schemas.AuditOpPolicyChange),
+			ActorType:      "system",
+			ActorID:        "admin_api",
+			Decision:       "allow",
+			ReasonCode:     "admin_rollback",
+			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, map[string]any{
+		"status":        "ok",
+		"dry_run":       false,
+		"memory_id":     req.MemoryID,
+		"action":        req.Action,
+		"before_active": beforeActive,
+		"after_active":  afterActive,
+		"reason":        strings.TrimSpace(req.Reason),
+	})
 }
 
 func (g *Gateway) handleS3ColdPurge(w http.ResponseWriter, r *http.Request) {
