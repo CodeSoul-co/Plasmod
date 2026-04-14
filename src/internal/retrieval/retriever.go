@@ -99,7 +99,7 @@ func (r *Retriever) Retrieve(req RetrievalRequest) CandidateList {
 		candidates = r.hybridSearch(req, effectiveTopK)
 	}
 
-	// Safety filter
+	// Safety filter + additional filters
 	passed := candidates[:0]
 	for _, c := range candidates {
 		mem, ok := r.objects.GetMemory(c.ObjectID)
@@ -107,6 +107,14 @@ func (r *Retriever) Retrieve(req RetrievalRequest) CandidateList {
 			continue
 		}
 		if !r.filter.Apply(mem, req) {
+			continue
+		}
+		// Apply numeric range filters
+		if !applyNumericFilters(mem, req.NumericFilters) {
+			continue
+		}
+		// Apply tag filters
+		if !applyTagFilters(mem, req.TagFilters) {
 			continue
 		}
 		c = enrichFromMemory(c, mem)
@@ -166,7 +174,7 @@ func (r *Retriever) EnrichAndRank(objectIDs []string, req RetrievalRequest) Cand
 		})
 	}
 
-	// Metadata fetch + safety filter
+	// Metadata fetch + safety filter + additional filters
 	passed := raw[:0]
 	for _, c := range raw {
 		mem, ok := r.objects.GetMemory(c.ObjectID)
@@ -176,6 +184,14 @@ func (r *Retriever) EnrichAndRank(objectIDs []string, req RetrievalRequest) Cand
 			continue
 		}
 		if !r.filter.Apply(mem, req) {
+			continue
+		}
+		// Apply numeric range filters
+		if !applyNumericFilters(mem, req.NumericFilters) {
+			continue
+		}
+		// Apply tag filters
+		if !applyTagFilters(mem, req.TagFilters) {
 			continue
 		}
 		c = enrichFromMemory(c, mem)
@@ -346,6 +362,26 @@ func markSeeds(cs []Candidate, threshold, absoluteFloor float64) []string {
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+// applyNumericFilters returns true if the memory passes all numeric range filters.
+func applyNumericFilters(mem schemas.Memory, filters []NumericRangeFilter) bool {
+	for _, f := range filters {
+		if !f.Apply(mem) {
+			return false
+		}
+	}
+	return true
+}
+
+// applyTagFilters returns true if the memory passes all tag filters.
+func applyTagFilters(mem schemas.Memory, filters []TagFilter) bool {
+	for _, f := range filters {
+		if !f.Apply(mem) {
+			return false
+		}
+	}
+	return true
+}
 
 // namespaceFrom builds a DataPlane namespace string from the request isolation
 // fields (tenant_id / workspace_id), falling back to agent_id.
