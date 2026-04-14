@@ -62,6 +62,11 @@ RESULTS: list[dict] = []
 REQ_LOG: list[dict] = []
 _lock = Lock()
 BASELINE_PROFILES = ("plain_vector", "vector_metadata", "plasmod_full")
+METRICS: dict[str, Any] = {
+    "llm_total_tokens": 0,
+    "query_total": 0,
+    "query_with_evidence": 0,
+}
 
 def _req(base: str, method: str, path: str, body: dict | None = None,
          timeout: float = 60.0) -> tuple[int, Any]:
@@ -125,6 +130,8 @@ class LLMClient:
         elapsed = time.monotonic() - t0
         content = d["choices"][0]["message"]["content"]
         tokens  = d.get("usage", {}).get("total_tokens", 0)
+        with _lock:
+            METRICS["llm_total_tokens"] = int(METRICS.get("llm_total_tokens", 0)) + int(tokens)
         return content, tokens, elapsed
 
     def available(self) -> bool:
@@ -410,6 +417,10 @@ def phase_query_chain(base: str, agents: dict[str, str],
                   f"objects={len(proof)}")
         else:
             _info("proof_trace empty (no ingested content in this workspace)")
+        with _lock:
+            METRICS["query_total"] = int(METRICS.get("query_total", 0)) + 1
+            if proof:
+                METRICS["query_with_evidence"] = int(METRICS.get("query_with_evidence", 0)) + 1
     else:
         _fail("QueryChain — ONNX query", f"status={status} latency={elapsed:.1f}s")
 
@@ -534,6 +545,37 @@ def write_report(out_dir: Path, llm: LLMClient | None,
     passes = sum(1 for r in RESULTS if r["status"] == "PASS")
     fails  = sum(1 for r in RESULTS if r["status"] == "FAIL")
     total  = passes + fails
+    success_rate = (passes / total) if total else 0.0
+
+    q_total = int(METRICS.get("query_total", 0))
+    q_evd = int(METRICS.get("query_with_evidence", 0))
+    evd_rate = (q_evd / q_total) if q_total else 0.0
+
+    # 5-M6（hallucination）使用可解释代理：1 - evidence_supported_answer_rate。
+    hallucination_proxy = 1.0 - evd_rate if q_total else 0.0
+
+    nonzero_http = [r for r in REQ_LOG if isinstance(r.get("status"), int) and r.get("status", 0) > 0]
+    ok_http = [r for r in nonzero_http if int(r.get("status", 0)) < 500]
+    long_session_stability = (len(ok_http) / len(nonzero_http)) if nonzero_http else 0.0
+
+    user_visible_checks = [r for r in RESULTS if any(
+        k in r["check"] for k in ("MainChain", "QueryChain", "CollaborationChain", "MemoryPipelineChain")
+    )]
+    user_consistency = (
+        sum(1 for r in user_visible_checks if r["status"] == "PASS") / len(user_visible_checks)
+        if user_visible_checks else 0.0
+    )
+
+    metrics_5m = {
+        "5-M1_task_success_rate": round(success_rate, 4),
+        "5-M2_completion_time_s": round(total_elapsed, 3),
+        "5-M3_token_cost_total_tokens": int(METRICS.get("llm_total_tokens", 0)),
+        "5-M4_task_quality_proxy_pass_rate": round(success_rate, 4),
+        "5-M5_evidence_supported_answer_rate": round(evd_rate, 4),
+        "5-M6_hallucination_rate_proxy": round(hallucination_proxy, 4),
+        "5-M7_long_session_stability": round(long_session_stability, 4),
+        "5-M8_user_facing_consistency": round(user_consistency, 4),
+    }
 
     # ── terminal summary ──────────────────────────────────────────
     bar = "═" * 64
@@ -572,6 +614,9 @@ def write_report(out_dir: Path, llm: LLMClient | None,
     color = "\033[32m" if fails == 0 else "\033[31m"
     print(f"\n{bar}")
     print(f"  {color}PASS {passes}/{total}   FAIL {fails}/{total}\033[0m")
+    print(f"  5-Metrics: success={metrics_5m['5-M1_task_success_rate']:.4f} "
+          f"evidence={metrics_5m['5-M5_evidence_supported_answer_rate']:.4f} "
+          f"hallucination_proxy={metrics_5m['5-M6_hallucination_rate_proxy']:.4f}")
     print(f"{bar}\n")
 
     # ── write report.md ───────────────────────────────────────────
@@ -603,11 +648,14 @@ def write_report(out_dir: Path, llm: LLMClient | None,
         lines.append(f"| {r['check']} | {icon} | {str(r.get('detail',''))[:100]} |")
 
     (out_dir / "report.md").write_text("\n".join(lines) + "\n")
+    (out_dir / "metrics_5m.json").write_text(json.dumps(metrics_5m, indent=2) + "\n")
+    (out_dir / "checks.json").write_text(json.dumps(RESULTS, indent=2, ensure_ascii=False) + "\n")
     with open(out_dir / "requests.jsonl", "w") as f:
         for r in REQ_LOG:
             f.write(json.dumps(r) + "\n")
 
     print(f"  Report  : {out_dir / 'report.md'}")
+    print(f"  Metrics : {out_dir / 'metrics_5m.json'}")
     print(f"  Requests: {out_dir / 'requests.jsonl'}\n")
     return fails
 
