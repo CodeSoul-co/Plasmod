@@ -93,6 +93,47 @@ Main response fields:
 
 > Note: This endpoint is intended for local/dev validation and pre-delivery checks.
 
+### `GET/POST /v1/admin/consistency-mode`
+
+Control-plane consistency mode endpoint for Layer-2 experiment orchestration.
+
+- `GET` returns current mode and supported mode list.
+- `POST` body: `{"mode":"strict_visible|bounded_staleness|eventual_visibility"}`.
+
+> Current behavior: mode is exposed for control-plane experiments and metadata capture; runtime query execution path remains single-mode.
+
+### `POST /v1/admin/replay`
+
+WAL replay preview endpoint for recovery experiments.
+
+Body:
+
+```json
+{
+  "from_lsn": 0,
+  "limit": 1000,
+  "dry_run": true
+}
+```
+
+Returns scan summary (`latest_lsn`, `scanned_entries`, sampled event IDs/type counts). This endpoint is preview-only and does not mutate runtime state.
+
+### `POST /v1/admin/s3/cold-purge`
+
+Cold-tier purge control endpoint.
+
+Body:
+
+```json
+{
+  "confirm": "purge_cold_tier",
+  "dry_run": false
+}
+```
+
+- For in-memory cold tier, it clears in-process cold records.
+- For S3-backed cold tier, response includes an explicit note that bucket-side lifecycle/manual cleanup is required.
+
 ### `POST /v1/admin/dataset/delete`
 
 Soft-deletes **Memory** rows that match the request selectors (**AND** semantics). JSON body must include **`workspace_id`** and at least one of **`file_name`**, **`dataset_name`**, **`prefix`**. Optional **`dry_run`**: if true, returns `matched` / `memory_ids` without mutating.
