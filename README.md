@@ -764,12 +764,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 ---
 
-## Code Review — Known Issues (Pass 9, 2026-04-07)
-
-> No outstanding issues remain from this pass.
-
----
-
 ## Team Member Responsibilities
 
 
