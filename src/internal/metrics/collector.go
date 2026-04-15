@@ -43,9 +43,13 @@ type histogram struct {
 	samples []float64
 }
 
+const histogramMaxSamples = 100_000
+
 func (h *histogram) record(ms float64) {
 	h.mu.Lock()
-	h.samples = append(h.samples, ms)
+	if len(h.samples) < histogramMaxSamples {
+		h.samples = append(h.samples, ms)
+	}
 	h.mu.Unlock()
 }
 

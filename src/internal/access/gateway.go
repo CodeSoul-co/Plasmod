@@ -2493,7 +2493,7 @@ func (g *Gateway) handleMASAggregate(w http.ResponseWriter, r *http.Request) {
 		AgentID   string   `json:"agent_id"`
 		ObjectIDs []string `json:"object_ids"`
 	}
-	var results []sourceResult
+	results := make([]sourceResult, 0)
 	seenIDs := make(map[string]bool)
 	contaminationCount := 0
 
@@ -2714,15 +2714,14 @@ func (g *Gateway) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	metrics.Global().RecordMASTask(true) // each handoff counts as a MAS coordination event
 	writeJSON(w, map[string]any{
-		"status":      "ok",
-		"event_id":    ack["event_id"],
-		"from_agent":  req.FromAgentID,
-		"to_agent":    req.ToAgentID,
-		"role_from":   req.RoleFrom,
-		"role_to":     req.RoleTo,
-		"timestamp":   now,
+		"status":        "ok",
+		"event_id":      ack["event_id"],
+		"from_agent_id": req.FromAgentID,
+		"to_agent_id":   req.ToAgentID,
+		"role_from":     req.RoleFrom,
+		"role_to":       req.RoleTo,
+		"timestamp":     now,
 	})
 }
 
