@@ -93,6 +93,73 @@ Main response fields:
 
 > Note: This endpoint is intended for local/dev validation and pre-delivery checks.
 
+### `GET/POST /v1/admin/consistency-mode`
+
+Control-plane consistency mode endpoint for Layer-2 experiment orchestration.
+
+- `GET` returns current mode and supported mode list.
+- `POST` body: `{"mode":"strict_visible|bounded_staleness|eventual_visibility"}`.
+
+> Current behavior: mode is exposed for control-plane experiments and metadata capture; runtime query execution path remains single-mode.
+
+### `POST /v1/admin/replay`
+
+WAL replay endpoint for recovery experiments (supports preview and apply).
+
+Body:
+
+```json
+{
+  "from_lsn": 0,
+  "limit": 1000,
+  "dry_run": true,
+  "apply": false,
+  "confirm": ""
+}
+```
+
+Behavior:
+- Preview mode (default): `dry_run=true` (or omit `apply`) returns scan summary only.
+- Apply mode: set `apply=true` (or `dry_run=false`) and must set `confirm` to `"apply_replay"`.
+- Apply mode re-submits WAL events through ingest path and mutates runtime state.
+
+### `POST /v1/admin/rollback`
+
+Operational rollback endpoint for memory active-state correction.
+
+Body:
+
+```json
+{
+  "memory_id": "mem_123",
+  "action": "reactivate",
+  "dry_run": true,
+  "reason": "operator rollback"
+}
+```
+
+Supported `action` values:
+- `reactivate`: set `IsActive=true` and clear `valid_to`
+- `deactivate`: set `IsActive=false` and set `valid_to` if empty
+
+When `dry_run=false`, mutation is applied and an audit record is appended.
+
+### `POST /v1/admin/s3/cold-purge`
+
+Cold-tier purge control endpoint.
+
+Body:
+
+```json
+{
+  "confirm": "purge_cold_tier",
+  "dry_run": false
+}
+```
+
+- For in-memory cold tier, it clears in-process cold records.
+- For S3-backed cold tier, response includes an explicit note that bucket-side lifecycle/manual cleanup is required.
+
 ### `POST /v1/admin/dataset/delete`
 
 Soft-deletes **Memory** rows that match the request selectors (**AND** semantics). JSON body must include **`workspace_id`** and at least one of **`file_name`**, **`dataset_name`**, **`prefix`**. Optional **`dry_run`**: if true, returns `matched` / `memory_ids` without mutating.
@@ -105,7 +172,7 @@ Hard-deletes memories that match the same selector keys as delete. JSON body: **
 
 When a **`TieredObjectStore`** is wired, removal uses **`HardDeleteMemory`** (hot/warm/cold as applicable). If tiered storage is **not** configured, the handler falls back to **warm-only** purge (`PurgeMemoryWarmOnly`); the JSON response includes **`purge_backend`**: `"tiered"` or `"warm_only"`.
 
-> **Security:** these admin routes are protected when `ANDB_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is **not** set, the default dev server does **not** authenticate `/v1/admin/*`. Always restrict by network or put a reverse proxy in front in production.
+> **Security:** these admin routes are protected when `PLASMOD_ADMIN_API_KEY` is set (legacy alias `ANDB_ADMIN_API_KEY`). Clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`. If neither env var is set, the default dev server does **not** authenticate `/v1/admin/*`. Always restrict by network or put a reverse proxy in front in production.
 
 ## Not Yet Implemented
 

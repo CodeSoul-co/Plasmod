@@ -62,4 +62,12 @@ TESTING.md
 go.sum.bak*
 out/
 go.mod
+.andb_data/00006.mem
+.gitignore
+.andb_data/wal.log
+.gitignore
+.andb_data/derivation.log
+.andb_data/00008.mem
+docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
+new.md
