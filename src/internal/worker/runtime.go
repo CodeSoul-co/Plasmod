@@ -15,6 +15,7 @@ import (
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/metrics"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
@@ -49,6 +50,15 @@ type Runtime struct {
 	// VectorOnlyMode disables graph expansion, policy enforcement, and provenance
 	// tracking to create a pure vector-search baseline (Baseline 1).
 	VectorOnlyMode bool
+
+	// MinimalMode disables provenance attachment, policy enforcement, and
+	// version recording while preserving graph search.  Corresponds to
+	// "Plasmod stripped" baselines 3-B4 / 4-B4.
+	MinimalMode bool
+
+	// GovernanceDisabled suppresses TTL / quarantine / ACL enforcement when
+	// true.  Used by 4-B4 to run Plasmod without the governance layer.
+	GovernanceDisabled bool
 }
 
 func CreateRuntime(
@@ -114,6 +124,7 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
+	t0Ingest := time.Now()
 	if strings.TrimSpace(ev.EventID) == "" {
 		return nil, errors.New("event_id is required")
 	}
@@ -196,7 +207,9 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		// Fallback for tests or code paths that don't initialise TieredObjectStore.
 		r.storage.PutMemoryWithBaseEdges(mat.Memory)
 	}
-	r.storage.Versions().PutVersion(mat.Version)
+	if !r.MinimalMode {
+		r.storage.Versions().PutVersion(mat.Version)
+	}
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)
 	}
@@ -238,6 +251,12 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.plane.Flush(); err != nil {
 		return nil, err
 	}
+	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
+	if ev.SessionID != "" {
+		metrics.Global().Session(ev.SessionID).AddStep()
+		metrics.Global().StorageMemoryCount.Add(1)
+		metrics.Global().StorageEventCount.Add(1)
+	}
 	return map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
@@ -248,6 +267,12 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
+	t0Query := time.Now()
+	metrics.Global().ConcurrentQueries.Add(1)
+	defer func() {
+		metrics.Global().ConcurrentQueries.Add(-1)
+		metrics.Global().RecordQueryLatency(time.Since(t0Query))
+	}()
 	plan := r.planner.Build(req)
 	vectorOnlyMode := vectorOnlyModeEnabled()
 	searchInput := dataplane.SearchInput{
@@ -310,7 +335,10 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		return resp
 	}
 
-	filters := r.policy.ApplyQueryFilters(req)
+	var filters []string
+	if !r.MinimalMode {
+		filters = r.policy.ApplyQueryFilters(req)
+	}
 	resp := r.assembler.Build(searchInput, result, filters)
 	resp.Retrieval = &schemas.RetrievalSummary{
 		Tier:               result.Tier,
@@ -373,9 +401,16 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
 	
-	// In VECTOR-ONLY MODE: skip provenance attachment
-	if !r.VectorOnlyMode {
+	// In VECTOR-ONLY MODE or MINIMAL MODE: skip provenance attachment
+	if !r.VectorOnlyMode && !r.MinimalMode {
 		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
+	}
+
+	// Record evidence-supported rate (3-MT5)
+	evidenceSupported := len(resp.ProofTrace) > 0 || len(resp.Nodes) > 0
+	metrics.Global().RecordEvidenceSupported(evidenceSupported)
+	if req.SessionID != "" {
+		metrics.Global().Session(req.SessionID).RecordQuery(evidenceSupported)
 	}
 
 	return resp

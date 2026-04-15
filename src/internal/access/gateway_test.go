@@ -863,6 +863,151 @@ func TestGateway_ListMemory_WorkspaceIDFilter(t *testing.T) {
 	}
 }
 
+func TestGateway_AdminMetrics(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/metrics", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var snap map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := snap["query_latency"]; !ok {
+		t.Fatal("expected query_latency in metrics snapshot")
+	}
+	if _, ok := snap["write_latency"]; !ok {
+		t.Fatal("expected write_latency in metrics snapshot")
+	}
+	if _, ok := snap["go_goroutines"]; !ok {
+		t.Fatal("expected go_goroutines in metrics snapshot")
+	}
+}
+
+func TestGateway_AdminGovernanceMode(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/admin/governance-mode", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, getReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET want 200, got %d", w.Code)
+	}
+
+	body, _ := json.Marshal(map[string]bool{"enabled": false})
+	postReq := httptest.NewRequest(http.MethodPost, "/v1/admin/governance-mode", bytes.NewReader(body))
+	postReq.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, postReq)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("POST want 200, got %d body=%s", w2.Code, w2.Body.String())
+	}
+	if !deps.runtime.GovernanceDisabled {
+		t.Fatal("expected GovernanceDisabled=true after enabled=false")
+	}
+}
+
+func TestGateway_AdminRuntimeMode(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	vomTrue := true
+	body, _ := json.Marshal(map[string]*bool{"vector_only_mode": &vomTrue})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/runtime-mode", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !deps.runtime.VectorOnlyMode {
+		t.Fatal("expected VectorOnlyMode=true")
+	}
+}
+
+func TestGateway_MemoryMarkStale(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "stale-target", IsActive: true,
+		LifecycleState: "active",
+	})
+
+	body, _ := json.Marshal(map[string]string{"memory_id": "stale-target", "reason": "test"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/memory/stale", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	mem, ok := deps.store.Objects().GetMemory("stale-target")
+	if !ok {
+		t.Fatal("memory should still exist")
+	}
+	if mem.LifecycleState != "stale" {
+		t.Fatalf("expected lifecycle_state=stale, got %s", mem.LifecycleState)
+	}
+	if mem.IsActive {
+		t.Fatal("expected IsActive=false after mark_stale")
+	}
+}
+
+func TestGateway_MemoryConflictInject(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"agent_id":   "agent-x",
+		"session_id": "sess-x",
+		"content_a":  "sky is blue",
+		"content_b":  "sky is red",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/memory/conflict/inject", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	idA, _ := resp["memory_id_a"].(string)
+	idB, _ := resp["memory_id_b"].(string)
+	if idA == "" || idB == "" {
+		t.Fatalf("expected memory IDs in response: %+v", resp)
+	}
+	if _, ok := deps.store.Objects().GetMemory(idA); !ok {
+		t.Fatal("memory A not found after inject")
+	}
+	if _, ok := deps.store.Objects().GetMemory(idB); !ok {
+		t.Fatal("memory B not found after inject")
+	}
+	edges := deps.store.Edges().EdgesFrom(idA)
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == "conflict" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected conflict edge between injected memories")
+	}
+}
+
 func TestGateway_AdminDataWipe(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
