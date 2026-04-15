@@ -207,6 +207,16 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 
 	// Long-document chunked ingest (3-T1)
 	mux.HandleFunc("/v1/ingest/document", g.handleIngestDocument)
+
+	// Multi-stage report progress (3-T3)
+	mux.HandleFunc("/v1/internal/task/stage", g.handleTaskStage)
+
+	// MAS coordination (4-T2, 4-M5)
+	mux.HandleFunc("/v1/internal/mas/answer-consistency", g.handleMASAnswerConsistency)
+	mux.HandleFunc("/v1/internal/mas/aggregate", g.handleMASAggregate)
+
+	// Stateful tool interaction query (3-T4)
+	mux.HandleFunc("/v1/internal/tool-state", g.handleToolState)
 }
 
 func (g *Gateway) handleSystemMode(w http.ResponseWriter, r *http.Request) {
@@ -2322,4 +2332,295 @@ func splitTextIntoChunks(text string, chunkSize, overlap int) []string {
 		start = nextStart
 	}
 	return chunks
+}
+
+// ── /v1/internal/task/stage ───────────────────────────────────────────────────
+//
+// POST /v1/internal/task/stage
+// Body: {"session_id":"...", "stage":"outline"|"draft"|"review"|"final",
+//        "stage_index":2, "total_stages":4, "description":"..."}
+//
+// Records the current stage of a multi-stage report generation task (3-T3).
+// Each stage call is stored as a memory event so the stage progression is
+// queryable and visible in the retrieval plane.
+func (g *Gateway) handleTaskStage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID   string `json:"session_id"`
+		AgentID     string `json:"agent_id"`
+		Stage       string `json:"stage"`
+		StageIndex  int    `json:"stage_index"`
+		TotalStages int    `json:"total_stages"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" || req.Stage == "" {
+		http.Error(w, "session_id and stage are required", http.StatusBadRequest)
+		return
+	}
+	// Count this as a plan step.
+	metrics.Global().Session(req.SessionID).AddStep()
+
+	// Persist stage milestone as a memory-write event for provenance.
+	evID := generateObjectID("stage")
+	ev := schemas.Event{
+		EventID:   evID,
+		AgentID:   req.AgentID,
+		SessionID: req.SessionID,
+		EventType: string(schemas.EventTypePlanUpdated),
+		EventTime: time.Now().UTC().Format(time.RFC3339),
+		Payload: map[string]any{
+			"stage":        req.Stage,
+			"stage_index":  req.StageIndex,
+			"total_stages": req.TotalStages,
+			"description":  req.Description,
+		},
+	}
+	ack, err := g.runtime.SubmitIngest(ev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":      "ok",
+		"session_id":  req.SessionID,
+		"stage":       req.Stage,
+		"stage_index": req.StageIndex,
+		"event_id":    ack["event_id"],
+		"memory_id":   ack["memory_id"],
+	})
+}
+
+// ── /v1/internal/mas/answer-consistency ──────────────────────────────────────
+//
+// POST /v1/internal/mas/answer-consistency
+// Body: {"score": 0.85, "session_id":"...", "agent_id":"..."}
+//
+// Records a [0,1] answer-consistency score for the final answer produced by
+// one agent in a MAS run.  The global accumulator computes the mean over all
+// submitted scores (4-M5).
+func (g *Gateway) handleMASAnswerConsistency(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Score     float64 `json:"score"`
+		SessionID string  `json:"session_id"`
+		AgentID   string  `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Score < 0 || req.Score > 1 {
+		http.Error(w, "score must be in [0, 1]", http.StatusBadRequest)
+		return
+	}
+	metrics.Global().RecordAnswerConsistency(req.Score)
+	writeJSON(w, map[string]any{
+		"status": "ok",
+		"score":  req.Score,
+	})
+}
+
+// ── /v1/internal/mas/aggregate ────────────────────────────────────────────────
+//
+// POST /v1/internal/mas/aggregate
+// Body: {
+//   "requester_agent_id": "agent-A",
+//   "source_agent_ids":   ["agent-B", "agent-C"],
+//   "query":              "recent findings on topic X",
+//   "top_k":              5
+// }
+//
+// Aggregates memories contributed by multiple agents into a single result
+// list visible to the requester.  Only memories explicitly shared (via a
+// ShareContract with ReadACL matching the requester) are included — ensuring
+// private memories are never leaked (4-T2, 4-D3).
+//
+// Returns the aggregated object IDs together with per-source attribution.
+func (g *Gateway) handleMASAggregate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		RequesterAgentID string   `json:"requester_agent_id"`
+		SourceAgentIDs   []string `json:"source_agent_ids"`
+		Query            string   `json:"query"`
+		TopK             int      `json:"top_k"`
+		SessionID        string   `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.RequesterAgentID == "" {
+		http.Error(w, "requester_agent_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+
+	// Build allowed scope set from share contracts.
+	contracts := g.store.Contracts().ListContracts()
+	allowedScopes := make(map[string]bool)
+	for _, c := range contracts {
+		if c.ReadACL == req.RequesterAgentID || c.ReadACL == "*" {
+			allowedScopes[c.Scope] = true
+		}
+	}
+
+	type sourceResult struct {
+		AgentID   string   `json:"agent_id"`
+		ObjectIDs []string `json:"object_ids"`
+	}
+	var results []sourceResult
+	seenIDs := make(map[string]bool)
+	contaminationCount := 0
+
+	for _, srcAgentID := range req.SourceAgentIDs {
+		if srcAgentID == req.RequesterAgentID {
+			continue
+		}
+		mems := g.store.Objects().ListMemories(srcAgentID, "")
+		var ids []string
+		for _, m := range mems {
+			if seenIDs[m.MemoryID] {
+				continue
+			}
+			ownerScope := m.Scope
+			if ownerScope == "" {
+				ownerScope = m.AgentID
+			}
+			if !allowedScopes[ownerScope] {
+				contaminationCount++
+				metrics.Global().RecordContaminationAttempt()
+				continue
+			}
+			ids = append(ids, m.MemoryID)
+			seenIDs[m.MemoryID] = true
+			if len(ids) >= req.TopK {
+				break
+			}
+		}
+		if len(ids) > 0 {
+			results = append(results, sourceResult{AgentID: srcAgentID, ObjectIDs: ids})
+		}
+	}
+
+	// Collect all shared IDs.
+	allIDs := make([]string, 0)
+	for _, sr := range results {
+		allIDs = append(allIDs, sr.ObjectIDs...)
+	}
+
+	writeJSON(w, map[string]any{
+		"status":                "ok",
+		"requester_agent_id":    req.RequesterAgentID,
+		"aggregated_object_ids": allIDs,
+		"by_source":             results,
+		"contamination_blocked": contaminationCount,
+	})
+}
+
+// ── /v1/internal/tool-state ───────────────────────────────────────────────────
+//
+// GET /v1/internal/tool-state?agent_id=...&session_id=...
+//
+// Returns the current stateful tool-interaction context for a session (3-T4).
+// Scans the last N tool_call_issued / tool_result_returned events and pairs
+// them up so callers can determine which tool calls are still pending (no
+// matching result) and which have completed.
+//
+// Response: {
+//   "pending":   [{"event_id":"...", "tool":"...", "args":{...}}],
+//   "completed": [{"call_event_id":"...", "result_event_id":"...", "tool":"...", "result":{...}}]
+// }
+func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	sessionID := r.URL.Query().Get("session_id")
+
+	events := g.store.Objects().ListEvents(agentID, sessionID)
+
+	type pendingCall struct {
+		EventID string         `json:"event_id"`
+		Tool    string         `json:"tool"`
+		Args    map[string]any `json:"args"`
+	}
+	type completedCall struct {
+		CallEventID   string         `json:"call_event_id"`
+		ResultEventID string         `json:"result_event_id"`
+		Tool          string         `json:"tool"`
+		Result        map[string]any `json:"result"`
+	}
+
+	callsByID := make(map[string]schemas.Event)
+	var resultEvents []schemas.Event
+
+	for _, ev := range events {
+		switch ev.EventType {
+		case string(schemas.EventTypeToolCallIssued), string(schemas.EventTypeToolCall):
+			callsByID[ev.EventID] = ev
+		case string(schemas.EventTypeToolResultReturned), string(schemas.EventTypeToolResult):
+			resultEvents = append(resultEvents, ev)
+		}
+	}
+
+	var pending []pendingCall
+	completed := make([]completedCall, 0)
+	matchedCalls := make(map[string]bool)
+
+	for _, res := range resultEvents {
+		parentID, _ := res.Payload["call_event_id"].(string)
+		if parentID == "" {
+			parentID, _ = res.Payload["parent_event_id"].(string)
+		}
+		if parentID == "" {
+			parentID = res.ParentEventID
+		}
+		if call, ok := callsByID[parentID]; ok {
+			matchedCalls[parentID] = true
+			tool, _ := call.Payload["tool"].(string)
+			result, _ := res.Payload["result"].(map[string]any)
+			completed = append(completed, completedCall{
+				CallEventID:   parentID,
+				ResultEventID: res.EventID,
+				Tool:          tool,
+				Result:        result,
+			})
+		}
+	}
+
+	for id, call := range callsByID {
+		if matchedCalls[id] {
+			continue
+		}
+		tool, _ := call.Payload["tool"].(string)
+		args, _ := call.Payload["args"].(map[string]any)
+		pending = append(pending, pendingCall{
+			EventID: id,
+			Tool:    tool,
+			Args:    args,
+		})
+	}
+
+	writeJSON(w, map[string]any{
+		"agent_id":   agentID,
+		"session_id": sessionID,
+		"pending":    pending,
+		"completed":  completed,
+	})
 }

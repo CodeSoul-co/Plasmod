@@ -183,6 +183,49 @@ type TaskSnapshot struct {
 	Done                  bool    `json:"done"`
 }
 
+// ── Rolling throughput window ────────────────────────────────────────────────
+
+// throughputWindow tracks per-second event counts over the last windowSecs
+// seconds using a circular bucket array.  Thread-safe.
+const throughputWindowSecs = 60
+
+type throughputWindow struct {
+	mu      sync.Mutex
+	buckets [throughputWindowSecs]int64
+	ts      [throughputWindowSecs]int64 // unix second for each bucket
+}
+
+func (tw *throughputWindow) Inc() {
+	now := time.Now().Unix()
+	slot := now % throughputWindowSecs
+	tw.mu.Lock()
+	if tw.ts[slot] != now {
+		tw.buckets[slot] = 0
+		tw.ts[slot] = now
+	}
+	tw.buckets[slot]++
+	tw.mu.Unlock()
+}
+
+// Rate returns the total count in the last n seconds (n ≤ windowSecs).
+func (tw *throughputWindow) Rate(n int) int64 {
+	if n > throughputWindowSecs {
+		n = throughputWindowSecs
+	}
+	now := time.Now().Unix()
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+	var total int64
+	for i := 0; i < n; i++ {
+		sec := now - int64(i)
+		slot := sec % throughputWindowSecs
+		if tw.ts[slot] == sec {
+			total += tw.buckets[slot]
+		}
+	}
+	return total
+}
+
 // ── Main Collector ───────────────────────────────────────────────────────────
 
 // Collector is the central thread-safe metrics store.
@@ -192,6 +235,10 @@ type Collector struct {
 	WriteLatency         histogram
 	WriteToVisibleLatency histogram
 	TaskDuration         histogram
+
+	// Rolling throughput windows (1-T7, 1-M10)
+	IngestRate throughputWindow
+	QueryRate  throughputWindow
 
 	// Throughput counters
 	IngestTotal      atomic.Int64
@@ -252,11 +299,13 @@ func Global() *Collector {
 func (c *Collector) RecordQueryLatency(d time.Duration) {
 	c.QueryLatency.record(float64(d.Milliseconds()))
 	c.QueryTotal.Add(1)
+	c.QueryRate.Inc()
 }
 
 func (c *Collector) RecordWriteLatency(d time.Duration) {
 	c.WriteLatency.record(float64(d.Milliseconds()))
 	c.IngestTotal.Add(1)
+	c.IngestRate.Inc()
 }
 
 func (c *Collector) RecordWriteToVisible(d time.Duration) {
@@ -386,9 +435,13 @@ type Snapshot struct {
 	TaskDuration LatencyStats `json:"task_duration"`
 
 	// 1-M10 / 1-T7
-	IngestTotal       int64 `json:"ingest_total"`
-	QueryTotal        int64 `json:"query_total"`
-	ConcurrentQueries int64 `json:"concurrent_queries"`
+	IngestTotal          int64 `json:"ingest_total"`
+	QueryTotal           int64 `json:"query_total"`
+	ConcurrentQueries    int64 `json:"concurrent_queries"`
+	IngestPerSec1m       int64 `json:"ingest_per_sec_1m"`
+	QueryPerSec1m        int64 `json:"query_per_sec_1m"`
+	IngestPerSec10s      int64 `json:"ingest_per_sec_10s"`
+	QueryPerSec10s       int64 `json:"query_per_sec_10s"`
 
 	// 3-MS5
 	RetrievalErrors     int64   `json:"retrieval_errors"`
@@ -485,9 +538,13 @@ func (c *Collector) Snapshot() Snapshot {
 		WriteToVisibleLatency: latStats(&c.WriteToVisibleLatency),
 		TaskDuration:          latStats(&c.TaskDuration),
 
-		IngestTotal:       ingestTotal,
-		QueryTotal:        queryTotal,
-		ConcurrentQueries: c.ConcurrentQueries.Load(),
+		IngestTotal:          ingestTotal,
+		QueryTotal:           queryTotal,
+		ConcurrentQueries:    c.ConcurrentQueries.Load(),
+		IngestPerSec1m:       c.IngestRate.Rate(60),
+		QueryPerSec1m:        c.QueryRate.Rate(60),
+		IngestPerSec10s:      c.IngestRate.Rate(10),
+		QueryPerSec10s:       c.QueryRate.Rate(10),
 
 		RetrievalErrors:    retriErr,
 		RetrievalErrorRate: ratio(retriErr, queryTotal),
