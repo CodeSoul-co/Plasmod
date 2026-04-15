@@ -13,6 +13,7 @@ import (
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/metrics"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
@@ -860,6 +861,557 @@ func TestGateway_ListMemory_WorkspaceIDFilter(t *testing.T) {
 	}
 	if mems[0].MemoryID != "mem-ws1" {
 		t.Fatalf("expected mem-ws1, got %s", mems[0].MemoryID)
+	}
+}
+
+func TestGateway_AdminMetrics(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/metrics", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var snap map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := snap["query_latency"]; !ok {
+		t.Fatal("expected query_latency in metrics snapshot")
+	}
+	if _, ok := snap["write_latency"]; !ok {
+		t.Fatal("expected write_latency in metrics snapshot")
+	}
+	if _, ok := snap["go_goroutines"]; !ok {
+		t.Fatal("expected go_goroutines in metrics snapshot")
+	}
+}
+
+func TestGateway_AdminGovernanceMode(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/admin/governance-mode", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, getReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET want 200, got %d", w.Code)
+	}
+
+	body, _ := json.Marshal(map[string]bool{"enabled": false})
+	postReq := httptest.NewRequest(http.MethodPost, "/v1/admin/governance-mode", bytes.NewReader(body))
+	postReq.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, postReq)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("POST want 200, got %d body=%s", w2.Code, w2.Body.String())
+	}
+	if !deps.runtime.GovernanceDisabled {
+		t.Fatal("expected GovernanceDisabled=true after enabled=false")
+	}
+}
+
+func TestGateway_AdminRuntimeMode(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	vomTrue := true
+	body, _ := json.Marshal(map[string]*bool{"vector_only_mode": &vomTrue})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/runtime-mode", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !deps.runtime.VectorOnlyMode {
+		t.Fatal("expected VectorOnlyMode=true")
+	}
+}
+
+func TestGateway_MemoryMarkStale(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "stale-target", IsActive: true,
+		LifecycleState: "active",
+	})
+
+	body, _ := json.Marshal(map[string]string{"memory_id": "stale-target", "reason": "test"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/memory/stale", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	mem, ok := deps.store.Objects().GetMemory("stale-target")
+	if !ok {
+		t.Fatal("memory should still exist")
+	}
+	if mem.LifecycleState != "stale" {
+		t.Fatalf("expected lifecycle_state=stale, got %s", mem.LifecycleState)
+	}
+	if mem.IsActive {
+		t.Fatal("expected IsActive=false after mark_stale")
+	}
+}
+
+func TestGateway_MemoryConflictInject(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"agent_id":   "agent-x",
+		"session_id": "sess-x",
+		"content_a":  "sky is blue",
+		"content_b":  "sky is red",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/memory/conflict/inject", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	idA, _ := resp["memory_id_a"].(string)
+	idB, _ := resp["memory_id_b"].(string)
+	if idA == "" || idB == "" {
+		t.Fatalf("expected memory IDs in response: %+v", resp)
+	}
+	if _, ok := deps.store.Objects().GetMemory(idA); !ok {
+		t.Fatal("memory A not found after inject")
+	}
+	if _, ok := deps.store.Objects().GetMemory(idB); !ok {
+		t.Fatal("memory B not found after inject")
+	}
+	edges := deps.store.Edges().EdgesFrom(idA)
+	found := false
+	for _, e := range edges {
+		if e.EdgeType == "conflict" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected conflict edge between injected memories")
+	}
+}
+
+func TestGateway_TaskLifecycle(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	sessID := "test-sess-lifecycle"
+
+	// start
+	b, _ := json.Marshal(map[string]string{"session_id": sessID, "task_type": "analysis", "goal": "test goal"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/task/start", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/start: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	sess, ok := deps.store.Objects().GetSession(sessID)
+	if !ok {
+		t.Fatal("session should be created on task start")
+	}
+	if sess.TaskType != "analysis" {
+		t.Fatalf("expected task_type=analysis, got %s", sess.TaskType)
+	}
+
+	// tokens
+	b, _ = json.Marshal(map[string]any{"session_id": sessID, "tokens": 256})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/task/tokens", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/tokens: want 200, got %d", w.Code)
+	}
+
+	// complete
+	b, _ = json.Marshal(map[string]any{"session_id": sessID, "success": true, "duration_ms": 500.0})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/task/complete", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/complete: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	snap, ok2 := metrics.Global().SessionSnapshot(sessID)
+	if !ok2 {
+		t.Fatal("expected session snapshot to exist after task/complete")
+	}
+	if !snap.Done {
+		t.Fatal("task should be marked done")
+	}
+	if snap.Tokens != 256 {
+		t.Fatalf("expected 256 tokens, got %d", snap.Tokens)
+	}
+}
+
+func TestGateway_PlanRepair(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	sessID := "test-sess-plan"
+
+	b, _ := json.Marshal(map[string]any{"session_id": sessID, "step_index": 1, "step_description": "fetch data"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/plan/step", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plan/step: want 200, got %d", w.Code)
+	}
+
+	b, _ = json.Marshal(map[string]any{"session_id": sessID, "success": true, "reason": "adjusted query"})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/plan/repair", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plan/repair: want 200, got %d", w.Code)
+	}
+}
+
+func TestGateway_IngestDocument(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	text := "First paragraph with some content.\n\nSecond paragraph with more content.\n\nThird paragraph for testing."
+	b, _ := json.Marshal(map[string]any{
+		"agent_id":   "agent-doc",
+		"session_id": "sess-doc",
+		"text":       text,
+		"chunk_size": 40,
+		"title":      "test_doc",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/document", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ingest/document: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["batch_id"] == "" {
+		t.Fatal("expected batch_id in response")
+	}
+	chunks := resp["chunks"].(float64)
+	if chunks < 1 {
+		t.Fatalf("expected at least 1 chunk, got %v", chunks)
+	}
+	ids, _ := resp["memory_ids"].([]any)
+	if len(ids) == 0 {
+		t.Fatal("expected at least one memory_id")
+	}
+}
+
+func TestGateway_TaskStage(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"session_id":   "sess-stage",
+		"agent_id":     "agent-stage",
+		"stage":        "draft",
+		"stage_index":  1,
+		"total_stages": 4,
+		"description":  "writing draft section",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/task/stage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/stage: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["stage"] != "draft" {
+		t.Fatalf("expected stage=draft, got %v", resp["stage"])
+	}
+}
+
+func TestGateway_MASAnswerConsistency(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{"score": 0.85, "session_id": "sess-mas", "agent_id": "agent-a"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/mas/answer-consistency", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mas/answer-consistency: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Score out of range should be rejected.
+	body, _ = json.Marshal(map[string]any{"score": 1.5})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/mas/answer-consistency", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for out-of-range score, got %d", w.Code)
+	}
+}
+
+func TestGateway_MASAggregate(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	// Create two memories for agent-b, each in their own scope.
+	deps.store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem-b1", AgentID: "agent-b", Scope: "scope-b", IsActive: true,
+	})
+	// No share contract → memory should be blocked.
+	body, _ := json.Marshal(map[string]any{
+		"requester_agent_id": "agent-a",
+		"source_agent_ids":   []string{"agent-b"},
+		"top_k":              5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/mas/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mas/aggregate: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	blocked := resp["contamination_blocked"].(float64)
+	if blocked < 1 {
+		t.Fatalf("expected at least 1 contamination blocked, got %v", blocked)
+	}
+}
+
+func TestGateway_ToolState(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	// Store a tool_call_issued event.
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID:   "evt-call-1",
+		AgentID:   "agent-tool",
+		SessionID: "sess-tool",
+		EventType: string(schemas.EventTypeToolCallIssued),
+		Payload:   map[string]any{"tool": "search", "args": map[string]any{"query": "plasmod"}},
+	})
+	// And a matching result.
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID:       "evt-result-1",
+		AgentID:       "agent-tool",
+		SessionID:     "sess-tool",
+		EventType:     string(schemas.EventTypeToolResultReturned),
+		ParentEventID: "evt-call-1",
+		Payload:       map[string]any{"result": map[string]any{"hits": 3}},
+	})
+	// An unmatched call.
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID:   "evt-call-2",
+		AgentID:   "agent-tool",
+		SessionID: "sess-tool",
+		EventType: string(schemas.EventTypeToolCallIssued),
+		Payload:   map[string]any{"tool": "fetch", "args": map[string]any{"url": "http://example.com"}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/internal/tool-state?agent_id=agent-tool&session_id=sess-tool", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tool-state: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	pending, _ := resp["pending"].([]any)
+	completed, _ := resp["completed"].([]any)
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending call, got %d", len(pending))
+	}
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 completed call, got %d", len(completed))
+	}
+}
+
+func TestGateway_AgentHandoff(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "planner-1", RoleProfile: "planner"})
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "executor-1", RoleProfile: ""})
+
+	body, _ := json.Marshal(map[string]any{
+		"from_agent_id": "planner-1",
+		"to_agent_id":   "executor-1",
+		"session_id":    "sess-handoff",
+		"role_from":     "planner",
+		"role_to":       "executor",
+		"context":       map[string]any{"task": "write report"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/agent/handoff", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent/handoff: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Executor's role should be updated.
+	agent, ok := deps.store.Objects().GetAgent("executor-1")
+	if !ok {
+		t.Fatal("executor agent should exist")
+	}
+	if agent.RoleProfile != "executor" {
+		t.Fatalf("expected role=executor, got %q", agent.RoleProfile)
+	}
+}
+
+func TestGateway_AgentList(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "a1", RoleProfile: "planner", WorkspaceID: "ws1"})
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "a2", RoleProfile: "executor", WorkspaceID: "ws1"})
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "a3", RoleProfile: "planner", WorkspaceID: "ws2"})
+
+	// Filter by role.
+	req := httptest.NewRequest(http.MethodGet, "/v1/agent/list?role=planner", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent/list: want 200, got %d", w.Code)
+	}
+	var agents []schemas.Agent
+	if err := json.Unmarshal(w.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 planners, got %d", len(agents))
+	}
+
+	// Filter by role + workspace.
+	req = httptest.NewRequest(http.MethodGet, "/v1/agent/list?role=planner&workspace_id=ws1", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if err := json.Unmarshal(w.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(agents) != 1 || agents[0].AgentID != "a1" {
+		t.Fatalf("expected only a1, got %v", agents)
+	}
+}
+
+func TestGateway_SessionContext(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID: "ev-user-1", AgentID: "agent-ctx", SessionID: "sess-ctx",
+		EventType: string(schemas.EventTypeUserMessage),
+		Payload:   map[string]any{"text": "hello"},
+	})
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID: "ev-asst-1", AgentID: "agent-ctx", SessionID: "sess-ctx",
+		EventType: string(schemas.EventTypeAssistantMessage),
+		Payload:   map[string]any{"text": "hi there"},
+	})
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID: "ev-tool-1", AgentID: "agent-ctx", SessionID: "sess-ctx",
+		EventType: "irrelevant_type",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/internal/session/context?session_id=sess-ctx&agent_id=agent-ctx", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session/context: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	evs, _ := resp["events"].([]any)
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 relevant events, got %d", len(evs))
+	}
+	if resp["turns"].(float64) != 3 {
+		t.Fatalf("expected turns=3, got %v", resp["turns"])
+	}
+}
+
+func TestGateway_EvalGroundTruth(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"task_id":  "task-gt-1",
+		"expected": "Paris",
+		"metadata": map[string]any{"source": "unit-test"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/eval/ground-truth", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("eval/ground-truth POST: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Retrieve by task_id.
+	req = httptest.NewRequest(http.MethodGet, "/v1/internal/eval/ground-truth?task_id=task-gt-1", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("eval/ground-truth GET: want 200, got %d", w.Code)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rec); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rec["expected"] != "Paris" {
+		t.Fatalf("expected 'Paris', got %v", rec["expected"])
+	}
+
+	// Unknown task_id → 404.
+	req = httptest.NewRequest(http.MethodGet, "/v1/internal/eval/ground-truth?task_id=no-such", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown task, got %d", w.Code)
 	}
 }
 
