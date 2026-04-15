@@ -217,6 +217,16 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 
 	// Stateful tool interaction query (3-T4)
 	mux.HandleFunc("/v1/internal/tool-state", g.handleToolState)
+
+	// Agent role management & handoff (4-T1)
+	mux.HandleFunc("/v1/internal/agent/handoff", g.handleAgentHandoff)
+	mux.HandleFunc("/v1/agent/list", g.handleAgentList)
+
+	// Multi-round session context aggregation (3-T2)
+	mux.HandleFunc("/v1/internal/session/context", g.handleSessionContext)
+
+	// Eval ground-truth store (eval harness support)
+	mux.HandleFunc("/v1/internal/eval/ground-truth", g.handleEvalGroundTruth)
 }
 
 func (g *Gateway) handleSystemMode(w http.ResponseWriter, r *http.Request) {
@@ -2623,4 +2633,265 @@ func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
 		"pending":    pending,
 		"completed":  completed,
 	})
+}
+
+// ── /v1/internal/agent/handoff ────────────────────────────────────────────────
+//
+// POST /v1/internal/agent/handoff
+// Body: {
+//   "from_agent_id": "planner-agent",
+//   "to_agent_id":   "executor-agent",
+//   "session_id":    "...",
+//   "role_from":     "planner",
+//   "role_to":       "executor",
+//   "context":       {...}   // arbitrary payload forwarded to the next agent
+// }
+//
+// Records a role handoff between agents in a MAS run (4-T1: planner →
+// executor → critic triangle).  A HandoffOccurred event is written to the
+// store so that handoff frequency and latency can be computed from the event
+// stream.  The receiving agent's RoleProfile is also updated if role_to is
+// provided.
+func (g *Gateway) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		FromAgentID string         `json:"from_agent_id"`
+		ToAgentID   string         `json:"to_agent_id"`
+		SessionID   string         `json:"session_id"`
+		RoleFrom    string         `json:"role_from"`
+		RoleTo      string         `json:"role_to"`
+		Context     map[string]any `json:"context"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.FromAgentID == "" || req.ToAgentID == "" {
+		http.Error(w, "from_agent_id and to_agent_id are required", http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Update receiver agent RoleProfile if provided.
+	if req.RoleTo != "" {
+		if agent, ok := g.store.Objects().GetAgent(req.ToAgentID); ok {
+			agent.RoleProfile = req.RoleTo
+			g.store.Objects().PutAgent(agent)
+		}
+	}
+	if req.RoleFrom != "" {
+		if agent, ok := g.store.Objects().GetAgent(req.FromAgentID); ok {
+			agent.RoleProfile = req.RoleFrom
+			g.store.Objects().PutAgent(agent)
+		}
+	}
+
+	// Persist as a HandoffOccurred event for provenance & latency tracking.
+	payload := map[string]any{
+		"from_agent_id": req.FromAgentID,
+		"to_agent_id":   req.ToAgentID,
+		"role_from":     req.RoleFrom,
+		"role_to":       req.RoleTo,
+	}
+	for k, v := range req.Context {
+		payload[k] = v
+	}
+	evID := generateObjectID("handoff")
+	ev := schemas.Event{
+		EventID:   evID,
+		AgentID:   req.FromAgentID,
+		SessionID: req.SessionID,
+		EventType: string(schemas.EventTypeHandoffOccurred),
+		EventTime: now,
+		Payload:   payload,
+	}
+	ack, err := g.runtime.SubmitIngest(ev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	metrics.Global().RecordMASTask(true) // each handoff counts as a MAS coordination event
+	writeJSON(w, map[string]any{
+		"status":      "ok",
+		"event_id":    ack["event_id"],
+		"from_agent":  req.FromAgentID,
+		"to_agent":    req.ToAgentID,
+		"role_from":   req.RoleFrom,
+		"role_to":     req.RoleTo,
+		"timestamp":   now,
+	})
+}
+
+// ── GET /v1/agent/list ────────────────────────────────────────────────────────
+//
+// Query params: role=planner, workspace_id=..., tenant_id=...
+//
+// Returns agents filtered by the supplied query params.  Supports role-based
+// lookup needed by the 4-T1 planner/executor/critic architecture.
+func (g *Gateway) handleAgentList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	roleFilter := r.URL.Query().Get("role")
+	workspaceFilter := r.URL.Query().Get("workspace_id")
+	tenantFilter := r.URL.Query().Get("tenant_id")
+
+	agents := g.store.Objects().ListAgents()
+	out := agents[:0]
+	for _, a := range agents {
+		if roleFilter != "" && a.RoleProfile != roleFilter {
+			continue
+		}
+		if workspaceFilter != "" && a.WorkspaceID != workspaceFilter {
+			continue
+		}
+		if tenantFilter != "" && a.TenantID != tenantFilter {
+			continue
+		}
+		out = append(out, a)
+	}
+	writeJSON(w, out)
+}
+
+// ── GET /v1/internal/session/context ─────────────────────────────────────────
+//
+// Query params: session_id=..., agent_id=..., last_n=20
+//
+// Aggregates the recent interaction context for a session: the last N
+// user/assistant messages, tool calls/results, memory-write events, and
+// plan updates.  Useful for multi-round Q&A agents (3-T2) that need a
+// compact view of what happened earlier in the session without re-querying
+// the full event stream.
+//
+// Response:
+// {
+//   "session":  {...},
+//   "events":   [...],    // last_n events sorted by event_time desc
+//   "memories": [...],    // memories linked to this session
+//   "turns":    N         // total event count in session
+// }
+func (g *Gateway) handleSessionContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := r.URL.Query().Get("session_id")
+	agentID := r.URL.Query().Get("agent_id")
+	lastN := 20
+	if v := r.URL.Query().Get("last_n"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lastN = n
+		}
+	}
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	sess, _ := g.store.Objects().GetSession(sessionID)
+	allEvents := g.store.Objects().ListEvents(agentID, sessionID)
+
+	// Filter to interaction-relevant event types.
+	relevantTypes := map[string]bool{
+		string(schemas.EventTypeUserMessage):        true,
+		string(schemas.EventTypeAssistantMessage):   true,
+		string(schemas.EventTypeToolCallIssued):     true,
+		string(schemas.EventTypeToolCall):           true,
+		string(schemas.EventTypeToolResultReturned): true,
+		string(schemas.EventTypeToolResult):         true,
+		string(schemas.EventTypePlanUpdated):        true,
+		string(schemas.EventTypeMemoryWriteRequested): true,
+		string(schemas.EventTypeMemoryConsolidated): true,
+	}
+	var filtered []schemas.Event
+	for _, ev := range allEvents {
+		if relevantTypes[ev.EventType] {
+			filtered = append(filtered, ev)
+		}
+	}
+
+	// Return last N (keep tail).
+	if len(filtered) > lastN {
+		filtered = filtered[len(filtered)-lastN:]
+	}
+
+	// Linked memories (same agentID + sessionID).
+	mems := g.store.Objects().ListMemories(agentID, sessionID)
+
+	writeJSON(w, map[string]any{
+		"session":  sess,
+		"events":   filtered,
+		"memories": mems,
+		"turns":    len(allEvents),
+	})
+}
+
+// ── /v1/internal/eval/ground-truth ───────────────────────────────────────────
+//
+// In-process ground-truth store keyed by task_id.  Allows eval harnesses to
+// register expected answers before running agents and retrieve them
+// afterwards for scoring.
+//
+// POST — register ground truth:
+//   Body: {"task_id":"...", "expected":"...", "metadata":{...}}
+// GET  — retrieve ground truth:
+//   Query: ?task_id=...   (omit to list all)
+
+var (
+	groundTruthMu   sync.RWMutex
+	groundTruthStore = make(map[string]groundTruthRecord)
+)
+
+type groundTruthRecord struct {
+	TaskID   string         `json:"task_id"`
+	Expected string         `json:"expected"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	CreatedAt string        `json:"created_at"`
+}
+
+func (g *Gateway) handleEvalGroundTruth(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var rec groundTruthRecord
+		if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if rec.TaskID == "" {
+			http.Error(w, "task_id is required", http.StatusBadRequest)
+			return
+		}
+		rec.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		groundTruthMu.Lock()
+		groundTruthStore[rec.TaskID] = rec
+		groundTruthMu.Unlock()
+		writeJSON(w, map[string]any{"status": "ok", "task_id": rec.TaskID})
+
+	case http.MethodGet:
+		taskID := r.URL.Query().Get("task_id")
+		groundTruthMu.RLock()
+		defer groundTruthMu.RUnlock()
+		if taskID != "" {
+			rec, ok := groundTruthStore[taskID]
+			if !ok {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, rec)
+			return
+		}
+		all := make([]groundTruthRecord, 0, len(groundTruthStore))
+		for _, rec := range groundTruthStore {
+			all = append(all, rec)
+		}
+		writeJSON(w, all)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
