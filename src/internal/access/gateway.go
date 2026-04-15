@@ -16,6 +16,7 @@ import (
 
 	"plasmod/src/internal/config"
 	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/metrics"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker"
@@ -186,6 +187,13 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/decay", g.handleMemoryDecay)
 	mux.HandleFunc("/v1/internal/memory/share", g.handleMemoryShare)
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
+	mux.HandleFunc("/v1/internal/memory/stale", g.handleMemoryMarkStale)
+	mux.HandleFunc("/v1/internal/memory/conflict/inject", g.handleMemoryConflictInject)
+
+	// Observability
+	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
+	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
+	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
 }
 
 func (g *Gateway) handleSystemMode(w http.ResponseWriter, r *http.Request) {
@@ -229,11 +237,14 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(ev.EventID) == "" {
 		ev.EventID = generateObjectID("evt")
 	}
+	t0Visible := time.Now()
 	ack, err := g.runtime.SubmitIngest(ev)
 	if err != nil {
+		metrics.Global().RecordRetrievalError()
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	metrics.Global().RecordWriteToVisible(time.Since(t0Visible))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ack)
 }
@@ -1648,5 +1659,265 @@ func (g *Gateway) handleMemoryConflictResolve(w http.ResponseWriter, r *http.Req
 		"winner_id": winner,
 		"left_id":   req.LeftID,
 		"right_id":  req.RightID,
+	})
+}
+
+// ── /v1/admin/metrics ────────────────────────────────────────────────────────
+//
+// GET /v1/admin/metrics
+//
+// Returns a point-in-time snapshot of all runtime metrics.  Covers:
+//   3-MS1 query latency, 3-MS2 write latency, 3-MS3 write-to-visible latency,
+//   3-MS4 storage growth, 3-MS5 retrieval error rate, 3-MS6 resource overhead,
+//   1-M8 memory footprint, 1-M10 scale-out efficiency,
+//   3-MT1~MT7 task-level metrics, 4-M1/M4/M5/M6 MAS metrics.
+//
+// Optional query param:
+//   ?storage=true   populate storage_bytes_total / storage_memory_count /
+//                   storage_event_count from the live ObjectStore (slightly
+//                   heavier; defaults to the atomic counters updated at ingest).
+func (g *Gateway) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mc := metrics.Global()
+	if r.URL.Query().Get("storage") == "true" {
+		mems := g.store.Objects().ListMemories("", "")
+		evts := g.store.Objects().ListEvents("", "")
+		mc.StorageMemoryCount.Store(int64(len(mems)))
+		mc.StorageEventCount.Store(int64(len(evts)))
+	}
+	snap := mc.Snapshot()
+	writeJSON(w, snap)
+}
+
+// ── /v1/admin/governance-mode ────────────────────────────────────────────────
+//
+// GET  /v1/admin/governance-mode          → return current state
+// POST /v1/admin/governance-mode          → {"enabled": true/false}
+//
+// When governance is disabled the runtime skips TTL/quarantine/ACL enforcement
+// (used by 4-B4 baseline).
+func (g *Gateway) handleAdminGovernanceMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	case http.MethodPost:
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		g.runtime.GovernanceDisabled = !body.Enabled
+		writeJSON(w, map[string]any{
+			"status":              "ok",
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ── /v1/admin/runtime-mode ───────────────────────────────────────────────────
+//
+// GET  /v1/admin/runtime-mode             → return current flags
+// POST /v1/admin/runtime-mode             → {"vector_only_mode": bool, "minimal_mode": bool}
+//
+// Allows hot-switching between:
+//   - full Plasmod            (both false)
+//   - vector-only baseline    (vector_only_mode=true)  3-B1
+//   - minimal/stripped mode   (minimal_mode=true)      3-B4 / 4-B4
+func (g *Gateway) handleAdminRuntimeMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{
+			"vector_only_mode":    g.runtime.VectorOnlyMode,
+			"minimal_mode":        g.runtime.MinimalMode,
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	case http.MethodPost:
+		var body struct {
+			VectorOnlyMode    *bool `json:"vector_only_mode"`
+			MinimalMode       *bool `json:"minimal_mode"`
+			GovernanceDisabled *bool `json:"governance_disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.VectorOnlyMode != nil {
+			g.runtime.VectorOnlyMode = *body.VectorOnlyMode
+		}
+		if body.MinimalMode != nil {
+			g.runtime.MinimalMode = *body.MinimalMode
+		}
+		if body.GovernanceDisabled != nil {
+			g.runtime.GovernanceDisabled = *body.GovernanceDisabled
+		}
+		writeJSON(w, map[string]any{
+			"status":              "ok",
+			"vector_only_mode":    g.runtime.VectorOnlyMode,
+			"minimal_mode":        g.runtime.MinimalMode,
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ── /v1/internal/memory/stale ────────────────────────────────────────────────
+//
+// POST /v1/internal/memory/stale
+// Body: {"memory_id": "...", "reason": "optional explanation"}
+//
+// Marks a memory as stale (LifecycleState="stale", IsActive=false) without
+// deleting it.  Stale memories can still be retrieved via include_cold=true
+// but are excluded from normal warm-tier queries.  Used by 4-D6 to inject
+// stale information for MAS contamination / resilience experiments.
+func (g *Gateway) handleMemoryMarkStale(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		MemoryID string `json:"memory_id"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.MemoryID) == "" {
+		http.Error(w, "memory_id is required", http.StatusBadRequest)
+		return
+	}
+	mem, ok := g.store.Objects().GetMemory(req.MemoryID)
+	if !ok {
+		http.Error(w, "memory not found", http.StatusNotFound)
+		return
+	}
+	mem.LifecycleState = string(schemas.MemoryLifecycleStale)
+	mem.IsActive = false
+	g.store.Objects().PutMemory(mem)
+	g.store.Audits().AppendAudit(schemas.AuditRecord{
+		RecordID:       fmt.Sprintf("stale_%s_%d", req.MemoryID, time.Now().UnixNano()),
+		OperationType:  string(schemas.AuditOpAlgorithmUpdate),
+		ActorType:      "system",
+		TargetMemoryID: req.MemoryID,
+		ReasonCode:     req.Reason,
+		Decision:       "allow",
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	})
+	writeJSON(w, map[string]any{
+		"status":          "ok",
+		"memory_id":       req.MemoryID,
+		"lifecycle_state": mem.LifecycleState,
+	})
+}
+
+// ── /v1/internal/memory/conflict/inject ─────────────────────────────────────
+//
+// POST /v1/internal/memory/conflict/inject
+// Body: {
+//   "agent_id":     "...",
+//   "session_id":   "...",
+//   "content_a":    "conflicting claim A",
+//   "content_b":    "conflicting claim B",
+//   "importance":   0.7       (optional, default 0.5)
+// }
+//
+// Synthesises two episodic Memory objects with identical provenance but
+// contradictory content and links them with a "conflict" edge.  The pair is
+// retrievable via normal query so downstream logic can be tested for
+// conflict awareness / preservation (4-D5, 4-M4).
+func (g *Gateway) handleMemoryConflictInject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID    string  `json:"agent_id"`
+		SessionID  string  `json:"session_id"`
+		ContentA   string  `json:"content_a"`
+		ContentB   string  `json:"content_b"`
+		Importance float64 `json:"importance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ContentA == "" || req.ContentB == "" {
+		http.Error(w, "content_a and content_b are required", http.StatusBadRequest)
+		return
+	}
+	if req.Importance <= 0 {
+		req.Importance = 0.5
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	idA := generateObjectID("cmem")
+	idB := generateObjectID("cmem")
+	scope := req.AgentID
+	if scope == "" {
+		scope = "default"
+	}
+	memA := schemas.Memory{
+		MemoryID:       idA,
+		AgentID:        req.AgentID,
+		SessionID:      req.SessionID,
+		Content:        req.ContentA,
+		MemoryType:     string(schemas.MemoryTypeEpisodic),
+		Importance:     req.Importance,
+		IsActive:       true,
+		Scope:          scope,
+		LifecycleState: string(schemas.MemoryLifecycleActive),
+		ValidFrom:      now,
+	}
+	memB := schemas.Memory{
+		MemoryID:       idB,
+		AgentID:        req.AgentID,
+		SessionID:      req.SessionID,
+		Content:        req.ContentB,
+		MemoryType:     string(schemas.MemoryTypeEpisodic),
+		Importance:     req.Importance,
+		IsActive:       true,
+		Scope:          scope,
+		LifecycleState: string(schemas.MemoryLifecycleActive),
+		ValidFrom:      now,
+	}
+	g.store.Objects().PutMemory(memA)
+	g.store.Objects().PutMemory(memB)
+
+	conflictEdge := schemas.Edge{
+		EdgeID:       generateObjectID("cedge"),
+		SrcObjectID:  idA,
+		SrcType:      string(schemas.ObjectTypeMemory),
+		DstObjectID:  idB,
+		DstType:      string(schemas.ObjectTypeMemory),
+		EdgeType:     "conflict",
+		CreatedTS:    now,
+		Properties:   map[string]any{"injected": true},
+	}
+	g.store.Edges().PutEdge(conflictEdge)
+
+	metrics.Global().RecordConflict(true)
+	g.store.Audits().AppendAudit(schemas.AuditRecord{
+		RecordID:       fmt.Sprintf("conflict_inject_%s_%d", idA, time.Now().UnixNano()),
+		OperationType:  string(schemas.AuditOpWrite),
+		ActorType:      "system",
+		TargetMemoryID: idA,
+		ReasonCode:     "conflict_injection:" + idB,
+		Decision:       "allow",
+		Timestamp:      now,
+	})
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"memory_id_a": idA,
+		"memory_id_b": idB,
+		"edge_id":    conflictEdge.EdgeID,
 	})
 }
