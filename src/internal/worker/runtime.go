@@ -45,6 +45,10 @@ type Runtime struct {
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
 	wipeMu    sync.Mutex
+
+	// VectorOnlyMode disables graph expansion, policy enforcement, and provenance
+	// tracking to create a pure vector-search baseline (Baseline 1).
+	VectorOnlyMode bool
 }
 
 func CreateRuntime(
@@ -292,7 +296,11 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
-	if len(result.ObjectIDs) > 0 {
+	//
+	// In VECTOR-ONLY MODE: skip QueryChain (graph expansion, proof trace, provenance).
+	if r.VectorOnlyMode {
+		resp.ChainTraces.Query = []string{"query_chain skipped=vector_only_mode"}
+	} else if len(result.ObjectIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
 			ObjectIDs:   result.ObjectIDs,
 			MaxDepth:    0, // default cap of 8
@@ -327,7 +335,11 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
-	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
+	
+	// In VECTOR-ONLY MODE: skip provenance attachment
+	if !r.VectorOnlyMode {
+		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
+	}
 
 	return resp
 }
