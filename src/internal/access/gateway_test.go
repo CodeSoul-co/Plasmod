@@ -1264,6 +1264,157 @@ func TestGateway_ToolState(t *testing.T) {
 	}
 }
 
+func TestGateway_AgentHandoff(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "planner-1", RoleProfile: "planner"})
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "executor-1", RoleProfile: ""})
+
+	body, _ := json.Marshal(map[string]any{
+		"from_agent_id": "planner-1",
+		"to_agent_id":   "executor-1",
+		"session_id":    "sess-handoff",
+		"role_from":     "planner",
+		"role_to":       "executor",
+		"context":       map[string]any{"task": "write report"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/agent/handoff", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent/handoff: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Executor's role should be updated.
+	agent, ok := deps.store.Objects().GetAgent("executor-1")
+	if !ok {
+		t.Fatal("executor agent should exist")
+	}
+	if agent.RoleProfile != "executor" {
+		t.Fatalf("expected role=executor, got %q", agent.RoleProfile)
+	}
+}
+
+func TestGateway_AgentList(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "a1", RoleProfile: "planner", WorkspaceID: "ws1"})
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "a2", RoleProfile: "executor", WorkspaceID: "ws1"})
+	deps.store.Objects().PutAgent(schemas.Agent{AgentID: "a3", RoleProfile: "planner", WorkspaceID: "ws2"})
+
+	// Filter by role.
+	req := httptest.NewRequest(http.MethodGet, "/v1/agent/list?role=planner", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent/list: want 200, got %d", w.Code)
+	}
+	var agents []schemas.Agent
+	if err := json.Unmarshal(w.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("expected 2 planners, got %d", len(agents))
+	}
+
+	// Filter by role + workspace.
+	req = httptest.NewRequest(http.MethodGet, "/v1/agent/list?role=planner&workspace_id=ws1", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if err := json.Unmarshal(w.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(agents) != 1 || agents[0].AgentID != "a1" {
+		t.Fatalf("expected only a1, got %v", agents)
+	}
+}
+
+func TestGateway_SessionContext(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID: "ev-user-1", AgentID: "agent-ctx", SessionID: "sess-ctx",
+		EventType: string(schemas.EventTypeUserMessage),
+		Payload:   map[string]any{"text": "hello"},
+	})
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID: "ev-asst-1", AgentID: "agent-ctx", SessionID: "sess-ctx",
+		EventType: string(schemas.EventTypeAssistantMessage),
+		Payload:   map[string]any{"text": "hi there"},
+	})
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID: "ev-tool-1", AgentID: "agent-ctx", SessionID: "sess-ctx",
+		EventType: "irrelevant_type",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/internal/session/context?session_id=sess-ctx&agent_id=agent-ctx", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session/context: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	evs, _ := resp["events"].([]any)
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 relevant events, got %d", len(evs))
+	}
+	if resp["turns"].(float64) != 3 {
+		t.Fatalf("expected turns=3, got %v", resp["turns"])
+	}
+}
+
+func TestGateway_EvalGroundTruth(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"task_id":  "task-gt-1",
+		"expected": "Paris",
+		"metadata": map[string]any{"source": "unit-test"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/eval/ground-truth", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("eval/ground-truth POST: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Retrieve by task_id.
+	req = httptest.NewRequest(http.MethodGet, "/v1/internal/eval/ground-truth?task_id=task-gt-1", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("eval/ground-truth GET: want 200, got %d", w.Code)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &rec); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rec["expected"] != "Paris" {
+		t.Fatalf("expected 'Paris', got %v", rec["expected"])
+	}
+
+	// Unknown task_id → 404.
+	req = httptest.NewRequest(http.MethodGet, "/v1/internal/eval/ground-truth?task_id=no-such", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown task, got %d", w.Code)
+	}
+}
+
 func TestGateway_AdminDataWipe(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
