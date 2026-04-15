@@ -12,21 +12,27 @@ baseline:
   max_strength:       5.0
   compressed_level:    1
   summarization_level: 2
+
+  # Member C retrieval / cold-tier experiment knobs.
   retrieval:
     rrf_k: 60
 
-    cold_search:
+  cold_search:
+    # Throughput / latency knobs for cold archived datasets.
     batch_size: 128
     max_candidates: 1000
     buffer_factor: 3
     early_stop_score: 0.95
     no_improve_pages: 2
+    # Recall guardrail for dense / brute-force cold retrieval.
     dfs_relevance_threshold: 0.2
+    # Final cold score composition before RRF fusion.
     weights:
       lexical: 0.5
       dense: 0.4
       recency: 0.1
 
+  # HNSW archived-index parameters for cold ANN experiments.
   hnsw:
     m: 16
     ef_construction: 256

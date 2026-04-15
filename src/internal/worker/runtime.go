@@ -45,6 +45,10 @@ type Runtime struct {
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
 	wipeMu    sync.Mutex
+
+	// VectorOnlyMode disables graph expansion, policy enforcement, and provenance
+	// tracking to create a pure vector-search baseline (Baseline 1).
+	VectorOnlyMode bool
 }
 
 func CreateRuntime(
@@ -245,6 +249,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	plan := r.planner.Build(req)
+	vectorOnlyMode := vectorOnlyModeEnabled()
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
 		TopK:           plan.TopK,
@@ -275,11 +280,47 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// State and Artifact objects are stored directly in ObjectStore, not in the
 	// retrieval plane.  When query requests these types, fetch them from the
 	// canonical store so they appear in the response alongside memory results.
-	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
-	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	canonicalAddCount := 0
+	if !vectorOnlyMode {
+		canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
+		canonicalAddCount = len(canonicalIDs)
+		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	}
+
+	if vectorOnlyMode {
+		resp := schemas.QueryResponse{
+			Objects: result.ObjectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:               result.Tier,
+				ColdSearchMode:     result.ColdSearchMode,
+				ColdCandidateCount: result.ColdCandidateCount,
+				ColdTierRequested:  result.ColdTierRequested,
+				ColdUsedFallback:   result.ColdUsedFallback,
+				RetrievalHits:      retrievalHitCount,
+				CanonicalAdds:      0,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           append(formatQueryPathMainChainLines(req, result), "vector_only_mode=true"),
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs),
+				Query:          []string{"query_chain skipped=vector_only_mode"},
+				Collaboration:  []string{"collaboration_chain skipped=vector_only_mode"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, retrievalHitCount)
+		return resp
+	}
 
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
+	resp.Retrieval = &schemas.RetrievalSummary{
+		Tier:               result.Tier,
+		ColdSearchMode:     result.ColdSearchMode,
+		ColdCandidateCount: result.ColdCandidateCount,
+		ColdTierRequested:  result.ColdTierRequested,
+		ColdUsedFallback:   result.ColdUsedFallback,
+		RetrievalHits:      retrievalHitCount,
+		CanonicalAdds:      canonicalAddCount,
+	}
 	applyQueryOutcomeHint(&resp, retrievalHitCount)
 
 	resp.ChainTraces.Main = formatQueryPathMainChainLines(req, result)
@@ -292,7 +333,11 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	//   3. Multi-hop BFS proof trace via ProofTraceWorker.
 	//   4. Subgraph expansion via SubgraphExecutorWorker.
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
-	if len(result.ObjectIDs) > 0 {
+	//
+	// In VECTOR-ONLY MODE: skip QueryChain (graph expansion, proof trace, provenance).
+	if r.VectorOnlyMode {
+		resp.ChainTraces.Query = []string{"query_chain skipped=vector_only_mode"}
+	} else if len(result.ObjectIDs) > 0 {
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
 			ObjectIDs:   result.ObjectIDs,
 			MaxDepth:    0, // default cap of 8
@@ -327,9 +372,23 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
-	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
+	
+	// In VECTOR-ONLY MODE: skip provenance attachment
+	if !r.VectorOnlyMode {
+		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
+	}
 
 	return resp
+}
+
+func vectorOnlyModeEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_VECTOR_ONLY_MODE"))
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // applyQueryOutcomeHint sets query_status / query_hint so clients can tell "no dataset"
@@ -662,8 +721,8 @@ func (r *Runtime) DispatchRecall(
 			From: "1970-01-01T00:00:00Z",
 			To:   now.Format(time.RFC3339),
 		},
-		ObjectTypes: []string{"memory"},
-		MemoryTypes: []string{"semantic", "episodic", "procedural"},
+		ObjectTypes:  []string{"memory"},
+		MemoryTypes:  []string{"semantic", "episodic", "procedural"},
 		ResponseMode: schemas.ResponseModeStructuredEvidence,
 	}
 
@@ -739,21 +798,21 @@ func (r *Runtime) DispatchShare(fromAgentID, toAgentID, memoryID string) (string
 	}
 	sharedID := "shared_" + memoryID + "_to_" + toAgentID
 	shared := schemas.Memory{
-		MemoryID:      sharedID,
-		AgentID:       toAgentID,
-		SessionID:     mem.SessionID,
-		OwnerType:     "shared",
-		Scope:         "restricted_shared",
-		MemoryType:    mem.MemoryType,
-		Content:       mem.Content,
-		Level:         mem.Level,
+		MemoryID:       sharedID,
+		AgentID:        toAgentID,
+		SessionID:      mem.SessionID,
+		OwnerType:      "shared",
+		Scope:          "restricted_shared",
+		MemoryType:     mem.MemoryType,
+		Content:        mem.Content,
+		Level:          mem.Level,
 		SourceEventIDs: mem.SourceEventIDs,
-		Importance:    mem.Importance,
-		Confidence:    mem.Confidence,
-		IsActive:      mem.IsActive,
-		Version:       mem.Version,
-		ValidFrom:     time.Now().UTC().Format(time.RFC3339),
-		ProvenanceRef: fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID),
+		Importance:     mem.Importance,
+		Confidence:     mem.Confidence,
+		IsActive:       mem.IsActive,
+		Version:        mem.Version,
+		ValidFrom:      time.Now().UTC().Format(time.RFC3339),
+		ProvenanceRef:  fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID),
 	}
 	r.storage.Objects().PutMemory(shared)
 	if r.nodeManager != nil {
@@ -1089,4 +1148,113 @@ func (r *Runtime) adminWipeWAL() string {
 	default:
 		return "unknown_skipped"
 	}
+}
+
+// AdminReplayPreview scans WAL entries from fromLSN and returns a replay-oriented
+// summary for operational validation. It does not mutate runtime state.
+func (r *Runtime) AdminReplayPreview(fromLSN int64, limit int) (map[string]any, error) {
+	if r == nil || r.wal == nil {
+		return nil, errors.New("wal not configured")
+	}
+	if fromLSN < 0 {
+		fromLSN = 0
+	}
+	entries := r.wal.Scan(fromLSN)
+	total := len(entries)
+	if total == 0 {
+		return map[string]any{
+			"status":               "ok",
+			"from_lsn":             fromLSN,
+			"latest_lsn":           r.wal.LatestLSN(),
+			"scanned_entries":      0,
+			"sampled_entries":      0,
+			"event_type_counts":    map[string]int{},
+			"sample_event_ids":     []string{},
+			"first_sample_lsn":     int64(0),
+			"last_sample_lsn":      int64(0),
+			"replay_apply_enabled": false,
+			"note":                 "preview only; no state mutation performed",
+		}, nil
+	}
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	sampled := entries[:limit]
+	counts := make(map[string]int)
+	sampleIDs := make([]string, 0, len(sampled))
+	for _, e := range sampled {
+		counts[e.Event.EventType]++
+		sampleIDs = append(sampleIDs, e.Event.EventID)
+	}
+	return map[string]any{
+		"status":               "ok",
+		"from_lsn":             fromLSN,
+		"latest_lsn":           r.wal.LatestLSN(),
+		"scanned_entries":      total,
+		"sampled_entries":      len(sampled),
+		"event_type_counts":    counts,
+		"sample_event_ids":     sampleIDs,
+		"first_sample_lsn":     sampled[0].LSN,
+		"last_sample_lsn":      sampled[len(sampled)-1].LSN,
+		"replay_apply_enabled": false,
+		"note":                 "preview only; no state mutation performed",
+	}, nil
+}
+
+// AdminReplayApply replays WAL entries by re-submitting events through the ingest path.
+// This mutates runtime state and appends new WAL entries for the replayed events.
+func (r *Runtime) AdminReplayApply(fromLSN int64, limit int) (map[string]any, error) {
+	if r == nil || r.wal == nil {
+		return nil, errors.New("wal not configured")
+	}
+	if fromLSN < 0 {
+		fromLSN = 0
+	}
+	entries := r.wal.Scan(fromLSN)
+	total := len(entries)
+	if total == 0 {
+		return map[string]any{
+			"status":           "ok",
+			"from_lsn":         fromLSN,
+			"latest_lsn":       r.wal.LatestLSN(),
+			"scanned_entries":  0,
+			"attempted":        0,
+			"applied":          0,
+			"failed":           0,
+			"failed_event_ids": []string{},
+			"note":             "no WAL entries to replay",
+		}, nil
+	}
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	target := entries[:limit]
+	applied := 0
+	failed := 0
+	failedIDs := make([]string, 0)
+	for _, entry := range target {
+		ev := entry.Event
+		if strings.TrimSpace(ev.EventID) == "" {
+			failed++
+			failedIDs = append(failedIDs, "")
+			continue
+		}
+		if _, err := r.SubmitIngest(ev); err != nil {
+			failed++
+			failedIDs = append(failedIDs, ev.EventID)
+			continue
+		}
+		applied++
+	}
+	return map[string]any{
+		"status":           "ok",
+		"from_lsn":         fromLSN,
+		"latest_lsn":       r.wal.LatestLSN(),
+		"scanned_entries":  total,
+		"attempted":        len(target),
+		"applied":          applied,
+		"failed":           failed,
+		"failed_event_ids": failedIDs,
+		"note":             "replay apply re-submits events via ingest path",
+	}, nil
 }

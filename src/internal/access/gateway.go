@@ -2,8 +2,8 @@ package access
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"plasmod/src/internal/config"
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/storage"
@@ -26,6 +27,8 @@ type Gateway struct {
 	store      storage.RuntimeStorage
 	storageCfg *storage.ConfigSnapshot
 	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
+	modeMu     sync.RWMutex
+	consistencyMode string
 }
 
 func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
@@ -125,7 +128,14 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 // GET /v1/admin/storage returns the resolved backend configuration.
 // bundle may be nil in tests; admin data wipe still clears in-memory state and omits Badger.DropAll.
 func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
-	return &Gateway{coord: coord, runtime: runtime, store: store, storageCfg: storageCfg, bundle: bundle}
+	return &Gateway{
+		coord:           coord,
+		runtime:         runtime,
+		store:           store,
+		storageCfg:      storageCfg,
+		bundle:          bundle,
+		consistencyMode: "strict_visible",
+	}
 }
 
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
@@ -137,11 +147,16 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/system/mode", g.handleSystemMode)
 	mux.HandleFunc("/v1/admin/topology", g.handleTopology)
 	mux.HandleFunc("/v1/admin/storage", g.handleStorage)
+	mux.HandleFunc("/v1/admin/config/effective", g.handleEffectiveConfig)
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
+	mux.HandleFunc("/v1/admin/s3/cold-purge", g.handleS3ColdPurge)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
+	mux.HandleFunc("/v1/admin/rollback", g.handleAdminRollback)
+	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
+	mux.HandleFunc("/v1/admin/replay", g.handleAdminReplay)
 	if isTestMode() {
 		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
 	}
@@ -265,6 +280,35 @@ func (g *Gateway) handleStorage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(g.storageCfg)
+}
+
+func (g *Gateway) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cfg, err := config.LoadSharedAlgorithmConfig()
+	if err != nil {
+		cfg = schemas.DefaultAlgorithmConfig()
+	}
+	if sz := os.Getenv("PLASMOD_EVIDENCE_CACHE_SIZE"); sz != "" {
+		if n, convErr := strconv.Atoi(sz); convErr == nil && n > 0 {
+			cfg.EvidenceCacheSize = n
+		}
+	}
+	if d := os.Getenv("PLASMOD_MAX_PROOF_DEPTH"); d != "" {
+		if n, convErr := strconv.Atoi(d); convErr == nil && n > 0 {
+			cfg.MaxProofDepth = n
+		}
+	}
+	if t := os.Getenv("PLASMOD_HOT_TIER_THRESHOLD"); t != "" {
+		if f, convErr := strconv.ParseFloat(t, 64); convErr == nil && f > 0 {
+			cfg.HotTierSalienceThreshold = f
+		}
+	}
+	writeJSON(w, map[string]any{
+		"algorithm_config": cfg,
+	})
 }
 
 // handleDatasetDelete soft-deletes uploaded dataset memories by dataset selectors.
@@ -548,30 +592,30 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{
-		"status":            status,
-		"data_presence":     dataPresence,
-		"file_name":         req.FileName,
-		"dataset_name":      req.DatasetName,
-		"prefix":            req.Prefix,
-		"workspace_id":      req.WorkspaceID,
-		"dry_run":           req.DryRun,
-		"only_if_inactive":  onlyIfInactive,
-		"purge_backend":     purgeBackend,
-		"scanned":           scanned,
-		"workspace_scanned": workspaceCandidates,
-		"matched":           matched,
-		"skipped_active":    skippedActive,
-		"purgeable":         purgeable,
-		"purged":            purged,
-		"cancelled":         cancelled,
-		"cancel_reason":     cancelReason,
-		"purge_workers":     purgeWorkers,
-		"purge_batch_size":  purgeBatchSize,
-		"purge_queue_size":  purgeQueueSize,
-		"purge_elapsed_ms":  time.Since(startedAt).Milliseconds(),
+		"status":                 status,
+		"data_presence":          dataPresence,
+		"file_name":              req.FileName,
+		"dataset_name":           req.DatasetName,
+		"prefix":                 req.Prefix,
+		"workspace_id":           req.WorkspaceID,
+		"dry_run":                req.DryRun,
+		"only_if_inactive":       onlyIfInactive,
+		"purge_backend":          purgeBackend,
+		"scanned":                scanned,
+		"workspace_scanned":      workspaceCandidates,
+		"matched":                matched,
+		"skipped_active":         skippedActive,
+		"purgeable":              purgeable,
+		"purged":                 purged,
+		"cancelled":              cancelled,
+		"cancel_reason":          cancelReason,
+		"purge_workers":          purgeWorkers,
+		"purge_batch_size":       purgeBatchSize,
+		"purge_queue_size":       purgeQueueSize,
+		"purge_elapsed_ms":       time.Since(startedAt).Milliseconds(),
 		"purge_progress_percent": progressPercent,
-		"memory_ids":        ids,
-		"purged_memory_ids": purgeIDs,
+		"memory_ids":             ids,
+		"purged_memory_ids":      purgeIDs,
 	})
 }
 
@@ -605,6 +649,238 @@ func (g *Gateway) handleAdminDataWipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+
+func isSupportedConsistencyMode(mode string) bool {
+	switch mode {
+	case "strict_visible", "bounded_staleness", "eventual_visibility":
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *Gateway) handleAdminConsistencyMode(w http.ResponseWriter, r *http.Request) {
+	supported := []string{"strict_visible", "bounded_staleness", "eventual_visibility"}
+	switch r.Method {
+	case http.MethodGet:
+		g.modeMu.RLock()
+		mode := g.consistencyMode
+		g.modeMu.RUnlock()
+		writeJSON(w, map[string]any{
+			"status":          "ok",
+			"mode":            mode,
+			"supported_modes": supported,
+			"note":            "control-plane mode exposed; query path currently remains single-mode",
+		})
+	case http.MethodPost:
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mode := strings.TrimSpace(req.Mode)
+		if !isSupportedConsistencyMode(mode) {
+			http.Error(w, "unsupported mode", http.StatusBadRequest)
+			return
+		}
+		g.modeMu.Lock()
+		g.consistencyMode = mode
+		g.modeMu.Unlock()
+		writeJSON(w, map[string]any{
+			"status":          "ok",
+			"mode":            mode,
+			"supported_modes": supported,
+			"note":            "control-plane mode exposed; query path currently remains single-mode",
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (g *Gateway) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		FromLSN int64 `json:"from_lsn"`
+		Limit   int   `json:"limit"`
+		DryRun  *bool `json:"dry_run,omitempty"`
+		Apply   bool  `json:"apply,omitempty"`
+		Confirm string `json:"confirm,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	applyRequested := req.Apply || !dryRun
+	var (
+		summary map[string]any
+		err     error
+	)
+	if applyRequested {
+		if strings.TrimSpace(req.Confirm) != "apply_replay" {
+			http.Error(w, `confirm must be "apply_replay" when apply=true`, http.StatusBadRequest)
+			return
+		}
+		summary, err = g.runtime.AdminReplayApply(req.FromLSN, req.Limit)
+	} else {
+		summary, err = g.runtime.AdminReplayPreview(req.FromLSN, req.Limit)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	summary["dry_run"] = !applyRequested
+	summary["apply"] = applyRequested
+	writeJSON(w, summary)
+}
+
+// handleAdminRollback performs a minimal memory-level rollback action for
+// operational recovery: reactivate or deactivate one memory record.
+func (g *Gateway) handleAdminRollback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		MemoryID string `json:"memory_id"`
+		Action   string `json:"action"` // reactivate | deactivate
+		DryRun   bool   `json:"dry_run,omitempty"`
+		Reason   string `json:"reason,omitempty"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.MemoryID = strings.TrimSpace(req.MemoryID)
+	req.Action = strings.TrimSpace(req.Action)
+	if req.MemoryID == "" {
+		http.Error(w, "memory_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Action != "reactivate" && req.Action != "deactivate" {
+		http.Error(w, `action must be "reactivate" or "deactivate"`, http.StatusBadRequest)
+		return
+	}
+	mem, ok := g.store.Objects().GetMemory(req.MemoryID)
+	if !ok {
+		http.Error(w, "memory not found", http.StatusNotFound)
+		return
+	}
+	beforeActive := mem.IsActive
+	afterActive := beforeActive
+	switch req.Action {
+	case "reactivate":
+		afterActive = true
+	case "deactivate":
+		afterActive = false
+	}
+	if req.DryRun {
+		writeJSON(w, map[string]any{
+			"status":        "ok",
+			"dry_run":       true,
+			"memory_id":     req.MemoryID,
+			"action":        req.Action,
+			"before_active": beforeActive,
+			"after_active":  afterActive,
+			"note":          "dry-run only; no mutation performed",
+		})
+		return
+	}
+
+	mem.IsActive = afterActive
+	if afterActive {
+		mem.ValidTo = ""
+	} else if mem.ValidTo == "" {
+		mem.ValidTo = time.Now().UTC().Format(time.RFC3339)
+	}
+	g.store.Objects().PutMemory(mem)
+	if !afterActive {
+		if tiered := g.runtime.TieredObjects(); tiered != nil {
+			tiered.SoftDeleteMemoryTierCleanup(mem.MemoryID)
+		}
+	}
+	if g.store.Audits() != nil {
+		g.store.Audits().AppendAudit(schemas.AuditRecord{
+			RecordID:       fmt.Sprintf("audit_rollback_%s_%d", mem.MemoryID, time.Now().UnixNano()),
+			TargetMemoryID: mem.MemoryID,
+			OperationType:  string(schemas.AuditOpPolicyChange),
+			ActorType:      "system",
+			ActorID:        "admin_api",
+			Decision:       "allow",
+			ReasonCode:     "admin_rollback",
+			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, map[string]any{
+		"status":        "ok",
+		"dry_run":       false,
+		"memory_id":     req.MemoryID,
+		"action":        req.Action,
+		"before_active": beforeActive,
+		"after_active":  afterActive,
+		"reason":        strings.TrimSpace(req.Reason),
+	})
+}
+
+func (g *Gateway) handleS3ColdPurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Confirm string `json:"confirm"`
+		DryRun  bool   `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Confirm) != "purge_cold_tier" {
+		http.Error(w, `confirm must be "purge_cold_tier"`, http.StatusBadRequest)
+		return
+	}
+	tiered := g.runtime.TieredObjects()
+	if tiered == nil {
+		writeJSON(w, map[string]any{
+			"status":   "ok",
+			"dry_run":  req.DryRun,
+			"result":   "no_tiered_store",
+			"purged":   false,
+			"note":     "tiered object store not configured",
+		})
+		return
+	}
+	if req.DryRun {
+		writeJSON(w, map[string]any{
+			"status":  "ok",
+			"dry_run": true,
+			"purged":  false,
+			"note":    "dry-run only; no mutation performed",
+		})
+		return
+	}
+	result := tiered.ClearColdIfInMemory()
+	writeJSON(w, map[string]any{
+		"status":  "ok",
+		"dry_run": false,
+		"result":  result,
+		"purged":  result == "in_memory_cleared",
+		"note":    "S3-backed cold objects require bucket-side lifecycle/manual cleanup",
+	})
 }
 
 // ─── /v1/admin/s3/export ────────────────────────────────────────────────────
@@ -1210,7 +1486,7 @@ func generateObjectID(prefix string) string {
 	// <prefix>_<unix_millis_base36>_<12hex random bytes>
 	ts := strconv.FormatInt(time.Now().UTC().UnixMilli(), 36)
 	var buf [12]byte
-	if _, err := rand.Read(buf[:]); err != nil {	
+	if _, err := rand.Read(buf[:]); err != nil {
 		return fmt.Sprintf("%s_%s", prefix, ts)
 	}
 	return fmt.Sprintf("%s_%s_%s", prefix, ts, hex.EncodeToString(buf[:]))

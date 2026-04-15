@@ -131,3 +131,68 @@ func TestMemoryViewBuilder_VisibleMemoryRefs_Matches_Payloads(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryViewBuilder_SharedPrivateScopeDefinition(t *testing.T) {
+	snap := &schemas.AccessGraphSnapshot{
+		AgentID: "agent-scope",
+		VisibleScopes: []string{
+			string(schemas.MemoryScopeRestrictedShared),
+			string(schemas.MemoryScopeWorkspaceShared),
+		},
+	}
+	candidates := []schemas.Memory{
+		{MemoryID: "m_private", Scope: string(schemas.MemoryScopePrivateAgent), LifecycleState: string(schemas.MemoryLifecycleActive)},
+		{MemoryID: "m_restricted", Scope: string(schemas.MemoryScopeRestrictedShared), LifecycleState: string(schemas.MemoryLifecycleActive)},
+		{MemoryID: "m_workspace", Scope: string(schemas.MemoryScopeWorkspaceShared), LifecycleState: string(schemas.MemoryLifecycleActive)},
+	}
+
+	view := NewMemoryViewBuilder("req_scope_matrix", "user-scope", "agent-scope").
+		WithSnapshot(snap).
+		Build(candidates, "")
+
+	if len(view.Payloads) != 2 {
+		t.Fatalf("expected 2 payloads after shared/private scope filter, got %d", len(view.Payloads))
+	}
+
+	got := map[string]bool{}
+	for _, payload := range view.Payloads {
+		got[payload.MemoryID] = true
+	}
+	if got["m_private"] {
+		t.Fatal("expected private-agent memory to be excluded from shared scope view")
+	}
+	if !got["m_restricted"] || !got["m_workspace"] {
+		t.Fatalf("expected restricted/workspace shared memories to remain, got %+v", got)
+	}
+
+	t.Logf("Scope definition: private_agent_visible=%t restricted_shared_visible=%t workspace_shared_visible=%t visible_refs=%d",
+		got["m_private"], got["m_restricted"], got["m_workspace"], len(view.VisibleMemoryRefs))
+}
+
+func TestMemoryViewBuilder_VisibilityScopeCoverage(t *testing.T) {
+	snap := &schemas.AccessGraphSnapshot{
+		AgentID: "agent-coverage",
+		VisibleScopes: []string{
+			string(schemas.MemoryScopeSessionLocal),
+			string(schemas.MemoryScopeWorkspaceShared),
+		},
+	}
+	candidates := []schemas.Memory{
+		{MemoryID: "m_session", Scope: string(schemas.MemoryScopeSessionLocal), LifecycleState: string(schemas.MemoryLifecycleActive)},
+		{MemoryID: "m_workspace", Scope: string(schemas.MemoryScopeWorkspaceShared), LifecycleState: string(schemas.MemoryLifecycleActive)},
+		{MemoryID: "m_private", Scope: string(schemas.MemoryScopePrivateAgent), LifecycleState: string(schemas.MemoryLifecycleActive)},
+		{MemoryID: "m_team", Scope: string(schemas.MemoryScopeTeamShared), LifecycleState: string(schemas.MemoryLifecycleActive)},
+	}
+
+	view := NewMemoryViewBuilder("req_scope_coverage", "user-coverage", "agent-coverage").
+		WithSnapshot(snap).
+		Build(candidates, "")
+
+	if len(view.Payloads) != 2 {
+		t.Fatalf("expected 2 visible payloads, got %d", len(view.Payloads))
+	}
+
+	excluded := len(candidates) - len(view.Payloads)
+	t.Logf("Visibility scope coverage: visible_refs=%d total_candidates=%d excluded_refs=%d resolved_scope=%s",
+		len(view.VisibleMemoryRefs), len(candidates), excluded, view.ResolvedScope)
+}

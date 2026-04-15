@@ -33,6 +33,7 @@ This can be overridden with the `ANDB_HTTP_ADDR` environment variable.
 
 - `GET /v1/admin/topology`
 - `GET /v1/admin/storage`
+- `GET /v1/admin/config/effective`
 - `POST /v1/admin/s3/export`
 - `POST /v1/admin/s3/snapshot-export`
 - `POST /v1/admin/dataset/delete`
