@@ -284,6 +284,10 @@ func (c *Collector) RecordUnsupportedClaim() {
 	c.UnsupportedClaims.Add(1)
 }
 
+func (c *Collector) RecordTaskDuration(ms float64) {
+	c.TaskDuration.record(ms)
+}
+
 func (c *Collector) RecordContaminationAttempt() {
 	c.ContaminationAttempts.Add(1)
 }

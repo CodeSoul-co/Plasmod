@@ -13,6 +13,7 @@ import (
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/metrics"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
@@ -1005,6 +1006,124 @@ func TestGateway_MemoryConflictInject(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected conflict edge between injected memories")
+	}
+}
+
+func TestGateway_TaskLifecycle(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	sessID := "test-sess-lifecycle"
+
+	// start
+	b, _ := json.Marshal(map[string]string{"session_id": sessID, "task_type": "analysis", "goal": "test goal"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/task/start", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/start: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	sess, ok := deps.store.Objects().GetSession(sessID)
+	if !ok {
+		t.Fatal("session should be created on task start")
+	}
+	if sess.TaskType != "analysis" {
+		t.Fatalf("expected task_type=analysis, got %s", sess.TaskType)
+	}
+
+	// tokens
+	b, _ = json.Marshal(map[string]any{"session_id": sessID, "tokens": 256})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/task/tokens", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/tokens: want 200, got %d", w.Code)
+	}
+
+	// complete
+	b, _ = json.Marshal(map[string]any{"session_id": sessID, "success": true, "duration_ms": 500.0})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/task/complete", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/complete: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	snap, ok2 := metrics.Global().SessionSnapshot(sessID)
+	if !ok2 {
+		t.Fatal("expected session snapshot to exist after task/complete")
+	}
+	if !snap.Done {
+		t.Fatal("task should be marked done")
+	}
+	if snap.Tokens != 256 {
+		t.Fatalf("expected 256 tokens, got %d", snap.Tokens)
+	}
+}
+
+func TestGateway_PlanRepair(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	sessID := "test-sess-plan"
+
+	b, _ := json.Marshal(map[string]any{"session_id": sessID, "step_index": 1, "step_description": "fetch data"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/plan/step", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plan/step: want 200, got %d", w.Code)
+	}
+
+	b, _ = json.Marshal(map[string]any{"session_id": sessID, "success": true, "reason": "adjusted query"})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/plan/repair", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plan/repair: want 200, got %d", w.Code)
+	}
+}
+
+func TestGateway_IngestDocument(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	text := "First paragraph with some content.\n\nSecond paragraph with more content.\n\nThird paragraph for testing."
+	b, _ := json.Marshal(map[string]any{
+		"agent_id":   "agent-doc",
+		"session_id": "sess-doc",
+		"text":       text,
+		"chunk_size": 40,
+		"title":      "test_doc",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingest/document", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ingest/document: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["batch_id"] == "" {
+		t.Fatal("expected batch_id in response")
+	}
+	chunks := resp["chunks"].(float64)
+	if chunks < 1 {
+		t.Fatalf("expected at least 1 chunk, got %v", chunks)
+	}
+	ids, _ := resp["memory_ids"].([]any)
+	if len(ids) == 0 {
+		t.Fatal("expected at least one memory_id")
 	}
 }
 
