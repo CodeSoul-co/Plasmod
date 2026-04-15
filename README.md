@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/cogdb.png" alt="CogDB Logo" width="480"/>
+  <img src="assets/plasmod.png" alt="Plasmod Logo" width="480"/>
 </div>
 
 <div align="center">
