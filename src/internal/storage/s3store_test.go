@@ -34,6 +34,42 @@ func TestLoadS3ColdSearchConfigFromEnv_LegacyMaxKeysFallback(t *testing.T) {
 	}
 }
 
+func TestClampColdKeys_RespectsMaxPagesAndCandidates(t *testing.T) {
+	keys := []string{"a", "b", "c", "d", "e", "f", "g"}
+	got, pages, truncated := clampColdKeys(keys, s3ColdSearchConfig{
+		maxPages:      2,
+		maxCandidates: 5,
+		batchSize:     2,
+	})
+	if len(got) != 4 {
+		t.Fatalf("len(got) = %d, want 4", len(got))
+	}
+	if pages != 2 {
+		t.Fatalf("pages = %d, want 2", pages)
+	}
+	if !truncated {
+		t.Fatal("expected truncated=true")
+	}
+}
+
+func TestClampColdKeys_RespectsCandidateCapWhenLowerThanPageCap(t *testing.T) {
+	keys := []string{"a", "b", "c", "d", "e"}
+	got, pages, truncated := clampColdKeys(keys, s3ColdSearchConfig{
+		maxPages:      3,
+		maxCandidates: 2,
+		batchSize:     2,
+	})
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if pages != 1 {
+		t.Fatalf("pages = %d, want 1", pages)
+	}
+	if !truncated {
+		t.Fatal("expected truncated=true")
+	}
+}
+
 func TestScoreColdMemory_ExactMatchWins(t *testing.T) {
 	m := schemas.Memory{Content: "hello world", Summary: "short"}
 	if got := scoreColdMemory("hello world", m); got != 1.0 {

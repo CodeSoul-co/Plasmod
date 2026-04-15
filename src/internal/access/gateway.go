@@ -2,8 +2,8 @@ package access
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"plasmod/src/internal/config"
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/storage"
@@ -146,6 +147,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/system/mode", g.handleSystemMode)
 	mux.HandleFunc("/v1/admin/topology", g.handleTopology)
 	mux.HandleFunc("/v1/admin/storage", g.handleStorage)
+	mux.HandleFunc("/v1/admin/config/effective", g.handleEffectiveConfig)
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/s3/cold-purge", g.handleS3ColdPurge)
@@ -278,6 +280,35 @@ func (g *Gateway) handleStorage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(g.storageCfg)
+}
+
+func (g *Gateway) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cfg, err := config.LoadSharedAlgorithmConfig()
+	if err != nil {
+		cfg = schemas.DefaultAlgorithmConfig()
+	}
+	if sz := os.Getenv("PLASMOD_EVIDENCE_CACHE_SIZE"); sz != "" {
+		if n, convErr := strconv.Atoi(sz); convErr == nil && n > 0 {
+			cfg.EvidenceCacheSize = n
+		}
+	}
+	if d := os.Getenv("PLASMOD_MAX_PROOF_DEPTH"); d != "" {
+		if n, convErr := strconv.Atoi(d); convErr == nil && n > 0 {
+			cfg.MaxProofDepth = n
+		}
+	}
+	if t := os.Getenv("PLASMOD_HOT_TIER_THRESHOLD"); t != "" {
+		if f, convErr := strconv.ParseFloat(t, 64); convErr == nil && f > 0 {
+			cfg.HotTierSalienceThreshold = f
+		}
+	}
+	writeJSON(w, map[string]any{
+		"algorithm_config": cfg,
+	})
 }
 
 // handleDatasetDelete soft-deletes uploaded dataset memories by dataset selectors.
@@ -561,30 +592,30 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{
-		"status":            status,
-		"data_presence":     dataPresence,
-		"file_name":         req.FileName,
-		"dataset_name":      req.DatasetName,
-		"prefix":            req.Prefix,
-		"workspace_id":      req.WorkspaceID,
-		"dry_run":           req.DryRun,
-		"only_if_inactive":  onlyIfInactive,
-		"purge_backend":     purgeBackend,
-		"scanned":           scanned,
-		"workspace_scanned": workspaceCandidates,
-		"matched":           matched,
-		"skipped_active":    skippedActive,
-		"purgeable":         purgeable,
-		"purged":            purged,
-		"cancelled":         cancelled,
-		"cancel_reason":     cancelReason,
-		"purge_workers":     purgeWorkers,
-		"purge_batch_size":  purgeBatchSize,
-		"purge_queue_size":  purgeQueueSize,
-		"purge_elapsed_ms":  time.Since(startedAt).Milliseconds(),
+		"status":                 status,
+		"data_presence":          dataPresence,
+		"file_name":              req.FileName,
+		"dataset_name":           req.DatasetName,
+		"prefix":                 req.Prefix,
+		"workspace_id":           req.WorkspaceID,
+		"dry_run":                req.DryRun,
+		"only_if_inactive":       onlyIfInactive,
+		"purge_backend":          purgeBackend,
+		"scanned":                scanned,
+		"workspace_scanned":      workspaceCandidates,
+		"matched":                matched,
+		"skipped_active":         skippedActive,
+		"purgeable":              purgeable,
+		"purged":                 purged,
+		"cancelled":              cancelled,
+		"cancel_reason":          cancelReason,
+		"purge_workers":          purgeWorkers,
+		"purge_batch_size":       purgeBatchSize,
+		"purge_queue_size":       purgeQueueSize,
+		"purge_elapsed_ms":       time.Since(startedAt).Milliseconds(),
 		"purge_progress_percent": progressPercent,
-		"memory_ids":        ids,
-		"purged_memory_ids": purgeIDs,
+		"memory_ids":             ids,
+		"purged_memory_ids":      purgeIDs,
 	})
 }
 
@@ -1455,7 +1486,7 @@ func generateObjectID(prefix string) string {
 	// <prefix>_<unix_millis_base36>_<12hex random bytes>
 	ts := strconv.FormatInt(time.Now().UTC().UnixMilli(), 36)
 	var buf [12]byte
-	if _, err := rand.Read(buf[:]); err != nil {	
+	if _, err := rand.Read(buf[:]); err != nil {
 		return fmt.Sprintf("%s_%s", prefix, ts)
 	}
 	return fmt.Sprintf("%s_%s_%s", prefix, ts, hex.EncodeToString(buf[:]))

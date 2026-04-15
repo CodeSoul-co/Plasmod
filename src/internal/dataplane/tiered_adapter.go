@@ -180,20 +180,20 @@ func (t *TieredDataPlane) BatchIngest(records []IngestRecord) error {
 	return t.warm.BatchIngest(records)
 }
 
-func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string) {
+func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, bool) {
 	if t.embedder != nil {
 		queryVec, err := t.embedder.Generate(input.QueryText)
 		if err == nil && len(queryVec) > 0 {
 			if t.coldHNSWSearch != nil {
 				ids := t.coldHNSWSearch(queryVec, input.TopK)
 				if len(ids) > 0 {
-					return ids, "hnsw"
+					return ids, "hnsw", false
 				}
 			}
 			if t.coldVectorSearch != nil {
 				ids := t.coldVectorSearch(queryVec, input.TopK)
 				if len(ids) > 0 {
-					return ids, "vector"
+					return ids, "vector", t.coldHNSWSearch != nil
 				}
 			}
 		}
@@ -201,10 +201,10 @@ func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string) {
 	if t.coldSearch != nil {
 		ids := t.coldSearch(input.QueryText, input.TopK)
 		if len(ids) > 0 {
-			return ids, "lexical"
+			return ids, "lexical", t.embedder != nil || t.coldVectorSearch != nil || t.coldHNSWSearch != nil
 		}
 	}
-	return nil, ""
+	return nil, "", false
 }
 
 // Search executes the tiered search:
@@ -231,17 +231,23 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		}
 		// Caller asked for cold tier: merge even when hot already satisfies TopK,
 		// otherwise archived hits would never be consulted on a full hot page.
-		coldIDs, coldMode := t.resolveColdIDs(input)
+		coldIDs, coldMode, coldFallback := t.resolveColdIDs(input)
 		coldOutput := SearchOutput{
-			ObjectIDs:      coldIDs,
-			ColdObjectIDs:  coldIDs,
-			Tier:           "cold",
-			ColdSearchMode: coldMode,
+			ObjectIDs:          coldIDs,
+			ColdObjectIDs:      coldIDs,
+			Tier:               "cold",
+			ColdSearchMode:     coldMode,
+			ColdCandidateCount: len(coldIDs),
+			ColdTierRequested:  true,
+			ColdUsedFallback:   coldFallback,
 		}
 		merged := mergeOutputs(hotOut, coldOutput, input.TopK)
 		merged.Tier = "hot+cold"
 		merged.ColdObjectIDs = coldIDs
 		merged.ColdSearchMode = coldMode
+		merged.ColdCandidateCount = coldOutput.ColdCandidateCount
+		merged.ColdTierRequested = true
+		merged.ColdUsedFallback = coldOutput.ColdUsedFallback
 		return merged
 	}
 
@@ -262,12 +268,15 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	// Cold tier is consulted only when explicitly requested.
 	coldOut := SearchOutput{}
 	if input.IncludeCold {
-		coldIDs, coldMode := t.resolveColdIDs(input)
+		coldIDs, coldMode, coldFallback := t.resolveColdIDs(input)
 		coldOut = SearchOutput{
-			ObjectIDs:      coldIDs,
-			ColdObjectIDs:  coldIDs,
-			Tier:           "cold",
-			ColdSearchMode: coldMode,
+			ObjectIDs:          coldIDs,
+			ColdObjectIDs:      coldIDs,
+			Tier:               "cold",
+			ColdSearchMode:     coldMode,
+			ColdCandidateCount: len(coldIDs),
+			ColdTierRequested:  true,
+			ColdUsedFallback:   coldFallback,
 		}
 		if len(coldOut.ObjectIDs) > 0 {
 			candidateLists = append(candidateLists, coldOut.ObjectIDs)
@@ -288,12 +297,15 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 	planned = append(planned, coldOut.PlannedSegments...)
 
 	return SearchOutput{
-		ObjectIDs:       fusedIDs,
-		ColdObjectIDs:   coldOut.ColdObjectIDs,
-		ScannedSegments: scanned,
-		PlannedSegments: planned,
-		Tier:            tierLabel,
-		ColdSearchMode:  coldOut.ColdSearchMode,
+		ObjectIDs:          fusedIDs,
+		ColdObjectIDs:      coldOut.ColdObjectIDs,
+		ScannedSegments:    scanned,
+		PlannedSegments:    planned,
+		Tier:               tierLabel,
+		ColdSearchMode:     coldOut.ColdSearchMode,
+		ColdCandidateCount: coldOut.ColdCandidateCount,
+		ColdTierRequested:  input.IncludeCold,
+		ColdUsedFallback:   coldOut.ColdUsedFallback,
 	}
 }
 

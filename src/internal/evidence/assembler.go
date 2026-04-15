@@ -155,9 +155,20 @@ func (a *Assembler) Build(input dataplane.SearchInput, result dataplane.SearchOu
 		misses := len(outputIDs) - hits
 		coldHits := 0
 		coldMisses := 0
-		if strings.Contains(result.Tier, "cold") {
-			coldHits = hits
-			coldMisses = misses
+		if len(result.ColdObjectIDs) > 0 {
+			coldSet := make(map[string]struct{}, len(result.ColdObjectIDs))
+			for _, id := range result.ColdObjectIDs {
+				coldSet[id] = struct{}{}
+			}
+			for _, f := range frags {
+				if _, ok := coldSet[f.ObjectID]; ok {
+					coldHits++
+				}
+			}
+			coldMisses = len(coldSet) - coldHits
+			if coldMisses < 0 {
+				coldMisses = 0
+			}
 		}
 
 		evStats = &schemas.EvidenceCacheStats{

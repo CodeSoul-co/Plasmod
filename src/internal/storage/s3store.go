@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"plasmod/retrievalplane"
-	"plasmod/src/internal/schemas"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -10,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"plasmod/retrievalplane"
+	"plasmod/src/internal/schemas"
 	"sort"
 	"strconv"
 	"strings"
@@ -398,6 +398,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
+	keys, pagesScanned, listTruncated := clampColdKeys(keys, cfg)
 
 	targetCandidates := topK * cfg.bufferFactor
 	if targetCandidates < topK {
@@ -480,7 +481,7 @@ func (s *S3ColdStore) ColdSearch(query string, topK int) []string {
 	}
 	log.Printf(
 		"s3cold: cold lexical search query=%q top_k=%d pages=%d listed=%d list_truncated=%t returned=%d cfg{max_pages=%d,max_candidates=%d,batch=%d,concurrency=%d}",
-		query, topK, 0, len(keys), false, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize, cfg.concurrency,
+		query, topK, pagesScanned, len(keys), listTruncated, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize, cfg.concurrency,
 	)
 	return out
 }
@@ -964,9 +965,7 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
-	if cfg.maxCandidates > 0 && len(keys) > cfg.maxCandidates {
-		keys = keys[:cfg.maxCandidates]
-	}
+	keys, pagesScanned, listTruncated := clampColdKeys(keys, cfg)
 
 	maxCandidates := cfg.maxCandidates
 	if maxCandidates <= 0 || maxCandidates > len(keys) {
@@ -1053,7 +1052,7 @@ func (s *S3ColdStore) ColdVectorSearch(queryVec []float32, topK int) []string {
 	}
 	log.Printf(
 		"s3cold: cold vector search top_k=%d pages=%d listed=%d list_truncated=%t returned=%d cfg{max_pages=%d,max_candidates=%d,batch=%d}",
-		topK, 0, len(keys), false, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize,
+		topK, pagesScanned, len(keys), listTruncated, len(out), cfg.maxPages, cfg.maxCandidates, cfg.batchSize,
 	)
 	return out
 }
@@ -1071,9 +1070,7 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 	if err != nil || len(keys) == 0 {
 		return nil
 	}
-	if cfg.maxCandidates > 0 && len(keys) > cfg.maxCandidates {
-		keys = keys[:cfg.maxCandidates]
-	}
+	keys, _, _ = clampColdKeys(keys, cfg)
 
 	dim := len(queryVec)
 	if dim <= 0 {
@@ -1155,4 +1152,27 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 		out = append(out, ids[i])
 	}
 	return out
+}
+
+func clampColdKeys(keys []string, cfg s3ColdSearchConfig) ([]string, int, bool) {
+	if len(keys) == 0 {
+		return keys, 0, false
+	}
+	limit := len(keys)
+	if cfg.batchSize > 0 && cfg.maxPages > 0 {
+		pageLimit := cfg.batchSize * cfg.maxPages
+		if pageLimit > 0 && pageLimit < limit {
+			limit = pageLimit
+		}
+	}
+	if cfg.maxCandidates > 0 && cfg.maxCandidates < limit {
+		limit = cfg.maxCandidates
+	}
+	truncated := limit < len(keys)
+	keys = keys[:limit]
+	pages := 1
+	if cfg.batchSize > 0 {
+		pages = (len(keys) + cfg.batchSize - 1) / cfg.batchSize
+	}
+	return keys, pages, truncated
 }
