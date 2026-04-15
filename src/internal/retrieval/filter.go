@@ -87,3 +87,97 @@ func parseTimestamp(s string) (time.Time, error) {
 	// Fall back to RFC3339Nano
 	return time.Parse(time.RFC3339Nano, s)
 }
+
+// ─── Additional Filters ───────────────────────────────────────────────────────
+
+// NumericRangeFilter provides generic numeric field filtering.
+// It supports filtering on any numeric metadata field (e.g., importance, confidence, version).
+// Both Min and Max are optional (nil = no constraint on that bound).
+type NumericRangeFilter struct {
+	Field string   // Field name to filter on (e.g., "importance", "confidence", "version")
+	Min   *float64 // Minimum value (inclusive); nil = no lower bound
+	Max   *float64 // Maximum value (inclusive); nil = no upper bound
+}
+
+// Apply returns true when the memory's field value is within [Min, Max].
+// If the field is not found or not numeric, the candidate is excluded.
+func (f NumericRangeFilter) Apply(m schemas.Memory) bool {
+	var value float64
+	var found bool
+
+	// Map common field names to Memory struct fields
+	switch f.Field {
+	case "importance":
+		value, found = m.Importance, true
+	case "confidence":
+		value, found = m.Confidence, true
+	case "version":
+		value, found = float64(m.Version), true
+	case "ttl":
+		value, found = float64(m.TTL), true
+	default:
+		// Field not recognized
+		return false
+	}
+
+	if !found {
+		return false
+	}
+
+	// Check bounds
+	if f.Min != nil && value < *f.Min {
+		return false
+	}
+	if f.Max != nil && value > *f.Max {
+		return false
+	}
+
+	return true
+}
+
+// TagFilter provides standardized tag-based filtering.
+// It supports both required tags (all must be present) and excluded tags (none can be present).
+type TagFilter struct {
+	RequiredTags []string // All of these tags must be present
+	ExcludedTags []string // None of these tags can be present
+	Mode         string   // "all" (default) = all RequiredTags must match; "any" = at least one must match
+}
+
+// Apply returns true when the memory's PolicyTags satisfy the tag requirements.
+func (f TagFilter) Apply(m schemas.Memory) bool {
+	// Check excluded tags first (fast rejection)
+	for _, excluded := range f.ExcludedTags {
+		if hasTag(m.PolicyTags, excluded) {
+			return false
+		}
+	}
+
+	// If no required tags, pass
+	if len(f.RequiredTags) == 0 {
+		return true
+	}
+
+	// Check required tags based on mode
+	mode := f.Mode
+	if mode == "" {
+		mode = "all" // default
+	}
+
+	if mode == "any" {
+		// At least one required tag must be present
+		for _, required := range f.RequiredTags {
+			if hasTag(m.PolicyTags, required) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// mode == "all": all required tags must be present
+	for _, required := range f.RequiredTags {
+		if !hasTag(m.PolicyTags, required) {
+			return false
+		}
+	}
+	return true
+}
