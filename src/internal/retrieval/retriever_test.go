@@ -185,6 +185,28 @@ func TestSafetyFilter_MinVersion(t *testing.T) {
 	t.Logf("SafetyFilter MinVersion: PASS — v1 object excluded (min_version=3)")
 }
 
+func TestSafetyFilter_QuarantineLabelSummary(t *testing.T) {
+	quarantined := mem("obj-quarantine-summary", 1.0, 1.0, 1.0)
+	quarantined.PolicyTags = []string{"quarantine"}
+
+	store := makeStore([]schemas.Memory{
+		mem("obj-ok-summary", 0.8, 0.8, 0.8),
+		quarantined,
+	})
+
+	r := retrieval.New(nil, store)
+	req := retrieval.DefaultRetrievalRequest("query", 10)
+	req.ExcludeQuarantined = true
+
+	cl := r.EnrichAndRank([]string{"obj-ok-summary", "obj-quarantine-summary"}, req)
+	excluded := 2 - len(cl.Candidates)
+	if excluded != 1 {
+		t.Fatalf("expected 1 quarantined exclusion, got %d", excluded)
+	}
+	t.Logf("Quarantine label experiment: excluded=%d returned=%d tag=quarantine",
+		excluded, len(cl.Candidates))
+}
+
 // TestSeedMarking verifies relative-normalised seed marking.
 //
 // With default threshold=0.5, any candidate whose normalised score >= 0.5

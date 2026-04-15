@@ -58,6 +58,14 @@ Example shape:
 }
 ```
 
+### `GET /v1/admin/config/effective`
+
+Returns the effective shared algorithm configuration used for retrieval and
+cold-tier experiments after YAML loading and lightweight environment overrides.
+
+Main response field:
+- `algorithm_config`
+
 ### `POST /v1/admin/s3/export`
 
 Dev-only endpoint to validate runtime ingest/query capture export to S3-compatible storage.

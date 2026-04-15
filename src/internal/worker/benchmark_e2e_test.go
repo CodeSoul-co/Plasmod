@@ -29,7 +29,6 @@ func buildColdQueryRuntime(t testing.TB) (*Runtime, *storage.TieredObjectStore, 
 	policy := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
 	materializer := materialization.NewService()
-	assembler := evidence.NewAssembler()
 	store := storage.NewMemoryRuntimeStorage()
 	cold := storage.NewInMemoryColdStore()
 	embedder := dataplane.NewTfidfEmbedder(dataplane.DefaultEmbeddingDim)
@@ -74,6 +73,11 @@ func buildColdQueryRuntime(t testing.TB) (*Runtime, *storage.TieredObjectStore, 
 
 	evCache := evidence.NewCache(1000)
 	preCompute := materialization.NewPreComputeService(evCache)
+	assembler := evidence.NewCachedAssembler(evCache).
+		WithEdgeStore(store.Edges()).
+		WithVersionStore(store.Versions()).
+		WithObjectStore(store.Objects()).
+		WithPolicyStore(store.Policies())
 
 	r := CreateRuntime(
 		wal, bus, plane, coord, policy, planner, materializer, preCompute,
@@ -102,7 +106,6 @@ func seedArchivedColdMemories(t testing.TB, tieredObjs *storage.TieredObjectStor
 		}
 		tieredObjs.PutMemory(mem, 0.8)
 		tieredObjs.ArchiveMemory(id)
-		store.Objects().DeleteMemory(id)
 	}
 	return targetIDs
 }
@@ -374,21 +377,45 @@ func TestRuntime_IncludeCold_10KArchivedCorrectnessAndLatency(t *testing.T) {
 	if len(firstResp.Objects) != 10 {
 		t.Fatalf("expected first response topK=10, got %d", len(firstResp.Objects))
 	}
+	if firstResp.EvidenceCache == nil {
+		t.Fatal("expected evidence cache stats for include_cold benchmark response")
+	}
 	for i, id := range firstResp.Objects {
 		if _, ok := targetIDs[id]; !ok {
 			t.Fatalf("unexpected non-target result at rank %d: %s", i, id)
 		}
 	}
 
+	recallAtK := func(ids []string) float64 {
+		if len(ids) == 0 {
+			return 0
+		}
+		hits := 0
+		for _, id := range ids {
+			if _, ok := targetIDs[id]; ok {
+				hits++
+			}
+		}
+		return float64(hits) / float64(len(ids))
+	}
+
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	p50 := latencies[len(latencies)/2]
 	p95 := latencies[(len(latencies)*95)/100]
 	p99 := latencies[(len(latencies)*99)/100]
+	recall := recallAtK(firstResp.Objects)
 
-	t.Logf("Runtime include_cold 10K archived: p50=%.3fms p95=%.3fms p99=%.3fms first_mode=%v first_objects=%d",
+	if recall < 1.0 {
+		t.Fatalf("expected Recall@10=1.0 for target cluster, got %.3f", recall)
+	}
+
+	t.Logf("Runtime include_cold 10K archived: recall@10=%.3f p50=%.3fms p95=%.3fms p99=%.3fms target_p95_lt_500ms=%t evidence_cache=%+v first_mode=%v first_objects=%d",
+		recall,
 		float64(p50.Microseconds())/1000.0,
 		float64(p95.Microseconds())/1000.0,
 		float64(p99.Microseconds())/1000.0,
+		p95 < 500*time.Millisecond,
+		*firstResp.EvidenceCache,
 		firstResp.ChainTraces.Main,
 		len(firstResp.Objects),
 	)
@@ -412,6 +439,9 @@ func BenchmarkRuntime_ExecuteQuery_IncludeCold_10KArchived(b *testing.B) {
 		})
 		if len(resp.Objects) != 10 {
 			b.Fatalf("expected topK=10, got %d", len(resp.Objects))
+		}
+		if resp.EvidenceCache == nil {
+			b.Fatal("expected evidence cache stats for include_cold benchmark response")
 		}
 		b.ReportMetric(float64(time.Since(start).Microseconds())/1000.0, "ms/op-observed")
 	}
@@ -469,6 +499,157 @@ func TestRuntime_IncludeCold_10KArchived_RecallVsHotOnly(t *testing.T) {
 
 	t.Logf("Recall@10 comparison: hot_only=%.3f include_cold=%.3f hot_objects=%d cold_objects=%d",
 		hotRecall, coldRecall, len(hotOnly.Objects), len(withCold.Objects))
+}
+
+func TestRuntime_IncludeCold_DatasetScaling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip dataset scaling validation in short mode")
+	}
+
+	sizes := []int{1000, 5000, 10000}
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			r, tieredObjs, store := buildColdQueryRuntime(t)
+			targetIDs := seedArchivedColdMemories(t, tieredObjs, store, size, 100, "runtime cold scaling payload")
+
+			const queries = 20
+			latencies := make([]time.Duration, 0, queries)
+
+			var firstResp schemas.QueryResponse
+			for i := 0; i < queries; i++ {
+				start := time.Now()
+				resp := r.ExecuteQuery(schemas.QueryRequest{
+					QueryText:   "runtime cold scaling payload target",
+					QueryScope:  "session",
+					SessionID:   "session-cold-bench",
+					AgentID:     "agent-cold-bench",
+					TopK:        10,
+					ObjectTypes: []string{"memory"},
+					IncludeCold: true,
+				})
+				latencies = append(latencies, time.Since(start))
+				if i == 0 {
+					firstResp = resp
+				}
+			}
+
+			if len(firstResp.Objects) != 10 {
+				t.Fatalf("expected first response topK=10 for size=%d, got %d", size, len(firstResp.Objects))
+			}
+
+			recallAtK := func(ids []string) float64 {
+				if len(ids) == 0 {
+					return 0
+				}
+				hits := 0
+				for _, id := range ids {
+					if _, ok := targetIDs[id]; ok {
+						hits++
+					}
+				}
+				return float64(hits) / float64(len(ids))
+			}
+
+			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+			p50 := latencies[len(latencies)/2]
+			p95 := latencies[(len(latencies)*95)/100]
+			p99 := latencies[(len(latencies)*99)/100]
+			recall := recallAtK(firstResp.Objects)
+
+			if recall < 1.0 {
+				t.Fatalf("expected Recall@10=1.0 for size=%d, got %.3f", size, recall)
+			}
+
+			coldHits := 0
+			coldMisses := 0
+			if firstResp.EvidenceCache != nil {
+				coldHits = firstResp.EvidenceCache.ColdHits
+				coldMisses = firstResp.EvidenceCache.ColdMisses
+			}
+
+			t.Logf("Dataset scaling: size=%d recall@10=%.3f p50=%.3fms p95=%.3fms p99=%.3fms cold_hits=%d cold_misses=%d",
+				size,
+				recall,
+				float64(p50.Microseconds())/1000.0,
+				float64(p95.Microseconds())/1000.0,
+				float64(p99.Microseconds())/1000.0,
+				coldHits,
+				coldMisses,
+			)
+		})
+	}
+}
+
+func TestRuntime_IncludeCold_RecallThroughputCurve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip recall-throughput validation in short mode")
+	}
+
+	r, tieredObjs, store := buildColdQueryRuntime(t)
+	targetIDs := seedArchivedColdMemories(t, tieredObjs, store, 10000, 100, "runtime cold curve payload")
+
+	topKs := []int{5, 10, 20}
+	for _, topK := range topKs {
+		t.Run(fmt.Sprintf("topk_%d", topK), func(t *testing.T) {
+			const queries = 50
+			latencies := make([]time.Duration, 0, queries)
+
+			var firstResp schemas.QueryResponse
+			startWall := time.Now()
+			for i := 0; i < queries; i++ {
+				start := time.Now()
+				resp := r.ExecuteQuery(schemas.QueryRequest{
+					QueryText:   "runtime cold curve payload target",
+					QueryScope:  "session",
+					SessionID:   "session-cold-bench",
+					AgentID:     "agent-cold-bench",
+					TopK:        topK,
+					ObjectTypes: []string{"memory"},
+					IncludeCold: true,
+				})
+				latencies = append(latencies, time.Since(start))
+				if i == 0 {
+					firstResp = resp
+				}
+			}
+			elapsed := time.Since(startWall)
+
+			recallAtK := func(ids []string) float64 {
+				if len(ids) == 0 {
+					return 0
+				}
+				hits := 0
+				for _, id := range ids {
+					if _, ok := targetIDs[id]; ok {
+						hits++
+					}
+				}
+				return float64(hits) / float64(len(ids))
+			}
+
+			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+			p50 := latencies[len(latencies)/2]
+			p95 := latencies[(len(latencies)*95)/100]
+			recall := recallAtK(firstResp.Objects)
+			qps := 0.0
+			if elapsed > 0 {
+				qps = float64(queries) / elapsed.Seconds()
+			}
+
+			if recall <= 0 {
+				t.Fatalf("expected recall > 0 for topK=%d, got %.3f", topK, recall)
+			}
+
+			t.Logf("Recall-throughput curve: dataset_size=%d topk=%d recall@k=%.3f qps=%.2f p50=%.3fms p95=%.3fms",
+				10000,
+				topK,
+				recall,
+				qps,
+				float64(p50.Microseconds())/1000.0,
+				float64(p95.Microseconds())/1000.0,
+			)
+		})
+	}
 }
 
 func BenchmarkRuntime_ExecuteQuery_IncludeCold_10KArchived_Throughput(b *testing.B) {

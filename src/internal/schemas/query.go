@@ -15,10 +15,10 @@ const (
 // main / memory_pipeline / collaboration carry read-path summaries (the write
 // chains are not re-executed); query is filled from QueryChain.
 type ChainTraceSlots struct {
-	Main             []string `json:"main"`
-	MemoryPipeline   []string `json:"memory_pipeline"`
-	Query            []string `json:"query"`
-	Collaboration    []string `json:"collaboration"`
+	Main           []string `json:"main"`
+	MemoryPipeline []string `json:"memory_pipeline"`
+	Query          []string `json:"query"`
+	Collaboration  []string `json:"collaboration"`
 }
 
 type QueryRequest struct {
@@ -52,16 +52,29 @@ type EvidenceCacheStats struct {
 	ColdMisses int `json:"cold_misses,omitempty"`
 }
 
+// RetrievalSummary exposes experiment-oriented retrieval metadata so benchmark
+// runners can inspect cold-tier usage without scraping logs or proof traces.
+type RetrievalSummary struct {
+	Tier               string `json:"tier,omitempty"`
+	ColdSearchMode     string `json:"cold_search_mode,omitempty"`
+	ColdCandidateCount int    `json:"cold_candidate_count,omitempty"`
+	ColdTierRequested  bool   `json:"cold_tier_requested,omitempty"`
+	ColdUsedFallback   bool   `json:"cold_used_fallback,omitempty"`
+	RetrievalHits      int    `json:"retrieval_hits,omitempty"`
+	CanonicalAdds      int    `json:"canonical_adds,omitempty"`
+}
+
 type QueryResponse struct {
-	Objects        []string        `json:"objects"`
-	Nodes          []GraphNode     `json:"nodes,omitempty"`
-	Edges          []Edge          `json:"edges"`
-	Provenance     []string        `json:"provenance"`
-	Versions       []ObjectVersion `json:"versions"`
-	AppliedFilters []string        `json:"applied_filters"`
-	ProofTrace     []ProofStep     `json:"proof_trace"`
-	ChainTraces    ChainTraceSlots `json:"chain_traces"`
+	Objects        []string            `json:"objects"`
+	Nodes          []GraphNode         `json:"nodes,omitempty"`
+	Edges          []Edge              `json:"edges"`
+	Provenance     []string            `json:"provenance"`
+	Versions       []ObjectVersion     `json:"versions"`
+	AppliedFilters []string            `json:"applied_filters"`
+	ProofTrace     []ProofStep         `json:"proof_trace"`
+	ChainTraces    ChainTraceSlots     `json:"chain_traces"`
 	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
+	Retrieval      *RetrievalSummary   `json:"retrieval,omitempty"`
 	// QueryStatus classifies retrieval-plane seed hits (distinct from supplemental canonical IDs).
 	//   ok — retrieval returned at least one candidate before canonical supplement.
 	//   no_retrieval_hits — zero retrieval seeds and empty objects list.

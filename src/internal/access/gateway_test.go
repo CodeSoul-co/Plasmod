@@ -13,10 +13,10 @@ import (
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
+	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker"
-	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/worker/nodes"
 )
 
@@ -149,6 +149,42 @@ func TestGateway_Topology(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("/v1/admin/topology: want 200, got %d", w.Code)
+	}
+}
+
+func TestGateway_EffectiveConfig(t *testing.T) {
+	gw := buildTestGateway()
+	mux := http.NewServeMux()
+	gw.RegisterRoutes(mux)
+
+	t.Setenv("PLASMOD_RRF_K", "88")
+	t.Setenv("PLASMOD_COLD_BATCH_SIZE", "222")
+	t.Setenv("PLASMOD_HOT_TIER_THRESHOLD", "0.75")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/config/effective", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("/v1/admin/config/effective: want 200, got %d", w.Code)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	cfg, ok := got["algorithm_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected algorithm_config in response, got %v", got)
+	}
+	if int(cfg["RRFK"].(float64)) != 88 {
+		t.Fatalf("expected RRFK=88, got %v", cfg["RRFK"])
+	}
+	if int(cfg["ColdBatchSize"].(float64)) != 222 {
+		t.Fatalf("expected ColdBatchSize=222, got %v", cfg["ColdBatchSize"])
+	}
+	if cfg["HotTierSalienceThreshold"].(float64) != 0.75 {
+		t.Fatalf("expected HotTierSalienceThreshold=0.75, got %v", cfg["HotTierSalienceThreshold"])
 	}
 }
 
@@ -512,16 +548,16 @@ func TestGateway_Query_LatestBatchOnlySelector(t *testing.T) {
 	}
 
 	qBody, _ := json.Marshal(map[string]any{
-		"query_text":       "dataset=deep1B.ibin",
-		"query_scope":      "w_batch_query",
-		"session_id":       "s_batch_query",
-		"agent_id":         "a_loader",
-		"tenant_id":        "t_batch",
-		"workspace_id":     "w_batch_query",
-		"top_k":            10,
-		"response_mode":    "structured_evidence",
-		"dataset_name":     "deep1B",
-		"source_file_name": "deep1B.ibin",
+		"query_text":        "dataset=deep1B.ibin",
+		"query_scope":       "w_batch_query",
+		"session_id":        "s_batch_query",
+		"agent_id":          "a_loader",
+		"tenant_id":         "t_batch",
+		"workspace_id":      "w_batch_query",
+		"top_k":             10,
+		"response_mode":     "structured_evidence",
+		"dataset_name":      "deep1B",
+		"source_file_name":  "deep1B.ibin",
 		"latest_batch_only": true,
 	})
 	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
@@ -627,9 +663,9 @@ func TestGateway_DatasetPurge_DryRun(t *testing.T) {
 	memID := "mem_evt_purge_ds_1"
 
 	delBody, _ := json.Marshal(map[string]any{
-		"dataset_name":   "purgeDS",
-		"workspace_id":   "w_purge",
-		"dry_run":        false,
+		"dataset_name": "purgeDS",
+		"workspace_id": "w_purge",
+		"dry_run":      false,
 	})
 	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
 	delReq.Header.Set("Content-Type", "application/json")
@@ -688,9 +724,9 @@ func TestGateway_DatasetPurge_RemovesMemoryAndAudit(t *testing.T) {
 	_ = deps.cold.PutMemoryEmbedding(memID, []float32{1, 2, 3})
 
 	delBody, _ := json.Marshal(map[string]any{
-		"dataset_name":   "purgeDS2",
-		"workspace_id":   "w_purge2",
-		"dry_run":        false,
+		"dataset_name": "purgeDS2",
+		"workspace_id": "w_purge2",
+		"dry_run":      false,
 	})
 	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
 	delReq.Header.Set("Content-Type", "application/json")
@@ -761,9 +797,9 @@ func TestGateway_DatasetPurge_WarmOnlyWithoutTieredRuntime(t *testing.T) {
 	memID := "mem_evt_purge_warmonly"
 
 	delBody, _ := json.Marshal(map[string]any{
-		"dataset_name":   "DSW",
-		"workspace_id":   "w_warmonly",
-		"dry_run":        false,
+		"dataset_name": "DSW",
+		"workspace_id": "w_warmonly",
+		"dry_run":      false,
 	})
 	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
 	delReq.Header.Set("Content-Type", "application/json")

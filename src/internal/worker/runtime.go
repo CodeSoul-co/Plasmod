@@ -249,6 +249,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	plan := r.planner.Build(req)
+	vectorOnlyMode := vectorOnlyModeEnabled()
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
 		TopK:           plan.TopK,
@@ -279,11 +280,47 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// State and Artifact objects are stored directly in ObjectStore, not in the
 	// retrieval plane.  When query requests these types, fetch them from the
 	// canonical store so they appear in the response alongside memory results.
-	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
-	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	canonicalAddCount := 0
+	if !vectorOnlyMode {
+		canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
+		canonicalAddCount = len(canonicalIDs)
+		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	}
+
+	if vectorOnlyMode {
+		resp := schemas.QueryResponse{
+			Objects: result.ObjectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:               result.Tier,
+				ColdSearchMode:     result.ColdSearchMode,
+				ColdCandidateCount: result.ColdCandidateCount,
+				ColdTierRequested:  result.ColdTierRequested,
+				ColdUsedFallback:   result.ColdUsedFallback,
+				RetrievalHits:      retrievalHitCount,
+				CanonicalAdds:      0,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           append(formatQueryPathMainChainLines(req, result), "vector_only_mode=true"),
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs),
+				Query:          []string{"query_chain skipped=vector_only_mode"},
+				Collaboration:  []string{"collaboration_chain skipped=vector_only_mode"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, retrievalHitCount)
+		return resp
+	}
 
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
+	resp.Retrieval = &schemas.RetrievalSummary{
+		Tier:               result.Tier,
+		ColdSearchMode:     result.ColdSearchMode,
+		ColdCandidateCount: result.ColdCandidateCount,
+		ColdTierRequested:  result.ColdTierRequested,
+		ColdUsedFallback:   result.ColdUsedFallback,
+		RetrievalHits:      retrievalHitCount,
+		CanonicalAdds:      canonicalAddCount,
+	}
 	applyQueryOutcomeHint(&resp, retrievalHitCount)
 
 	resp.ChainTraces.Main = formatQueryPathMainChainLines(req, result)
@@ -342,6 +379,16 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	return resp
+}
+
+func vectorOnlyModeEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_VECTOR_ONLY_MODE"))
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // applyQueryOutcomeHint sets query_status / query_hint so clients can tell "no dataset"
@@ -674,8 +721,8 @@ func (r *Runtime) DispatchRecall(
 			From: "1970-01-01T00:00:00Z",
 			To:   now.Format(time.RFC3339),
 		},
-		ObjectTypes: []string{"memory"},
-		MemoryTypes: []string{"semantic", "episodic", "procedural"},
+		ObjectTypes:  []string{"memory"},
+		MemoryTypes:  []string{"semantic", "episodic", "procedural"},
 		ResponseMode: schemas.ResponseModeStructuredEvidence,
 	}
 
@@ -751,21 +798,21 @@ func (r *Runtime) DispatchShare(fromAgentID, toAgentID, memoryID string) (string
 	}
 	sharedID := "shared_" + memoryID + "_to_" + toAgentID
 	shared := schemas.Memory{
-		MemoryID:      sharedID,
-		AgentID:       toAgentID,
-		SessionID:     mem.SessionID,
-		OwnerType:     "shared",
-		Scope:         "restricted_shared",
-		MemoryType:    mem.MemoryType,
-		Content:       mem.Content,
-		Level:         mem.Level,
+		MemoryID:       sharedID,
+		AgentID:        toAgentID,
+		SessionID:      mem.SessionID,
+		OwnerType:      "shared",
+		Scope:          "restricted_shared",
+		MemoryType:     mem.MemoryType,
+		Content:        mem.Content,
+		Level:          mem.Level,
 		SourceEventIDs: mem.SourceEventIDs,
-		Importance:    mem.Importance,
-		Confidence:    mem.Confidence,
-		IsActive:      mem.IsActive,
-		Version:       mem.Version,
-		ValidFrom:     time.Now().UTC().Format(time.RFC3339),
-		ProvenanceRef: fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID),
+		Importance:     mem.Importance,
+		Confidence:     mem.Confidence,
+		IsActive:       mem.IsActive,
+		Version:        mem.Version,
+		ValidFrom:      time.Now().UTC().Format(time.RFC3339),
+		ProvenanceRef:  fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID),
 	}
 	r.storage.Objects().PutMemory(shared)
 	if r.nodeManager != nil {

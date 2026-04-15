@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"strconv"
+	"strings"
 
 	"plasmod/src/internal/schemas"
 )
@@ -113,5 +115,75 @@ func LoadSharedAlgorithmConfig() (schemas.AlgorithmConfig, error) {
 		cfg.HNSEfSearch = sec.HNSW.EfSearch
 	}
 
+	applySharedAlgorithmEnvOverrides(&cfg)
 	return cfg, nil
+}
+
+func applySharedAlgorithmEnvOverrides(cfg *schemas.AlgorithmConfig) {
+	if cfg == nil {
+		return
+	}
+	if v, ok := envInt("PLASMOD_RRF_K"); ok && v > 0 {
+		cfg.RRFK = v
+	}
+	if v, ok := envInt("PLASMOD_COLD_BATCH_SIZE"); ok && v > 0 {
+		cfg.ColdBatchSize = v
+	}
+	if v, ok := envInt("PLASMOD_COLD_MAX_CANDIDATES"); ok && v > 0 {
+		cfg.ColdMaxCandidates = v
+	}
+	if v, ok := envInt("PLASMOD_COLD_BUFFER_FACTOR"); ok && v > 0 {
+		cfg.ColdBufferFactor = v
+	}
+	if v, ok := envFloat("PLASMOD_COLD_EARLY_STOP_SCORE"); ok && v > 0 && v <= 1 {
+		cfg.ColdEarlyStopScore = v
+	}
+	if v, ok := envInt("PLASMOD_COLD_NO_IMPROVE_PAGES"); ok && v > 0 {
+		cfg.ColdNoImprovePages = v
+	}
+	if v, ok := envFloat("PLASMOD_DFS_RELEVANCE_THRESHOLD"); ok && v > 0 {
+		cfg.DFSRelevanceThreshold = v
+	}
+	if v, ok := envInt("PLASMOD_HNSW_M"); ok && v > 0 {
+		cfg.HNSWM = v
+	}
+	if v, ok := envInt("PLASMOD_HNSW_EF_CONSTRUCTION"); ok && v > 0 {
+		cfg.HNSEfConstruction = v
+	}
+	if v, ok := envInt("PLASMOD_HNSW_EF_SEARCH"); ok && v > 0 {
+		cfg.HNSEfSearch = v
+	}
+	if v, ok := envFloat("PLASMOD_COLD_WEIGHT_LEXICAL"); ok && v >= 0 {
+		cfg.ColdSearchWeights.Lexical = v
+	}
+	if v, ok := envFloat("PLASMOD_COLD_WEIGHT_DENSE"); ok && v >= 0 {
+		cfg.ColdSearchWeights.Dense = v
+	}
+	if v, ok := envFloat("PLASMOD_COLD_WEIGHT_RECENCY"); ok && v >= 0 {
+		cfg.ColdSearchWeights.Recency = v
+	}
+}
+
+func envInt(key string) (int, bool) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func envFloat(key string) (float64, bool) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
