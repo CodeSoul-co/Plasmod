@@ -812,13 +812,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 **Interface boundary:** All embedding providers implement `embedding.Generator` (defined in `dataplane/contracts.go`). Member C's `TieredDataPlane` calls `Generator.BatchGenerate` — B owns the implementation, C owns the call-site.
 
-#### Outstanding TODO
-
-- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput *(acknowledged; deferred as future optimisation — see in-code comment)*
-- [x] `tensorrt_cuda.go` — add `dim <= 0` guard in `NewTensorRT` (zero-size GPU buffer → panic on first batch)
-- [x] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) on adversarial tokens
-- [x] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning error (align with ONNX CPU)
-
 ---
 
 ### Member C — Cold Tier Search · Graph Traversal · Algorithm Config
@@ -837,20 +830,6 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 | `src/internal/worker/benchmark_e2e_test.go` | Cold-tier recall and throughput benchmarks |
 
 **Interface boundary:** `ColdObjectStore` (in `storage/contracts.go`) is the boundary with Member A's warm layer. `embedding.Generator.BatchGenerate` is the boundary with Member B's GPU layer.
-
-#### Outstanding TODO
-
-```
-[x] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
-[x] Memory reactivated -> S3 embeddings/{id}.npy deleted
-[x] include_cold=true query returns cold memories ranked via vector similarity
-[x] ColdSearch latency < 500ms for 10K archived memories (benchmark target)
-[x] HNSW cold index loads from S3 and produces correct scores
-[x] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
-[x] EvidenceCache reports cold_hits and cold_misses
-[x] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
-[x] End-to-end: archive 10K memories -> query include_cold=true -> correct results
-```
 
 ---
 
