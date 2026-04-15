@@ -16,6 +16,7 @@ import (
 
 	"plasmod/src/internal/config"
 	"plasmod/src/internal/coordinator"
+	"plasmod/src/internal/metrics"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker"
@@ -186,6 +187,46 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/decay", g.handleMemoryDecay)
 	mux.HandleFunc("/v1/internal/memory/share", g.handleMemoryShare)
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
+	mux.HandleFunc("/v1/internal/memory/stale", g.handleMemoryMarkStale)
+	mux.HandleFunc("/v1/internal/memory/conflict/inject", g.handleMemoryConflictInject)
+
+	// Observability
+	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
+	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
+	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
+
+	// Task lifecycle (3-MT1~MT7, 4-M6)
+	mux.HandleFunc("/v1/internal/task/start", g.handleTaskStart)
+	mux.HandleFunc("/v1/internal/task/complete", g.handleTaskComplete)
+	mux.HandleFunc("/v1/internal/task/tokens", g.handleTaskTokens)
+	mux.HandleFunc("/v1/internal/task/claim", g.handleTaskClaim)
+
+	// Plan step tracking (3-T5, 3-MT6)
+	mux.HandleFunc("/v1/internal/plan/step", g.handlePlanStep)
+	mux.HandleFunc("/v1/internal/plan/repair", g.handlePlanRepair)
+
+	// Long-document chunked ingest (3-T1)
+	mux.HandleFunc("/v1/ingest/document", g.handleIngestDocument)
+
+	// Multi-stage report progress (3-T3)
+	mux.HandleFunc("/v1/internal/task/stage", g.handleTaskStage)
+
+	// MAS coordination (4-T2, 4-M5)
+	mux.HandleFunc("/v1/internal/mas/answer-consistency", g.handleMASAnswerConsistency)
+	mux.HandleFunc("/v1/internal/mas/aggregate", g.handleMASAggregate)
+
+	// Stateful tool interaction query (3-T4)
+	mux.HandleFunc("/v1/internal/tool-state", g.handleToolState)
+
+	// Agent role management & handoff (4-T1)
+	mux.HandleFunc("/v1/internal/agent/handoff", g.handleAgentHandoff)
+	mux.HandleFunc("/v1/agent/list", g.handleAgentList)
+
+	// Multi-round session context aggregation (3-T2)
+	mux.HandleFunc("/v1/internal/session/context", g.handleSessionContext)
+
+	// Eval ground-truth store (eval harness support)
+	mux.HandleFunc("/v1/internal/eval/ground-truth", g.handleEvalGroundTruth)
 }
 
 func (g *Gateway) handleSystemMode(w http.ResponseWriter, r *http.Request) {
@@ -229,11 +270,14 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(ev.EventID) == "" {
 		ev.EventID = generateObjectID("evt")
 	}
+	t0Visible := time.Now()
 	ack, err := g.runtime.SubmitIngest(ev)
 	if err != nil {
+		metrics.Global().RecordRetrievalError()
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	metrics.Global().RecordWriteToVisible(time.Since(t0Visible))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ack)
 }
@@ -1649,4 +1693,1204 @@ func (g *Gateway) handleMemoryConflictResolve(w http.ResponseWriter, r *http.Req
 		"left_id":   req.LeftID,
 		"right_id":  req.RightID,
 	})
+}
+
+// ── /v1/admin/metrics ────────────────────────────────────────────────────────
+//
+// GET /v1/admin/metrics
+//
+// Returns a point-in-time snapshot of all runtime metrics.  Covers:
+//   3-MS1 query latency, 3-MS2 write latency, 3-MS3 write-to-visible latency,
+//   3-MS4 storage growth, 3-MS5 retrieval error rate, 3-MS6 resource overhead,
+//   1-M8 memory footprint, 1-M10 scale-out efficiency,
+//   3-MT1~MT7 task-level metrics, 4-M1/M4/M5/M6 MAS metrics.
+//
+// Optional query param:
+//   ?storage=true   populate storage_bytes_total / storage_memory_count /
+//                   storage_event_count from the live ObjectStore (slightly
+//                   heavier; defaults to the atomic counters updated at ingest).
+func (g *Gateway) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mc := metrics.Global()
+	if r.URL.Query().Get("storage") == "true" {
+		mems := g.store.Objects().ListMemories("", "")
+		evts := g.store.Objects().ListEvents("", "")
+		mc.StorageMemoryCount.Store(int64(len(mems)))
+		mc.StorageEventCount.Store(int64(len(evts)))
+	}
+	snap := mc.Snapshot()
+	writeJSON(w, snap)
+}
+
+// ── /v1/admin/governance-mode ────────────────────────────────────────────────
+//
+// GET  /v1/admin/governance-mode          → return current state
+// POST /v1/admin/governance-mode          → {"enabled": true/false}
+//
+// When governance is disabled the runtime skips TTL/quarantine/ACL enforcement
+// (used by 4-B4 baseline).
+func (g *Gateway) handleAdminGovernanceMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	case http.MethodPost:
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		g.runtime.GovernanceDisabled = !body.Enabled
+		writeJSON(w, map[string]any{
+			"status":              "ok",
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ── /v1/admin/runtime-mode ───────────────────────────────────────────────────
+//
+// GET  /v1/admin/runtime-mode             → return current flags
+// POST /v1/admin/runtime-mode             → {"vector_only_mode": bool, "minimal_mode": bool}
+//
+// Allows hot-switching between:
+//   - full Plasmod            (both false)
+//   - vector-only baseline    (vector_only_mode=true)  3-B1
+//   - minimal/stripped mode   (minimal_mode=true)      3-B4 / 4-B4
+func (g *Gateway) handleAdminRuntimeMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{
+			"vector_only_mode":    g.runtime.VectorOnlyMode,
+			"minimal_mode":        g.runtime.MinimalMode,
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	case http.MethodPost:
+		var body struct {
+			VectorOnlyMode    *bool `json:"vector_only_mode"`
+			MinimalMode       *bool `json:"minimal_mode"`
+			GovernanceDisabled *bool `json:"governance_disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.VectorOnlyMode != nil {
+			g.runtime.VectorOnlyMode = *body.VectorOnlyMode
+		}
+		if body.MinimalMode != nil {
+			g.runtime.MinimalMode = *body.MinimalMode
+		}
+		if body.GovernanceDisabled != nil {
+			g.runtime.GovernanceDisabled = *body.GovernanceDisabled
+		}
+		writeJSON(w, map[string]any{
+			"status":              "ok",
+			"vector_only_mode":    g.runtime.VectorOnlyMode,
+			"minimal_mode":        g.runtime.MinimalMode,
+			"governance_disabled": g.runtime.GovernanceDisabled,
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ── /v1/internal/memory/stale ────────────────────────────────────────────────
+//
+// POST /v1/internal/memory/stale
+// Body: {"memory_id": "...", "reason": "optional explanation"}
+//
+// Marks a memory as stale (LifecycleState="stale", IsActive=false) without
+// deleting it.  Stale memories can still be retrieved via include_cold=true
+// but are excluded from normal warm-tier queries.  Used by 4-D6 to inject
+// stale information for MAS contamination / resilience experiments.
+func (g *Gateway) handleMemoryMarkStale(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		MemoryID string `json:"memory_id"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.MemoryID) == "" {
+		http.Error(w, "memory_id is required", http.StatusBadRequest)
+		return
+	}
+	mem, ok := g.store.Objects().GetMemory(req.MemoryID)
+	if !ok {
+		http.Error(w, "memory not found", http.StatusNotFound)
+		return
+	}
+	mem.LifecycleState = string(schemas.MemoryLifecycleStale)
+	mem.IsActive = false
+	g.store.Objects().PutMemory(mem)
+	g.store.Audits().AppendAudit(schemas.AuditRecord{
+		RecordID:       fmt.Sprintf("stale_%s_%d", req.MemoryID, time.Now().UnixNano()),
+		OperationType:  string(schemas.AuditOpAlgorithmUpdate),
+		ActorType:      "system",
+		TargetMemoryID: req.MemoryID,
+		ReasonCode:     req.Reason,
+		Decision:       "allow",
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	})
+	writeJSON(w, map[string]any{
+		"status":          "ok",
+		"memory_id":       req.MemoryID,
+		"lifecycle_state": mem.LifecycleState,
+	})
+}
+
+// ── /v1/internal/memory/conflict/inject ─────────────────────────────────────
+//
+// POST /v1/internal/memory/conflict/inject
+// Body: {
+//   "agent_id":     "...",
+//   "session_id":   "...",
+//   "content_a":    "conflicting claim A",
+//   "content_b":    "conflicting claim B",
+//   "importance":   0.7       (optional, default 0.5)
+// }
+//
+// Synthesises two episodic Memory objects with identical provenance but
+// contradictory content and links them with a "conflict" edge.  The pair is
+// retrievable via normal query so downstream logic can be tested for
+// conflict awareness / preservation (4-D5, 4-M4).
+func (g *Gateway) handleMemoryConflictInject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID    string  `json:"agent_id"`
+		SessionID  string  `json:"session_id"`
+		ContentA   string  `json:"content_a"`
+		ContentB   string  `json:"content_b"`
+		Importance float64 `json:"importance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ContentA == "" || req.ContentB == "" {
+		http.Error(w, "content_a and content_b are required", http.StatusBadRequest)
+		return
+	}
+	if req.Importance <= 0 {
+		req.Importance = 0.5
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	idA := generateObjectID("cmem")
+	idB := generateObjectID("cmem")
+	scope := req.AgentID
+	if scope == "" {
+		scope = "default"
+	}
+	memA := schemas.Memory{
+		MemoryID:       idA,
+		AgentID:        req.AgentID,
+		SessionID:      req.SessionID,
+		Content:        req.ContentA,
+		MemoryType:     string(schemas.MemoryTypeEpisodic),
+		Importance:     req.Importance,
+		IsActive:       true,
+		Scope:          scope,
+		LifecycleState: string(schemas.MemoryLifecycleActive),
+		ValidFrom:      now,
+	}
+	memB := schemas.Memory{
+		MemoryID:       idB,
+		AgentID:        req.AgentID,
+		SessionID:      req.SessionID,
+		Content:        req.ContentB,
+		MemoryType:     string(schemas.MemoryTypeEpisodic),
+		Importance:     req.Importance,
+		IsActive:       true,
+		Scope:          scope,
+		LifecycleState: string(schemas.MemoryLifecycleActive),
+		ValidFrom:      now,
+	}
+	g.store.Objects().PutMemory(memA)
+	g.store.Objects().PutMemory(memB)
+
+	conflictEdge := schemas.Edge{
+		EdgeID:       generateObjectID("cedge"),
+		SrcObjectID:  idA,
+		SrcType:      string(schemas.ObjectTypeMemory),
+		DstObjectID:  idB,
+		DstType:      string(schemas.ObjectTypeMemory),
+		EdgeType:     "conflict",
+		CreatedTS:    now,
+		Properties:   map[string]any{"injected": true},
+	}
+	g.store.Edges().PutEdge(conflictEdge)
+
+	metrics.Global().RecordConflict(true)
+	g.store.Audits().AppendAudit(schemas.AuditRecord{
+		RecordID:       fmt.Sprintf("conflict_inject_%s_%d", idA, time.Now().UnixNano()),
+		OperationType:  string(schemas.AuditOpWrite),
+		ActorType:      "system",
+		TargetMemoryID: idA,
+		ReasonCode:     "conflict_injection:" + idB,
+		Decision:       "allow",
+		Timestamp:      now,
+	})
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"memory_id_a": idA,
+		"memory_id_b": idB,
+		"edge_id":    conflictEdge.EdgeID,
+	})
+}
+
+// ── Task Lifecycle API ────────────────────────────────────────────────────────
+//
+// These endpoints allow agents (or eval harnesses) to report task lifecycle
+// events so the metrics collector can compute 3-MT1~MT7 and 4-M6 without
+// the server needing to intercept every LLM call.
+
+// POST /v1/internal/task/start
+// Body: {"session_id":"...", "task_type":"...", "goal":"..."}
+//
+// Registers the session in the metrics tracker and optionally updates the
+// Session object in the store.  Idempotent: calling start multiple times
+// on the same session only refreshes goal/task_type.
+func (g *Gateway) handleTaskStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		TaskType  string `json:"task_type"`
+		Goal      string `json:"goal"`
+		AgentID   string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	// Ensure the session record is initialised in the tracker.
+	_ = metrics.Global().Session(req.SessionID)
+
+	// Update or create the Session object in the canonical store.
+	sess, ok := g.store.Objects().GetSession(req.SessionID)
+	if !ok {
+		sess = schemas.Session{
+			SessionID: req.SessionID,
+			AgentID:   req.AgentID,
+			StartTS:   time.Now().UTC().Format(time.RFC3339),
+			Status:    "active",
+		}
+	}
+	if req.TaskType != "" {
+		sess.TaskType = req.TaskType
+	}
+	if req.Goal != "" {
+		sess.Goal = req.Goal
+	}
+	if req.AgentID != "" {
+		sess.AgentID = req.AgentID
+	}
+	g.store.Objects().PutSession(sess)
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"task_type":  sess.TaskType,
+	})
+}
+
+// POST /v1/internal/task/complete
+// Body: {"session_id":"...", "success":true, "duration_ms":1234}
+//
+// Marks the task as complete in the metrics tracker and updates the Session
+// EndTS + Status in the store.  Also increments MASTaskTotal/Success when
+// the agent is part of a multi-agent system (presence of AgentID in session).
+func (g *Gateway) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID  string  `json:"session_id"`
+		Success    bool    `json:"success"`
+		DurationMs float64 `json:"duration_ms"`
+		MAS        bool    `json:"mas"` // true → also count in MAS metrics (4-M6)
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	metrics.Global().Session(req.SessionID).Complete(req.Success, req.DurationMs)
+	metrics.Global().RecordTaskDuration(req.DurationMs)
+	if req.MAS {
+		metrics.Global().RecordMASTask(req.Success)
+	}
+
+	// Update Session record.
+	if sess, ok := g.store.Objects().GetSession(req.SessionID); ok {
+		sess.EndTS = time.Now().UTC().Format(time.RFC3339)
+		if req.Success {
+			sess.Status = "completed"
+		} else {
+			sess.Status = "failed"
+		}
+		g.store.Objects().PutSession(sess)
+	}
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"success":    req.Success,
+	})
+}
+
+// POST /v1/internal/task/tokens
+// Body: {"session_id":"...", "tokens":512}
+//
+// Adds token usage to the session tracker (3-MT4).
+func (g *Gateway) handleTaskTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Tokens    int64  `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	metrics.Global().Session(req.SessionID).AddTokens(req.Tokens)
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"tokens":     req.Tokens,
+	})
+}
+
+// POST /v1/internal/task/claim
+// Body: {"session_id":"...", "evidence_supported":true, "unsupported":false}
+//
+// Records a single agent claim.  evidence_supported=true counts towards
+// 3-MT5; unsupported=true (hallucination) counts towards 3-MT7.
+func (g *Gateway) handleTaskClaim(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID         string `json:"session_id"`
+		EvidenceSupported bool   `json:"evidence_supported"`
+		Unsupported       bool   `json:"unsupported"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mc := metrics.Global()
+	mc.RecordEvidenceSupported(req.EvidenceSupported)
+	if req.Unsupported {
+		mc.RecordUnsupportedClaim()
+	}
+	if req.SessionID != "" {
+		tr := mc.Session(req.SessionID)
+		tr.RecordQuery(req.EvidenceSupported)
+		if req.Unsupported {
+			tr.RecordUnsupportedClaim()
+		}
+	}
+	writeJSON(w, map[string]any{"status": "ok"})
+}
+
+// ── Plan Step & Repair API ────────────────────────────────────────────────────
+
+// POST /v1/internal/plan/step
+// Body: {"session_id":"...", "step_description":"...", "step_index":1}
+//
+// Records that a plan step has been executed.  Increments the session step
+// counter (3-MT2).
+func (g *Gateway) handlePlanStep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID       string `json:"session_id"`
+		StepDescription string `json:"step_description"`
+		StepIndex       int    `json:"step_index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID != "" {
+		metrics.Global().Session(req.SessionID).AddStep()
+	}
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"step_index": req.StepIndex,
+	})
+}
+
+// POST /v1/internal/plan/repair
+// Body: {"session_id":"...", "success":true, "reason":"..."}
+//
+// Records a plan repair attempt.  Updates both the global PlanRepair counters
+// (3-MT6) and the per-session tracker.
+func (g *Gateway) handlePlanRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Success   bool   `json:"success"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	metrics.Global().RecordPlanRepair(req.Success)
+	if req.SessionID != "" {
+		metrics.Global().Session(req.SessionID).RecordPlanRepair(req.Success)
+	}
+	writeJSON(w, map[string]any{
+		"status":  "ok",
+		"success": req.Success,
+	})
+}
+
+// ── /v1/ingest/document ───────────────────────────────────────────────────────
+//
+// POST /v1/ingest/document
+// Body: {
+//   "agent_id":     "...",
+//   "session_id":   "...",
+//   "workspace_id": "...",
+//   "title":        "...",
+//   "text":         "<full document text>",
+//   "chunk_size":   512,    // chars per chunk, default 1000
+//   "overlap":      50,     // overlap chars between chunks, default 0
+//   "importance":   0.6
+// }
+//
+// Splits the document into chunks and ingests each as an episodic memory
+// event.  All chunks share the same ImportBatchID so they can be queried
+// as a unit.  Returns the batch_id and per-chunk memory_ids.
+//
+// Covers 3-T1 (long-document analysis).
+func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID     string  `json:"agent_id"`
+		SessionID   string  `json:"session_id"`
+		WorkspaceID string  `json:"workspace_id"`
+		Title       string  `json:"title"`
+		Text        string  `json:"text"`
+		ChunkSize   int     `json:"chunk_size"`
+		Overlap     int     `json:"overlap"`
+		Importance  float64 `json:"importance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	if req.ChunkSize <= 0 {
+		req.ChunkSize = 1000
+	}
+	if req.Overlap < 0 {
+		req.Overlap = 0
+	}
+	if req.Importance <= 0 {
+		req.Importance = 0.5
+	}
+
+	chunks := splitTextIntoChunks(req.Text, req.ChunkSize, req.Overlap)
+	batchID := generateObjectID("batch")
+	now := time.Now().UTC().Format(time.RFC3339)
+	memoryIDs := make([]string, 0, len(chunks))
+	errs := []string{}
+
+	for i, chunk := range chunks {
+		evID := generateObjectID("evt")
+		title := req.Title
+		if title == "" {
+			title = fmt.Sprintf("chunk_%d", i)
+		} else {
+			title = fmt.Sprintf("%s_chunk_%d", title, i)
+		}
+		ev := schemas.Event{
+			EventID:     evID,
+			AgentID:     req.AgentID,
+			SessionID:   req.SessionID,
+			WorkspaceID: req.WorkspaceID,
+			EventType:   string(schemas.EventTypeMemoryWriteRequested),
+			EventTime:   now,
+			Importance:  req.Importance,
+			Payload: map[string]any{
+				"text":          chunk,
+				"title":         title,
+				"chunk_index":   i,
+				"chunk_total":   len(chunks),
+				"import_batch":  batchID,
+			},
+		}
+		ack, err := g.runtime.SubmitIngest(ev)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("chunk_%d: %v", i, err))
+			continue
+		}
+		if mid, ok := ack["memory_id"].(string); ok {
+			memoryIDs = append(memoryIDs, mid)
+		}
+	}
+
+	result := map[string]any{
+		"status":     "ok",
+		"batch_id":   batchID,
+		"chunks":     len(chunks),
+		"memory_ids": memoryIDs,
+	}
+	if len(errs) > 0 {
+		result["errors"] = errs
+		result["status"] = "partial"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+// splitTextIntoChunks divides text into chunks of at most chunkSize runes,
+// with optional overlap.  Splits prefer paragraph / sentence boundaries when
+// they fall within the last 20% of the chunk window.
+func splitTextIntoChunks(text string, chunkSize, overlap int) []string {
+	runes := []rune(text)
+	total := len(runes)
+	if total == 0 {
+		return nil
+	}
+	if chunkSize >= total {
+		return []string{string(runes)}
+	}
+	var chunks []string
+	start := 0
+	for start < total {
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		// Try to split on a paragraph boundary in the last 20% of the window.
+		window := end - start
+		searchFrom := start + window*4/5
+		splitAt := -1
+		for i := end - 1; i >= searchFrom; i-- {
+			if runes[i] == '\n' {
+				splitAt = i + 1
+				break
+			}
+		}
+		if splitAt < 0 || splitAt <= start {
+			// Fall back to period / space boundary.
+			for i := end - 1; i >= searchFrom; i-- {
+				if runes[i] == '.' || runes[i] == ' ' {
+					splitAt = i + 1
+					break
+				}
+			}
+		}
+		if splitAt > start {
+			end = splitAt
+		}
+		chunks = append(chunks, string(runes[start:end]))
+		nextStart := end - overlap
+		if nextStart <= start {
+			nextStart = end
+		}
+		start = nextStart
+	}
+	return chunks
+}
+
+// ── /v1/internal/task/stage ───────────────────────────────────────────────────
+//
+// POST /v1/internal/task/stage
+// Body: {"session_id":"...", "stage":"outline"|"draft"|"review"|"final",
+//        "stage_index":2, "total_stages":4, "description":"..."}
+//
+// Records the current stage of a multi-stage report generation task (3-T3).
+// Each stage call is stored as a memory event so the stage progression is
+// queryable and visible in the retrieval plane.
+func (g *Gateway) handleTaskStage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID   string `json:"session_id"`
+		AgentID     string `json:"agent_id"`
+		Stage       string `json:"stage"`
+		StageIndex  int    `json:"stage_index"`
+		TotalStages int    `json:"total_stages"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" || req.Stage == "" {
+		http.Error(w, "session_id and stage are required", http.StatusBadRequest)
+		return
+	}
+	// Count this as a plan step.
+	metrics.Global().Session(req.SessionID).AddStep()
+
+	// Persist stage milestone as a memory-write event for provenance.
+	evID := generateObjectID("stage")
+	ev := schemas.Event{
+		EventID:   evID,
+		AgentID:   req.AgentID,
+		SessionID: req.SessionID,
+		EventType: string(schemas.EventTypePlanUpdated),
+		EventTime: time.Now().UTC().Format(time.RFC3339),
+		Payload: map[string]any{
+			"stage":        req.Stage,
+			"stage_index":  req.StageIndex,
+			"total_stages": req.TotalStages,
+			"description":  req.Description,
+		},
+	}
+	ack, err := g.runtime.SubmitIngest(ev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":      "ok",
+		"session_id":  req.SessionID,
+		"stage":       req.Stage,
+		"stage_index": req.StageIndex,
+		"event_id":    ack["event_id"],
+		"memory_id":   ack["memory_id"],
+	})
+}
+
+// ── /v1/internal/mas/answer-consistency ──────────────────────────────────────
+//
+// POST /v1/internal/mas/answer-consistency
+// Body: {"score": 0.85, "session_id":"...", "agent_id":"..."}
+//
+// Records a [0,1] answer-consistency score for the final answer produced by
+// one agent in a MAS run.  The global accumulator computes the mean over all
+// submitted scores (4-M5).
+func (g *Gateway) handleMASAnswerConsistency(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Score     float64 `json:"score"`
+		SessionID string  `json:"session_id"`
+		AgentID   string  `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Score < 0 || req.Score > 1 {
+		http.Error(w, "score must be in [0, 1]", http.StatusBadRequest)
+		return
+	}
+	metrics.Global().RecordAnswerConsistency(req.Score)
+	writeJSON(w, map[string]any{
+		"status": "ok",
+		"score":  req.Score,
+	})
+}
+
+// ── /v1/internal/mas/aggregate ────────────────────────────────────────────────
+//
+// POST /v1/internal/mas/aggregate
+// Body: {
+//   "requester_agent_id": "agent-A",
+//   "source_agent_ids":   ["agent-B", "agent-C"],
+//   "query":              "recent findings on topic X",
+//   "top_k":              5
+// }
+//
+// Aggregates memories contributed by multiple agents into a single result
+// list visible to the requester.  Only memories explicitly shared (via a
+// ShareContract with ReadACL matching the requester) are included — ensuring
+// private memories are never leaked (4-T2, 4-D3).
+//
+// Returns the aggregated object IDs together with per-source attribution.
+func (g *Gateway) handleMASAggregate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		RequesterAgentID string   `json:"requester_agent_id"`
+		SourceAgentIDs   []string `json:"source_agent_ids"`
+		Query            string   `json:"query"`
+		TopK             int      `json:"top_k"`
+		SessionID        string   `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.RequesterAgentID == "" {
+		http.Error(w, "requester_agent_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+
+	// Build allowed scope set from share contracts.
+	contracts := g.store.Contracts().ListContracts()
+	allowedScopes := make(map[string]bool)
+	for _, c := range contracts {
+		if c.ReadACL == req.RequesterAgentID || c.ReadACL == "*" {
+			allowedScopes[c.Scope] = true
+		}
+	}
+
+	type sourceResult struct {
+		AgentID   string   `json:"agent_id"`
+		ObjectIDs []string `json:"object_ids"`
+	}
+	results := make([]sourceResult, 0)
+	seenIDs := make(map[string]bool)
+	contaminationCount := 0
+
+	for _, srcAgentID := range req.SourceAgentIDs {
+		if srcAgentID == req.RequesterAgentID {
+			continue
+		}
+		mems := g.store.Objects().ListMemories(srcAgentID, "")
+		var ids []string
+		for _, m := range mems {
+			if seenIDs[m.MemoryID] {
+				continue
+			}
+			ownerScope := m.Scope
+			if ownerScope == "" {
+				ownerScope = m.AgentID
+			}
+			if !allowedScopes[ownerScope] {
+				contaminationCount++
+				metrics.Global().RecordContaminationAttempt()
+				continue
+			}
+			ids = append(ids, m.MemoryID)
+			seenIDs[m.MemoryID] = true
+			if len(ids) >= req.TopK {
+				break
+			}
+		}
+		if len(ids) > 0 {
+			results = append(results, sourceResult{AgentID: srcAgentID, ObjectIDs: ids})
+		}
+	}
+
+	// Collect all shared IDs.
+	allIDs := make([]string, 0)
+	for _, sr := range results {
+		allIDs = append(allIDs, sr.ObjectIDs...)
+	}
+
+	writeJSON(w, map[string]any{
+		"status":                "ok",
+		"requester_agent_id":    req.RequesterAgentID,
+		"aggregated_object_ids": allIDs,
+		"by_source":             results,
+		"contamination_blocked": contaminationCount,
+	})
+}
+
+// ── /v1/internal/tool-state ───────────────────────────────────────────────────
+//
+// GET /v1/internal/tool-state?agent_id=...&session_id=...
+//
+// Returns the current stateful tool-interaction context for a session (3-T4).
+// Scans the last N tool_call_issued / tool_result_returned events and pairs
+// them up so callers can determine which tool calls are still pending (no
+// matching result) and which have completed.
+//
+// Response: {
+//   "pending":   [{"event_id":"...", "tool":"...", "args":{...}}],
+//   "completed": [{"call_event_id":"...", "result_event_id":"...", "tool":"...", "result":{...}}]
+// }
+func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	sessionID := r.URL.Query().Get("session_id")
+
+	events := g.store.Objects().ListEvents(agentID, sessionID)
+
+	type pendingCall struct {
+		EventID string         `json:"event_id"`
+		Tool    string         `json:"tool"`
+		Args    map[string]any `json:"args"`
+	}
+	type completedCall struct {
+		CallEventID   string         `json:"call_event_id"`
+		ResultEventID string         `json:"result_event_id"`
+		Tool          string         `json:"tool"`
+		Result        map[string]any `json:"result"`
+	}
+
+	callsByID := make(map[string]schemas.Event)
+	var resultEvents []schemas.Event
+
+	for _, ev := range events {
+		switch ev.EventType {
+		case string(schemas.EventTypeToolCallIssued), string(schemas.EventTypeToolCall):
+			callsByID[ev.EventID] = ev
+		case string(schemas.EventTypeToolResultReturned), string(schemas.EventTypeToolResult):
+			resultEvents = append(resultEvents, ev)
+		}
+	}
+
+	var pending []pendingCall
+	completed := make([]completedCall, 0)
+	matchedCalls := make(map[string]bool)
+
+	for _, res := range resultEvents {
+		parentID, _ := res.Payload["call_event_id"].(string)
+		if parentID == "" {
+			parentID, _ = res.Payload["parent_event_id"].(string)
+		}
+		if parentID == "" {
+			parentID = res.ParentEventID
+		}
+		if call, ok := callsByID[parentID]; ok {
+			matchedCalls[parentID] = true
+			tool, _ := call.Payload["tool"].(string)
+			result, _ := res.Payload["result"].(map[string]any)
+			completed = append(completed, completedCall{
+				CallEventID:   parentID,
+				ResultEventID: res.EventID,
+				Tool:          tool,
+				Result:        result,
+			})
+		}
+	}
+
+	for id, call := range callsByID {
+		if matchedCalls[id] {
+			continue
+		}
+		tool, _ := call.Payload["tool"].(string)
+		args, _ := call.Payload["args"].(map[string]any)
+		pending = append(pending, pendingCall{
+			EventID: id,
+			Tool:    tool,
+			Args:    args,
+		})
+	}
+
+	writeJSON(w, map[string]any{
+		"agent_id":   agentID,
+		"session_id": sessionID,
+		"pending":    pending,
+		"completed":  completed,
+	})
+}
+
+// ── /v1/internal/agent/handoff ────────────────────────────────────────────────
+//
+// POST /v1/internal/agent/handoff
+// Body: {
+//   "from_agent_id": "planner-agent",
+//   "to_agent_id":   "executor-agent",
+//   "session_id":    "...",
+//   "role_from":     "planner",
+//   "role_to":       "executor",
+//   "context":       {...}   // arbitrary payload forwarded to the next agent
+// }
+//
+// Records a role handoff between agents in a MAS run (4-T1: planner →
+// executor → critic triangle).  A HandoffOccurred event is written to the
+// store so that handoff frequency and latency can be computed from the event
+// stream.  The receiving agent's RoleProfile is also updated if role_to is
+// provided.
+func (g *Gateway) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		FromAgentID string         `json:"from_agent_id"`
+		ToAgentID   string         `json:"to_agent_id"`
+		SessionID   string         `json:"session_id"`
+		RoleFrom    string         `json:"role_from"`
+		RoleTo      string         `json:"role_to"`
+		Context     map[string]any `json:"context"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.FromAgentID == "" || req.ToAgentID == "" {
+		http.Error(w, "from_agent_id and to_agent_id are required", http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Update receiver agent RoleProfile if provided.
+	if req.RoleTo != "" {
+		if agent, ok := g.store.Objects().GetAgent(req.ToAgentID); ok {
+			agent.RoleProfile = req.RoleTo
+			g.store.Objects().PutAgent(agent)
+		}
+	}
+	if req.RoleFrom != "" {
+		if agent, ok := g.store.Objects().GetAgent(req.FromAgentID); ok {
+			agent.RoleProfile = req.RoleFrom
+			g.store.Objects().PutAgent(agent)
+		}
+	}
+
+	// Persist as a HandoffOccurred event for provenance & latency tracking.
+	payload := map[string]any{
+		"from_agent_id": req.FromAgentID,
+		"to_agent_id":   req.ToAgentID,
+		"role_from":     req.RoleFrom,
+		"role_to":       req.RoleTo,
+	}
+	for k, v := range req.Context {
+		payload[k] = v
+	}
+	evID := generateObjectID("handoff")
+	ev := schemas.Event{
+		EventID:   evID,
+		AgentID:   req.FromAgentID,
+		SessionID: req.SessionID,
+		EventType: string(schemas.EventTypeHandoffOccurred),
+		EventTime: now,
+		Payload:   payload,
+	}
+	ack, err := g.runtime.SubmitIngest(ev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":        "ok",
+		"event_id":      ack["event_id"],
+		"from_agent_id": req.FromAgentID,
+		"to_agent_id":   req.ToAgentID,
+		"role_from":     req.RoleFrom,
+		"role_to":       req.RoleTo,
+		"timestamp":     now,
+	})
+}
+
+// ── GET /v1/agent/list ────────────────────────────────────────────────────────
+//
+// Query params: role=planner, workspace_id=..., tenant_id=...
+//
+// Returns agents filtered by the supplied query params.  Supports role-based
+// lookup needed by the 4-T1 planner/executor/critic architecture.
+func (g *Gateway) handleAgentList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	roleFilter := r.URL.Query().Get("role")
+	workspaceFilter := r.URL.Query().Get("workspace_id")
+	tenantFilter := r.URL.Query().Get("tenant_id")
+
+	agents := g.store.Objects().ListAgents()
+	out := agents[:0]
+	for _, a := range agents {
+		if roleFilter != "" && a.RoleProfile != roleFilter {
+			continue
+		}
+		if workspaceFilter != "" && a.WorkspaceID != workspaceFilter {
+			continue
+		}
+		if tenantFilter != "" && a.TenantID != tenantFilter {
+			continue
+		}
+		out = append(out, a)
+	}
+	writeJSON(w, out)
+}
+
+// ── GET /v1/internal/session/context ─────────────────────────────────────────
+//
+// Query params: session_id=..., agent_id=..., last_n=20
+//
+// Aggregates the recent interaction context for a session: the last N
+// user/assistant messages, tool calls/results, memory-write events, and
+// plan updates.  Useful for multi-round Q&A agents (3-T2) that need a
+// compact view of what happened earlier in the session without re-querying
+// the full event stream.
+//
+// Response:
+// {
+//   "session":  {...},
+//   "events":   [...],    // last_n events sorted by event_time desc
+//   "memories": [...],    // memories linked to this session
+//   "turns":    N         // total event count in session
+// }
+func (g *Gateway) handleSessionContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := r.URL.Query().Get("session_id")
+	agentID := r.URL.Query().Get("agent_id")
+	lastN := 20
+	if v := r.URL.Query().Get("last_n"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lastN = n
+		}
+	}
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	sess, _ := g.store.Objects().GetSession(sessionID)
+	allEvents := g.store.Objects().ListEvents(agentID, sessionID)
+
+	// Filter to interaction-relevant event types.
+	relevantTypes := map[string]bool{
+		string(schemas.EventTypeUserMessage):        true,
+		string(schemas.EventTypeAssistantMessage):   true,
+		string(schemas.EventTypeToolCallIssued):     true,
+		string(schemas.EventTypeToolCall):           true,
+		string(schemas.EventTypeToolResultReturned): true,
+		string(schemas.EventTypeToolResult):         true,
+		string(schemas.EventTypePlanUpdated):        true,
+		string(schemas.EventTypeMemoryWriteRequested): true,
+		string(schemas.EventTypeMemoryConsolidated): true,
+	}
+	var filtered []schemas.Event
+	for _, ev := range allEvents {
+		if relevantTypes[ev.EventType] {
+			filtered = append(filtered, ev)
+		}
+	}
+
+	// Return last N (keep tail).
+	if len(filtered) > lastN {
+		filtered = filtered[len(filtered)-lastN:]
+	}
+
+	// Linked memories (same agentID + sessionID).
+	mems := g.store.Objects().ListMemories(agentID, sessionID)
+
+	writeJSON(w, map[string]any{
+		"session":  sess,
+		"events":   filtered,
+		"memories": mems,
+		"turns":    len(allEvents),
+	})
+}
+
+// ── /v1/internal/eval/ground-truth ───────────────────────────────────────────
+//
+// In-process ground-truth store keyed by task_id.  Allows eval harnesses to
+// register expected answers before running agents and retrieve them
+// afterwards for scoring.
+//
+// POST — register ground truth:
+//   Body: {"task_id":"...", "expected":"...", "metadata":{...}}
+// GET  — retrieve ground truth:
+//   Query: ?task_id=...   (omit to list all)
+
+var (
+	groundTruthMu   sync.RWMutex
+	groundTruthStore = make(map[string]groundTruthRecord)
+)
+
+type groundTruthRecord struct {
+	TaskID   string         `json:"task_id"`
+	Expected string         `json:"expected"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	CreatedAt string        `json:"created_at"`
+}
+
+func (g *Gateway) handleEvalGroundTruth(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var rec groundTruthRecord
+		if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if rec.TaskID == "" {
+			http.Error(w, "task_id is required", http.StatusBadRequest)
+			return
+		}
+		rec.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		groundTruthMu.Lock()
+		groundTruthStore[rec.TaskID] = rec
+		groundTruthMu.Unlock()
+		writeJSON(w, map[string]any{"status": "ok", "task_id": rec.TaskID})
+
+	case http.MethodGet:
+		taskID := r.URL.Query().Get("task_id")
+		groundTruthMu.RLock()
+		defer groundTruthMu.RUnlock()
+		if taskID != "" {
+			rec, ok := groundTruthStore[taskID]
+			if !ok {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, rec)
+			return
+		}
+		all := make([]groundTruthRecord, 0, len(groundTruthStore))
+		for _, rec := range groundTruthStore {
+			all = append(all, rec)
+		}
+		writeJSON(w, all)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
