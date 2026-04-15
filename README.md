@@ -814,10 +814,10 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 
 #### Outstanding TODO
 
-- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput
-- [ ] `tensorrt_cuda.go` — add `dim <= 0` guard in `NewTensorRT` (zero-size GPU buffer → panic on first batch)
-- [ ] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) on adversarial tokens
-- [ ] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning error (align with ONNX CPU)
+- [ ] `tensorrt_cuda.go` — replace global `sync.Mutex` with per-call CUDA streams for concurrent inference throughput *(acknowledged; deferred as future optimisation — see in-code comment)*
+- [x] `tensorrt_cuda.go` — add `dim <= 0` guard in `NewTensorRT` (zero-size GPU buffer → panic on first batch)
+- [x] `onnx_tokenizer.go` — add max-subword depth limit in `wordPieceSplit` to prevent O(n²) on adversarial tokens
+- [x] `tensorrt_cuda.go` — auto-split batches larger than `MaxBatchSize` instead of returning error (align with ONNX CPU)
 
 ---
 
@@ -841,15 +841,15 @@ For design philosophy and contribution guidelines, see [`docs/v1-scope.md`](docs
 #### Outstanding TODO
 
 ```
-[ ] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
-[ ] Memory reactivated -> S3 embeddings/{id}.npy deleted
-[ ] include_cold=true query returns cold memories ranked via vector similarity
-[ ] ColdSearch latency < 500ms for 10K archived memories (benchmark target)
-[ ] HNSW cold index loads from S3 and produces correct scores
-[ ] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
-[ ] EvidenceCache reports cold_hits and cold_misses
-[ ] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
-[ ] End-to-end: archive 10K memories -> query include_cold=true -> correct results
+[x] Memory archived -> S3 contains memories/{id}.json AND embeddings/{id}.npy
+[x] Memory reactivated -> S3 embeddings/{id}.npy deleted
+[x] include_cold=true query returns cold memories ranked via vector similarity
+[x] ColdSearch latency < 500ms for 10K archived memories (benchmark target)
+[x] HNSW cold index loads from S3 and produces correct scores
+[x] Cold-tier proof_trace includes cold_hnsw_search / cold_embedding_fetch steps
+[x] EvidenceCache reports cold_hits and cold_misses
+[x] AlgorithmConfig: RRFK, HNSW params, ColdBatchSize read from YAML config
+[x] End-to-end: archive 10K memories -> query include_cold=true -> correct results
 ```
 
 ---
