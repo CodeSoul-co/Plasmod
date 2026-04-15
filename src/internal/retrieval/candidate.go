@@ -61,6 +61,10 @@ type RetrievalRequest struct {
 
 	// Graph expansion (for QueryChain / SubgraphExecutorWorker)
 	ForGraph bool // when true: return TopK*2 candidates, include SourceEventIDs
+
+	// Additional filters (optional)
+	NumericFilters []NumericRangeFilter // Apply numeric range filters
+	TagFilters     []TagFilter          // Apply tag-based filters
 }
 
 // DefaultRetrievalRequest returns a RetrievalRequest with sensible defaults.

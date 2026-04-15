@@ -233,6 +233,7 @@ func TestAssembler_Build_ColdTierEvidenceCacheStatsAndTrace(t *testing.T) {
 	input := dataplane.SearchInput{TopK: 5}
 	result := dataplane.SearchOutput{
 		ObjectIDs:      []string{"mem_1", "mem_2"},
+		ColdObjectIDs:  []string{"mem_1", "mem_2"},
 		Tier:           "hot+warm+cold",
 		ColdSearchMode: "vector",
 	}

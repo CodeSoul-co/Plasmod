@@ -35,12 +35,12 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
-	plane := dataplane.NewSegmentDataPlane()
 	policy := semantic.NewPolicyEngine()
 	planner := semantic.NewDefaultQueryPlanner()
 	materializer := materialization.NewService()
 	assembler := evidence.NewAssembler()
 	store := storage.NewMemoryRuntimeStorage()
+	plane := dataplane.NewSegmentDataPlane()
 	tieredObjs := storage.NewTieredObjectStore(
 		store.HotCache(),
 		store.Objects(),
@@ -353,16 +353,16 @@ func TestRuntime_ExecuteQuery_LatestBatchOnly(t *testing.T) {
 	}
 
 	resp := r.ExecuteQuery(schemas.QueryRequest{
-		QueryText:        "dataset=deep1B.ibin",
-		QueryScope:       "w_latest",
-		WorkspaceID:      "w_latest",
-		AgentID:          "agent_latest",
-		SessionID:        "session_latest",
-		TopK:             10,
-		ResponseMode:     schemas.ResponseModeStructuredEvidence,
-		DatasetName:      "deep1B",
-		SourceFileName:   "deep1B.ibin",
-		LatestBatchOnly:  true,
+		QueryText:       "dataset=deep1B.ibin",
+		QueryScope:      "w_latest",
+		WorkspaceID:     "w_latest",
+		AgentID:         "agent_latest",
+		SessionID:       "session_latest",
+		TopK:            10,
+		ResponseMode:    schemas.ResponseModeStructuredEvidence,
+		DatasetName:     "deep1B",
+		SourceFileName:  "deep1B.ibin",
+		LatestBatchOnly: true,
 	})
 	if len(resp.Objects) != 1 || resp.Objects[0] != "mem_evt_latest_batch_new_1" {
 		t.Fatalf("expected only latest batch memory, got objects=%v", resp.Objects)
@@ -783,11 +783,19 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 		embedder,
 		schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold,
 	)
+	tieredPlane, err := dataplane.NewTieredDataPlaneWithEmbedderAndConfig(
+		tieredObjs,
+		embedder,
+		schemas.DefaultAlgorithmConfig(),
+	)
+	if err != nil {
+		t.Fatalf("NewTieredDataPlaneWithEmbedderAndConfig failed: %v", err)
+	}
 
 	nodeManager := nodes.CreateManager()
 	nodeManager.RegisterData(nodes.CreateInMemoryDataNode("data-1", store.Segments()))
 	nodeManager.RegisterIndex(nodes.CreateInMemoryIndexNode("index-1", store.Indexes()))
-	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", plane))
+	nodeManager.RegisterQuery(nodes.CreateInMemoryQueryNode("query-1", tieredPlane))
 	nodeManager.RegisterSubgraphExecutor(indexing.CreateInMemorySubgraphExecutorWorker("subgraph-1"))
 	nodeManager.RegisterStateMaterialization(
 		matworker.CreateInMemoryStateMaterializationWorker("state-mat-1", store.Objects(), store.Versions(), nil),
@@ -851,13 +859,12 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 	// archive 到 cold（会写 cold memory + cold embedding）
 	tieredObjs.ArchiveMemory(memID)
 
-	// ArchiveMemory 当前不会删除 warm，所以这里手动删掉 warm copy，
-	// 这样后面的命中才能证明来自 cold tier，而不是 warm。
-	store.Objects().DeleteMemory(memID)
-
 	// 验证 cold 中已经有对象
 	if _, ok := cold.GetMemory(memID); !ok {
 		t.Fatalf("expected archived memory %s in cold store", memID)
+	}
+	if _, ok := store.Objects().GetMemory(memID); ok {
+		t.Fatalf("expected archived memory %s to be removed from warm store", memID)
 	}
 
 	// 验证 cold embedding 已写入
@@ -879,6 +886,15 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 
 	if len(resp.Objects) == 0 {
 		t.Fatal("expected non-empty resp.Objects for include_cold query")
+	}
+	if resp.Retrieval == nil {
+		t.Fatal("expected retrieval summary on include_cold query")
+	}
+	if !resp.Retrieval.ColdTierRequested {
+		t.Fatal("expected retrieval.cold_tier_requested=true")
+	}
+	if resp.Retrieval.ColdSearchMode == "" {
+		t.Fatal("expected retrieval.cold_search_mode to be populated")
 	}
 
 	found := false
@@ -1006,7 +1022,9 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory_FromS3(t *testing
 	}
 
 	tieredObjs.ArchiveMemory(memID)
-	store.Objects().DeleteMemory(memID)
+	if _, ok := store.Objects().GetMemory(memID); ok {
+		t.Fatalf("expected archived memory %s to be removed from warm store", memID)
+	}
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -1044,6 +1062,12 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory_FromS3(t *testing
 	if len(resp.Objects) == 0 {
 		t.Fatal("expected non-empty resp.Objects for S3-backed include_cold query")
 	}
+	if resp.Retrieval == nil {
+		t.Fatal("expected retrieval summary on S3 include_cold query")
+	}
+	if !resp.Retrieval.ColdTierRequested {
+		t.Fatal("expected retrieval.cold_tier_requested=true")
+	}
 
 	found := false
 	for _, id := range resp.Objects {
@@ -1064,4 +1088,43 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory_FromS3(t *testing
 
 	_ = cold.DeleteMemoryEmbedding(memID)
 	_ = cold.DeleteMemory(memID)
+}
+
+func TestRuntime_VectorOnlyMode_SkipsGraphAndProvenance(t *testing.T) {
+	t.Setenv("PLASMOD_VECTOR_ONLY_MODE", "true")
+
+	r := buildTestRuntime(t)
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:   "evt_vector_only_mode_1",
+		TenantID:  "tenant_vector_only",
+		WorkspaceID: "ws_vector_only",
+		AgentID:   "agent_vector_only",
+		SessionID: "sess_vector_only",
+		Payload:   map[string]any{"text": "hello andb vector only"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitIngest failed: %v", err)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "hello andb vector only",
+		AgentID:     "agent_vector_only",
+		SessionID:   "sess_vector_only",
+		WorkspaceID: "ws_vector_only",
+		TopK:        5,
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatal("expected vector-only mode to return retrieval objects")
+	}
+	if len(resp.Nodes) != 0 || len(resp.Edges) != 0 || len(resp.ProofTrace) != 0 || len(resp.Provenance) != 0 || len(resp.Versions) != 0 {
+		t.Fatalf("expected vector-only mode to skip graph/provenance payloads, got nodes=%d edges=%d proof=%d prov=%d versions=%d",
+			len(resp.Nodes), len(resp.Edges), len(resp.ProofTrace), len(resp.Provenance), len(resp.Versions))
+	}
+	if resp.Retrieval == nil {
+		t.Fatal("expected retrieval summary in vector-only mode")
+	}
+	if resp.Retrieval.CanonicalAdds != 0 {
+		t.Fatalf("expected canonical adds to be disabled in vector-only mode, got %d", resp.Retrieval.CanonicalAdds)
+	}
 }

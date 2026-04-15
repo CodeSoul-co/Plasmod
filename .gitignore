@@ -48,6 +48,7 @@ rule
 方案.md
 分工情况.md
 系统分层架构图.md
+docs/member-b/
 多维度数据集入库与检索规范（参考Milvus-Manu）.md
 TESTING.md
 # Local runtime data
@@ -62,4 +63,12 @@ TESTING.md
 go.sum.bak*
 out/
 go.mod
+.andb_data/00006.mem
+.gitignore
+.andb_data/wal.log
+.gitignore
+.andb_data/derivation.log
+.andb_data/00008.mem
+docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
+new.md

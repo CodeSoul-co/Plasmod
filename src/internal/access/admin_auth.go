@@ -14,6 +14,8 @@ import (
 const (
 	// EnvAdminAPIKey enables admin auth when set.
 	EnvAdminAPIKey = "PLASMOD_ADMIN_API_KEY"
+	// EnvAdminAPIKeyCompat keeps backward compatibility with older docs/env.
+	EnvAdminAPIKeyCompat = "ANDB_ADMIN_API_KEY"
 )
 
 var adminAuthWarnOnce sync.Once
@@ -27,6 +29,9 @@ var adminAuthWarnOnce sync.Once
 // If PLASMOD_ADMIN_API_KEY is not set, the handler is returned unchanged (dev default).
 func WrapAdminAuth(next http.Handler) http.Handler {
 	key := strings.TrimSpace(os.Getenv(EnvAdminAPIKey))
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv(EnvAdminAPIKeyCompat))
+	}
 	if key == "" {
 		adminAuthWarnOnce.Do(func() {
 			log.Printf("warning: admin routes are unprotected because %s is not set", EnvAdminAPIKey)

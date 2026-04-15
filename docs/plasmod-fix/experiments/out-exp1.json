@@ -1,0 +1,42 @@
+[
+  {
+    "ingest_hz_target": 1.0,
+    "p50_e2e_write_to_visible_ms": 11.882161488756537,
+    "p95_e2e_write_to_visible_ms": 13.2098498637788,
+    "p50_query_latency_ms": 2.1502714953385293,
+    "p95_query_latency_ms": 120.08096535573729,
+    "stale_result_rate": 0.0,
+    "under_load_ingest_events": 20,
+    "under_load_query_requests": 10
+  },
+  {
+    "ingest_hz_target": 4.0,
+    "p50_e2e_write_to_visible_ms": 18.969879485666752,
+    "p95_e2e_write_to_visible_ms": 22.701285465154797,
+    "p50_query_latency_ms": 2.2680629626847804,
+    "p95_query_latency_ms": 2.6933668705169107,
+    "stale_result_rate": 0.0,
+    "under_load_ingest_events": 79,
+    "under_load_query_requests": 40
+  },
+  {
+    "ingest_hz_target": 8.0,
+    "p50_e2e_write_to_visible_ms": 23.149660031776875,
+    "p95_e2e_write_to_visible_ms": 24.272991274483502,
+    "p50_query_latency_ms": 2.427386527415365,
+    "p95_query_latency_ms": 2.726656454615295,
+    "stale_result_rate": 0.0,
+    "under_load_ingest_events": 156,
+    "under_load_query_requests": 78
+  },
+  {
+    "ingest_hz_target": 16.0,
+    "p50_e2e_write_to_visible_ms": 33.777751959860325,
+    "p95_e2e_write_to_visible_ms": 39.01701226714067,
+    "p50_query_latency_ms": 2.8036379953846335,
+    "p95_query_latency_ms": 3.311261080671102,
+    "stale_result_rate": 0.0,
+    "under_load_ingest_events": 301,
+    "under_load_query_requests": 114
+  }
+]
