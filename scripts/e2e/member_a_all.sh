@@ -5,7 +5,9 @@ set -euo pipefail
 # Steps:
 # 1) member_a_verify.sh
 # 2) optional member_a_gpu_check.sh (MEMBER_A_RUN_GPU_CHECK=true)
-# 3) member_a_task4_strict.sh
+# 3) member_a_layer4_auth_boundary.py
+# 4) member_a_layer5_ops_stability.py
+# 5) member_a_task4_strict.sh
 #
 # Usage:
 #   bash scripts/e2e/member_a_all.sh
@@ -28,6 +30,13 @@ else
 fi
 
 echo "[member-a-all] step3: strict task4"
+echo "[member-a-all] step3: layer4 auth boundary check"
+python3 scripts/e2e/member_a_layer4_auth_boundary.py
+
+echo "[member-a-all] step4: layer5 ops stability check"
+python3 scripts/e2e/member_a_layer5_ops_stability.py
+
+echo "[member-a-all] step5: strict task4"
 bash scripts/e2e/member_a_task4_strict.sh
 
 echo "[member-a-all] done."
