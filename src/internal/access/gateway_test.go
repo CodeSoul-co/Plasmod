@@ -1127,6 +1127,143 @@ func TestGateway_IngestDocument(t *testing.T) {
 	}
 }
 
+func TestGateway_TaskStage(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"session_id":   "sess-stage",
+		"agent_id":     "agent-stage",
+		"stage":        "draft",
+		"stage_index":  1,
+		"total_stages": 4,
+		"description":  "writing draft section",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/task/stage", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("task/stage: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["stage"] != "draft" {
+		t.Fatalf("expected stage=draft, got %v", resp["stage"])
+	}
+}
+
+func TestGateway_MASAnswerConsistency(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{"score": 0.85, "session_id": "sess-mas", "agent_id": "agent-a"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/mas/answer-consistency", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mas/answer-consistency: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Score out of range should be rejected.
+	body, _ = json.Marshal(map[string]any{"score": 1.5})
+	req = httptest.NewRequest(http.MethodPost, "/v1/internal/mas/answer-consistency", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for out-of-range score, got %d", w.Code)
+	}
+}
+
+func TestGateway_MASAggregate(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	// Create two memories for agent-b, each in their own scope.
+	deps.store.Objects().PutMemory(schemas.Memory{
+		MemoryID: "mem-b1", AgentID: "agent-b", Scope: "scope-b", IsActive: true,
+	})
+	// No share contract → memory should be blocked.
+	body, _ := json.Marshal(map[string]any{
+		"requester_agent_id": "agent-a",
+		"source_agent_ids":   []string{"agent-b"},
+		"top_k":              5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/internal/mas/aggregate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mas/aggregate: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	blocked := resp["contamination_blocked"].(float64)
+	if blocked < 1 {
+		t.Fatalf("expected at least 1 contamination blocked, got %v", blocked)
+	}
+}
+
+func TestGateway_ToolState(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	// Store a tool_call_issued event.
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID:   "evt-call-1",
+		AgentID:   "agent-tool",
+		SessionID: "sess-tool",
+		EventType: string(schemas.EventTypeToolCallIssued),
+		Payload:   map[string]any{"tool": "search", "args": map[string]any{"query": "plasmod"}},
+	})
+	// And a matching result.
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID:       "evt-result-1",
+		AgentID:       "agent-tool",
+		SessionID:     "sess-tool",
+		EventType:     string(schemas.EventTypeToolResultReturned),
+		ParentEventID: "evt-call-1",
+		Payload:       map[string]any{"result": map[string]any{"hits": 3}},
+	})
+	// An unmatched call.
+	deps.store.Objects().PutEvent(schemas.Event{
+		EventID:   "evt-call-2",
+		AgentID:   "agent-tool",
+		SessionID: "sess-tool",
+		EventType: string(schemas.EventTypeToolCallIssued),
+		Payload:   map[string]any{"tool": "fetch", "args": map[string]any{"url": "http://example.com"}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/internal/tool-state?agent_id=agent-tool&session_id=sess-tool", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tool-state: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	pending, _ := resp["pending"].([]any)
+	completed, _ := resp["completed"].([]any)
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending call, got %d", len(pending))
+	}
+	if len(completed) != 1 {
+		t.Fatalf("expected 1 completed call, got %d", len(completed))
+	}
+}
+
 func TestGateway_AdminDataWipe(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
