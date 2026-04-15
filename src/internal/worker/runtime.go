@@ -245,6 +245,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	plan := r.planner.Build(req)
+	vectorOnlyMode := vectorOnlyModeEnabled()
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
 		TopK:           plan.TopK,
@@ -275,9 +276,35 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// State and Artifact objects are stored directly in ObjectStore, not in the
 	// retrieval plane.  When query requests these types, fetch them from the
 	// canonical store so they appear in the response alongside memory results.
-	canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
-	canonicalAddCount := len(canonicalIDs)
-	result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	canonicalAddCount := 0
+	if !vectorOnlyMode {
+		canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
+		canonicalAddCount = len(canonicalIDs)
+		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
+	}
+
+	if vectorOnlyMode {
+		resp := schemas.QueryResponse{
+			Objects: result.ObjectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:               result.Tier,
+				ColdSearchMode:     result.ColdSearchMode,
+				ColdCandidateCount: result.ColdCandidateCount,
+				ColdTierRequested:  result.ColdTierRequested,
+				ColdUsedFallback:   result.ColdUsedFallback,
+				RetrievalHits:      retrievalHitCount,
+				CanonicalAdds:      0,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           append(formatQueryPathMainChainLines(req, result), "vector_only_mode=true"),
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs),
+				Query:          []string{"query_chain skipped=vector_only_mode"},
+				Collaboration:  []string{"collaboration_chain skipped=vector_only_mode"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, retrievalHitCount)
+		return resp
+	}
 
 	filters := r.policy.ApplyQueryFilters(req)
 	resp := r.assembler.Build(searchInput, result, filters)
@@ -340,6 +367,16 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 
 	return resp
+}
+
+func vectorOnlyModeEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_VECTOR_ONLY_MODE"))
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // applyQueryOutcomeHint sets query_status / query_hint so clients can tell "no dataset"

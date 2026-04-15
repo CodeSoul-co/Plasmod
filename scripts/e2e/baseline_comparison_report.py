@@ -6,8 +6,8 @@ This script does not implement the baseline itself. Instead, it standardizes how
 two already-exported result files are compared for experiment reporting.
 
 Accepted inputs:
-- JSON exported by member_c_benchmark_summary.py
-- CSV exported by member_c_benchmark_summary.py
+- JSON exported by cold_tier_benchmark_summary.py
+- CSV exported by cold_tier_benchmark_summary.py
 - Any CSV/JSON file that exposes matching metric columns
 """
 
@@ -159,7 +159,7 @@ def main() -> int:
     baseline_rows = load_rows(args.baseline)
     comparisons = build_comparison(full_rows, baseline_rows)
 
-    print("Member C Baseline Comparison")
+    print("Baseline Comparison")
     print(f"full_rows: {len(full_rows)}")
     print(f"baseline_rows: {len(baseline_rows)}")
     for row in comparisons:

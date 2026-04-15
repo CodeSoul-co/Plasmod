@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Summarize Member C visibility/scope/quarantine experiment checks.
+Summarize visibility/scope/quarantine experiment checks.
 
 Targets:
 - 4-D3 shared/private scope definition
@@ -77,7 +77,7 @@ def run_go_tests() -> subprocess.CompletedProcess[str]:
 def parse_output(stdout: str, stderr: str) -> dict[str, Any]:
     combined = "\n".join(part for part in (stdout, stderr) if part)
     summary: dict[str, Any] = {
-        "suite": "member_c_scope_governance",
+        "suite": "scope_governance",
         "checks": {},
         "notes": [],
     }
@@ -126,7 +126,7 @@ def parse_output(stdout: str, stderr: str) -> dict[str, Any]:
 
 
 def print_summary(summary: dict[str, Any]) -> None:
-    print("Member C Scope/Governance Summary")
+    print("Scope/Governance Summary")
     print(f"suite: {summary['suite']}")
     for name, check in summary["checks"].items():
         print(f"{name}: {check}")
