@@ -413,7 +413,43 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		metrics.Global().Session(req.SessionID).RecordQuery(evidenceSupported)
 	}
 
+	// Cross-agent contamination detection (4-M1).
+	// When governance is active, check returned memories for cross-scope leakage.
+	if req.AgentID != "" && !r.GovernanceDisabled {
+		r.detectContamination(req.AgentID, result.ObjectIDs)
+	}
+
 	return resp
+}
+
+// detectContamination counts memory IDs that belong to a different agent and
+// are not covered by any share contract.  Each such ID increments the global
+// contamination counter (4-M1).
+func (r *Runtime) detectContamination(requesterAgentID string, objectIDs []string) {
+	for _, id := range objectIDs {
+		mem, ok := r.storage.Objects().GetMemory(id)
+		if !ok {
+			continue
+		}
+		if mem.AgentID == "" || mem.AgentID == requesterAgentID {
+			continue
+		}
+		ownerScope := mem.Scope
+		if ownerScope == "" {
+			ownerScope = mem.AgentID
+		}
+		// Check if a share contract allows the requester to read this scope.
+		allowed := false
+		for _, c := range r.storage.Contracts().ContractsByScope(ownerScope) {
+			if c.ReadACL == "*" || c.ReadACL == requesterAgentID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			metrics.Global().RecordContaminationAttempt()
+		}
+	}
 }
 
 func vectorOnlyModeEnabled() bool {

@@ -194,6 +194,19 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
 	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
 	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
+
+	// Task lifecycle (3-MT1~MT7, 4-M6)
+	mux.HandleFunc("/v1/internal/task/start", g.handleTaskStart)
+	mux.HandleFunc("/v1/internal/task/complete", g.handleTaskComplete)
+	mux.HandleFunc("/v1/internal/task/tokens", g.handleTaskTokens)
+	mux.HandleFunc("/v1/internal/task/claim", g.handleTaskClaim)
+
+	// Plan step tracking (3-T5, 3-MT6)
+	mux.HandleFunc("/v1/internal/plan/step", g.handlePlanStep)
+	mux.HandleFunc("/v1/internal/plan/repair", g.handlePlanRepair)
+
+	// Long-document chunked ingest (3-T1)
+	mux.HandleFunc("/v1/ingest/document", g.handleIngestDocument)
 }
 
 func (g *Gateway) handleSystemMode(w http.ResponseWriter, r *http.Request) {
@@ -1920,4 +1933,393 @@ func (g *Gateway) handleMemoryConflictInject(w http.ResponseWriter, r *http.Requ
 		"memory_id_b": idB,
 		"edge_id":    conflictEdge.EdgeID,
 	})
+}
+
+// ── Task Lifecycle API ────────────────────────────────────────────────────────
+//
+// These endpoints allow agents (or eval harnesses) to report task lifecycle
+// events so the metrics collector can compute 3-MT1~MT7 and 4-M6 without
+// the server needing to intercept every LLM call.
+
+// POST /v1/internal/task/start
+// Body: {"session_id":"...", "task_type":"...", "goal":"..."}
+//
+// Registers the session in the metrics tracker and optionally updates the
+// Session object in the store.  Idempotent: calling start multiple times
+// on the same session only refreshes goal/task_type.
+func (g *Gateway) handleTaskStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		TaskType  string `json:"task_type"`
+		Goal      string `json:"goal"`
+		AgentID   string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	// Ensure the session record is initialised in the tracker.
+	_ = metrics.Global().Session(req.SessionID)
+
+	// Update or create the Session object in the canonical store.
+	sess, ok := g.store.Objects().GetSession(req.SessionID)
+	if !ok {
+		sess = schemas.Session{
+			SessionID: req.SessionID,
+			AgentID:   req.AgentID,
+			StartTS:   time.Now().UTC().Format(time.RFC3339),
+			Status:    "active",
+		}
+	}
+	if req.TaskType != "" {
+		sess.TaskType = req.TaskType
+	}
+	if req.Goal != "" {
+		sess.Goal = req.Goal
+	}
+	if req.AgentID != "" {
+		sess.AgentID = req.AgentID
+	}
+	g.store.Objects().PutSession(sess)
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"task_type":  sess.TaskType,
+	})
+}
+
+// POST /v1/internal/task/complete
+// Body: {"session_id":"...", "success":true, "duration_ms":1234}
+//
+// Marks the task as complete in the metrics tracker and updates the Session
+// EndTS + Status in the store.  Also increments MASTaskTotal/Success when
+// the agent is part of a multi-agent system (presence of AgentID in session).
+func (g *Gateway) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID  string  `json:"session_id"`
+		Success    bool    `json:"success"`
+		DurationMs float64 `json:"duration_ms"`
+		MAS        bool    `json:"mas"` // true → also count in MAS metrics (4-M6)
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	metrics.Global().Session(req.SessionID).Complete(req.Success, req.DurationMs)
+	metrics.Global().RecordTaskDuration(req.DurationMs)
+	if req.MAS {
+		metrics.Global().RecordMASTask(req.Success)
+	}
+
+	// Update Session record.
+	if sess, ok := g.store.Objects().GetSession(req.SessionID); ok {
+		sess.EndTS = time.Now().UTC().Format(time.RFC3339)
+		if req.Success {
+			sess.Status = "completed"
+		} else {
+			sess.Status = "failed"
+		}
+		g.store.Objects().PutSession(sess)
+	}
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"success":    req.Success,
+	})
+}
+
+// POST /v1/internal/task/tokens
+// Body: {"session_id":"...", "tokens":512}
+//
+// Adds token usage to the session tracker (3-MT4).
+func (g *Gateway) handleTaskTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Tokens    int64  `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	metrics.Global().Session(req.SessionID).AddTokens(req.Tokens)
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"tokens":     req.Tokens,
+	})
+}
+
+// POST /v1/internal/task/claim
+// Body: {"session_id":"...", "evidence_supported":true, "unsupported":false}
+//
+// Records a single agent claim.  evidence_supported=true counts towards
+// 3-MT5; unsupported=true (hallucination) counts towards 3-MT7.
+func (g *Gateway) handleTaskClaim(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID         string `json:"session_id"`
+		EvidenceSupported bool   `json:"evidence_supported"`
+		Unsupported       bool   `json:"unsupported"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mc := metrics.Global()
+	mc.RecordEvidenceSupported(req.EvidenceSupported)
+	if req.Unsupported {
+		mc.RecordUnsupportedClaim()
+	}
+	if req.SessionID != "" {
+		tr := mc.Session(req.SessionID)
+		tr.RecordQuery(req.EvidenceSupported)
+		if req.Unsupported {
+			tr.RecordUnsupportedClaim()
+		}
+	}
+	writeJSON(w, map[string]any{"status": "ok"})
+}
+
+// ── Plan Step & Repair API ────────────────────────────────────────────────────
+
+// POST /v1/internal/plan/step
+// Body: {"session_id":"...", "step_description":"...", "step_index":1}
+//
+// Records that a plan step has been executed.  Increments the session step
+// counter (3-MT2).
+func (g *Gateway) handlePlanStep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID       string `json:"session_id"`
+		StepDescription string `json:"step_description"`
+		StepIndex       int    `json:"step_index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SessionID != "" {
+		metrics.Global().Session(req.SessionID).AddStep()
+	}
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"session_id": req.SessionID,
+		"step_index": req.StepIndex,
+	})
+}
+
+// POST /v1/internal/plan/repair
+// Body: {"session_id":"...", "success":true, "reason":"..."}
+//
+// Records a plan repair attempt.  Updates both the global PlanRepair counters
+// (3-MT6) and the per-session tracker.
+func (g *Gateway) handlePlanRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		Success   bool   `json:"success"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	metrics.Global().RecordPlanRepair(req.Success)
+	if req.SessionID != "" {
+		metrics.Global().Session(req.SessionID).RecordPlanRepair(req.Success)
+	}
+	writeJSON(w, map[string]any{
+		"status":  "ok",
+		"success": req.Success,
+	})
+}
+
+// ── /v1/ingest/document ───────────────────────────────────────────────────────
+//
+// POST /v1/ingest/document
+// Body: {
+//   "agent_id":     "...",
+//   "session_id":   "...",
+//   "workspace_id": "...",
+//   "title":        "...",
+//   "text":         "<full document text>",
+//   "chunk_size":   512,    // chars per chunk, default 1000
+//   "overlap":      50,     // overlap chars between chunks, default 0
+//   "importance":   0.6
+// }
+//
+// Splits the document into chunks and ingests each as an episodic memory
+// event.  All chunks share the same ImportBatchID so they can be queried
+// as a unit.  Returns the batch_id and per-chunk memory_ids.
+//
+// Covers 3-T1 (long-document analysis).
+func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentID     string  `json:"agent_id"`
+		SessionID   string  `json:"session_id"`
+		WorkspaceID string  `json:"workspace_id"`
+		Title       string  `json:"title"`
+		Text        string  `json:"text"`
+		ChunkSize   int     `json:"chunk_size"`
+		Overlap     int     `json:"overlap"`
+		Importance  float64 `json:"importance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	if req.ChunkSize <= 0 {
+		req.ChunkSize = 1000
+	}
+	if req.Overlap < 0 {
+		req.Overlap = 0
+	}
+	if req.Importance <= 0 {
+		req.Importance = 0.5
+	}
+
+	chunks := splitTextIntoChunks(req.Text, req.ChunkSize, req.Overlap)
+	batchID := generateObjectID("batch")
+	now := time.Now().UTC().Format(time.RFC3339)
+	memoryIDs := make([]string, 0, len(chunks))
+	errs := []string{}
+
+	for i, chunk := range chunks {
+		evID := generateObjectID("evt")
+		title := req.Title
+		if title == "" {
+			title = fmt.Sprintf("chunk_%d", i)
+		} else {
+			title = fmt.Sprintf("%s_chunk_%d", title, i)
+		}
+		ev := schemas.Event{
+			EventID:     evID,
+			AgentID:     req.AgentID,
+			SessionID:   req.SessionID,
+			WorkspaceID: req.WorkspaceID,
+			EventType:   string(schemas.EventTypeMemoryWriteRequested),
+			EventTime:   now,
+			Importance:  req.Importance,
+			Payload: map[string]any{
+				"text":          chunk,
+				"title":         title,
+				"chunk_index":   i,
+				"chunk_total":   len(chunks),
+				"import_batch":  batchID,
+			},
+		}
+		ack, err := g.runtime.SubmitIngest(ev)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("chunk_%d: %v", i, err))
+			continue
+		}
+		if mid, ok := ack["memory_id"].(string); ok {
+			memoryIDs = append(memoryIDs, mid)
+		}
+	}
+
+	result := map[string]any{
+		"status":     "ok",
+		"batch_id":   batchID,
+		"chunks":     len(chunks),
+		"memory_ids": memoryIDs,
+	}
+	if len(errs) > 0 {
+		result["errors"] = errs
+		result["status"] = "partial"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+// splitTextIntoChunks divides text into chunks of at most chunkSize runes,
+// with optional overlap.  Splits prefer paragraph / sentence boundaries when
+// they fall within the last 20% of the chunk window.
+func splitTextIntoChunks(text string, chunkSize, overlap int) []string {
+	runes := []rune(text)
+	total := len(runes)
+	if total == 0 {
+		return nil
+	}
+	if chunkSize >= total {
+		return []string{string(runes)}
+	}
+	var chunks []string
+	start := 0
+	for start < total {
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		// Try to split on a paragraph boundary in the last 20% of the window.
+		window := end - start
+		searchFrom := start + window*4/5
+		splitAt := -1
+		for i := end - 1; i >= searchFrom; i-- {
+			if runes[i] == '\n' {
+				splitAt = i + 1
+				break
+			}
+		}
+		if splitAt < 0 || splitAt <= start {
+			// Fall back to period / space boundary.
+			for i := end - 1; i >= searchFrom; i-- {
+				if runes[i] == '.' || runes[i] == ' ' {
+					splitAt = i + 1
+					break
+				}
+			}
+		}
+		if splitAt > start {
+			end = splitAt
+		}
+		chunks = append(chunks, string(runes[start:end]))
+		nextStart := end - overlap
+		if nextStart <= start {
+			nextStart = end
+		}
+		start = nextStart
+	}
+	return chunks
 }
