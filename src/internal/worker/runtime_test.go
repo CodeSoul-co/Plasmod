@@ -1089,3 +1089,42 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory_FromS3(t *testing
 	_ = cold.DeleteMemoryEmbedding(memID)
 	_ = cold.DeleteMemory(memID)
 }
+
+func TestRuntime_VectorOnlyMode_SkipsGraphAndProvenance(t *testing.T) {
+	t.Setenv("PLASMOD_VECTOR_ONLY_MODE", "true")
+
+	r := buildTestRuntime(t)
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:   "evt_vector_only_mode_1",
+		TenantID:  "tenant_vector_only",
+		WorkspaceID: "ws_vector_only",
+		AgentID:   "agent_vector_only",
+		SessionID: "sess_vector_only",
+		Payload:   map[string]any{"text": "hello andb vector only"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitIngest failed: %v", err)
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "hello andb vector only",
+		AgentID:     "agent_vector_only",
+		SessionID:   "sess_vector_only",
+		WorkspaceID: "ws_vector_only",
+		TopK:        5,
+	})
+
+	if len(resp.Objects) == 0 {
+		t.Fatal("expected vector-only mode to return retrieval objects")
+	}
+	if len(resp.Nodes) != 0 || len(resp.Edges) != 0 || len(resp.ProofTrace) != 0 || len(resp.Provenance) != 0 || len(resp.Versions) != 0 {
+		t.Fatalf("expected vector-only mode to skip graph/provenance payloads, got nodes=%d edges=%d proof=%d prov=%d versions=%d",
+			len(resp.Nodes), len(resp.Edges), len(resp.ProofTrace), len(resp.Provenance), len(resp.Versions))
+	}
+	if resp.Retrieval == nil {
+		t.Fatal("expected retrieval summary in vector-only mode")
+	}
+	if resp.Retrieval.CanonicalAdds != 0 {
+		t.Fatalf("expected canonical adds to be disabled in vector-only mode, got %d", resp.Retrieval.CanonicalAdds)
+	}
+}

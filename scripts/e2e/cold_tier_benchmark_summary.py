@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run Member C cold-tier benchmark tests and summarize the key metrics.
+Run cold-tier benchmark tests and summarize the key metrics.
 
 This script is intentionally lightweight:
 - it reuses the existing Go benchmark / validation tests
@@ -8,11 +8,11 @@ This script is intentionally lightweight:
 - it can emit both human-readable text and machine-readable JSON
 
 Typical usage:
-  python scripts/e2e/member_c_benchmark_summary.py
-  python scripts/e2e/member_c_benchmark_summary.py --json out/member_c_benchmark.json
-  python scripts/e2e/member_c_benchmark_summary.py --csv out/member_c_benchmark.csv
-  python scripts/e2e/member_c_benchmark_summary.py --include-scaling
-  python scripts/e2e/member_c_benchmark_summary.py --include-curve --csv out/member_c_curve.csv
+  python scripts/e2e/cold_tier_benchmark_summary.py
+  python scripts/e2e/cold_tier_benchmark_summary.py --json out/cold_tier_benchmark.json
+  python scripts/e2e/cold_tier_benchmark_summary.py --csv out/cold_tier_benchmark.csv
+  python scripts/e2e/cold_tier_benchmark_summary.py --include-scaling
+  python scripts/e2e/cold_tier_benchmark_summary.py --include-curve --csv out/recall_throughput_curve.csv
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def parse_output(stdout: str, stderr: str) -> dict[str, Any]:
     combined = "\n".join(part for part in (stdout, stderr) if part)
     summary: dict[str, Any] = {
         "package": "plasmod/src/internal/worker",
-        "benchmark_suite": "member_c_cold_tier",
+        "benchmark_suite": "cold_tier",
         "tests_ran": [
             "TestRuntime_IncludeCold_10KArchivedCorrectnessAndLatency",
             "TestRuntime_IncludeCold_10KArchived_RecallVsHotOnly",
@@ -183,7 +183,7 @@ def parse_output(stdout: str, stderr: str) -> dict[str, Any]:
 
 
 def print_human_summary(summary: dict[str, Any]) -> None:
-    print("Member C Cold-Tier Benchmark Summary")
+    print("Cold-Tier Benchmark Summary")
     print(f"package: {summary['package']}")
     print(f"suite:   {summary['benchmark_suite']}")
 
@@ -324,7 +324,7 @@ def write_csv(summary: dict[str, Any], csv_path: pathlib.Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Summarize Member C cold-tier benchmark metrics")
+    parser = argparse.ArgumentParser(description="Summarize cold-tier benchmark metrics")
     parser.add_argument("--json", dest="json_path", help="Optional path to write JSON summary")
     parser.add_argument("--csv", dest="csv_path", help="Optional path to write flat CSV summary")
     parser.add_argument("--include-scaling", action="store_true", help="Also run dataset-size scaling validation")
