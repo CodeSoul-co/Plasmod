@@ -72,3 +72,4 @@ go.mod
 docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
 new.md
+.gocache/
