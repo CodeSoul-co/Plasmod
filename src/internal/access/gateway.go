@@ -292,6 +292,19 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.LatestBatchOnly {
+		workspaceID := strings.TrimSpace(req.WorkspaceID)
+		datasetName := strings.TrimSpace(req.DatasetName)
+		sourceFileName := strings.TrimSpace(req.SourceFileName)
+		if workspaceID == "" {
+			http.Error(w, "latest_batch_only requires workspace_id", http.StatusBadRequest)
+			return
+		}
+		if datasetName == "" && sourceFileName == "" {
+			http.Error(w, "latest_batch_only requires dataset_name or source_file_name", http.StatusBadRequest)
+			return
+		}
+	}
 	resp := g.runtime.ExecuteQuery(req)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

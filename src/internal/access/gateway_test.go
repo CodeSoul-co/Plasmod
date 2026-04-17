@@ -579,6 +579,63 @@ func TestGateway_Query_LatestBatchOnlySelector(t *testing.T) {
 	}
 }
 
+func TestGateway_Query_LatestBatchOnly_RequiresWorkspaceID(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	qBody, _ := json.Marshal(map[string]any{
+		"query_text":        "dataset=deep1B.ibin",
+		"query_scope":       "w_batch_query",
+		"session_id":        "s_batch_query",
+		"agent_id":          "a_loader",
+		"tenant_id":         "t_batch",
+		"top_k":             10,
+		"response_mode":     "structured_evidence",
+		"dataset_name":      "deep1B",
+		"source_file_name":  "deep1B.ibin",
+		"latest_batch_only": true,
+	})
+	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
+	qReq.Header.Set("Content-Type", "application/json")
+	qW := httptest.NewRecorder()
+	mux.ServeHTTP(qW, qReq)
+	if qW.Code != http.StatusBadRequest {
+		t.Fatalf("query: want 400, got %d", qW.Code)
+	}
+	if got := qW.Body.String(); got != "latest_batch_only requires workspace_id\n" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestGateway_Query_LatestBatchOnly_RequiresDatasetOrSourceFile(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	qBody, _ := json.Marshal(map[string]any{
+		"query_text":        "dataset=deep1B.ibin",
+		"query_scope":       "w_batch_query",
+		"session_id":        "s_batch_query",
+		"agent_id":          "a_loader",
+		"tenant_id":         "t_batch",
+		"workspace_id":      "w_batch_query",
+		"top_k":             10,
+		"response_mode":     "structured_evidence",
+		"latest_batch_only": true,
+	})
+	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
+	qReq.Header.Set("Content-Type", "application/json")
+	qW := httptest.NewRecorder()
+	mux.ServeHTTP(qW, qReq)
+	if qW.Code != http.StatusBadRequest {
+		t.Fatalf("query: want 400, got %d", qW.Code)
+	}
+	if got := qW.Body.String(); got != "latest_batch_only requires dataset_name or source_file_name\n" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
 func TestGateway_DatasetDelete_CompatViaSourceEventIDs_WhenPolicyTagsEmpty(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
