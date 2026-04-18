@@ -50,6 +50,7 @@ rule
 系统分层架构图.md
 docs/member-b/
 多维度数据集入库与检索规范（参考Milvus-Manu）.md
+
 TESTING.md
 # Local runtime data
 .andb_data/00001.mem
@@ -72,3 +73,9 @@ go.mod
 docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
 new.md
+
+# dev docs
+reviewlist.md
+
+# Local experiment environment (temporary test data, models, and runtime)
+plasmod_test_env/
