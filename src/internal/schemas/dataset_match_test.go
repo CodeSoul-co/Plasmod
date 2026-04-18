@@ -69,3 +69,21 @@ func TestMemoryDatasetMatch_prefixOnStructuredFile(t *testing.T) {
 		t.Fatal("bad prefix")
 	}
 }
+
+func TestMemoryDatasetMatchTrimmedInWorkspace_Equivalent(t *testing.T) {
+	m := Memory{
+		Scope:          "w1",
+		DatasetName:    "deep1B",
+		SourceFileName: "base.10M.fbin",
+		Content:        "dataset=base.10M.fbin dataset_name:deep1B row:0",
+	}
+	if !MemoryDatasetMatch(m, "w1", "base.10M.fbin", "deep1B", "") {
+		t.Fatal("expected baseline matcher true")
+	}
+	if !MemoryDatasetMatchTrimmedInWorkspace(m, "base.10M.fbin", "deep1B", "") {
+		t.Fatal("expected trimmed-in-workspace matcher true")
+	}
+	if MemoryDatasetMatchTrimmedInWorkspace(m, "other.fbin", "deep1B", "") {
+		t.Fatal("expected trimmed-in-workspace matcher false on file mismatch")
+	}
+}

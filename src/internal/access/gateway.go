@@ -408,7 +408,11 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	ids := make([]string, 0)
 	for _, m := range mems {
-		if !schemas.MemoryDatasetMatch(m, req.WorkspaceID, req.FileName, req.DatasetName, req.Prefix) {
+		// Fast path: workspace_id is required; skip cross-workspace rows early.
+		if m.Scope != req.WorkspaceID {
+			continue
+		}
+		if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
 			continue
 		}
 		matched++
@@ -501,6 +505,8 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if tiered == nil {
 		purgeBackend = "warm_only"
 	}
+	requestStartedAt := time.Now()
+	scanStartedAt := requestStartedAt
 	ctx := r.Context()
 	mems := g.store.Objects().ListMemories("", "")
 	scanned := len(mems)
@@ -531,7 +537,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workspaceCandidates++
-		if !schemas.MemoryDatasetMatch(m, req.WorkspaceID, req.FileName, req.DatasetName, req.Prefix) {
+		if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
 			continue
 		}
 		matched++
@@ -545,10 +551,11 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		purgeable++
 		purgeIDs = append(purgeIDs, m.MemoryID)
 	}
+	scanElapsedMs := time.Since(scanStartedAt).Milliseconds()
 	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
 	purgeBatchSize := resolveDatasetPurgeBatchSize()
 	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
-	startedAt := time.Now()
+	deleteStartedAt := time.Now()
 	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
 		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
 			select {
@@ -630,7 +637,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 				len(purgeIDs),
 				workerCount,
 				purgeQueueSize,
-				time.Since(startedAt).Milliseconds(),
+				time.Since(deleteStartedAt).Milliseconds(),
 				cancelled,
 			)
 			if cancelled {
@@ -653,6 +660,8 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			progressPercent = 100
 		}
 	}
+	deleteElapsedMs := time.Since(deleteStartedAt).Milliseconds()
+	responseStartedAt := time.Now()
 	resp := map[string]any{
 		"status":                 status,
 		"data_presence":          dataPresence,
@@ -674,7 +683,9 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"purge_workers":          purgeWorkers,
 		"purge_batch_size":       purgeBatchSize,
 		"purge_queue_size":       purgeQueueSize,
-		"purge_elapsed_ms":       time.Since(startedAt).Milliseconds(),
+		"purge_elapsed_ms":       time.Since(requestStartedAt).Milliseconds(),
+		"purge_scan_elapsed_ms":  scanElapsedMs,
+		"purge_delete_elapsed_ms": deleteElapsedMs,
 		"purge_progress_percent": progressPercent,
 		"include_memory_ids":     includeMemoryIDs,
 	}
@@ -684,6 +695,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resp["memory_ids_omitted"] = true
 	}
+	resp["purge_response_build_elapsed_ms"] = time.Since(responseStartedAt).Milliseconds()
 	writeJSON(w, resp)
 }
 

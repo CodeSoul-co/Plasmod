@@ -752,6 +752,15 @@ func TestGateway_DatasetPurge_DryRun(t *testing.T) {
 	if int(pr["matched"].(float64)) != 1 || int(pr["purgeable"].(float64)) != 1 || int(pr["purged"].(float64)) != 0 {
 		t.Fatalf("purge dry-run mismatch: %+v", pr)
 	}
+	if _, ok := pr["purge_scan_elapsed_ms"]; !ok {
+		t.Fatalf("expected purge_scan_elapsed_ms in response: %+v", pr)
+	}
+	if _, ok := pr["purge_delete_elapsed_ms"]; !ok {
+		t.Fatalf("expected purge_delete_elapsed_ms in response: %+v", pr)
+	}
+	if _, ok := pr["purge_response_build_elapsed_ms"]; !ok {
+		t.Fatalf("expected purge_response_build_elapsed_ms in response: %+v", pr)
+	}
 	if _, ok := deps.store.Objects().GetMemory(memID); !ok {
 		t.Fatalf("memory should still exist after purge dry-run")
 	}
