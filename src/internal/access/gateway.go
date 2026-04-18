@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"plasmod/src/internal/config"
@@ -468,6 +469,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID    string `json:"workspace_id,omitempty"`
 		DryRun         bool   `json:"dry_run,omitempty"`
 		OnlyIfInactive *bool  `json:"only_if_inactive,omitempty"`
+		IncludeMemoryIDs *bool `json:"include_memory_ids,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -489,6 +491,10 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	onlyIfInactive := true
 	if req.OnlyIfInactive != nil {
 		onlyIfInactive = *req.OnlyIfInactive
+	}
+	includeMemoryIDs := true
+	if req.IncludeMemoryIDs != nil {
+		includeMemoryIDs = *req.IncludeMemoryIDs
 	}
 	tiered := g.runtime.TieredObjects()
 	purgeBackend := "tiered"
@@ -529,7 +535,9 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		matched++
-		ids = append(ids, m.MemoryID)
+		if includeMemoryIDs {
+			ids = append(ids, m.MemoryID)
+		}
 		if m.IsActive && onlyIfInactive {
 			skippedActive++
 			continue
@@ -578,8 +586,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			} else {
 				jobs := make(chan string, purgeQueueSize)
 				var wg sync.WaitGroup
-				var mu sync.Mutex
-				batchPurged := 0
+				var batchPurged int64
 				for i := 0; i < workerCount; i++ {
 					wg.Add(1)
 					go func() {
@@ -593,9 +600,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 									return
 								}
 								g.purgeOneMemory(id, tiered)
-								mu.Lock()
-								batchPurged++
-								mu.Unlock()
+								atomic.AddInt64(&batchPurged, 1)
 							}
 						}
 					}()
@@ -613,7 +618,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 				}
 				close(jobs)
 				wg.Wait()
-				purged += batchPurged
+				purged += int(batchPurged)
 			}
 			log.Printf(
 				"admin purge progress: workspace=%s dataset=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
@@ -648,7 +653,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			progressPercent = 100
 		}
 	}
-	writeJSON(w, map[string]any{
+	resp := map[string]any{
 		"status":                 status,
 		"data_presence":          dataPresence,
 		"file_name":              req.FileName,
@@ -671,9 +676,15 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"purge_queue_size":       purgeQueueSize,
 		"purge_elapsed_ms":       time.Since(startedAt).Milliseconds(),
 		"purge_progress_percent": progressPercent,
-		"memory_ids":             ids,
-		"purged_memory_ids":      purgeIDs,
-	})
+		"include_memory_ids":     includeMemoryIDs,
+	}
+	if includeMemoryIDs {
+		resp["memory_ids"] = ids
+		resp["purged_memory_ids"] = purgeIDs
+	} else {
+		resp["memory_ids_omitted"] = true
+	}
+	writeJSON(w, resp)
 }
 
 // handleAdminDataWipe clears all application data (Badger DropAll when enabled, in-memory stores,

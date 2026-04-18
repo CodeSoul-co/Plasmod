@@ -757,6 +757,59 @@ func TestGateway_DatasetPurge_DryRun(t *testing.T) {
 	}
 }
 
+func TestGateway_DatasetPurge_WithoutMemoryIDs(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_ds_no_ids",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_purge_no_ids",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=purge_no_ids.bin row=1 dataset_name:purgeNoIDs",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name":       "purgeNoIDs",
+		"workspace_id":       "w_purge_no_ids",
+		"dry_run":            true,
+		"include_memory_ids": false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge dry-run: want 200, got %d", purgeW.Code)
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+	if v, ok := pr["include_memory_ids"].(bool); !ok || v {
+		t.Fatalf("expected include_memory_ids=false in response, got %v", pr["include_memory_ids"])
+	}
+	if v, ok := pr["memory_ids_omitted"].(bool); !ok || !v {
+		t.Fatalf("expected memory_ids_omitted=true, got %v", pr["memory_ids_omitted"])
+	}
+	if _, ok := pr["memory_ids"]; ok {
+		t.Fatal("expected memory_ids to be omitted when include_memory_ids=false")
+	}
+	if _, ok := pr["purged_memory_ids"]; ok {
+		t.Fatal("expected purged_memory_ids to be omitted when include_memory_ids=false")
+	}
+}
+
 func TestGateway_DatasetPurge_RemovesMemoryAndAudit(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
