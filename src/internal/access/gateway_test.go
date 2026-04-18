@@ -579,6 +579,63 @@ func TestGateway_Query_LatestBatchOnlySelector(t *testing.T) {
 	}
 }
 
+func TestGateway_Query_LatestBatchOnly_RequiresWorkspaceID(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	qBody, _ := json.Marshal(map[string]any{
+		"query_text":        "dataset=deep1B.ibin",
+		"query_scope":       "w_batch_query",
+		"session_id":        "s_batch_query",
+		"agent_id":          "a_loader",
+		"tenant_id":         "t_batch",
+		"top_k":             10,
+		"response_mode":     "structured_evidence",
+		"dataset_name":      "deep1B",
+		"source_file_name":  "deep1B.ibin",
+		"latest_batch_only": true,
+	})
+	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
+	qReq.Header.Set("Content-Type", "application/json")
+	qW := httptest.NewRecorder()
+	mux.ServeHTTP(qW, qReq)
+	if qW.Code != http.StatusBadRequest {
+		t.Fatalf("query: want 400, got %d", qW.Code)
+	}
+	if got := qW.Body.String(); got != "latest_batch_only requires workspace_id\n" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestGateway_Query_LatestBatchOnly_RequiresDatasetOrSourceFile(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	qBody, _ := json.Marshal(map[string]any{
+		"query_text":        "dataset=deep1B.ibin",
+		"query_scope":       "w_batch_query",
+		"session_id":        "s_batch_query",
+		"agent_id":          "a_loader",
+		"tenant_id":         "t_batch",
+		"workspace_id":      "w_batch_query",
+		"top_k":             10,
+		"response_mode":     "structured_evidence",
+		"latest_batch_only": true,
+	})
+	qReq := httptest.NewRequest(http.MethodPost, "/v1/query", bytes.NewReader(qBody))
+	qReq.Header.Set("Content-Type", "application/json")
+	qW := httptest.NewRecorder()
+	mux.ServeHTTP(qW, qReq)
+	if qW.Code != http.StatusBadRequest {
+		t.Fatalf("query: want 400, got %d", qW.Code)
+	}
+	if got := qW.Body.String(); got != "latest_batch_only requires dataset_name or source_file_name\n" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
 func TestGateway_DatasetDelete_CompatViaSourceEventIDs_WhenPolicyTagsEmpty(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
@@ -695,8 +752,70 @@ func TestGateway_DatasetPurge_DryRun(t *testing.T) {
 	if int(pr["matched"].(float64)) != 1 || int(pr["purgeable"].(float64)) != 1 || int(pr["purged"].(float64)) != 0 {
 		t.Fatalf("purge dry-run mismatch: %+v", pr)
 	}
+	if _, ok := pr["purge_scan_elapsed_ms"]; !ok {
+		t.Fatalf("expected purge_scan_elapsed_ms in response: %+v", pr)
+	}
+	if _, ok := pr["purge_delete_elapsed_ms"]; !ok {
+		t.Fatalf("expected purge_delete_elapsed_ms in response: %+v", pr)
+	}
+	if _, ok := pr["purge_response_build_elapsed_ms"]; !ok {
+		t.Fatalf("expected purge_response_build_elapsed_ms in response: %+v", pr)
+	}
 	if _, ok := deps.store.Objects().GetMemory(memID); !ok {
 		t.Fatalf("memory should still exist after purge dry-run")
+	}
+}
+
+func TestGateway_DatasetPurge_WithoutMemoryIDs(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_ds_no_ids",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_purge_no_ids",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=purge_no_ids.bin row=1 dataset_name:purgeNoIDs",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name":       "purgeNoIDs",
+		"workspace_id":       "w_purge_no_ids",
+		"dry_run":            true,
+		"include_memory_ids": false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge dry-run: want 200, got %d", purgeW.Code)
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+	if v, ok := pr["include_memory_ids"].(bool); !ok || v {
+		t.Fatalf("expected include_memory_ids=false in response, got %v", pr["include_memory_ids"])
+	}
+	if v, ok := pr["memory_ids_omitted"].(bool); !ok || !v {
+		t.Fatalf("expected memory_ids_omitted=true, got %v", pr["memory_ids_omitted"])
+	}
+	if _, ok := pr["memory_ids"]; ok {
+		t.Fatal("expected memory_ids to be omitted when include_memory_ids=false")
+	}
+	if _, ok := pr["purged_memory_ids"]; ok {
+		t.Fatal("expected purged_memory_ids to be omitted when include_memory_ids=false")
 	}
 }
 
