@@ -246,8 +246,14 @@ func (t *TieredObjectStore) HardDeleteMemory(memoryID string) {
 		t.hot.Evict(memoryID)
 	}
 	if t.warmEdge != nil {
-		for _, e := range t.warmEdge.BulkEdges([]string{memoryID}) {
-			t.warmEdge.DeleteEdge(e.EdgeID)
+		// Fast path: if the warm edge store supports object-scoped bulk delete,
+		// remove all incident edges in one critical section to reduce lock churn.
+		if bulk, ok := t.warmEdge.(warmEdgeBulkDeleter); ok {
+			bulk.DeleteEdgesByObjectID(memoryID)
+		} else {
+			for _, e := range t.warmEdge.BulkEdges([]string{memoryID}) {
+				t.warmEdge.DeleteEdge(e.EdgeID)
+			}
 		}
 	}
 	if t.cold != nil {

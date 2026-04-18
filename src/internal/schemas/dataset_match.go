@@ -18,6 +18,13 @@ func MemoryDatasetMatch(m Memory, workspaceID string, fileName, datasetName, pre
 	if workspaceID == "" || m.Scope != workspaceID {
 		return false
 	}
+	return MemoryDatasetMatchTrimmedInWorkspace(m, fileName, datasetName, prefix)
+}
+
+// MemoryDatasetMatchTrimmedInWorkspace is a hot-loop matcher for admin delete/purge paths.
+// Inputs must already be trimmed, and caller must have verified m.Scope==workspaceID.
+// Selectors use AND semantics: empty selector disables that constraint.
+func MemoryDatasetMatchTrimmedInWorkspace(m Memory, fileName, datasetName, prefix string) bool {
 	if fileName == "" && datasetName == "" && prefix == "" {
 		return true
 	}

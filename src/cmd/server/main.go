@@ -16,7 +16,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("ANDB server listen on %s", srv.Addr)
+	log.Printf("Plasmod server listen on %s", srv.Addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
