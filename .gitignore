@@ -79,3 +79,9 @@ reviewlist.md
 
 # Local experiment environment (temporary test data, models, and runtime)
 plasmod_test_env/
+
+# Member A: local files
+.gocache/
+Zep.docx
+MemoryBank.docx
+HARD_DELETE_ZEP_EXECUTION_PLAN.md
