@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"plasmod/src/internal/config"
@@ -38,7 +39,7 @@ func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
 		defaultWarmWorkers   = 1
 		maxWorkers           = 64
 	)
-	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_WORKERS"))
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_DATASET_PURGE_WORKERS"))
 	if raw == "" {
 		if tieredEnabled {
 			return defaultTieredWorkers
@@ -60,7 +61,7 @@ func resolveDatasetPurgeBatchSize() int {
 		defaultBatchSize = 512
 		maxBatchSize     = 20000
 	)
-	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_BATCH_SIZE"))
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_DATASET_PURGE_BATCH_SIZE"))
 	if raw == "" {
 		return defaultBatchSize
 	}
@@ -76,7 +77,7 @@ func resolveDatasetPurgeBatchSize() int {
 
 func resolveDatasetPurgeQueueSize(workers int) int {
 	const maxQueueSize = 20000
-	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_QUEUE_SIZE"))
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_DATASET_PURGE_QUEUE_SIZE"))
 	if raw == "" {
 		q := workers * 4
 		if q < 16 {
@@ -292,6 +293,19 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.LatestBatchOnly {
+		workspaceID := strings.TrimSpace(req.WorkspaceID)
+		datasetName := strings.TrimSpace(req.DatasetName)
+		sourceFileName := strings.TrimSpace(req.SourceFileName)
+		if workspaceID == "" {
+			http.Error(w, "latest_batch_only requires workspace_id", http.StatusBadRequest)
+			return
+		}
+		if datasetName == "" && sourceFileName == "" {
+			http.Error(w, "latest_batch_only requires dataset_name or source_file_name", http.StatusBadRequest)
+			return
+		}
+	}
 	resp := g.runtime.ExecuteQuery(req)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -394,7 +408,11 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	ids := make([]string, 0)
 	for _, m := range mems {
-		if !schemas.MemoryDatasetMatch(m, req.WorkspaceID, req.FileName, req.DatasetName, req.Prefix) {
+		// Fast path: workspace_id is required; skip cross-workspace rows early.
+		if m.Scope != req.WorkspaceID {
+			continue
+		}
+		if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
 			continue
 		}
 		matched++
@@ -455,6 +473,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID    string `json:"workspace_id,omitempty"`
 		DryRun         bool   `json:"dry_run,omitempty"`
 		OnlyIfInactive *bool  `json:"only_if_inactive,omitempty"`
+		IncludeMemoryIDs *bool `json:"include_memory_ids,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -477,11 +496,17 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if req.OnlyIfInactive != nil {
 		onlyIfInactive = *req.OnlyIfInactive
 	}
+	includeMemoryIDs := true
+	if req.IncludeMemoryIDs != nil {
+		includeMemoryIDs = *req.IncludeMemoryIDs
+	}
 	tiered := g.runtime.TieredObjects()
 	purgeBackend := "tiered"
 	if tiered == nil {
 		purgeBackend = "warm_only"
 	}
+	requestStartedAt := time.Now()
+	scanStartedAt := requestStartedAt
 	ctx := r.Context()
 	mems := g.store.Objects().ListMemories("", "")
 	scanned := len(mems)
@@ -512,11 +537,13 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workspaceCandidates++
-		if !schemas.MemoryDatasetMatch(m, req.WorkspaceID, req.FileName, req.DatasetName, req.Prefix) {
+		if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
 			continue
 		}
 		matched++
-		ids = append(ids, m.MemoryID)
+		if includeMemoryIDs {
+			ids = append(ids, m.MemoryID)
+		}
 		if m.IsActive && onlyIfInactive {
 			skippedActive++
 			continue
@@ -524,10 +551,11 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		purgeable++
 		purgeIDs = append(purgeIDs, m.MemoryID)
 	}
+	scanElapsedMs := time.Since(scanStartedAt).Milliseconds()
 	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
 	purgeBatchSize := resolveDatasetPurgeBatchSize()
 	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
-	startedAt := time.Now()
+	deleteStartedAt := time.Now()
 	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
 		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
 			select {
@@ -565,8 +593,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			} else {
 				jobs := make(chan string, purgeQueueSize)
 				var wg sync.WaitGroup
-				var mu sync.Mutex
-				batchPurged := 0
+				var batchPurged int64
 				for i := 0; i < workerCount; i++ {
 					wg.Add(1)
 					go func() {
@@ -580,9 +607,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 									return
 								}
 								g.purgeOneMemory(id, tiered)
-								mu.Lock()
-								batchPurged++
-								mu.Unlock()
+								atomic.AddInt64(&batchPurged, 1)
 							}
 						}
 					}()
@@ -600,7 +625,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 				}
 				close(jobs)
 				wg.Wait()
-				purged += batchPurged
+				purged += int(batchPurged)
 			}
 			log.Printf(
 				"admin purge progress: workspace=%s dataset=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
@@ -612,7 +637,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 				len(purgeIDs),
 				workerCount,
 				purgeQueueSize,
-				time.Since(startedAt).Milliseconds(),
+				time.Since(deleteStartedAt).Milliseconds(),
 				cancelled,
 			)
 			if cancelled {
@@ -635,7 +660,9 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			progressPercent = 100
 		}
 	}
-	writeJSON(w, map[string]any{
+	deleteElapsedMs := time.Since(deleteStartedAt).Milliseconds()
+	responseStartedAt := time.Now()
+	resp := map[string]any{
 		"status":                 status,
 		"data_presence":          dataPresence,
 		"file_name":              req.FileName,
@@ -656,11 +683,20 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"purge_workers":          purgeWorkers,
 		"purge_batch_size":       purgeBatchSize,
 		"purge_queue_size":       purgeQueueSize,
-		"purge_elapsed_ms":       time.Since(startedAt).Milliseconds(),
+		"purge_elapsed_ms":       time.Since(requestStartedAt).Milliseconds(),
+		"purge_scan_elapsed_ms":  scanElapsedMs,
+		"purge_delete_elapsed_ms": deleteElapsedMs,
 		"purge_progress_percent": progressPercent,
-		"memory_ids":             ids,
-		"purged_memory_ids":      purgeIDs,
-	})
+		"include_memory_ids":     includeMemoryIDs,
+	}
+	if includeMemoryIDs {
+		resp["memory_ids"] = ids
+		resp["purged_memory_ids"] = purgeIDs
+	} else {
+		resp["memory_ids_omitted"] = true
+	}
+	resp["purge_response_build_elapsed_ms"] = time.Since(responseStartedAt).Milliseconds()
+	writeJSON(w, resp)
 }
 
 // handleAdminDataWipe clears all application data (Badger DropAll when enabled, in-memory stores,
