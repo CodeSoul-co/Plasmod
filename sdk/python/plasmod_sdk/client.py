@@ -1,10 +1,12 @@
+from __future__ import annotations
 import os
 import requests
+from typing import Optional, List, Dict, Any, Union
 
 
-class AndbClient:
+class PlasmodClient:
     """
-    Python SDK client for CogDB (ANDB).
+    Python SDK client for Plasmod.
 
     Field names and JSON keys are kept in sync with schemas.QueryRequest
     and the /v1/ingest and /v1/query HTTP contracts in access/gateway.go.
@@ -13,7 +15,7 @@ class AndbClient:
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:8080",
-        timeout: float | None = None,
+        timeout: Optional[float] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout or float(os.environ.get("ANDB_HTTP_TIMEOUT", "10"))
@@ -33,7 +35,7 @@ class AndbClient:
         **extra,
     ) -> dict:
         """
-        Ingest a single event into ANDB.
+        Ingest a single event into Plasmod.
 
         Required fields mirror /v1/ingest body (access/gateway.go → schemas.Event):
           event_id, agent_id, session_id, event_type, payload
@@ -74,14 +76,14 @@ class AndbClient:
         tenant_id: str = "",
         workspace_id: str = "",
         top_k: int = 10,
-        object_types: list[str] | None = None,
-        memory_types: list[str] | None = None,
-        relation_constraints: list[str] | None = None,
-        time_window: dict | None = None,
+        object_types: List[str] | None = None,
+        memory_types: List[str] | None = None,
+        relation_constraints: List[str] | None = None,
+        time_window: Optional[dict] = None,
         **extra,
     ) -> dict:
         """
-        Query ANDB for relevant objects.
+        Query Plasmod for relevant objects.
 
         Field names mirror schemas.QueryRequest JSON tags (schemas/query.go):
           query_text, query_scope, session_id, agent_id, tenant_id,
