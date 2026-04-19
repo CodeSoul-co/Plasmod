@@ -1,23 +1,23 @@
 //go:build retrieval
 // +build retrieval
 
-// bridge.go — CGO bridge to libandb_retrieval (Knowhere HNSW).
+// bridge.go — CGO bridge to libplasmod_retrieval (Knowhere HNSW).
 //
 // Build: go build -tags retrieval ./...
-// Requires: make cpp (builds cpp/build/libandb_retrieval.dylib)
+// Requires: make cpp-with-knowhere (builds cpp/build/libplasmod_retrieval.dylib)
 //
 // This file provides the real implementations of Retriever and SegmentRetriever
-// by calling the extern "C" functions in cpp/include/andb/retrieval.h via CGO.
+// by calling the extern "C" functions in cpp/include/plasmod/plasmod_c_api.h via CGO.
 // The stub file (bridge_stub.go) is used for non-CGO builds.
 
 package retrievalplane
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../../../../cpp/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../../../cpp/build -landb_retrieval -Wl,-rpath,${SRCDIR}/../../../../../cpp/build
+#cgo LDFLAGS: -L${SRCDIR}/../../../../../cpp/build -lplasmod_retrieval -Wl,-rpath,${SRCDIR}/../../../../../cpp/build
 
 // Use the pure-C header (no C++ includes) so CGO's C compiler can parse it.
-#include "andb/andb_c_api.h"
+#include "plasmod/plasmod_c_api.h"
 #include <stdlib.h>
 */
 import "C"
@@ -28,7 +28,7 @@ import (
 
 // Version returns the C++ library version string.
 func Version() string {
-	return C.GoString(C.andb_version())
+	return C.GoString(C.plasmod_version())
 }
 
 // ── Retriever (single-index, legacy path) ─────────────────────────────────────
@@ -55,11 +55,11 @@ func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriev
 	if metric == "" {
 		metric = "IP"
 	}
-	ptr := C.andb_retriever_create()
+	ptr := C.plasmod_retriever_create()
 	if ptr == nil {
 		return nil, fmt.Errorf("andb_retriever_create: returned nil")
 	}
-	rc := C.andb_retriever_init(
+	rc := C.plasmod_retriever_init(
 		ptr,
 		C.CString("HNSW"),
 		C.CString(metric),
@@ -68,7 +68,7 @@ func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriev
 		C.int(60),
 	)
 	if rc == 0 {
-		C.andb_retriever_destroy(ptr)
+		C.plasmod_retriever_destroy(ptr)
 		return nil, fmt.Errorf("andb_retriever_init: failed (rc=%d)", rc)
 	}
 	return &Retriever{ptr: ptr, dim: dim}, nil
@@ -80,7 +80,7 @@ func (r *Retriever) Build(vectors []float32, n int) error {
 	if len(vectors) == 0 || n <= 0 {
 		return fmt.Errorf("Build: empty input")
 	}
-	rc := C.andb_retriever_build(
+	rc := C.plasmod_retriever_build(
 		r.ptr,
 		(*C.float)(unsafe.Pointer(&vectors[0])),
 		C.int64_t(n),
@@ -110,7 +110,7 @@ func (r *Retriever) Search(query []float32, topk int, filter []byte) ([]int64, [
 		filterSize = C.size_t(len(filter))
 	}
 
-	rc := C.andb_retriever_search(
+	rc := C.plasmod_retriever_search(
 		r.ptr,
 		(*C.float)(unsafe.Pointer(&query[0])),
 		C.int(r.dim),
@@ -132,7 +132,7 @@ func (r *Retriever) Search(query []float32, topk int, filter []byte) ([]int64, [
 // Close destroys the underlying C++ Retriever.
 func (r *Retriever) Close() {
 	if r.ptr != nil {
-		C.andb_retriever_destroy(r.ptr)
+		C.plasmod_retriever_destroy(r.ptr)
 		r.ptr = nil
 	}
 }
@@ -154,7 +154,7 @@ func (s *SegmentRetriever) BuildSegment(segmentID string, vectors []float32, n, 
 	}
 	cs := C.CString(segmentID)
 	defer C.free(unsafe.Pointer(cs))
-	rc := C.andb_segment_build(
+	rc := C.plasmod_segment_build(
 		cs,
 		(*C.float)(unsafe.Pointer(&vectors[0])),
 		C.int64_t(n),
@@ -198,7 +198,7 @@ func (s *SegmentRetriever) SearchWithFilter(
 		if numVecs < 0 {
 			numVecs = int64(len(allowList) * 8)
 		}
-		rc = C.andb_segment_search_filter(
+		rc = C.plasmod_segment_search_filter(
 			cs,
 			(*C.float)(unsafe.Pointer(&query[0])),
 			C.int64_t(nq),
@@ -209,7 +209,7 @@ func (s *SegmentRetriever) SearchWithFilter(
 			(*C.float)(unsafe.Pointer(&outDists[0])),
 		)
 	} else {
-		rc = C.andb_segment_search(
+		rc = C.plasmod_segment_search(
 			cs,
 			(*C.float)(unsafe.Pointer(&query[0])),
 			C.int64_t(nq),
@@ -228,7 +228,7 @@ func (s *SegmentRetriever) SearchWithFilter(
 func (s *SegmentRetriever) UnloadSegment(segmentID string) error {
 	cs := C.CString(segmentID)
 	defer C.free(unsafe.Pointer(cs))
-	rc := C.andb_segment_unload(cs)
+	rc := C.plasmod_segment_unload(cs)
 	if rc != 0 {
 		return fmt.Errorf("andb_segment_unload(%q): rc=%d", segmentID, rc)
 	}
@@ -239,12 +239,12 @@ func (s *SegmentRetriever) UnloadSegment(segmentID string) error {
 func (s *SegmentRetriever) HasSegment(segmentID string) bool {
 	cs := C.CString(segmentID)
 	defer C.free(unsafe.Pointer(cs))
-	return C.andb_segment_exists(cs) == 1
+	return C.plasmod_segment_exists(cs) == 1
 }
 
 // SegmentSize returns the number of vectors in a loaded segment, or -1.
 func (s *SegmentRetriever) SegmentSize(segmentID string) int64 {
 	cs := C.CString(segmentID)
 	defer C.free(unsafe.Pointer(cs))
-	return int64(C.andb_segment_size(cs))
+	return int64(C.plasmod_segment_size(cs))
 }

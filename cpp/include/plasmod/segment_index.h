@@ -18,7 +18,7 @@
 #include <shared_mutex>
 #include <vector>
 
-namespace andb {
+namespace plasmod {
 
 class SegmentIndexManager {
 public:
@@ -102,4 +102,4 @@ private:
     void DestroyEntry(Entry& e);
 };
 
-}  // namespace andb
+}  // namespace plasmod

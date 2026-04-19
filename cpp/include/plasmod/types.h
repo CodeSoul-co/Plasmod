@@ -4,14 +4,14 @@
 // Core types for retrieval module.
 // All interfaces are fully exposed, no internal hiding.
 
-#ifndef ANDB_TYPES_H
-#define ANDB_TYPES_H
+#ifndef PLASMOD_TYPES_H
+#define PLASMOD_TYPES_H
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace andb {
+namespace plasmod {
 
 // Retrieval candidate with all scoring fields
 // Aligned with Python Candidate dataclass in types.py
@@ -106,6 +106,6 @@ struct MergeConfig {
     float seed_threshold = 0.7f;  // Threshold for seed marking
 };
 
-}  // namespace andb
+}  // namespace plasmod
 
-#endif  // ANDB_TYPES_H
+#endif  // PLASMOD_TYPES_H

@@ -4,15 +4,15 @@
 // Sparse retrieval interface using Knowhere SPARSE_INVERTED_INDEX/SPARSE_WAND.
 // All interfaces are fully exposed for extensibility.
 
-#ifndef ANDB_SPARSE_H
-#define ANDB_SPARSE_H
+#ifndef PLASMOD_SPARSE_H
+#define PLASMOD_SPARSE_H
 
-#include "andb/types.h"
+#include "plasmod/types.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
 
-namespace andb {
+namespace plasmod {
 
 // Forward declaration for Knowhere sparse index wrapper
 class KnowhereSparseIndexWrapper;
@@ -91,6 +91,6 @@ private:
     static uint32_t FnvHash(const std::string& token);
 };
 
-}  // namespace andb
+}  // namespace plasmod
 
-#endif  // ANDB_SPARSE_H
+#endif  // PLASMOD_SPARSE_H
