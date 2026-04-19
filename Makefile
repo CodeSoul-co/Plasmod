@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup
+.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -131,3 +131,18 @@ member-a-all:
 # Production visibility/sanitization guard.
 prod-safety-check:
 	bash scripts/check_prod_visibility.sh
+
+# ── Layer-1 Benchmarks ─────────────────────────────────────────────────────────
+# Group 2: FAISS HNSW (pure ANN baseline — no pipeline overhead)
+# Group 3: Plasmod retrievalplane direct (Go CGO → Knowhere HNSW)
+# Group 4: Plasmod full system  (HTTP → full agent-native pipeline)
+#
+# Requires:
+#   - make cpp-with-knowhere  (builds cpp/build/libandb_retrieval.dylib)
+#   - make build              (builds bin/andb with -tags retrieval)
+#   - pip install numpy faiss-cpu requests
+#   - Plasmod server running: bash start_server.sh
+#
+# Python script (Groups 2, 3, 4 via HTTP):
+bench-layer1:
+	python3 scripts/benchmark_layer1.py
