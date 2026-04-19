@@ -449,6 +449,42 @@ make dev
 
 By default the server listens on `127.0.0.1:8080`. You can override it with `PLASMOD_HTTP_ADDR`.
 
+### Build with HNSW (Knowhere) support
+
+Plasmod supports HNSW vector search via the C++ Knowhere library. This is **optional** — without it, the server runs with a pure-Go fallback.
+
+**Prerequisites:** macOS with Homebrew:
+```bash
+brew install libomp abseil googletest
+```
+
+**Step 1 — Build the C++ library:**
+```bash
+make cpp-with-knowhere
+```
+
+**Step 2 — Build the Go binary (Makefile auto-detects the dylib):**
+```bash
+make build        # automatically adds -tags retrieval when libandb_retrieval.dylib exists
+```
+
+**Step 3 — Deploy the new binary:**
+```bash
+cp bin/andb plasmod_server          # or wherever your start script points
+```
+
+**Verify HNSW is loaded:** after starting the server, check the log for:
+```
+[bootstrap] data plane: hybrid search enabled (provider=onnx dim=384)
+```
+and confirm the library is mapped:
+```bash
+lsof -p $(lsof -t -i:8080) | grep knowhere
+# expected: .../cpp/build/vendor/libknowhere.dylib
+```
+
+**Common mistake:** Running `go build` or `go run` directly (without `make build`) will **not** include the `retrieval` build tag, so `bridge.go` is skipped and `bridge_stub.go` (pure-Go stub) is used instead. Always use `make build` or `make dev` to build with HNSW support.
+
 ### Seed a mock event
 
 ```bash

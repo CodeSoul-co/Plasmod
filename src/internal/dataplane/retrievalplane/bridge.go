@@ -13,8 +13,8 @@
 package retrievalplane
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../../cpp/include
-#cgo LDFLAGS: -L${SRCDIR}/../../../../cpp/build -landb_retrieval -Wl,-rpath,${SRCDIR}/../../../../cpp/build
+#cgo CFLAGS: -I${SRCDIR}/../../../../../cpp/include
+#cgo LDFLAGS: -L${SRCDIR}/../../../../../cpp/build -landb_retrieval -Wl,-rpath,${SRCDIR}/../../../../../cpp/build
 
 // Use the pure-C header (no C++ includes) so CGO's C compiler can parse it.
 #include "andb/andb_c_api.h"
