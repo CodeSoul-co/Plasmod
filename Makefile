@@ -11,17 +11,17 @@ S3_REGION ?= us-east-1
 S3_PREFIX ?= andb/integration_tests
 
 # RETRIEVAL_TAG enables the CGO Knowhere/HNSW retriever.
-# It is only safe to set when cpp/build/libandb_retrieval.so/dylib exists.
+# It is only safe to set when cpp/build/libplasmod_retrieval.so/dylib exists.
 # Use `make cpp` to build the C++ library and set this automatically.
 RETRIEVAL_TAG :=
-CPP_LIB := cpp/build/libandb_retrieval.dylib
-CPP_LIB_SO := cpp/build/libandb_retrieval.so
+CPP_LIB := cpp/build/libplasmod_retrieval.dylib
+CPP_LIB_SO := cpp/build/libplasmod_retrieval.so
 ifeq ($(shell [ -f $(CPP_LIB) ] && echo yes),yes)
   RETRIEVAL_TAG := -tags retrieval
-  CGO_LDFLAGS := -L$(shell pwd)/cpp/build -landb_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
+  CGO_LDFLAGS := -L$(shell pwd)/cpp/build -lplasmod_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
 else ifeq ($(shell [ -f $(CPP_LIB_SO) ] && echo yes),yes)
   RETRIEVAL_TAG := -tags retrieval
-  CGO_LDFLAGS := -L$(shell pwd)/cpp/build -landb_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
+  CGO_LDFLAGS := -L$(shell pwd)/cpp/build -lplasmod_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
 endif
 
 setup:
@@ -33,7 +33,7 @@ dev:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go run $(RETRIEVAL_TAG) ./src/cmd/server'
 
 build:
-	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/andb ./src/cmd/server'
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/plasmod ./src/cmd/server'
 
 cpp:
 	cmake -S cpp -B cpp/build && cmake --build cpp/build --parallel $(shell nproc)
@@ -43,15 +43,15 @@ cpp-gpu:
 
 tensorrt:
 	cmake -S cpp -B cpp/build_trt -DANDB_WITH_TENSORRT=ON -DANDB_WITH_GPU=OFF
-	cmake --build cpp/build_trt --target andb_tensorrt --parallel $(shell nproc)
+	cmake --build cpp/build_trt --target plasmod_tensorrt --parallel $(shell nproc)
 	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
-	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
+	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -lplasmod_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
 	go build -tags cuda,tensorrt,linux ./src/...
 
 tensorrt-dev:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; \
 	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
-	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -landb_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
+	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -lplasmod_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
 	go run -tags cuda,tensorrt,linux ./src/cmd/server'
 
 gguf:
@@ -138,8 +138,8 @@ prod-safety-check:
 # Group 4: Plasmod full system  (HTTP → full agent-native pipeline)
 #
 # Requires:
-#   - make cpp-with-knowhere  (builds cpp/build/libandb_retrieval.dylib)
-#   - make build              (builds bin/andb with -tags retrieval)
+#   - make cpp-with-knowhere  (builds cpp/build/libplasmod_retrieval.dylib)
+#   - make build              (builds bin/plasmod with -tags retrieval)
 #   - pip install numpy faiss-cpu requests
 #   - Plasmod server running: bash start_server.sh
 #

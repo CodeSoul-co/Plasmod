@@ -18,7 +18,7 @@
 //   engines/diskann_engine/ ← Microsoft DiskANN (opt-in)
 //   src/index/gpu_raft/    ← NVIDIA RAFT wrappers: CAGRA/brute_force/ivf_flat/ivf_pq (opt-in)
 
-#include "andb/dense.h"
+#include "plasmod/dense.h"
 
 // Knowhere public API
 #include "knowhere/index/index_factory.h"
@@ -38,7 +38,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace andb {
+namespace plasmod {
 
 // ── Default index config ─────────────────────────────────────────────────────
 static constexpr int kDefaultM              = 16;
@@ -322,4 +322,4 @@ bool DenseRetriever::Search(const float* q, int64_t nq, int topk,
 int64_t DenseRetriever::Count() const { return impl_ ? impl_->Count() : 0; }
 int     DenseRetriever::Dim()   const { return impl_ ? impl_->Dim()   : 0; }
 
-}  // namespace andb
+}  // namespace plasmod
