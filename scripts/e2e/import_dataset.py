@@ -80,10 +80,30 @@ def _http_post_json(
         raise RuntimeError(f"POST {url} failed: {e}") from e
 
 
+def _http_post_status_only(base_url: str, path: str, body: dict, timeout: float = 30.0) -> int:
+    """POST JSON and only validate HTTP status.
+
+    Used by high-throughput ingest path to avoid per-row JSON response decoding overhead.
+    """
+    url = base_url.rstrip("/") + path
+    req = Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            # Drain response body to allow connection reuse by urllib internals.
+            _ = resp.read()
+            return resp.status
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {e.code} POST {url}: {raw}") from e
+    except URLError as e:
+        raise RuntimeError(f"POST {url} failed: {e}") from e
+
+
 def _ingest_event_post(base_url: str, body: dict, timeout: float) -> None:
-    status, ack = _http_post_json(base_url, "/v1/ingest/events", body, timeout=timeout)
+    status = _http_post_status_only(base_url, "/v1/ingest/events", body, timeout=timeout)
     if status != 200:
-        raise RuntimeError(f"unexpected status={status} ack={ack}")
+        raise RuntimeError(f"unexpected status={status}")
 
 
 def _ingest_event_post_retry(
@@ -164,7 +184,7 @@ def _save_ingest_checkpoint(checkpoint_path: str, per_file: dict[str, int], next
         raise
 
 
-def _iter_fvecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[float]]]:
+def _iter_fvecs(path: Path, limit: int, preview_k: int) -> Iterator[tuple[int, int, list[float]]]:
     with path.open("rb") as f:
         i = 0
         while True:
@@ -179,14 +199,15 @@ def _iter_fvecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[float]]
             b = f.read(4 * dim)
             if len(b) != 4 * dim:
                 raise RuntimeError(f"{path}: truncated vector row {i}")
-            vals = list(struct.unpack("<" + "f" * dim, b))
+            k = min(dim, max(0, preview_k))
+            vals = list(struct.unpack("<" + "f" * k, b[: 4 * k])) if k > 0 else []
             yield i, dim, vals
             i += 1
             if limit > 0 and i >= limit:
                 return
 
 
-def _iter_ivecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[int]]]:
+def _iter_ivecs(path: Path, limit: int, preview_k: int) -> Iterator[tuple[int, int, list[int]]]:
     with path.open("rb") as f:
         i = 0
         while True:
@@ -201,14 +222,17 @@ def _iter_ivecs(path: Path, limit: int) -> Iterator[tuple[int, int, list[int]]]:
             b = f.read(4 * dim)
             if len(b) != 4 * dim:
                 raise RuntimeError(f"{path}: truncated vector row {i}")
-            vals = list(struct.unpack("<" + "i" * dim, b))
+            k = min(dim, max(0, preview_k))
+            vals = list(struct.unpack("<" + "i" * k, b[: 4 * k])) if k > 0 else []
             yield i, dim, vals
             i += 1
             if limit > 0 and i >= limit:
                 return
 
 
-def _iter_ibin(path: Path, limit: int, ibin_dtype: str) -> Iterator[tuple[int, int, list[float] | list[int], str]]:
+def _iter_ibin(
+    path: Path, limit: int, ibin_dtype: str, preview_k: int
+) -> Iterator[tuple[int, int, list[float] | list[int], str]]:
     with path.open("rb") as f:
         header = f.read(8)
         if len(header) != 8:
@@ -235,14 +259,15 @@ def _iter_ibin(path: Path, limit: int, ibin_dtype: str) -> Iterator[tuple[int, i
             b = f.read(4 * dim)
             if len(b) != 4 * dim:
                 raise RuntimeError(f"{path}: truncated data at row {i}")
+            k = min(dim, max(0, preview_k))
             if as_int:
-                vals = list(struct.unpack("<" + "i" * dim, b))
+                vals = list(struct.unpack("<" + "i" * k, b[: 4 * k])) if k > 0 else []
             else:
-                vals = list(struct.unpack("<" + "f" * dim, b))
+                vals = list(struct.unpack("<" + "f" * k, b[: 4 * k])) if k > 0 else []
             yield i, dim, vals, dtype
 
 
-def _iter_fbin(path: Path, limit: int) -> Iterator[tuple[int, int, list[float], str]]:
+def _iter_fbin(path: Path, limit: int, preview_k: int) -> Iterator[tuple[int, int, list[float], str]]:
     with path.open("rb") as f:
         header = f.read(8)
         if len(header) != 8:
@@ -256,7 +281,8 @@ def _iter_fbin(path: Path, limit: int) -> Iterator[tuple[int, int, list[float], 
             b = f.read(4 * dim)
             if len(b) != 4 * dim:
                 raise RuntimeError(f"{path}: truncated data at row {i}")
-            vals = list(struct.unpack("<" + "f" * dim, b))
+            k = min(dim, max(0, preview_k))
+            vals = list(struct.unpack("<" + "f" * k, b[: 4 * k])) if k > 0 else []
             yield i, dim, vals, "float32"
 
 
@@ -269,6 +295,12 @@ def _preview(vals: Iterable, k: int) -> str:
     return " ".join(out)
 
 
+def _safe_rate(count: int, elapsed_sec: float) -> float:
+    if elapsed_sec <= 0:
+        return 0.0
+    return float(count) / elapsed_sec
+
+
 def _is_vector_like(v: object) -> bool:
     if not isinstance(v, (list, tuple)) or len(v) == 0:
         return False
@@ -276,7 +308,9 @@ def _is_vector_like(v: object) -> bool:
     return isinstance(sample, (int, float))
 
 
-def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[float] | list[int], str, str]]:
+def _iter_arrow_rows(
+    path: Path, limit: int, preview_k: int
+) -> Iterator[tuple[int, int, list[float] | list[int], str, str]]:
     if pa is None or pa_ipc is None:
         raise RuntimeError("pyarrow is required for .arrow files. Please install: pip install pyarrow")
 
@@ -327,10 +361,12 @@ def _iter_arrow_rows(path: Path, limit: int) -> Iterator[tuple[int, int, list[fl
             if not _is_vector_like(vals_obj):
                 row_idx += 1
                 continue
-            vals = list(vals_obj)
-            dim = len(vals)
+            full_vals = list(vals_obj)
+            dim = len(full_vals)
+            vals = full_vals[: max(0, preview_k)]
             # Infer numeric dtype for metadata/text only.
-            dtype = "float32" if isinstance(vals[0], float) else "int32"
+            sample = full_vals[0]
+            dtype = "float32" if isinstance(sample, float) else "int32"
             # Include best-effort extra text token for easier retrieval.
             extra = ""
             if txt_col and r.get(txt_col) is not None:
@@ -456,6 +492,13 @@ def main() -> None:
         help="Max rows per file; omit for no cap; <=0 means all rows",
     )
     ap.add_argument("--preview-k", type=int, default=6, help="How many leading values in payload.text")
+    ap.add_argument(
+        "--progress-every",
+        type=int,
+        default=200,
+        metavar="N",
+        help="Print ingest progress every N rows (default 200; <=0 disables periodic progress logs)",
+    )
     ap.add_argument("--start-seq", type=int, default=0, help="Global event sequence start")
     ap.add_argument(
         "--concurrency",
@@ -532,6 +575,8 @@ def main() -> None:
         ap.error("--ingest-retries must be >= 0")
     if args.retry_backoff < 0:
         ap.error("--retry-backoff must be >= 0")
+    if args.progress_every < 0:
+        ap.error("--progress-every must be >= 0")
 
     if args.delete and args.purge:
         ap.error("cannot use --delete and --purge together")
@@ -741,10 +786,11 @@ def main() -> None:
     print(
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
         f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
-        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} "
+        f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} progress_every={args.progress_every} "
         f"source={args.source} ingest_mode={args.ingest_mode} import_batch_id={import_batch_id} "
         f"event_id_scope={event_scope}"
     )
+    started_at = time.time()
     try:
         for path in files:
             ext = path.suffix.lower()
@@ -757,22 +803,26 @@ def main() -> None:
 
             if ext == ".fvecs":
                 base_iter = (
-                    (i, dim, vals, "float32", "") for i, dim, vals in _iter_fvecs(path, row_limit)
+                    (i, dim, vals, "float32", "")
+                    for i, dim, vals in _iter_fvecs(path, row_limit, args.preview_k)
                 )
             elif ext == ".ivecs":
-                base_iter = ((i, dim, vals, "int32", "") for i, dim, vals in _iter_ivecs(path, row_limit))
+                base_iter = (
+                    (i, dim, vals, "int32", "")
+                    for i, dim, vals in _iter_ivecs(path, row_limit, args.preview_k)
+                )
             elif ext == ".ibin":
                 base_iter = (
                     (i, dim, vals, dtype, "")
-                    for i, dim, vals, dtype in _iter_ibin(path, row_limit, args.ibin_dtype)
+                    for i, dim, vals, dtype in _iter_ibin(path, row_limit, args.ibin_dtype, args.preview_k)
                 )
             elif ext == ".fbin":
                 base_iter = (
                     (i, dim, vals, dtype, "")
-                    for i, dim, vals, dtype in _iter_fbin(path, row_limit)
+                    for i, dim, vals, dtype in _iter_fbin(path, row_limit, args.preview_k)
                 )
             elif ext == ".arrow":
-                base_iter = _iter_arrow_rows(path, row_limit)
+                base_iter = _iter_arrow_rows(path, row_limit, args.preview_k)
             else:
                 # Should never happen due to _collect_files
                 continue
@@ -782,6 +832,7 @@ def main() -> None:
             )
 
             print(f"[file] {path} ({ext})")
+            file_started_at = time.time()
 
             def _build_ingest_body(
                 row_i: int,
@@ -846,8 +897,9 @@ def main() -> None:
                     if checkpoint_path:
                         ckpt_per_file[ck_key] = file_skip + count
                         _save_ingest_checkpoint(checkpoint_path, ckpt_per_file, seq)
-                    if count % 200 == 0:
-                        print(f"  ingested {count} rows...")
+                    if args.progress_every > 0 and count % args.progress_every == 0:
+                        elapsed = time.time() - file_started_at
+                        print(f"  ingested {count} rows... ({_safe_rate(count, elapsed):.1f} rows/s)")
             else:
                 seq_lock = threading.Lock()
 
@@ -865,8 +917,9 @@ def main() -> None:
                     with prog_lock:
                         count += 1
                         total += 1
-                        if count % 200 == 0:
-                            print(f"  ingested {count} rows...")
+                        if args.progress_every > 0 and count % args.progress_every == 0:
+                            elapsed = time.time() - file_started_at
+                            print(f"  ingested {count} rows... ({_safe_rate(count, elapsed):.1f} rows/s)")
 
                 pending = set()
                 with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
@@ -893,7 +946,11 @@ def main() -> None:
                             fut.result()
                             _on_done()
 
-            print(f"  done rows={count} session_id={session_id}")
+            file_elapsed = time.time() - file_started_at
+            print(
+                f"  done rows={count} session_id={session_id} "
+                f"elapsed={file_elapsed:.1f}s rows_per_sec={_safe_rate(count, file_elapsed):.1f}"
+            )
 
     except Exception:
         if args.checkpoint:
@@ -914,7 +971,11 @@ def main() -> None:
             )
         raise
 
-    print(f"[done] total_rows={total}")
+    total_elapsed = time.time() - started_at
+    print(
+        f"[done] total_rows={total} elapsed={total_elapsed:.1f}s "
+        f"rows_per_sec={_safe_rate(total, total_elapsed):.1f}"
+    )
 
 
 if __name__ == "__main__":
