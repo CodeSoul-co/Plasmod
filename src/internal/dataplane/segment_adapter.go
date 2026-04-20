@@ -1,11 +1,8 @@
 package dataplane
 
 import (
-	"fmt"
 	"sort"
-	"sync"
 
-	"plasmod/retrievalplane"
 	"plasmod/src/internal/dataplane/segmentstore"
 	"plasmod/src/internal/schemas"
 )
@@ -24,8 +21,6 @@ type SegmentDataPlane struct {
 	vecStore *VectorStore
 	embedder EmbeddingGenerator
 	rrfK     int
-	segMu    sync.RWMutex
-	segments map[string][]string
 }
 
 // NewSegmentDataPlane creates a SegmentDataPlane that performs only lexical search.
@@ -38,7 +33,6 @@ func NewSegmentDataPlaneWithConfig(cfg schemas.AlgorithmConfig) *SegmentDataPlan
 	return &SegmentDataPlane{
 		index: segmentstore.NewIndex(),
 		rrfK:  normalizeRRFK(cfg),
-		segments: map[string][]string{},
 	}
 }
 
@@ -66,7 +60,6 @@ func NewSegmentDataPlaneWithEmbedderAndConfig(embedder EmbeddingGenerator, cfg s
 		vecStore: vecStore,
 		embedder: embedder,
 		rrfK:     normalizeRRFK(cfg),
-		segments: map[string][]string{},
 	}, nil
 }
 
@@ -79,26 +72,8 @@ func (e *errEmbedderNil) Error() string { return "embedder is nil" }
 func (p *SegmentDataPlane) Flush() error {
 	if p.vecStore != nil && p.embedder != nil {
 		_ = p.vecStore.Build()
-		_ = p.prebuildDefaultWarmSegment()
 		p.embedder.Reset()
 	}
-	return nil
-}
-
-func (p *SegmentDataPlane) prebuildDefaultWarmSegment() error {
-	if p.vecStore == nil {
-		return nil
-	}
-	ids, vectors, dim := p.vecStore.Snapshot()
-	if len(ids) == 0 || len(vectors) == 0 || dim <= 0 {
-		return nil
-	}
-	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment("warm.default", vectors, len(ids), dim); err != nil {
-		return err
-	}
-	p.segMu.Lock()
-	p.segments["warm.default"] = append([]string(nil), ids...)
-	p.segMu.Unlock()
 	return nil
 }
 
@@ -280,74 +255,4 @@ func (p *SegmentDataPlane) SetEmbedder(embedder EmbeddingGenerator) error {
 	p.vecStore = vs
 	p.embedder = embedder
 	return nil
-}
-
-// IngestVectorsToWarmSegment builds/rebuilds a warm retrieval segment directly.
-// This bypasses canonical object/WAL flows and is intended for bulk vector ingest.
-func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
-	if segmentID == "" {
-		return 0, fmt.Errorf("segment_id is required")
-	}
-	if len(vectors) == 0 || len(objectIDs) != len(vectors) {
-		return 0, fmt.Errorf("vectors/object_ids length mismatch")
-	}
-	dim := len(vectors[0])
-	if dim <= 0 {
-		return 0, fmt.Errorf("vector dim must be > 0")
-	}
-	flat := make([]float32, 0, len(vectors)*dim)
-	for i := range vectors {
-		if len(vectors[i]) != dim {
-			return 0, fmt.Errorf("all vectors must share the same dim")
-		}
-		if objectIDs[i] == "" {
-			return 0, fmt.Errorf("object_ids[%d] is empty", i)
-		}
-		flat = append(flat, vectors[i]...)
-	}
-	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flat, len(vectors), dim); err != nil {
-		return 0, err
-	}
-	p.segMu.Lock()
-	p.segments[segmentID] = append([]string(nil), objectIDs...)
-	p.segMu.Unlock()
-	return len(vectors), nil
-}
-
-// SearchWarmSegment executes ANN search against a prebuilt warm segment.
-func (p *SegmentDataPlane) SearchWarmSegment(segmentID, queryText string, topK int) ([]string, error) {
-	if segmentID == "" {
-		return nil, fmt.Errorf("segment_id is required")
-	}
-	if topK <= 0 {
-		topK = 10
-	}
-	if p.embedder == nil {
-		return nil, fmt.Errorf("embedder unavailable")
-	}
-	queryVec, err := p.embedder.Generate(queryText)
-	if err != nil || len(queryVec) == 0 {
-		if err == nil {
-			err = fmt.Errorf("empty query vector")
-		}
-		return nil, err
-	}
-	intIDs, _, err := retrievalplane.GlobalSegmentRetriever.Search(segmentID, queryVec, 1, topK)
-	if err != nil {
-		return nil, err
-	}
-	p.segMu.RLock()
-	ids := p.segments[segmentID]
-	p.segMu.RUnlock()
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	out := make([]string, 0, len(intIDs))
-	for _, idx := range intIDs {
-		i := int(idx)
-		if i >= 0 && i < len(ids) {
-			out = append(out, ids[i])
-		}
-	}
-	return out, nil
 }
