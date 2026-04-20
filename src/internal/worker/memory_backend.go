@@ -34,6 +34,8 @@ type zepMemoryBackend struct {
 	ingestPath string
 	recallPath string
 	healthPath string
+	softDeletePath string
+	hardDeletePath string
 	client     *http.Client
 }
 
@@ -67,6 +69,14 @@ func newMemoryBackendRouterFromEnv() *memoryBackendRouter {
 		strings.TrimSpace(os.Getenv("PLASMOD_ZEP_HEALTH_PATH")),
 		"/healthz",
 	)
+	softDeletePath := resolveZepPath(
+		strings.TrimSpace(os.Getenv("PLASMOD_ZEP_SOFT_DELETE_PATH")),
+		"/v1/memory/soft-delete",
+	)
+	hardDeletePath := resolveZepPath(
+		strings.TrimSpace(os.Getenv("PLASMOD_ZEP_HARD_DELETE_PATH")),
+		"/v1/memory/hard-delete",
+	)
 	var zep *zepMemoryBackend
 	if baseURL != "" {
 		zep = &zepMemoryBackend{
@@ -76,6 +86,8 @@ func newMemoryBackendRouterFromEnv() *memoryBackendRouter {
 			ingestPath: ingestPath,
 			recallPath: recallPath,
 			healthPath: healthPath,
+			softDeletePath: softDeletePath,
+			hardDeletePath: hardDeletePath,
 			client:     client,
 		}
 	}
@@ -130,6 +142,20 @@ func (m *memoryBackendRouter) RecallZep(
 		return nil, nil
 	}
 	return m.zep.Recall(ctx, query, topK, agentID, sessionID, tenantID, workspaceID)
+}
+
+func (m *memoryBackendRouter) SoftDelete(ctx context.Context, memoryID string, reason string) error {
+	if m == nil || m.zep == nil || strings.TrimSpace(memoryID) == "" {
+		return nil
+	}
+	return m.zep.SoftDelete(ctx, memoryID, reason)
+}
+
+func (m *memoryBackendRouter) HardDelete(ctx context.Context, memoryID string, reason string) error {
+	if m == nil || m.zep == nil || strings.TrimSpace(memoryID) == "" {
+		return nil
+	}
+	return m.zep.HardDelete(ctx, memoryID, reason)
 }
 
 func (m *memoryBackendRouter) Health(ctx context.Context) map[string]any {
@@ -213,6 +239,24 @@ func (z *zepMemoryBackend) Health(ctx context.Context) (bool, map[string]any) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300, map[string]any{"status_code": resp.StatusCode}
+}
+
+func (z *zepMemoryBackend) SoftDelete(ctx context.Context, memoryID string, reason string) error {
+	_, err := z.postJSON(ctx, z.softDeletePath, map[string]any{
+		"memory_id":  memoryID,
+		"reason":     reason,
+		"collection": z.collection,
+	})
+	return err
+}
+
+func (z *zepMemoryBackend) HardDelete(ctx context.Context, memoryID string, reason string) error {
+	_, err := z.postJSON(ctx, z.hardDeletePath, map[string]any{
+		"memory_id":  memoryID,
+		"reason":     reason,
+		"collection": z.collection,
+	})
+	return err
 }
 
 func (z *zepMemoryBackend) postJSON(ctx context.Context, path string, payload map[string]any) (map[string]any, error) {

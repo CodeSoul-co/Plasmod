@@ -124,6 +124,9 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 			Timestamp:      now,
 		})
 	}
+	if g.runtime != nil {
+		g.runtime.EnqueueMemoryDelete(memoryID, true, "dataset_purge")
+	}
 }
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
@@ -524,6 +527,9 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		updated++
+		if g.runtime != nil {
+			g.runtime.EnqueueMemoryDelete(m.MemoryID, false, "dataset_delete")
+		}
 	}
 	writeJSON(w, map[string]any{
 		"status":       "ok",
