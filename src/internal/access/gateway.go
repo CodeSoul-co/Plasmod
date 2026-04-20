@@ -39,7 +39,7 @@ func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
 		defaultWarmWorkers   = 1
 		maxWorkers           = 64
 	)
-	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_WORKERS"))
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_DATASET_PURGE_WORKERS"))
 	if raw == "" {
 		if tieredEnabled {
 			return defaultTieredWorkers
@@ -61,7 +61,7 @@ func resolveDatasetPurgeBatchSize() int {
 		defaultBatchSize = 512
 		maxBatchSize     = 20000
 	)
-	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_BATCH_SIZE"))
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_DATASET_PURGE_BATCH_SIZE"))
 	if raw == "" {
 		return defaultBatchSize
 	}
@@ -77,7 +77,7 @@ func resolveDatasetPurgeBatchSize() int {
 
 func resolveDatasetPurgeQueueSize(workers int) int {
 	const maxQueueSize = 20000
-	raw := strings.TrimSpace(os.Getenv("ANDB_DATASET_PURGE_QUEUE_SIZE"))
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_DATASET_PURGE_QUEUE_SIZE"))
 	if raw == "" {
 		q := workers * 4
 		if q < 16 {

@@ -3,61 +3,61 @@
 //
 // C++ retrieval layer — ANN index operations only.
 //
-// This file implements the extern "C" API declared in andb/retrieval.h.
+// This file implements the extern "C" API declared in plasmod/retrieval.h.
 // All business logic (RRF reranking, safety filtering, seed marking) has been
 // removed and lives exclusively in the Go retrieval engine
 // (src/internal/retrieval/).
 //
-// The flat-index path (andb_retriever_*) uses FlatIndexHandle, a minimal
+// The flat-index path (plasmod_retriever_*) uses FlatIndexHandle, a minimal
 // wrapper around DenseRetriever.  No Merger, no Reranker, no Seed logic.
-// The segment path (andb_segment_*) delegates to SegmentIndexManager.
+// The segment path (plasmod_segment_*) delegates to SegmentIndexManager.
 
-#include "andb/retrieval.h"
-#include "andb/segment_index.h"
+#include "plasmod/retrieval.h"
+#include "plasmod/segment_index.h"
 #include <algorithm>
 #include <cstdio>
 #include <vector>
 
-namespace andb {
+namespace plasmod {
 
 static const char* kVersion = "andb-retrieval-0.3.0";
 
 const char* Version() { return kVersion; }
 
 // ── FlatIndexHandle ───────────────────────────────────────────────────────────
-// Thin RAII wrapper used by andb_retriever_* functions.
+// Thin RAII wrapper used by plasmod_retriever_* functions.
 // No merger, no reranker — purely an HNSW index.
 struct FlatIndexHandle {
     DenseRetriever dense;
     bool           ready = false;
 };
 
-}  // namespace andb
+}  // namespace plasmod
 
 // ── C API implementation ──────────────────────────────────────────────────────
 
-const char* andb_version() { return andb::Version(); }
+const char* plasmod_version() { return plasmod::Version(); }
 
 // ── Flat handle lifecycle ─────────────────────────────────────────────────────
 
-void* andb_retriever_create() {
-    return new andb::FlatIndexHandle();
+void* plasmod_retriever_create() {
+    return new plasmod::FlatIndexHandle();
 }
 
-void andb_retriever_destroy(void* handle) {
-    delete static_cast<andb::FlatIndexHandle*>(handle);
+void plasmod_retriever_destroy(void* handle) {
+    delete static_cast<plasmod::FlatIndexHandle*>(handle);
 }
 
-int andb_retriever_init(void* handle,
+int plasmod_retriever_init(void* handle,
                         const char* index_type,
                         const char* metric_type,
                         int dim,
                         const char* /*unused1*/,
                         int         /*unused2*/) {
     if (!handle || dim <= 0) return 0;
-    auto* h = static_cast<andb::FlatIndexHandle*>(handle);
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
 
-    andb::IndexConfig cfg;
+    plasmod::IndexConfig cfg;
     cfg.index_type  = index_type  ? index_type  : "HNSW";
     cfg.metric_type = metric_type ? metric_type : "IP";
     cfg.dim         = dim;
@@ -65,19 +65,19 @@ int andb_retriever_init(void* handle,
     return h->dense.Init(cfg) ? 1 : 0;
 }
 
-int andb_retriever_build(void* handle,
+int plasmod_retriever_build(void* handle,
                          const float* vectors,
                          int64_t      n,
                          int          dim) {
     if (!handle || !vectors || n <= 0 || dim <= 0) return 0;
-    auto* h = static_cast<andb::FlatIndexHandle*>(handle);
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
     if (!h->dense.Build(vectors, n)) return 0;
     h->ready = true;
     return 1;
 }
 
 // ANN search — raw nearest neighbours, no business logic.
-int andb_retriever_search(void*          handle,
+int plasmod_retriever_search(void*          handle,
                           const float*   query,
                           int            dim,
                           int            top_k,
@@ -90,7 +90,7 @@ int andb_retriever_search(void*          handle,
     if (!handle || !query || dim <= 0 || top_k <= 0 || !out_ids || !out_scores) {
         return 0;
     }
-    auto* h = static_cast<andb::FlatIndexHandle*>(handle);
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
     if (!h->ready) return 0;
 
     const int k = std::min(top_k, max_results);
@@ -118,42 +118,42 @@ int andb_retriever_search(void*          handle,
 
 // ── SegmentIndexManager C API ─────────────────────────────────────────────────
 
-int andb_segment_build(const char* segment_id, const float* vectors,
+int plasmod_segment_build(const char* segment_id, const float* vectors,
                        int64_t n, int dim) {
     if (!segment_id || !vectors || n <= 0 || dim <= 0) return -2;
-    return andb::SegmentIndexManager::Instance().BuildSegment(
+    return plasmod::SegmentIndexManager::Instance().BuildSegment(
         segment_id, vectors, n, dim);
 }
 
-int andb_segment_search(const char* segment_id, const float* query,
+int plasmod_segment_search(const char* segment_id, const float* query,
                         int64_t nq, int topk,
                         int64_t* out_ids, float* out_dists) {
     if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
-    return andb::SegmentIndexManager::Instance().Search(
+    return plasmod::SegmentIndexManager::Instance().Search(
         segment_id, query, nq, topk, out_ids, out_dists);
 }
 
-int andb_segment_search_filter(const char* segment_id, const float* query,
+int plasmod_segment_search_filter(const char* segment_id, const float* query,
                                int64_t nq, int topk,
                                const uint8_t* allow_bits, int64_t allow_count,
                                int64_t* out_ids, float* out_dists) {
     if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
-    return andb::SegmentIndexManager::Instance().SearchWithFilter(
+    return plasmod::SegmentIndexManager::Instance().SearchWithFilter(
         segment_id, query, nq, topk, allow_bits, allow_count,
         out_ids, out_dists);
 }
 
-int andb_segment_unload(const char* segment_id) {
+int plasmod_segment_unload(const char* segment_id) {
     if (!segment_id) return -2;
-    return andb::SegmentIndexManager::Instance().UnloadSegment(segment_id);
+    return plasmod::SegmentIndexManager::Instance().UnloadSegment(segment_id);
 }
 
-int andb_segment_exists(const char* segment_id) {
+int plasmod_segment_exists(const char* segment_id) {
     if (!segment_id) return 0;
-    return andb::SegmentIndexManager::Instance().HasSegment(segment_id) ? 1 : 0;
+    return plasmod::SegmentIndexManager::Instance().HasSegment(segment_id) ? 1 : 0;
 }
 
-int64_t andb_segment_size(const char* segment_id) {
+int64_t plasmod_segment_size(const char* segment_id) {
     if (!segment_id) return -1;
-    return andb::SegmentIndexManager::Instance().SegmentSize(segment_id);
+    return plasmod::SegmentIndexManager::Instance().SegmentSize(segment_id);
 }

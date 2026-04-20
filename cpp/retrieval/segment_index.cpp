@@ -6,7 +6,7 @@
 // Metric: IP (Inner Product, compatible with normalised embeddings).
 // Default params: M=16, efConstruction=256 (configurable via constants).
 
-#include "andb/segment_index.h"
+#include "plasmod/segment_index.h"
 
 #include "knowhere/index/index_factory.h"
 #include "knowhere/dataset.h"
@@ -22,7 +22,7 @@ namespace {
 // Index tuning parameters
 constexpr int kHNSW_M              = 16;
 constexpr int kHNSW_EfConstruction = 256;
-constexpr int kHNSW_EfSearch       = 64;
+constexpr int kHNSW_EfSearch       = 256;  // was 64 — raise for better recall at low topk
 constexpr const char* kMetricType  = "IP";
 constexpr const char* kIndexType   = "HNSW";
 
@@ -35,7 +35,7 @@ constexpr int kErrSearchFailed = -4;
 
 }  // namespace
 
-namespace andb {
+namespace plasmod {
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
 SegmentIndexManager& SegmentIndexManager::Instance() {
@@ -191,4 +191,4 @@ int64_t SegmentIndexManager::SegmentSize(const std::string& segment_id) const {
     return it->second->num_vectors;
 }
 
-}  // namespace andb
+}  // namespace plasmod

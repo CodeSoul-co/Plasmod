@@ -32,7 +32,7 @@ import (
 	"plasmod/src/internal/worker/nodes"
 )
 
-// BuildServer constructs and wires all ANDB server components.
+// BuildServer constructs and wires all Plasmod server components.
 // Returns the HTTP server, a cleanup function, and any build error.
 // The cleanup function must be called when the server is shutting down;
 // it cancels the background worker contexts (EventSubscriber, Orchestrator).
