@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"fmt"
 	"sort"
 
 	"plasmod/src/internal/dataplane/segmentstore"
@@ -178,6 +179,20 @@ func (t *TieredDataPlane) BatchIngest(records []IngestRecord) error {
 		t.hot.InsertObject(r.ObjectID, r.Text, r.Attributes, ns, r.EventUnixTS)
 	}
 	return t.warm.BatchIngest(records)
+}
+
+func (t *TieredDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
+	if t == nil || t.warm == nil {
+		return 0, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
+}
+
+func (t *TieredDataPlane) SearchWarmSegment(segmentID, queryText string, topK int) ([]string, error) {
+	if t == nil || t.warm == nil {
+		return nil, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.SearchWarmSegment(segmentID, queryText, topK)
 }
 
 func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, bool) {

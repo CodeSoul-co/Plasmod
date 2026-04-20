@@ -153,6 +153,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/s3/export", g.handleS3Export)
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/s3/cold-purge", g.handleS3ColdPurge)
+	mux.HandleFunc("/v1/admin/warm/prebuild", g.handleAdminWarmPrebuild)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
@@ -165,6 +166,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
+	mux.HandleFunc("/v1/ingest/vectors", g.handleIngestVectors)
 	mux.HandleFunc("/v1/query", g.handleQuery)
 
 	// Canonical object CRUD
@@ -293,6 +295,20 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(req.WarmSegmentID) != "" {
+		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"status":          "ok",
+			"objects":         ids,
+			"warm_segment_id": req.WarmSegmentID,
+			"tier":            "warm_segment",
+		})
+		return
+	}
 	if req.LatestBatchOnly {
 		workspaceID := strings.TrimSpace(req.WorkspaceID)
 		datasetName := strings.TrimSpace(req.DatasetName)
@@ -309,6 +325,69 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 	resp := g.runtime.ExecuteQuery(req)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		SegmentID string      `json:"segment_id"`
+		ObjectIDs []string    `json:"object_ids"`
+		Vectors   [][]float32 `json:"vectors"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.SegmentID = strings.TrimSpace(req.SegmentID)
+	if req.SegmentID == "" {
+		req.SegmentID = "warm.default"
+	}
+	if len(req.Vectors) == 0 {
+		http.Error(w, "vectors is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.ObjectIDs) == 0 {
+		req.ObjectIDs = make([]string, len(req.Vectors))
+		for i := range req.Vectors {
+			req.ObjectIDs[i] = fmt.Sprintf("%s_%d", req.SegmentID, i)
+		}
+	}
+	if len(req.ObjectIDs) != len(req.Vectors) {
+		http.Error(w, "object_ids/vectors length mismatch", http.StatusBadRequest)
+		return
+	}
+	n, err := g.runtime.IngestVectorsToWarmSegment(req.SegmentID, req.ObjectIDs, req.Vectors)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":      "ok",
+		"segment_id":  req.SegmentID,
+		"ingested":    n,
+		"vector_dim":  len(req.Vectors[0]),
+		"direct_warm": true,
+	})
+}
+
+func (g *Gateway) handleAdminWarmPrebuild(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := g.runtime.AdminWarmPrebuild(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":     "ok",
+		"prebuilt":   true,
+		"segment_id": "warm.default",
+	})
 }
 
 func (g *Gateway) handleTopology(w http.ResponseWriter, r *http.Request) {
