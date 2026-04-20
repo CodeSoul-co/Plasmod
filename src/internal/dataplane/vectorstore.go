@@ -206,6 +206,16 @@ func (vs *VectorStore) Build() error {
 	return nil
 }
 
+// Snapshot returns a copy of the currently buffered vectors and aligned IDs.
+// Callers can use this to prebuild external segment indexes.
+func (vs *VectorStore) Snapshot() (ids []string, vectors []float32, dim int) {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+	ids = append([]string(nil), vs.idArray...)
+	vectors = append([]float32(nil), vs.vectors...)
+	return ids, vectors, vs.dim
+}
+
 // Search queries the vector index and returns up to topK (objectID, score) pairs.
 // Thread-safe.
 func (vs *VectorStore) Search(queryVec []float32, topK int) (ids []string, scores []float32, err error) {
