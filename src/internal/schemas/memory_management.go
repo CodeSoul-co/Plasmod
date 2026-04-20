@@ -67,6 +67,9 @@ type MemoryView struct {
 	ResolvedScope     string   `json:"resolved_scope"`
 	VisibleMemoryRefs []string `json:"visible_memory_refs"`
 	Payloads          []Memory `json:"payloads"`
+	BackendMode       string   `json:"backend_mode,omitempty"`
+	RecallSources     []string `json:"recall_sources,omitempty"`
+	ZepFallback       bool     `json:"zep_fallback,omitempty"`
 	PolicyNotes       []string `json:"policy_notes,omitempty"`
 	ProvenanceNotes   []string `json:"provenance_notes,omitempty"`
 	AlgorithmNotes    []string `json:"algorithm_notes,omitempty"`

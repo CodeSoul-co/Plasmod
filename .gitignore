@@ -85,3 +85,6 @@ plasmod_test_env/
 Zep.docx
 MemoryBank.docx
 HARD_DELETE_ZEP_EXECUTION_PLAN.md
+/home/yangyongsheng/Plasmod/scripts/e2e/import_dataset.py
+.gocache_local/
+Zep_in_Plasmod.md

@@ -197,6 +197,8 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
 	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
 	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
+	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminMemoryProvidersMode)
+	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminMemoryProvidersHealth)
 
 	// Task lifecycle (3-MT1~MT7, 4-M6)
 	mux.HandleFunc("/v1/internal/task/start", g.handleTaskStart)
@@ -1916,6 +1918,42 @@ func (g *Gateway) handleAdminRuntimeMode(w http.ResponseWriter, r *http.Request)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (g *Gateway) handleAdminMemoryProvidersMode(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{
+			"status": "ok",
+			"mode":   g.runtime.MemoryBackendMode(),
+		})
+	case http.MethodPost:
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if ok := g.runtime.SetMemoryBackendMode(strings.TrimSpace(req.Mode)); !ok {
+			http.Error(w, "unsupported mode", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"status": "ok",
+			"mode":   g.runtime.MemoryBackendMode(),
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (g *Gateway) handleAdminMemoryProvidersHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, g.runtime.MemoryBackendHealth(r.Context()))
 }
 
 // ── /v1/internal/memory/stale ────────────────────────────────────────────────
