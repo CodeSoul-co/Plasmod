@@ -206,6 +206,13 @@ func (vs *VectorStore) Build() error {
 	return nil
 }
 
+// Snapshot returns copies of buffered ids/vectors for prebuild workflows.
+func (vs *VectorStore) Snapshot() (ids []string, vectors []float32, dim int) {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+	return append([]string(nil), vs.idArray...), append([]float32(nil), vs.vectors...), vs.dim
+}
+
 // Search queries the vector index and returns up to topK (objectID, score) pairs.
 // Thread-safe.
 func (vs *VectorStore) Search(queryVec []float32, topK int) (ids []string, scores []float32, err error) {

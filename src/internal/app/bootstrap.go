@@ -440,6 +440,11 @@ func BuildServer() (*http.Server, func() error, error) {
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
 	runtime.VectorOnlyMode = vectorOnlyMode
 	runtime.RegisterDefaults()
+	if err := runtime.AdminWarmPrebuild(); err != nil {
+		log.Printf("[bootstrap] warm prebuild skipped: %v", err)
+	} else {
+		log.Printf("[bootstrap] warm prebuild: segment=warm.default")
+	}
 
 	// ── QueryChain (post-retrieval reasoning: ProofTrace + SubgraphExpand) ───
 	// Created internally by Runtime; exposed here for discoverability.

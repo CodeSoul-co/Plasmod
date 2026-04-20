@@ -111,6 +111,29 @@ func (r *Runtime) TieredObjects() *storage.TieredObjectStore {
 	return r.tieredObjects
 }
 
+func (r *Runtime) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
+}
+
+func (r *Runtime) SearchWarmSegment(segmentID, queryText string, topK int) ([]string, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegment(segmentID, queryText, topK)
+}
+
+func (r *Runtime) AdminWarmPrebuild() error {
+	if r.plane == nil {
+		return fmt.Errorf("data plane unavailable")
+	}
+	return r.plane.Flush()
+}
+
 // QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
 // It is nil if the Runtime was constructed without a nodeManager.
 func (r *Runtime) QueryChain() *chain.QueryChain {

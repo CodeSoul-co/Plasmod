@@ -39,6 +39,8 @@ type QueryRequest struct {
 	SourceFileName      string     `json:"source_file_name,omitempty"`
 	ImportBatchID       string     `json:"import_batch_id,omitempty"`
 	LatestBatchOnly     bool       `json:"latest_batch_only,omitempty"`
+	// WarmSegmentID enables direct ANN query against a prebuilt warm segment.
+	WarmSegmentID       string     `json:"warm_segment_id,omitempty"`
 	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
 	IncludeCold bool `json:"include_cold,omitempty"`
 }
