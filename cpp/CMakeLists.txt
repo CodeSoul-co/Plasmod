@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(andb_retrieval LANGUAGES CXX)
+project(plasmod_retrieval LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,18 +66,18 @@ message(STATUS "  diskann engine  : cpp/vendor/engines/diskann_engine/ [opt ${AN
 message(STATUS "  gpu/raft engine : [opt ${ANDB_WITH_GPU}] — NVIDIA RAFT (brute_force/cagra/ivf_flat/ivf_pq)")
 
 # =============================================================================
-# andb_retrieval — B-module retrieval shared library
+# plasmod_retrieval — B-module retrieval shared library
 # C++ layer responsibility: ANN index operations only.
 # Business logic (RRF, safety filter, seed marking) lives in Go.
 # =============================================================================
-add_library(andb_retrieval SHARED
+add_library(plasmod_retrieval SHARED
     retrieval/retrieval.cpp       # extern "C" ANN API (no business logic)
     retrieval/segment_index.cpp   # SegmentIndexManager — per-segment HNSW
     retrieval/dense.cpp           # DenseRetriever — HNSW via ann_core
     retrieval/sparse.cpp          # SparseRetriever — C++ inverted index
 )
 
-target_include_directories(andb_retrieval PUBLIC
+target_include_directories(plasmod_retrieval PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include          # andb/ public headers
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include   # knowhere/ internal API
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/compat    # glog+nlohmann+omp shims
@@ -89,25 +89,25 @@ target_include_directories(andb_retrieval PUBLIC
 if(APPLE)
     set(LIBOMP_INC "/opt/homebrew/opt/libomp/include")
     if(EXISTS "${LIBOMP_INC}/omp.h")
-        target_include_directories(andb_retrieval PRIVATE "${LIBOMP_INC}")
-        target_compile_options(andb_retrieval PRIVATE -Xpreprocessor -fopenmp)
-        target_link_libraries(andb_retrieval PRIVATE "-L/opt/homebrew/opt/libomp/lib" omp)
+        target_include_directories(plasmod_retrieval PRIVATE "${LIBOMP_INC}")
+        target_compile_options(plasmod_retrieval PRIVATE -Xpreprocessor -fopenmp)
+        target_link_libraries(plasmod_retrieval PRIVATE "-L/opt/homebrew/opt/libomp/lib" omp)
     endif()
 endif()
 
 find_package(Threads REQUIRED)
-target_link_libraries(andb_retrieval PUBLIC knowhere Threads::Threads)
+target_link_libraries(plasmod_retrieval PUBLIC knowhere Threads::Threads)
 if(ANDB_WITH_GPU)
-    target_link_libraries(andb_retrieval PUBLIC CUDA::cudart CUDA::nvrtc)
-    target_compile_definitions(andb_retrieval PUBLIC ANDB_WITH_GPU=1)
+    target_link_libraries(plasmod_retrieval PUBLIC CUDA::cudart CUDA::nvrtc)
+    target_compile_definitions(plasmod_retrieval PUBLIC ANDB_WITH_GPU=1)
 endif()
 
-message(STATUS "andb_retrieval: links against vendor/knowhere (CMake target: knowhere)")
+message(STATUS "plasmod_retrieval: links against vendor/knowhere (CMake target: knowhere)")
 
 # =============================================================================
 # TensorRT Bridge (optional — standalone, does NOT require ANDB_WITH_GPU/RAFT)
 # Requires: CUDA toolkit + libnvinfer-dev
-# Build: cmake -S cpp -B cpp/build -DANDB_WITH_TENSORRT=ON && cmake --build cpp/build --target andb_tensorrt
+# Build: cmake -S cpp -B cpp/build -DANDB_WITH_TENSORRT=ON && cmake --build cpp/build --target plasmod_tensorrt
 # =============================================================================
 if(ANDB_WITH_TENSORRT)
     find_package(CUDAToolkit QUIET)
@@ -130,18 +130,18 @@ if(ANDB_WITH_TENSORRT)
         message(STATUS "TensorRT found: ${TENSORRT_LIBRARY}")
         message(STATUS "TensorRT headers: ${TENSORRT_INCLUDE_DIR}")
 
-        add_library(andb_tensorrt SHARED tensorrt_bridge.cpp)
-        target_include_directories(andb_tensorrt PUBLIC
+        add_library(plasmod_tensorrt SHARED tensorrt_bridge.cpp)
+        target_include_directories(plasmod_tensorrt PUBLIC
             ${TENSORRT_INCLUDE_DIR}
             ${CUDAToolkit_INCLUDE_DIRS})
-        target_link_libraries(andb_tensorrt PUBLIC
+        target_link_libraries(plasmod_tensorrt PUBLIC
             ${TENSORRT_LIBRARY}
             CUDA::cudart)
-        set_target_properties(andb_tensorrt PROPERTIES
+        set_target_properties(plasmod_tensorrt PROPERTIES
             CXX_STANDARD 17
             POSITION_INDEPENDENT_CODE ON)
 
-        install(TARGETS andb_tensorrt
+        install(TARGETS plasmod_tensorrt
             LIBRARY DESTINATION lib
             ARCHIVE DESTINATION lib)
 
@@ -161,11 +161,11 @@ endif()
 # =============================================================================
 # Installation
 # =============================================================================
-install(TARGETS andb_retrieval knowhere
+install(TARGETS plasmod_retrieval knowhere
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-install(DIRECTORY include/andb DESTINATION include)
+install(DIRECTORY include/plasmod DESTINATION include)
 install(DIRECTORY vendor/include/knowhere DESTINATION include)

@@ -16,31 +16,31 @@
 //     EnrichAndRank                  (nothing else)
 //
 // The Go layer calls C++ exclusively through the extern "C" functions defined
-// in andb_c_api.h (use that header for CGO — it contains no C++ includes).
+// in plasmod_c_api.h (use that header for CGO — it contains no C++ includes).
 
-#ifndef ANDB_RETRIEVAL_H
-#define ANDB_RETRIEVAL_H
+#ifndef PLASMOD_RETRIEVAL_H
+#define PLASMOD_RETRIEVAL_H
 
-#include "andb/types.h"
-#include "andb/dense.h"
-#include "andb/sparse.h"
-#include "andb/segment_index.h"
+#include "plasmod/types.h"
+#include "plasmod/dense.h"
+#include "plasmod/sparse.h"
+#include "plasmod/segment_index.h"
 #include <cstdint>
 #include <cstddef>
 
-namespace andb {
+namespace plasmod {
 
 // Library version string.
 const char* Version();
 
-}  // namespace andb
+}  // namespace plasmod
 
-// ── C API (also declared in andb_c_api.h — pure-C version for CGO) ───────────
+// ── C API (also declared in plasmod_c_api.h — pure-C version for CGO) ───────────
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-const char* andb_version();
+const char* plasmod_version();
 
 // ── Flat single-index handle (legacy / VectorStore path) ─────────────────────
 // Wraps a single DenseRetriever without any merger or reranking.
@@ -48,11 +48,11 @@ const char* andb_version();
 //
 // Lifecycle: create → init → build → search (×N) → destroy
 
-void* andb_retriever_create();
-void  andb_retriever_destroy(void* handle);
+void* plasmod_retriever_create();
+void  plasmod_retriever_destroy(void* handle);
 
 // Configure HNSW parameters.  Returns 1 on success, 0 on failure.
-int   andb_retriever_init(
+int   plasmod_retriever_init(
     void*       handle,
     const char* index_type,   // "HNSW"
     const char* metric_type,  // "IP" | "L2"
@@ -63,7 +63,7 @@ int   andb_retriever_init(
 
 // Build the HNSW index from a [n × dim] float32 matrix.
 // Returns 1 on success, 0 on failure.
-int   andb_retriever_build(
+int   plasmod_retriever_build(
     void*        handle,
     const float* vectors,
     int64_t      n,
@@ -72,7 +72,7 @@ int   andb_retriever_build(
 
 // ANN search — returns number of results written to out_ids/out_scores.
 // No RRF, no reranking.  Raw nearest-neighbour distances (IP or L2).
-int   andb_retriever_search(
+int   plasmod_retriever_search(
     void*          handle,
     const float*   query,
     int            dim,
@@ -90,14 +90,14 @@ int   andb_retriever_search(
 // Matches retrieval_segments table primary key.
 // Returns 0 on success, negative on error.
 
-int     andb_segment_build(
+int     plasmod_segment_build(
     const char*  segment_id,
     const float* vectors,
     int64_t      n,
     int          dim
 );
 
-int     andb_segment_search(
+int     plasmod_segment_search(
     const char*  segment_id,
     const float* query,
     int64_t      nq,
@@ -106,7 +106,7 @@ int     andb_segment_search(
     float*       out_dists
 );
 
-int     andb_segment_search_filter(
+int     plasmod_segment_search_filter(
     const char*    segment_id,
     const float*   query,
     int64_t        nq,
@@ -117,12 +117,12 @@ int     andb_segment_search_filter(
     float*         out_dists
 );
 
-int     andb_segment_unload(const char* segment_id);
-int     andb_segment_exists(const char* segment_id);
-int64_t andb_segment_size(const char* segment_id);
+int     plasmod_segment_unload(const char* segment_id);
+int     plasmod_segment_exists(const char* segment_id);
+int64_t plasmod_segment_size(const char* segment_id);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // ANDB_RETRIEVAL_H
+#endif  // PLASMOD_RETRIEVAL_H

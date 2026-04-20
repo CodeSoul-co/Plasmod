@@ -26,7 +26,7 @@
 // Serialize/Deserialize/Load/Save implement a simple little-endian binary
 // format (see serialize() for layout details).
 
-#include "andb/sparse.h"
+#include "plasmod/sparse.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -37,7 +37,7 @@
 #include <sstream>
 #include <unordered_map>
 
-namespace andb {
+namespace plasmod {
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -433,4 +433,4 @@ int64_t     SparseRetriever::Count()   const { return impl_->Count(); }
 std::string SparseRetriever::Type()    const { return impl_->Type(); }
 bool        SparseRetriever::IsReady() const { return ready_; }
 
-}  // namespace andb
+}  // namespace plasmod

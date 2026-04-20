@@ -3,14 +3,14 @@
 //
 // Dense retrieval interface backed by CogDB-internal Knowhere (HNSW, IP metric).
 
-#ifndef ANDB_DENSE_H
-#define ANDB_DENSE_H
+#ifndef PLASMOD_DENSE_H
+#define PLASMOD_DENSE_H
 
-#include "andb/types.h"
+#include "plasmod/types.h"
 #include <cstdint>
 #include <memory>
 
-namespace andb {
+namespace plasmod {
 
 // Forward-declare the implementation class (defined in dense.cpp).
 class DenseRetrieverImpl;
@@ -61,6 +61,6 @@ private:
     std::unique_ptr<DenseRetrieverImpl> impl_;
 };
 
-}  // namespace andb
+}  // namespace plasmod
 
-#endif  // ANDB_DENSE_H
+#endif  // PLASMOD_DENSE_H
