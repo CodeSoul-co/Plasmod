@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -59,6 +60,7 @@ type Runtime struct {
 	// GovernanceDisabled suppresses TTL / quarantine / ACL enforcement when
 	// true.  Used by 4-B4 to run Plasmod without the governance layer.
 	GovernanceDisabled bool
+	memoryBackend      *memoryBackendRouter
 }
 
 func CreateRuntime(
@@ -96,6 +98,7 @@ func CreateRuntime(
 		tieredObjects:     tieredObjs,
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
+		memoryBackend:     newMemoryBackendRouterFromEnv(),
 	}
 }
 
@@ -232,6 +235,11 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 	if !r.MinimalMode {
 		r.storage.Versions().PutVersion(mat.Version)
+	}
+	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
+		if err := r.memoryBackend.WriteShadow(context.Background(), mat.Memory, ev); err != nil {
+			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
+		}
 	}
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)
@@ -828,6 +836,7 @@ func (r *Runtime) DispatchRecall(
 			RequesterID:   agentID,
 			AgentID:       agentID,
 			ResolvedScope: scope,
+			BackendMode:   r.MemoryBackendMode(),
 		}
 	}
 
@@ -845,26 +854,66 @@ func (r *Runtime) DispatchRecall(
 	if len(algoOut.ScoredRefs) > 0 {
 		orderedRefs = algoOut.ScoredRefs
 	}
-
-	// Collect full Memory payloads for the ordered refs.
-	payloads := make([]schemas.Memory, 0, len(orderedRefs))
-	for _, id := range orderedRefs {
-		if mem, ok := r.storage.Objects().GetMemory(id); ok {
-			payloads = append(payloads, mem)
-		}
-	}
-
 	var algoNotes []string
 	if len(algoOut.ScoredRefs) > 0 {
 		algoNotes = []string{fmt.Sprintf("algorithm_scored:%d", len(algoOut.ScoredRefs))}
 	} else {
 		algoNotes = []string{"search_fallback:no_algo_worker"}
 	}
-
 	// Convert ProofStep slice to string slice for MemoryView.ConstructionTrace
 	proofStrs := make([]string, len(resp.ProofTrace))
 	for i, step := range resp.ProofTrace {
 		proofStrs[i] = fmt.Sprintf("%s:%s", step.StepType, step.SourceID)
+	}
+	if r.memoryBackend != nil && r.memoryBackend.ShouldHybridRecall() {
+		zepFallback := false
+		recallSources := []string{"local"}
+		zepRefs, err := r.memoryBackend.RecallZep(
+			context.Background(),
+			query,
+			topK,
+			agentID,
+			sessionID,
+			tenantID,
+			workspaceID,
+		)
+		if err != nil {
+			log.Printf("[memory-backend] hybrid_recall zep fallback to local: %v", err)
+			algoNotes = append(algoNotes, "hybrid_recall_zep_fallback=error")
+			zepFallback = true
+		} else if len(zepRefs) > 0 {
+			orderedRefs = rrfFuseStringLists([][]string{orderedRefs, zepRefs}, 60, topK)
+			algoNotes = append(algoNotes, fmt.Sprintf("hybrid_recall_zep=%d", len(zepRefs)))
+			recallSources = append(recallSources, "zep")
+		}
+		// Collect full Memory payloads for the final ordered refs.
+		payloads := make([]schemas.Memory, 0, len(orderedRefs))
+		for _, id := range orderedRefs {
+			if mem, ok := r.storage.Objects().GetMemory(id); ok {
+				payloads = append(payloads, mem)
+			}
+		}
+		return schemas.MemoryView{
+			RequestID:         fmt.Sprintf("recall_%d", now.UnixNano()),
+			RequesterID:       agentID,
+			AgentID:           agentID,
+			ResolvedScope:     scope,
+			VisibleMemoryRefs: orderedRefs,
+			Payloads:          payloads,
+			BackendMode:       r.MemoryBackendMode(),
+			RecallSources:     recallSources,
+			ZepFallback:       zepFallback,
+			ProvenanceNotes:   []string{fmt.Sprintf("search_rank:%d_algo_rank:%d", len(visibleRefs), len(orderedRefs))},
+			AlgorithmNotes:    algoNotes,
+			ConstructionTrace: proofStrs,
+		}
+	}
+	// Collect full Memory payloads for the final ordered refs.
+	payloads := make([]schemas.Memory, 0, len(orderedRefs))
+	for _, id := range orderedRefs {
+		if mem, ok := r.storage.Objects().GetMemory(id); ok {
+			payloads = append(payloads, mem)
+		}
 	}
 
 	return schemas.MemoryView{
@@ -874,10 +923,33 @@ func (r *Runtime) DispatchRecall(
 		ResolvedScope:     scope,
 		VisibleMemoryRefs: orderedRefs,
 		Payloads:          payloads,
+		BackendMode:       r.MemoryBackendMode(),
+		RecallSources:     []string{"local"},
 		ProvenanceNotes:   []string{fmt.Sprintf("search_rank:%d_algo_rank:%d", len(visibleRefs), len(orderedRefs))},
 		AlgorithmNotes:    algoNotes,
 		ConstructionTrace: proofStrs,
 	}
+}
+
+func (r *Runtime) MemoryBackendMode() string {
+	if r == nil || r.memoryBackend == nil {
+		return MemoryBackendLocalOnly
+	}
+	return r.memoryBackend.Mode()
+}
+
+func (r *Runtime) MemoryBackendHealth(ctx context.Context) map[string]any {
+	if r == nil || r.memoryBackend == nil {
+		return map[string]any{"mode": MemoryBackendLocalOnly, "status": "ok"}
+	}
+	return r.memoryBackend.Health(ctx)
+}
+
+func (r *Runtime) SetMemoryBackendMode(mode string) bool {
+	if r == nil || r.memoryBackend == nil {
+		return mode == MemoryBackendLocalOnly
+	}
+	return r.memoryBackend.SetMode(mode)
 }
 
 // DispatchShare copies a memory to a target agent's namespace and fires
