@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
@@ -61,6 +62,18 @@ type Runtime struct {
 	// true.  Used by 4-B4 to run Plasmod without the governance layer.
 	GovernanceDisabled bool
 	memoryBackend      *memoryBackendRouter
+	deleteOutbox       chan memoryDeleteTask
+	deleteWorkerOnce   sync.Once
+	deleteOutboxQueued int64
+	deleteOutboxDone   int64
+	deleteOutboxFailed int64
+	deleteOutboxDropped int64
+}
+
+type memoryDeleteTask struct {
+	MemoryID string
+	Hard     bool
+	Reason   string
 }
 
 func CreateRuntime(
@@ -99,6 +112,7 @@ func CreateRuntime(
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
 		memoryBackend:     newMemoryBackendRouterFromEnv(),
+		deleteOutbox:      make(chan memoryDeleteTask, resolveMemoryDeleteOutboxQueueSize()),
 	}
 }
 
@@ -147,6 +161,15 @@ func (r *Runtime) QueryChain() *chain.QueryChain {
 // goroutine tied to ctx.  The goroutine exits cleanly when ctx is cancelled.
 func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 	go sub.Run(ctx)
+}
+
+func (r *Runtime) StartMemoryDeleteOutbox(ctx context.Context) {
+	if r == nil {
+		return
+	}
+	r.deleteWorkerOnce.Do(func() {
+		go r.runMemoryDeleteOutbox(ctx)
+	})
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
@@ -942,7 +965,10 @@ func (r *Runtime) MemoryBackendHealth(ctx context.Context) map[string]any {
 	if r == nil || r.memoryBackend == nil {
 		return map[string]any{"mode": MemoryBackendLocalOnly, "status": "ok"}
 	}
-	return r.memoryBackend.Health(ctx)
+	out := r.memoryBackend.Health(ctx)
+	outbox := r.MemoryDeleteOutboxStats()
+	out["delete_outbox"] = outbox
+	return out
 }
 
 func (r *Runtime) SetMemoryBackendMode(mode string) bool {
@@ -950,6 +976,127 @@ func (r *Runtime) SetMemoryBackendMode(mode string) bool {
 		return mode == MemoryBackendLocalOnly
 	}
 	return r.memoryBackend.SetMode(mode)
+}
+
+func (r *Runtime) EnqueueMemoryDelete(memoryID string, hard bool, reason string) bool {
+	if r == nil || strings.TrimSpace(memoryID) == "" || r.memoryBackend == nil {
+		return false
+	}
+	task := memoryDeleteTask{
+		MemoryID: strings.TrimSpace(memoryID),
+		Hard:     hard,
+		Reason:   strings.TrimSpace(reason),
+	}
+	select {
+	case r.deleteOutbox <- task:
+		atomic.AddInt64(&r.deleteOutboxQueued, 1)
+		return true
+	default:
+		atomic.AddInt64(&r.deleteOutboxDropped, 1)
+		return false
+	}
+}
+
+func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
+	if r == nil {
+		return map[string]any{"enabled": false}
+	}
+	return map[string]any{
+		"enabled":      true,
+		"queue_size":   len(r.deleteOutbox),
+		"queue_cap":    cap(r.deleteOutbox),
+		"queued_total": atomic.LoadInt64(&r.deleteOutboxQueued),
+		"done_total":   atomic.LoadInt64(&r.deleteOutboxDone),
+		"failed_total": atomic.LoadInt64(&r.deleteOutboxFailed),
+		"dropped_total": atomic.LoadInt64(&r.deleteOutboxDropped),
+	}
+}
+
+func (r *Runtime) runMemoryDeleteOutbox(ctx context.Context) {
+	maxRetries := resolveMemoryDeleteOutboxRetries()
+	retryDelay := resolveMemoryDeleteOutboxRetryDelay()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case task := <-r.deleteOutbox:
+			var err error
+			for attempt := 0; attempt <= maxRetries; attempt++ {
+				callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				if task.Hard {
+					err = r.memoryBackend.HardDelete(callCtx, task.MemoryID, task.Reason)
+				} else {
+					err = r.memoryBackend.SoftDelete(callCtx, task.MemoryID, task.Reason)
+				}
+				cancel()
+				if err == nil {
+					break
+				}
+				if attempt < maxRetries {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(retryDelay):
+					}
+				}
+			}
+			if err != nil {
+				atomic.AddInt64(&r.deleteOutboxFailed, 1)
+				log.Printf("[memory-backend] delete_outbox failed hard=%t memory=%s err=%v", task.Hard, task.MemoryID, err)
+				continue
+			}
+			atomic.AddInt64(&r.deleteOutboxDone, 1)
+		}
+	}
+}
+
+func resolveMemoryDeleteOutboxQueueSize() int {
+	const defaultSize = 2048
+	const maxSize = 20000
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_OUTBOX_SIZE"))
+	if raw == "" {
+		return defaultSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultSize
+	}
+	if n > maxSize {
+		return maxSize
+	}
+	return n
+}
+
+func resolveMemoryDeleteOutboxRetries() int {
+	const defaultRetries = 3
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_RETRIES"))
+	if raw == "" {
+		return defaultRetries
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultRetries
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
+}
+
+func resolveMemoryDeleteOutboxRetryDelay() time.Duration {
+	const defaultMS = 300
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_RETRY_DELAY_MS"))
+	if raw == "" {
+		return time.Duration(defaultMS) * time.Millisecond
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return time.Duration(defaultMS) * time.Millisecond
+	}
+	if n > 10000 {
+		n = 10000
+	}
+	return time.Duration(n) * time.Millisecond
 }
 
 // DispatchShare copies a memory to a target agent's namespace and fires

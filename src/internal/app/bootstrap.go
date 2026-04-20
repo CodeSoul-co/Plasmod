@@ -460,6 +460,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	subscriber := worker.CreateEventSubscriber(wal, nodeManager)
 	runtime.StartSubscriber(ctx, subscriber)
+	runtime.StartMemoryDeleteOutbox(ctx)
 	coord.Registry.Register("event_subscriber", subscriber)
 
 	// ── Execution Orchestrator ─────────────────────────────────────────────────
