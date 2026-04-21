@@ -62,7 +62,8 @@ type Runtime struct {
 	// true.  Used by 4-B4 to run Plasmod without the governance layer.
 	GovernanceDisabled bool
 	memoryBackend      *memoryBackendRouter
-	deleteOutbox       chan memoryDeleteTask
+	deleteOutboxStore  *memoryDeleteOutboxStore
+	deleteOutboxWake   chan struct{}
 	deleteWorkerOnce   sync.Once
 	deleteOutboxQueued int64
 	deleteOutboxDone   int64
@@ -71,9 +72,13 @@ type Runtime struct {
 }
 
 type memoryDeleteTask struct {
+	TaskID   string `json:"task_id"`
 	MemoryID string
 	Hard     bool
 	Reason   string
+	Attempts int    `json:"attempts,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 func CreateRuntime(
@@ -112,7 +117,8 @@ func CreateRuntime(
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
 		memoryBackend:     newMemoryBackendRouterFromEnv(),
-		deleteOutbox:      make(chan memoryDeleteTask, resolveMemoryDeleteOutboxQueueSize()),
+		deleteOutboxStore: newMemoryDeleteOutboxStoreFromEnv(),
+		deleteOutboxWake:  make(chan struct{}, 1),
 	}
 }
 
@@ -982,19 +988,24 @@ func (r *Runtime) EnqueueMemoryDelete(memoryID string, hard bool, reason string)
 	if r == nil || strings.TrimSpace(memoryID) == "" || r.memoryBackend == nil {
 		return false
 	}
+	now := time.Now().UTC().Format(time.RFC3339)
 	task := memoryDeleteTask{
+		TaskID:   fmt.Sprintf("zdel_%d", time.Now().UTC().UnixNano()),
 		MemoryID: strings.TrimSpace(memoryID),
 		Hard:     hard,
 		Reason:   strings.TrimSpace(reason),
+		UpdatedAt: now,
 	}
-	select {
-	case r.deleteOutbox <- task:
+	if r.deleteOutboxStore != nil && r.deleteOutboxStore.Enqueue(task) {
 		atomic.AddInt64(&r.deleteOutboxQueued, 1)
+		select {
+		case r.deleteOutboxWake <- struct{}{}:
+		default:
+		}
 		return true
-	default:
-		atomic.AddInt64(&r.deleteOutboxDropped, 1)
-		return false
 	}
+	atomic.AddInt64(&r.deleteOutboxDropped, 1)
+	return false
 }
 
 func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
@@ -1003,8 +1014,9 @@ func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
 	}
 	return map[string]any{
 		"enabled":      true,
-		"queue_size":   len(r.deleteOutbox),
-		"queue_cap":    cap(r.deleteOutbox),
+		"queue_size":   r.deleteOutboxStore.Pending(),
+		"queue_cap":    resolveMemoryDeleteOutboxQueueSize(),
+		"store_path":   r.deleteOutboxStore.Path(),
 		"queued_total": atomic.LoadInt64(&r.deleteOutboxQueued),
 		"done_total":   atomic.LoadInt64(&r.deleteOutboxDone),
 		"failed_total": atomic.LoadInt64(&r.deleteOutboxFailed),
@@ -1015,38 +1027,60 @@ func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
 func (r *Runtime) runMemoryDeleteOutbox(ctx context.Context) {
 	maxRetries := resolveMemoryDeleteOutboxRetries()
 	retryDelay := resolveMemoryDeleteOutboxRetryDelay()
+	idleTick := time.NewTicker(2 * time.Second)
+	defer idleTick.Stop()
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case task := <-r.deleteOutbox:
-			var err error
-			for attempt := 0; attempt <= maxRetries; attempt++ {
-				callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				if task.Hard {
-					err = r.memoryBackend.HardDelete(callCtx, task.MemoryID, task.Reason)
-				} else {
-					err = r.memoryBackend.SoftDelete(callCtx, task.MemoryID, task.Reason)
-				}
-				cancel()
-				if err == nil {
-					break
-				}
-				if attempt < maxRetries {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(retryDelay):
-					}
-				}
+		if r.deleteOutboxStore == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-idleTick.C:
 			}
-			if err != nil {
-				atomic.AddInt64(&r.deleteOutboxFailed, 1)
-				log.Printf("[memory-backend] delete_outbox failed hard=%t memory=%s err=%v", task.Hard, task.MemoryID, err)
-				continue
-			}
-			atomic.AddInt64(&r.deleteOutboxDone, 1)
+			continue
 		}
+		task, ok := r.deleteOutboxStore.Peek()
+		if !ok {
+			select {
+			case <-ctx.Done():
+				return
+			case <-r.deleteOutboxWake:
+			case <-idleTick.C:
+			}
+			continue
+		}
+		var err error
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			if task.Hard {
+				err = r.memoryBackend.HardDelete(callCtx, task.MemoryID, task.Reason)
+			} else {
+				err = r.memoryBackend.SoftDelete(callCtx, task.MemoryID, task.Reason)
+			}
+			cancel()
+			if err == nil {
+				break
+			}
+			if attempt < maxRetries {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(retryDelay):
+				}
+			}
+		}
+		if err != nil {
+			atomic.AddInt64(&r.deleteOutboxFailed, 1)
+			_ = r.deleteOutboxStore.MarkFailed(task.TaskID, err.Error())
+			log.Printf("[memory-backend] delete_outbox failed hard=%t memory=%s err=%v", task.Hard, task.MemoryID, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retryDelay):
+			}
+			continue
+		}
+		_ = r.deleteOutboxStore.Ack(task.TaskID)
+		atomic.AddInt64(&r.deleteOutboxDone, 1)
 	}
 }
 
