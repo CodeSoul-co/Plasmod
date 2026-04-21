@@ -88,6 +88,9 @@ func (p *SegmentDataPlane) Flush() error {
 }
 
 func (p *SegmentDataPlane) prebuildDefaultWarmSegment() error {
+	if p.vecStore == nil {
+		return nil
+	}
 	ids, vectors, dim := p.vecStore.Snapshot()
 	if len(ids) == 0 || len(vectors) == 0 || dim <= 0 {
 		return nil
