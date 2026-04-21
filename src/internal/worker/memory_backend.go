@@ -51,6 +51,8 @@ func newMemoryBackendRouterFromEnv() *memoryBackendRouter {
 	if raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_TIMEOUT_MS")); raw != "" {
 		if n, err := parsePositiveInt(raw); err == nil {
 			timeoutMS = n
+		} else if raw == "0" {
+			timeoutMS = 0 // zero = no timeout (Go http.Client interprets 0 as infinite)
 		}
 	}
 	client := &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond}
@@ -278,7 +280,9 @@ func (z *zepMemoryBackend) postJSON(ctx context.Context, path string, payload ma
 	}
 	defer resp.Body.Close()
 	out := map[string]any{}
-	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("zep response decode error: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return out, fmt.Errorf("zep http status=%d", resp.StatusCode)
 	}
