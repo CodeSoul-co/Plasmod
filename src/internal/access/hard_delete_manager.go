@@ -35,6 +35,20 @@ type hardDeleteTask struct {
 	StartedAt       string   `json:"started_at,omitempty"`
 	CompletedAt     string   `json:"completed_at,omitempty"`
 	IdempotencyKey  string   `json:"idempotency_key,omitempty"`
+	PurgeBackend    string   `json:"purge_backend,omitempty"`
+	Workers         int      `json:"workers,omitempty"`
+	BatchSize       int      `json:"batch_size,omitempty"`
+	DeleteObjectMs  float64  `json:"delete_object_ms,omitempty"`
+	DeleteAuditMs   float64  `json:"delete_audit_ms,omitempty"`
+	DeleteOutboxMs  float64  `json:"delete_outbox_ms,omitempty"`
+}
+
+type hardDeleteBatchStats struct {
+	DeleteObjectNs int64
+	DeleteAuditNs  int64
+	DeleteOutboxNs int64
+	Workers        int
+	BatchSize      int
 }
 
 type hardDeleteManager struct {
@@ -73,6 +87,9 @@ func (m *hardDeleteManager) enqueue(task *hardDeleteTask) bool {
 	if m == nil || task == nil {
 		return false
 	}
+	if strings.TrimSpace(task.TaskID) == "" || strings.TrimSpace(task.WorkspaceID) == "" {
+		return false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if strings.TrimSpace(task.IdempotencyKey) != "" {
@@ -98,7 +115,7 @@ func (m *hardDeleteManager) get(taskID string) (*hardDeleteTask, bool) {
 	return &cp, true
 }
 
-func (m *hardDeleteManager) run(stopCh <-chan struct{}, ctx context.Context, process func(task *hardDeleteTask, batchSize int) (processed, failed int, done bool, err error)) {
+func (m *hardDeleteManager) run(stopCh <-chan struct{}, ctx context.Context, process func(task *hardDeleteTask, batchSize int) (processed, failed int, done bool, stats hardDeleteBatchStats, err error)) {
 	for {
 		select {
 		case <-stopCh:
@@ -117,8 +134,8 @@ func (m *hardDeleteManager) run(stopCh <-chan struct{}, ctx context.Context, pro
 			continue
 		}
 		batchSize := m.recommendBatchSize(task.CurrentBatch)
-		processed, failed, done, err := process(task, batchSize)
-		m.applyResult(task.TaskID, processed, failed, batchSize, done, err)
+		processed, failed, done, stats, err := process(task, batchSize)
+		m.applyResult(task.TaskID, processed, failed, batchSize, done, stats, err)
 	}
 }
 
@@ -146,7 +163,7 @@ func (m *hardDeleteManager) nextRunnable() *hardDeleteTask {
 	return nil
 }
 
-func (m *hardDeleteManager) applyResult(taskID string, processed, failed, batchSize int, done bool, runErr error) {
+func (m *hardDeleteManager) applyResult(taskID string, processed, failed, batchSize int, done bool, stats hardDeleteBatchStats, runErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[taskID]
@@ -157,6 +174,15 @@ func (m *hardDeleteManager) applyResult(taskID string, processed, failed, batchS
 	t.Processed += processed
 	t.Failed += failed
 	t.CurrentBatch = batchSize
+	if stats.Workers > 0 {
+		t.Workers = stats.Workers
+	}
+	if stats.BatchSize > 0 {
+		t.BatchSize = stats.BatchSize
+	}
+	t.DeleteObjectMs += float64(stats.DeleteObjectNs) / float64(time.Millisecond)
+	t.DeleteAuditMs += float64(stats.DeleteAuditNs) / float64(time.Millisecond)
+	t.DeleteOutboxMs += float64(stats.DeleteOutboxNs) / float64(time.Millisecond)
 	t.UpdatedAt = now
 	if runErr != nil {
 		if hardDeleteTransitionAllowed(t.State, hardDeleteStateFailed) {
@@ -239,7 +265,8 @@ func (m *hardDeleteManager) persistLocked() error {
 	if m == nil || strings.TrimSpace(m.path) == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
+	dir := filepath.Dir(m.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	out := hardDeleteSnapshot{Tasks: make([]*hardDeleteTask, 0, len(m.tasks))}
@@ -250,5 +277,37 @@ func (m *hardDeleteManager) persistLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.path, b, 0o644)
+
+	// Crash-safe persistence: write to a temp file first, fsync, then atomically rename.
+	tmpFile, err := os.CreateTemp(dir, "hard_delete_tasks_*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	cleanupTmp := func() {
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmpFile.Write(b); err != nil {
+		_ = tmpFile.Close()
+		cleanupTmp()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		cleanupTmp()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		cleanupTmp()
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		cleanupTmp()
+		return err
+	}
+	if err := os.Rename(tmpPath, m.path); err != nil {
+		cleanupTmp()
+		return err
+	}
+	return nil
 }
