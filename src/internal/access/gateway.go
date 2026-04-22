@@ -1,7 +1,6 @@
 package access
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -32,8 +31,6 @@ type Gateway struct {
 	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
 	modeMu     sync.RWMutex
 	consistencyMode string
-	hardDeleteMgr *hardDeleteManager
-	stopCh    chan struct{}
 }
 
 func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
@@ -108,23 +105,12 @@ func resolveDatasetPurgeQueueSize(workers int) int {
 	return n
 }
 
-type purgePhaseDurations struct {
-	deleteNs int64
-	auditNs  int64
-	outboxNs int64
-}
-
-func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectStore) purgePhaseDurations {
-	var phase purgePhaseDurations
-	startDelete := time.Now()
+func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectStore) {
 	if tiered != nil {
 		tiered.HardDeleteMemory(memoryID)
 	} else {
 		storage.PurgeMemoryWarmOnly(g.store, memoryID)
 	}
-	phase.deleteNs = time.Since(startDelete).Nanoseconds()
-
-	startAudit := time.Now()
 	if g.store.Audits() != nil {
 		now := time.Now().UTC().Format(time.RFC3339)
 		g.store.Audits().AppendAudit(schemas.AuditRecord{
@@ -138,21 +124,16 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 			Timestamp:      now,
 		})
 	}
-	phase.auditNs = time.Since(startAudit).Nanoseconds()
-
-	startOutbox := time.Now()
 	if g.runtime != nil {
 		g.runtime.EnqueueMemoryDelete(memoryID, true, "dataset_purge")
 	}
-	phase.outboxNs = time.Since(startOutbox).Nanoseconds()
-	return phase
 }
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
 // GET /v1/admin/storage returns the resolved backend configuration.
 // bundle may be nil in tests; admin data wipe still clears in-memory state and omits Badger.DropAll.
 func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
-	g := &Gateway{
+	return &Gateway{
 		coord:           coord,
 		runtime:         runtime,
 		store:           store,
@@ -160,15 +141,6 @@ func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.R
 		bundle:          bundle,
 		consistencyMode: "strict_visible",
 	}
-	g.hardDeleteMgr = newHardDeleteManagerFromEnv()
-	go g.hardDeleteMgr.run(g.stopCh, context.Background(), g.processHardDeleteTaskBatch)
-	return g
-}
-
-// Shutdown stops all background goroutines.
-func (g *Gateway) Shutdown() {
-	if g == nil { return }
-	if g.stopCh != nil { close(g.stopCh) }
 }
 
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
@@ -187,7 +159,6 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/warm/prebuild", g.handleAdminWarmPrebuild)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
-	mux.HandleFunc("/v1/admin/dataset/purge/task", g.handleDatasetPurgeTask)
 	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
 	mux.HandleFunc("/v1/admin/rollback", g.handleAdminRollback)
 	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
@@ -590,8 +561,6 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		DryRun         bool   `json:"dry_run,omitempty"`
 		OnlyIfInactive *bool  `json:"only_if_inactive,omitempty"`
 		IncludeMemoryIDs *bool `json:"include_memory_ids,omitempty"`
-		Async *bool `json:"async,omitempty"`
-		IdempotencyKey string `json:"idempotency_key,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -617,10 +586,6 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	includeMemoryIDs := true
 	if req.IncludeMemoryIDs != nil {
 		includeMemoryIDs = *req.IncludeMemoryIDs
-	}
-	asyncMode := false
-	if req.Async != nil {
-		asyncMode = *req.Async
 	}
 	tiered := g.runtime.TieredObjects()
 	purgeBackend := "tiered"
@@ -677,37 +642,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
 	purgeBatchSize := resolveDatasetPurgeBatchSize()
 	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
-	var purgeDeleteObjectNs int64
-	var purgeDeleteAuditNs int64
-	var purgeDeleteOutboxNs int64
 	deleteStartedAt := time.Now()
-	if asyncMode && !req.DryRun {
-		task := &hardDeleteTask{
-			TaskID:         generateObjectID("purge_task"),
-			WorkspaceID:    req.WorkspaceID,
-			DatasetName:    req.DatasetName,
-			MemoryIDs:      purgeIDs,
-			State:          hardDeleteStateQueued,
-			CreatedAt:      time.Now().UTC().Format(time.RFC3339),
-			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
-			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-		}
-		if g.hardDeleteMgr != nil && g.hardDeleteMgr.enqueue(task) {
-			writeJSON(w, map[string]any{
-				"status":               "accepted",
-				"async":                true,
-				"task_id":              task.TaskID,
-				"workspace_id":         req.WorkspaceID,
-				"matched":              matched,
-				"purgeable":            purgeable,
-				"purge_backend":        purgeBackend,
-				"purge_scan_elapsed_ms": scanElapsedMs,
-				"include_memory_ids":   includeMemoryIDs,
-				"idempotency_key":      task.IdempotencyKey,
-			})
-			return
-		}
-	}
 	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
 		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
 			select {
@@ -739,19 +674,13 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 					if cancelled {
 						break
 					}
-					phase := g.purgeOneMemory(id, tiered)
-					purgeDeleteObjectNs += phase.deleteNs
-					purgeDeleteAuditNs += phase.auditNs
-					purgeDeleteOutboxNs += phase.outboxNs
+					g.purgeOneMemory(id, tiered)
 					purged++
 				}
 			} else {
 				jobs := make(chan string, purgeQueueSize)
 				var wg sync.WaitGroup
 				var batchPurged int64
-				var batchDeleteNs int64
-				var batchAuditNs int64
-				var batchOutboxNs int64
 				for i := 0; i < workerCount; i++ {
 					wg.Add(1)
 					go func() {
@@ -764,10 +693,7 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 								if !ok {
 									return
 								}
-								phase := g.purgeOneMemory(id, tiered)
-								atomic.AddInt64(&batchDeleteNs, phase.deleteNs)
-								atomic.AddInt64(&batchAuditNs, phase.auditNs)
-								atomic.AddInt64(&batchOutboxNs, phase.outboxNs)
+								g.purgeOneMemory(id, tiered)
 								atomic.AddInt64(&batchPurged, 1)
 							}
 						}
@@ -787,9 +713,6 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 				close(jobs)
 				wg.Wait()
 				purged += int(batchPurged)
-				purgeDeleteObjectNs += atomic.LoadInt64(&batchDeleteNs)
-				purgeDeleteAuditNs += atomic.LoadInt64(&batchAuditNs)
-				purgeDeleteOutboxNs += atomic.LoadInt64(&batchOutboxNs)
 			}
 			log.Printf(
 				"admin purge progress: workspace=%s dataset=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
@@ -851,9 +774,6 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		"purge_scan_elapsed_ms":  scanElapsedMs,
 		"purge_delete_elapsed_ms": deleteElapsedMs,
 		"purge_progress_percent": progressPercent,
-		"purge_delete_object_ms": float64(purgeDeleteObjectNs) / float64(time.Millisecond),
-		"purge_delete_audit_ms":  float64(purgeDeleteAuditNs) / float64(time.Millisecond),
-		"purge_delete_outbox_ms": float64(purgeDeleteOutboxNs) / float64(time.Millisecond),
 		"include_memory_ids":     includeMemoryIDs,
 	}
 	if includeMemoryIDs {
@@ -864,129 +784,6 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	}
 	resp["purge_response_build_elapsed_ms"] = time.Since(responseStartedAt).Milliseconds()
 	writeJSON(w, resp)
-}
-
-func (g *Gateway) handleDatasetPurgeTask(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
-	if taskID == "" {
-		http.Error(w, "task_id is required", http.StatusBadRequest)
-		return
-	}
-	if g.hardDeleteMgr == nil {
-		http.Error(w, "hard delete manager unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	task, ok := g.hardDeleteMgr.get(taskID)
-	if !ok {
-		http.Error(w, "task not found", http.StatusNotFound)
-		return
-	}
-	total := len(task.MemoryIDs)
-	progressPercent := 0
-	if total > 0 {
-		progressPercent = int((float64(task.Processed+task.Failed) / float64(total)) * 100)
-		if progressPercent > 100 {
-			progressPercent = 100
-		}
-	}
-	writeJSON(w, map[string]any{
-		"status":           "ok",
-		"task":             task,
-		"total":            total,
-		"progress_percent": progressPercent,
-	})
-}
-
-func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int) (processed, failed int, done bool, err error) {
-	if task == nil {
-		return 0, 0, true, nil
-	}
-	tiered := g.runtime.TieredObjects()
-	start := task.Processed + task.Failed
-	if start >= len(task.MemoryIDs) {
-		return 0, 0, true, nil
-	}
-	end := start + batchSize
-	if end > len(task.MemoryIDs) {
-		end = len(task.MemoryIDs)
-	}
-	ids := task.MemoryIDs[start:end]
-	workers := resolveHardDeleteBatchWorkers(len(ids))
-	if workers <= 1 {
-		var pAtomic, fAtomic int64
-		for _, id := range ids {
-			func() {
-				defer func() {
-					if recover() != nil {
-						atomic.AddInt64(&fAtomic, 1)
-					} else {
-						atomic.AddInt64(&pAtomic, 1)
-					}
-				}()
-				_ = g.purgeOneMemory(id, tiered)
-			}()
-		}
-		processed = int(atomic.LoadInt64(&pAtomic))
-		failed = int(atomic.LoadInt64(&fAtomic))
-		done = (task.Processed + task.Failed + processed + failed) >= len(task.MemoryIDs)
-		return processed, failed, done, nil
-	}
-	var processedAtomic int64
-	var failedAtomic int64
-	jobs := make(chan string, workers*2)
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for id := range jobs {
-				func() {
-					defer func() {
-						if recover() != nil {
-							atomic.AddInt64(&failedAtomic, 1)
-						}
-					}()
-					_ = g.purgeOneMemory(id, tiered)
-					atomic.AddInt64(&processedAtomic, 1)
-				}()
-			}
-		}()
-	}
-	for _, id := range ids {
-		jobs <- id
-	}
-	close(jobs)
-	wg.Wait()
-	processed = int(atomic.LoadInt64(&processedAtomic))
-	failed = int(atomic.LoadInt64(&failedAtomic))
-	done = (task.Processed + task.Failed + processed + failed) >= len(task.MemoryIDs)
-	return processed, failed, done, nil
-}
-
-func resolveHardDeleteBatchWorkers(batchLen int) int {
-	const defaultWorkers = 8
-	const maxWorkers = 64
-	n := defaultWorkers
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_HARD_DELETE_BATCH_WORKERS"))
-	if raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			n = parsed
-		}
-	}
-	if n > maxWorkers {
-		n = maxWorkers
-	}
-	if batchLen > 0 && n > batchLen {
-		n = batchLen
-	}
-	if n < 1 {
-		return 1
-	}
-	return n
 }
 
 // handleAdminDataWipe clears all application data (Badger DropAll when enabled, in-memory stores,
