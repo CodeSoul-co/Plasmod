@@ -691,6 +691,9 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+			PurgeBackend:   purgeBackend,
+			Workers:        purgeWorkers,
+			BatchSize:      purgeBatchSize,
 		}
 		if g.hardDeleteMgr != nil && g.hardDeleteMgr.enqueue(task) {
 			writeJSON(w, map[string]any{
@@ -901,14 +904,14 @@ func (g *Gateway) handleDatasetPurgeTask(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int) (processed, failed int, done bool, err error) {
+func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int) (processed, failed int, done bool, stats hardDeleteBatchStats, err error) {
 	if task == nil {
-		return 0, 0, true, nil
+		return 0, 0, true, hardDeleteBatchStats{}, nil
 	}
 	tiered := g.runtime.TieredObjects()
 	start := task.Processed + task.Failed
 	if start >= len(task.MemoryIDs) {
-		return 0, 0, true, nil
+		return 0, 0, true, hardDeleteBatchStats{}, nil
 	}
 	end := start + batchSize
 	if end > len(task.MemoryIDs) {
@@ -916,8 +919,15 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 	}
 	ids := task.MemoryIDs[start:end]
 	workers := resolveHardDeleteBatchWorkers(len(ids))
+	stats = hardDeleteBatchStats{
+		Workers:   workers,
+		BatchSize: len(ids),
+	}
 	if workers <= 1 {
 		var pAtomic, fAtomic int64
+		var deleteNsAtomic int64
+		var auditNsAtomic int64
+		var outboxNsAtomic int64
 		for _, id := range ids {
 			func() {
 				defer func() {
@@ -927,16 +937,25 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 						atomic.AddInt64(&pAtomic, 1)
 					}
 				}()
-				_ = g.purgeOneMemory(id, tiered)
+				phase := g.purgeOneMemory(id, tiered)
+				atomic.AddInt64(&deleteNsAtomic, phase.deleteNs)
+				atomic.AddInt64(&auditNsAtomic, phase.auditNs)
+				atomic.AddInt64(&outboxNsAtomic, phase.outboxNs)
 			}()
 		}
 		processed = int(atomic.LoadInt64(&pAtomic))
 		failed = int(atomic.LoadInt64(&fAtomic))
+		stats.DeleteObjectNs = atomic.LoadInt64(&deleteNsAtomic)
+		stats.DeleteAuditNs = atomic.LoadInt64(&auditNsAtomic)
+		stats.DeleteOutboxNs = atomic.LoadInt64(&outboxNsAtomic)
 		done = (task.Processed + task.Failed + processed + failed) >= len(task.MemoryIDs)
-		return processed, failed, done, nil
+		return processed, failed, done, stats, nil
 	}
 	var processedAtomic int64
 	var failedAtomic int64
+	var deleteNsAtomic int64
+	var auditNsAtomic int64
+	var outboxNsAtomic int64
 	jobs := make(chan string, workers*2)
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -950,7 +969,10 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 							atomic.AddInt64(&failedAtomic, 1)
 						}
 					}()
-					_ = g.purgeOneMemory(id, tiered)
+					phase := g.purgeOneMemory(id, tiered)
+					atomic.AddInt64(&deleteNsAtomic, phase.deleteNs)
+					atomic.AddInt64(&auditNsAtomic, phase.auditNs)
+					atomic.AddInt64(&outboxNsAtomic, phase.outboxNs)
 					atomic.AddInt64(&processedAtomic, 1)
 				}()
 			}
@@ -963,8 +985,11 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 	wg.Wait()
 	processed = int(atomic.LoadInt64(&processedAtomic))
 	failed = int(atomic.LoadInt64(&failedAtomic))
+	stats.DeleteObjectNs = atomic.LoadInt64(&deleteNsAtomic)
+	stats.DeleteAuditNs = atomic.LoadInt64(&auditNsAtomic)
+	stats.DeleteOutboxNs = atomic.LoadInt64(&outboxNsAtomic)
 	done = (task.Processed + task.Failed + processed + failed) >= len(task.MemoryIDs)
-	return processed, failed, done, nil
+	return processed, failed, done, stats, nil
 }
 
 func resolveHardDeleteBatchWorkers(batchLen int) int {
