@@ -52,24 +52,14 @@ docs/member-b/
 多维度数据集入库与检索规范（参考Milvus-Manu）.md
 
 TESTING.md
-# Local runtime data
-.andb_data/00001.mem
-.andb_data/000001.vlog
-.andb_data/KEYREGISTRY
-.andb_data/LOCK
-.andb_data/MANIFEST
-.andb_data/DISCARD
 
 # build / test artifacts
 go.sum.bak*
 out/
 go.mod
-.andb_data/00006.mem
+.andb_data
 .gitignore
-.andb_data/wal.log
 .gitignore
-.andb_data/derivation.log
-.andb_data/00008.mem
 docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
 new.md
@@ -88,3 +78,6 @@ HARD_DELETE_ZEP_EXECUTION_PLAN.md
 /home/yangyongsheng/Plasmod/scripts/e2e/import_dataset.py
 .gocache_local/
 Zep_in_Plasmod.md
+.out/
+src/internal/access/.out/
+
