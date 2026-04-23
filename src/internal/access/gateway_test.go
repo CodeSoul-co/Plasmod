@@ -988,9 +988,9 @@ func TestGateway_DatasetPurge_AsyncIdempotencyReturnsExistingTask(t *testing.T) 
 		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 		IdempotencyKey: "idem-dup",
 	}
-	if ok := deps.gw.hardDeleteMgr.enqueue(existingTask); !ok {
-		t.Fatal("failed to seed existing async task")
-	}
+	deps.gw.hardDeleteMgr.mu.Lock()
+	deps.gw.hardDeleteMgr.tasks[existingTask.TaskID] = existingTask
+	deps.gw.hardDeleteMgr.mu.Unlock()
 
 	purgeBody, _ := json.Marshal(map[string]any{
 		"dataset_name":    "purgeAsync",
