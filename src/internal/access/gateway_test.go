@@ -953,6 +953,78 @@ func TestGateway_DatasetPurge_WarmOnlyWithoutTieredRuntime(t *testing.T) {
 	}
 }
 
+func TestGateway_DatasetPurge_AsyncIdempotencyReturnsExistingTask(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_async_dedupe",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_purge_async_dedupe",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=purge-async.bin row=1 dataset_name:purgeAsync",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_purge_async_dedupe"
+
+	// Pre-create an active async task with the same idempotency key to verify
+	// that gateway returns accepted + existing task instead of falling back to sync purge.
+	existingTask := &hardDeleteTask{
+		TaskID:         "purge_task_existing",
+		WorkspaceID:    "w_purge_async_dedupe",
+		DatasetName:    "purgeAsync",
+		MemoryIDs:      []string{"mem_nonexistent"},
+		State:          hardDeleteStateQueued,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+		IdempotencyKey: "idem-dup",
+	}
+	if ok := deps.gw.hardDeleteMgr.enqueue(existingTask); !ok {
+		t.Fatal("failed to seed existing async task")
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"dataset_name":    "purgeAsync",
+		"workspace_id":    "w_purge_async_dedupe",
+		"only_if_inactive": false,
+		"dry_run":         false,
+		"async":           true,
+		"idempotency_key": "idem-dup",
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge async: want 200, got %d body=%s", purgeW.Code, purgeW.Body.String())
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode purge response: %v", err)
+	}
+	if pr["status"] != "accepted" {
+		t.Fatalf("expected accepted status, got %+v", pr)
+	}
+	if v, ok := pr["deduplicated"].(bool); !ok || !v {
+		t.Fatalf("expected deduplicated=true, got %+v", pr)
+	}
+	if pr["task_id"] != existingTask.TaskID {
+		t.Fatalf("expected existing task_id=%s, got %v", existingTask.TaskID, pr["task_id"])
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); !ok {
+		t.Fatalf("memory should not be synchronously purged on idempotency dedupe")
+	}
+}
+
 func TestGateway_ListMemory_WorkspaceIDFilter(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
