@@ -949,25 +949,22 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 		Workers:   workers,
 		BatchSize: len(ids),
 	}
+	itemTimeout := resolveHardDeleteItemTimeout()
 	if workers <= 1 {
 		var pAtomic, fAtomic int64
 		var deleteNsAtomic int64
 		var auditNsAtomic int64
 		var outboxNsAtomic int64
 		for _, id := range ids {
-			func() {
-				defer func() {
-					if recover() != nil {
-						atomic.AddInt64(&fAtomic, 1)
-					} else {
-						atomic.AddInt64(&pAtomic, 1)
-					}
-				}()
-				phase := g.purgeOneMemory(id, tiered)
-				atomic.AddInt64(&deleteNsAtomic, phase.deleteNs)
-				atomic.AddInt64(&auditNsAtomic, phase.auditNs)
-				atomic.AddInt64(&outboxNsAtomic, phase.outboxNs)
-			}()
+			phase, timedOut, panicked := runPurgeOneMemoryWithTimeout(id, tiered, itemTimeout, g.purgeOneMemory)
+			if timedOut || panicked {
+				atomic.AddInt64(&fAtomic, 1)
+				continue
+			}
+			atomic.AddInt64(&pAtomic, 1)
+			atomic.AddInt64(&deleteNsAtomic, phase.deleteNs)
+			atomic.AddInt64(&auditNsAtomic, phase.auditNs)
+			atomic.AddInt64(&outboxNsAtomic, phase.outboxNs)
 		}
 		processed = int(atomic.LoadInt64(&pAtomic))
 		failed = int(atomic.LoadInt64(&fAtomic))
@@ -989,18 +986,15 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 		go func() {
 			defer wg.Done()
 			for id := range jobs {
-				func() {
-					defer func() {
-						if recover() != nil {
-							atomic.AddInt64(&failedAtomic, 1)
-						}
-					}()
-					phase := g.purgeOneMemory(id, tiered)
-					atomic.AddInt64(&deleteNsAtomic, phase.deleteNs)
-					atomic.AddInt64(&auditNsAtomic, phase.auditNs)
-					atomic.AddInt64(&outboxNsAtomic, phase.outboxNs)
-					atomic.AddInt64(&processedAtomic, 1)
-				}()
+				phase, timedOut, panicked := runPurgeOneMemoryWithTimeout(id, tiered, itemTimeout, g.purgeOneMemory)
+				if timedOut || panicked {
+					atomic.AddInt64(&failedAtomic, 1)
+					continue
+				}
+				atomic.AddInt64(&deleteNsAtomic, phase.deleteNs)
+				atomic.AddInt64(&auditNsAtomic, phase.auditNs)
+				atomic.AddInt64(&outboxNsAtomic, phase.outboxNs)
+				atomic.AddInt64(&processedAtomic, 1)
 			}
 		}()
 	}
@@ -1038,6 +1032,62 @@ func resolveHardDeleteBatchWorkers(batchLen int) int {
 		return 1
 	}
 	return n
+}
+
+func resolveHardDeleteItemTimeout() time.Duration {
+	const (
+		defaultTimeoutMs = 5000
+		minTimeoutMs     = 100
+		maxTimeoutMs     = 600000
+	)
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_HARD_DELETE_ITEM_TIMEOUT_MS"))
+	if raw == "" {
+		return time.Duration(defaultTimeoutMs) * time.Millisecond
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return time.Duration(defaultTimeoutMs) * time.Millisecond
+	}
+	if n < minTimeoutMs {
+		n = minTimeoutMs
+	}
+	if n > maxTimeoutMs {
+		n = maxTimeoutMs
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+func runPurgeOneMemoryWithTimeout(
+	memoryID string,
+	tiered *storage.TieredObjectStore,
+	timeout time.Duration,
+	purgeFn func(string, *storage.TieredObjectStore) purgePhaseDurations,
+) (phase purgePhaseDurations, timedOut bool, panicked bool) {
+	if purgeFn == nil {
+		return purgePhaseDurations{}, false, true
+	}
+	if timeout <= 0 {
+		timeout = 1 * time.Millisecond
+	}
+	type result struct {
+		phase    purgePhaseDurations
+		panicked bool
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer func() {
+			if recover() != nil {
+				done <- result{panicked: true}
+			}
+		}()
+		done <- result{phase: purgeFn(memoryID, tiered)}
+	}()
+	select {
+	case r := <-done:
+		return r.phase, false, r.panicked
+	case <-time.After(timeout):
+		return purgePhaseDurations{}, true, false
+	}
 }
 
 // handleAdminDataWipe clears all application data (Badger DropAll when enabled, in-memory stores,
