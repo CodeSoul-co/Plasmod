@@ -87,7 +87,7 @@ func (m *hardDeleteManager) enqueue(task *hardDeleteTask) bool {
 	if m == nil || task == nil {
 		return false
 	}
-	if strings.TrimSpace(task.TaskID) == "" || strings.TrimSpace(task.WorkspaceID) == "" {
+	if strings.TrimSpace(task.TaskID) == "" || strings.TrimSpace(task.WorkspaceID) == "" || len(task.MemoryIDs) == 0 {
 		return false
 	}
 	m.mu.Lock()
@@ -101,6 +101,30 @@ func (m *hardDeleteManager) enqueue(task *hardDeleteTask) bool {
 	}
 	m.tasks[task.TaskID] = task
 	return m.persistLocked() == nil
+}
+
+func (m *hardDeleteManager) getActiveByIdempotencyKey(key string) (*hardDeleteTask, bool) {
+	if m == nil {
+		return nil, false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.tasks {
+		if t.IdempotencyKey != key {
+			continue
+		}
+		if t.State != hardDeleteStateQueued && t.State != hardDeleteStateRunning {
+			continue
+		}
+		cp := *t
+		cp.MemoryIDs = append([]string(nil), t.MemoryIDs...)
+		return &cp, true
+	}
+	return nil, false
 }
 
 func (m *hardDeleteManager) get(taskID string) (*hardDeleteTask, bool) {

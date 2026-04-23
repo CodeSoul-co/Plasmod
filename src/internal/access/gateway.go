@@ -684,7 +684,28 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	var purgeDeleteAuditNs int64
 	var purgeDeleteOutboxNs int64
 	deleteStartedAt := time.Now()
-	if asyncMode && !req.DryRun {
+	if asyncMode && !req.DryRun && len(purgeIDs) > 0 {
+		if g.hardDeleteMgr == nil {
+			http.Error(w, "hard delete manager unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+		if existing, ok := g.hardDeleteMgr.getActiveByIdempotencyKey(idempotencyKey); ok {
+			writeJSON(w, map[string]any{
+				"status":                "accepted",
+				"async":                 true,
+				"task_id":               existing.TaskID,
+				"workspace_id":          req.WorkspaceID,
+				"matched":               matched,
+				"purgeable":             purgeable,
+				"purge_backend":         purgeBackend,
+				"purge_scan_elapsed_ms": scanElapsedMs,
+				"include_memory_ids":    includeMemoryIDs,
+				"idempotency_key":       idempotencyKey,
+				"deduplicated":          true,
+			})
+			return
+		}
 		task := &hardDeleteTask{
 			TaskID:         generateObjectID("purge_task"),
 			WorkspaceID:    req.WorkspaceID,
@@ -693,12 +714,12 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			State:          hardDeleteStateQueued,
 			CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
-			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+			IdempotencyKey: idempotencyKey,
 			PurgeBackend:   purgeBackend,
 			Workers:        purgeWorkers,
 			BatchSize:      purgeBatchSize,
 		}
-		if g.hardDeleteMgr != nil && g.hardDeleteMgr.enqueue(task) {
+		if g.hardDeleteMgr.enqueue(task) {
 			writeJSON(w, map[string]any{
 				"status":                "accepted",
 				"async":                 true,
@@ -713,6 +734,8 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		http.Error(w, "failed to enqueue hard delete task", http.StatusInternalServerError)
+		return
 	}
 	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
 		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
