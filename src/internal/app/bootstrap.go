@@ -104,13 +104,13 @@ func BuildServer() (*http.Server, func() error, error) {
 	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
 	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
 	var coldStore storage.ColdObjectStore
-	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
+	if s3Cfg, loadErr := storage.LoadFromEnv(); loadErr == nil {
 		coldStore = storage.NewS3ColdStoreWithAlgorithmConfig(s3Cfg, algoCfg)
 		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
 			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
 	} else {
 		coldStore = storage.NewInMemoryColdStore()
-		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
+		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", loadErr)
 	}
 	tieredObjects := storage.NewTieredObjectStoreWithThreshold(
 		store.HotCache(),
@@ -126,17 +126,17 @@ func BuildServer() (*http.Server, func() error, error) {
 	planner := semantic.NewDefaultQueryPlanner()
 
 	if sz := os.Getenv("PLASMOD_EVIDENCE_CACHE_SIZE"); sz != "" {
-		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
+		if n, parseErr := strconv.Atoi(sz); parseErr == nil && n > 0 {
 			algoCfg.EvidenceCacheSize = n
 		}
 	}
 	if d := os.Getenv("PLASMOD_MAX_PROOF_DEPTH"); d != "" {
-		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+		if n, parseErr := strconv.Atoi(d); parseErr == nil && n > 0 {
 			algoCfg.MaxProofDepth = n
 		}
 	}
 	if t := os.Getenv("PLASMOD_HOT_TIER_THRESHOLD"); t != "" {
-		if f, err := strconv.ParseFloat(t, 64); err == nil && f > 0 {
+		if f, parseErr := strconv.ParseFloat(t, 64); parseErr == nil && f > 0 {
 			algoCfg.HotTierSalienceThreshold = f
 		}
 	}
@@ -173,6 +173,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	//   PLASMOD_EMBEDDING_FAMILY    (override family label used in segment metadata)
 	var embedder embedding.Generator
 	var embedderDim int
+	var embedderErr error
 	embedderType := os.Getenv("PLASMOD_EMBEDDER")
 	if embedderType == "" {
 		embedderType = "tfidf"
@@ -183,19 +184,19 @@ func BuildServer() (*http.Server, func() error, error) {
 		model := os.Getenv("PLASMOD_EMBEDDER_MODEL")
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
 		timeoutSec := 30
 		if ts := os.Getenv("PLASMOD_EMBEDDER_TIMEOUT"); ts != "" {
-			if n, err := strconv.Atoi(ts); err == nil {
+			if n, parseErr := strconv.Atoi(ts); parseErr == nil {
 				timeoutSec = n
 			}
 		}
 		batchSize := 100
 		if bs := os.Getenv("PLASMOD_EMBEDDER_BATCH_SIZE"); bs != "" {
-			if n, err := strconv.Atoi(bs); err == nil {
+			if n, parseErr := strconv.Atoi(bs); parseErr == nil {
 				batchSize = n
 			}
 		}
@@ -207,10 +208,9 @@ func BuildServer() (*http.Server, func() error, error) {
 			BatchSize: batchSize,
 		}
 		ctx := context.Background()
-		var err error
-		embedder, err = embedding.NewOpenAI(ctx, cfg, embedderDim)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, err)
+		embedder, embedderErr = embedding.NewOpenAI(ctx, cfg, embedderDim)
+		if embedderErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: %s model=%s dim=%d", embedderType, model, embedderDim)
 	case "cohere":
@@ -219,7 +219,7 @@ func BuildServer() (*http.Server, func() error, error) {
 			model = "embed-english-v3.0"
 		}
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
@@ -227,9 +227,9 @@ func BuildServer() (*http.Server, func() error, error) {
 			return nil, nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
 		}
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
-		embedder, err = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", err)
+		embedder, embedderErr = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
+		if embedderErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
 	case "huggingface":
@@ -238,14 +238,14 @@ func BuildServer() (*http.Server, func() error, error) {
 			model = "sentence-transformers/all-MiniLM-L6-v2"
 		}
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		timeoutSec := 60
 		if ts := os.Getenv("PLASMOD_EMBEDDER_TIMEOUT"); ts != "" {
-			if n, err := strconv.Atoi(ts); err == nil {
+			if n, parseErr := strconv.Atoi(ts); parseErr == nil {
 				timeoutSec = n
 			}
 		}
@@ -265,7 +265,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		log.Printf("[bootstrap] embedder: huggingface model=%s dim=%d", model, embedderDim)
 	case "vertexai":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
@@ -281,7 +281,7 @@ func BuildServer() (*http.Server, func() error, error) {
 			os.Getenv("GOOGLE_CLOUD_PROJECT"), embedderDim)
 	case "onnx":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
@@ -297,7 +297,7 @@ func BuildServer() (*http.Server, func() error, error) {
 			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
 	case "tensorrt":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}

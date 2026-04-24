@@ -1088,13 +1088,17 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 		page := keys[start:end]
 
 		for _, key := range page {
-			data, err := GetBytes(ctx, nil, s.cfg, key)
-			if err != nil || data == nil {
+			var data []byte
+			var errGet error
+			data, errGet = GetBytes(ctx, nil, s.cfg, key)
+			if errGet != nil || data == nil {
 				continue
 			}
 
-			vec, err := bytesToFloat32Slice(data)
-			if err != nil {
+			var vec []float32
+			var errConv error
+			vec, errConv = bytesToFloat32Slice(data)
+			if errConv != nil {
 				continue
 			}
 			if len(vec) != dim {
@@ -1134,12 +1138,13 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 	}
 	defer retriever.Close()
 
-	if err := retriever.Build(vectors, len(ids)); err != nil {
+	var buildErr error
+	if buildErr = retriever.Build(vectors, len(ids)); buildErr != nil {
 		return nil
 	}
 
-	intIDs, _, err := retriever.Search(queryVec, topK, nil)
-	if err != nil || len(intIDs) == 0 {
+	intIDs, _, searchErr := retriever.Search(queryVec, topK, nil)
+	if searchErr != nil || len(intIDs) == 0 {
 		return nil
 	}
 
