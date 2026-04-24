@@ -51,6 +51,7 @@ Plasmod is an agent-native database for multi-agent systems. Inspired by the ada
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
 - `include_cold` query flag wired through planner and TieredDataPlane to force cold-tier merge even when hot satisfies TopK
 - Algorithm dispatch: `DispatchAlgorithm`, `DispatchRecall`, `DispatchShare`, `DispatchConflictResolve` on Runtime; pluggable `MemoryManagementAlgorithm` interface with `BaselineMemoryAlgorithm` (default) and `MemoryBankAlgorithm` (8-dimension governance model)
+- Zep-integrated memory backend router with runtime-switchable modes (`local_only`, `shadow_write`, `hybrid_recall`, `zep_only`), provider health endpoints (`/v1/admin/memory/providers/mode`, `/v1/admin/memory/providers/health`), and delete outbox telemetry/retry controls
 - **MemoryBank governance**: 8 lifecycle states (candidate→active→reinforced→compressed→stale→quarantined→archived→deleted), conflict detection (value contradiction, preference reversal, factual disagreement, entity conflict), profile management
 - All algorithm parameters externalized to `configs/algorithm_memorybank.yaml` and `configs/algorithm_baseline.yaml`
 - Safe DLQ: panic recovery with overflow buffer (capacity 256) + structured `OverflowBuffer()` + `OverflowCount` metrics — panics are never silently lost
@@ -73,6 +74,19 @@ Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.g
 | **Internal (Agent SDK bridge)** | `POST` — `/v1/internal/memory/recall`, `/v1/internal/memory/ingest`, `/v1/internal/memory/compress`, `/v1/internal/memory/summarize`, `/v1/internal/memory/decay`, `/v1/internal/memory/share`, `/v1/internal/memory/conflict/resolve` |
 
 **Operational notes:** `/v1/admin/*` is protected when `PLASMOD_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response). `POST /v1/admin/dataset/purge` can run in async mode (`async=true`) and be polled via `GET /v1/admin/dataset/purge/task`.
+
+### Zep integration notes
+
+- Runtime mode switching for memory backend is exposed via:
+  - `POST /v1/admin/memory/providers/mode`
+  - `GET /v1/admin/memory/providers/mode`
+  - `GET /v1/admin/memory/providers/health`
+- Supported backend modes are `local_only`, `shadow_write`, `hybrid_recall`, and `zep_only`.
+- Zep wiring is configured via env vars such as:
+  - `PLASMOD_ZEP_BASE_URL`, `PLASMOD_ZEP_API_KEY`, `PLASMOD_ZEP_COLLECTION`
+  - `PLASMOD_ZEP_TIMEOUT_MS`
+  - Optional path overrides: `PLASMOD_ZEP_INGEST_PATH`, `PLASMOD_ZEP_RECALL_PATH`, `PLASMOD_ZEP_HEALTH_PATH`, `PLASMOD_ZEP_SOFT_DELETE_PATH`, `PLASMOD_ZEP_HARD_DELETE_PATH`
+- Hybrid recall verification should target `POST /v1/internal/memory/recall` (Agent SDK bridge). This response includes algorithm-level fields like `backend_mode`, `recall_sources`, and fallback notes. `POST /v1/query` is the core retrieval pipeline and is not the canonical endpoint for validating Zep hybrid-recall participation.
 
 ## Dataset bulk import and CLI delete / purge (E2E)
 
