@@ -92,7 +92,7 @@ func buildRuntime(get func(string) string) (*RuntimeBundle, error) {
 			return nil, fmt.Errorf("storage: open badger (in-memory): %w", err)
 		}
 	} else {
-		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		if err = os.MkdirAll(dataDir, 0o755); err != nil {
 			return nil, fmt.Errorf("storage: mkdir %q: %w", dataDir, err)
 		}
 		db, err = openBadger(dataDir)
