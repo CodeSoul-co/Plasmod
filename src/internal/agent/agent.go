@@ -186,9 +186,20 @@ func (s *AgentSession) MemoryManager() MemoryManager {
 func (s *AgentSession) WithMemoryManager(mm MemoryManager) *AgentSession {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	cp := *s
-	cp.mm = mm
-	return &cp
+	// Construct a fresh struct to avoid copying sync.RWMutex (unsafe in Go).
+	return &AgentSession{
+		agentID:     s.agentID,
+		tenantID:    s.tenantID,
+		workspaceID: s.workspaceID,
+		sessionMu:   sync.RWMutex{},
+		sessionID:   s.sessionID,
+		closed:      s.closed,
+		httpClient:  s.httpClient,
+		baseURL:     s.baseURL,
+		mm:          mm,
+		llm:         s.llm,
+		mas:         s.mas,
+	}
 }
 
 // ─── internal helpers ─────────────────────────────────────────────────────────
