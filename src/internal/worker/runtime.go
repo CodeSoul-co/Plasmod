@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
@@ -342,6 +343,15 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		MemoryTypes:    plan.MemoryTypes,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
+	if len(result.ObjectIDs) == 0 {
+		if altQuery, ok := cjkSpacedFallbackQuery(req.QueryText); ok && altQuery != searchInput.QueryText {
+			searchInput.QueryText = altQuery
+			retry := r.nodeManager.DispatchQuery(searchInput, r.plane)
+			if len(retry.ObjectIDs) > 0 {
+				result = retry
+			}
+		}
+	}
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	if queryUsesStructuredMemorySelectors(req) {
 		selectorIDs := r.fetchMemoryIDsByStructuredSelectors(req)
@@ -852,6 +862,12 @@ func (r *Runtime) DispatchRecall(
 	}
 
 	resp := r.ExecuteQuery(req)
+	if len(resp.Objects) == 0 {
+		if altQuery, ok := cjkSpacedFallbackQuery(query); ok {
+			req.QueryText = altQuery
+			resp = r.ExecuteQuery(req)
+		}
+	}
 	visibleRefs := resp.Objects
 	if len(visibleRefs) == 0 {
 		return schemas.MemoryView{
@@ -952,6 +968,38 @@ func (r *Runtime) DispatchRecall(
 		AlgorithmNotes:    algoNotes,
 		ConstructionTrace: proofStrs,
 	}
+}
+
+func cjkSpacedFallbackQuery(query string) (string, bool) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "", false
+	}
+	hasCJK := false
+	for _, r := range q {
+		if unicode.Is(unicode.Han, r) {
+			hasCJK = true
+			break
+		}
+	}
+	if !hasCJK {
+		return "", false
+	}
+	parts := make([]string, 0, len([]rune(q)))
+	for _, r := range q {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		parts = append(parts, string(r))
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	alt := strings.Join(parts, " ")
+	if alt == q {
+		return "", false
+	}
+	return alt, true
 }
 
 func (r *Runtime) MemoryBackendMode() string {
