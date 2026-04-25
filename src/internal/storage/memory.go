@@ -36,6 +36,19 @@ func (s *memorySegmentStore) List(namespace string) []SegmentRecord {
 	return out
 }
 
+func (s *memorySegmentStore) DeleteByStorageRef(objectID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for key, rec := range s.items {
+		if rec.StorageRef == objectID {
+			delete(s.items, key)
+			count++
+		}
+	}
+	return count
+}
+
 type memoryIndexStore struct {
 	mu    sync.RWMutex
 	items map[string]IndexRecord
@@ -578,6 +591,14 @@ func (s *inMemoryAuditStore) ListAudits() []schemas.AuditRecord {
 		out = append(out, rs...)
 	}
 	return out
+}
+
+func (s *inMemoryAuditStore) DeleteByTargetID(targetMemoryID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.records[targetMemoryID])
+	delete(s.records, targetMemoryID)
+	return n
 }
 
 // ─── MemoryAlgorithmStateStore ────────────────────────────────────────────────

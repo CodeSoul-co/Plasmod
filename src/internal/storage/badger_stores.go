@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"time"
@@ -12,8 +13,8 @@ import (
 
 // Key prefixes (ASCII, stable) for Badger key-value layout.
 const (
-	kpSeg        = "seg|"
-	kpIdx        = "idx|"
+	kpSeg         = "seg|"
+	kpIdx         = "idx|"
 	kpObjAgent    = "obj|agent|"
 	kpObjSession  = "obj|session|"
 	kpObjMemory   = "obj|memory|"
@@ -25,6 +26,14 @@ const (
 	kpVer         = "ver|"
 	kpPol         = "pol|"
 	kpCtr         = "ctr|"
+)
+
+// Edge auxiliary indexes: kpeS|{srcObjectID}|{edgeID} and kpeD|{dstObjectID}|{edgeID}.
+// Both store the edge key ("edg|{edgeID}") as value, enabling O(k) lookups
+// instead of O(n) full-table scans when deleting edges by object ID.
+const (
+	kpEdgeSrcIdx = "kpeS|" // index by source object: kpeS|{srcID}|{edgeID}
+	kpEdgeDstIdx = "kpeD|" // index by dest object:  kpeD|{dstID}|{edgeID}
 )
 
 // ─── SegmentStore ────────────────────────────────────────────────────────────
@@ -67,6 +76,34 @@ func (s *badgerSegmentStore) List(namespace string) []SegmentRecord {
 		return nil
 	})
 	return out
+}
+
+// DeleteByStorageRef removes all SegmentRecords that reference the given object ID.
+// There is no secondary index on StorageRef, so this does a full scan of all segment
+// records. It is only called during hard-delete, not on the hot path.
+func (s *badgerSegmentStore) DeleteByStorageRef(objectID string) int {
+	var count int
+	_ = s.db.Update(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		prefix := []byte(kpSeg)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			_ = item.Value(func(val []byte) error {
+				var rec SegmentRecord
+				if err := json.Unmarshal(val, &rec); err != nil {
+					return err
+				}
+				if rec.StorageRef == objectID {
+					_ = txn.Delete(item.Key())
+					count++
+				}
+				return nil
+			})
+		}
+		return nil
+	})
+	return count
 }
 
 // ─── IndexStore ──────────────────────────────────────────────────────────────
@@ -282,7 +319,25 @@ func newBadgerGraphEdgeStore(db *badger.DB) *badgerGraphEdgeStore {
 }
 
 func (s *badgerGraphEdgeStore) PutEdge(edge schemas.Edge) {
-	_ = badgerSetJSON(s.db, []byte(kpEdge+edge.EdgeID), edge)
+	edgeKey := []byte(kpEdge + edge.EdgeID)
+	srcIdxKey := []byte(kpEdgeSrcIdx + edge.SrcObjectID + "|" + edge.EdgeID)
+	dstIdxKey := []byte(kpEdgeDstIdx + edge.DstObjectID + "|" + edge.EdgeID)
+	_ = s.db.Update(func(txn *badger.Txn) error {
+		b, err := json.Marshal(edge)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set(edgeKey, b); err != nil {
+			return err
+		}
+		if err := txn.Set(srcIdxKey, edgeKey); err != nil {
+			return err
+		}
+		if err := txn.Set(dstIdxKey, edgeKey); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *badgerGraphEdgeStore) GetEdge(id string) (schemas.Edge, bool) {
@@ -291,32 +346,83 @@ func (s *badgerGraphEdgeStore) GetEdge(id string) (schemas.Edge, bool) {
 	return e, ok && err == nil
 }
 
+// getEdgeTxn reads an edge within an existing Badger read transaction.
+func (s *badgerGraphEdgeStore) getEdgeTxn(txn *badger.Txn, key string) (schemas.Edge, bool) {
+	item, err := txn.Get([]byte(key))
+	if err != nil {
+		return schemas.Edge{}, false
+	}
+	var e schemas.Edge
+	err = item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &e)
+	})
+	return e, err == nil
+}
+
 func (s *badgerGraphEdgeStore) DeleteEdge(id string) {
-	_ = badgerDelete(s.db, []byte(kpEdge+id))
+	// Fetch edge to get src/dst IDs before deleting so we can remove the index entries.
+	var edge schemas.Edge
+	found, err := badgerGetJSON(s.db, []byte(kpEdge+id), &edge)
+	if !found || err != nil {
+		return
+	}
+	srcIdxKey := []byte(kpEdgeSrcIdx + edge.SrcObjectID + "|" + edge.EdgeID)
+	dstIdxKey := []byte(kpEdgeDstIdx + edge.DstObjectID + "|" + edge.EdgeID)
+	edgeKey := []byte(kpEdge + edge.EdgeID)
+	_ = s.db.Update(func(txn *badger.Txn) error {
+		_ = txn.Delete(srcIdxKey)
+		_ = txn.Delete(dstIdxKey)
+		_ = txn.Delete(edgeKey)
+		return nil
+	})
 }
 
 // DeleteEdgesByObjectID deletes all incident edges in one DB update transaction.
+// Uses auxiliary indexes (kpeS/kpeD) for O(k) lookup instead of O(n) full scan.
 // Returns the number of deleted edges.
 func (s *badgerGraphEdgeStore) DeleteEdgesByObjectID(objectID string) int {
 	var count int
 	_ = s.db.Update(func(txn *badger.Txn) error {
+		deletedKeys := make(map[string]struct{})
+		// Collect edge keys from src index.
+		srcPrefix := []byte(kpEdgeSrcIdx + objectID + "|")
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
-		prefix := []byte(kpEdge)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			_ = item.Value(func(val []byte) error {
-				var e schemas.Edge
-				if err := json.Unmarshal(val, &e); err != nil {
-					return err
-				}
-				if e.SrcObjectID == objectID || e.DstObjectID == objectID {
-					if err := txn.Delete(item.Key()); err == nil {
-						count++
-					}
-				}
+		for it.Seek(srcPrefix); it.Valid(); it.Next() {
+			key := it.Item().Key()
+			if !bytes.HasPrefix(key, srcPrefix) {
+				break
+			}
+			var edgeKey []byte
+			_ = it.Item().Value(func(val []byte) error {
+				edgeKey = append([]byte(nil), val...)
 				return nil
 			})
+			if _, exists := deletedKeys[string(edgeKey)]; !exists {
+				_ = txn.Delete(edgeKey)
+				deletedKeys[string(edgeKey)] = struct{}{}
+				count++
+			}
+			_ = txn.Delete(key)
+		}
+		// Collect edge keys from dst index.
+		dstPrefix := []byte(kpEdgeDstIdx + objectID + "|")
+		for it.Seek(dstPrefix); it.Valid(); it.Next() {
+			key := it.Item().Key()
+			if !bytes.HasPrefix(key, dstPrefix) {
+				break
+			}
+			var edgeKey []byte
+			_ = it.Item().Value(func(val []byte) error {
+				edgeKey = append([]byte(nil), val...)
+				return nil
+			})
+			if _, exists := deletedKeys[string(edgeKey)]; !exists {
+				_ = txn.Delete(edgeKey)
+				deletedKeys[string(edgeKey)] = struct{}{}
+				count++
+			}
+			_ = txn.Delete(key)
 		}
 		return nil
 	})
@@ -328,37 +434,97 @@ func (s *badgerGraphEdgeStore) allEdges() []schemas.Edge {
 }
 
 func (s *badgerGraphEdgeStore) EdgesFrom(srcObjectID string) []schemas.Edge {
-	out := make([]schemas.Edge, 0)
-	for _, e := range s.allEdges() {
-		if e.SrcObjectID == srcObjectID {
-			out = append(out, e)
-		}
-	}
-	return out
+	return s.edgesByIndex(kpEdgeSrcIdx, srcObjectID)
 }
 
 func (s *badgerGraphEdgeStore) EdgesTo(dstObjectID string) []schemas.Edge {
-	out := make([]schemas.Edge, 0)
-	for _, e := range s.allEdges() {
-		if e.DstObjectID == dstObjectID {
-			out = append(out, e)
+	return s.edgesByIndex(kpEdgeDstIdx, dstObjectID)
+}
+
+// edgesByIndex uses the auxiliary index to retrieve edges in O(k) instead of O(n).
+func (s *badgerGraphEdgeStore) edgesByIndex(idxPrefix, objectID string) []schemas.Edge {
+	var out []schemas.Edge
+	_ = s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		prefix := []byte(idxPrefix + objectID + "|")
+		for it.Seek(prefix); it.Valid(); it.Next() {
+			key := it.Item().Key()
+			if !bytes.HasPrefix(key, prefix) {
+				break
+			}
+			var edgeKey []byte
+			_ = it.Item().Value(func(val []byte) error {
+				edgeKey = append([]byte(nil), val...)
+				return nil
+			})
+			if e, ok := s.getEdgeTxn(txn, string(edgeKey)); ok {
+				out = append(out, e)
+			}
 		}
-	}
+		return nil
+	})
 	return out
 }
 
 func (s *badgerGraphEdgeStore) BulkEdges(objectIDs []string) []schemas.Edge {
+	if len(objectIDs) == 0 {
+		return nil
+	}
 	set := make(map[string]bool, len(objectIDs))
 	for _, id := range objectIDs {
 		set[id] = true
 	}
 	out := make([]schemas.Edge, 0)
-	for _, e := range s.allEdges() {
-		if set[e.SrcObjectID] || set[e.DstObjectID] {
-			out = append(out, e)
+	_ = s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for _, oid := range objectIDs {
+			// Collect from src index.
+			srcPrefix := []byte(kpEdgeSrcIdx + oid + "|")
+			for it.Seek(srcPrefix); it.Valid(); it.Next() {
+				key := it.Item().Key()
+				if !bytes.HasPrefix(key, srcPrefix) {
+					break
+				}
+				var edgeKey []byte
+				_ = it.Item().Value(func(val []byte) error {
+					edgeKey = append([]byte(nil), val...)
+					return nil
+				})
+				if e, ok := s.getEdgeTxn(txn, string(edgeKey)); ok {
+					out = append(out, e)
+				}
+			}
+			// Collect from dst index (deduplicate via set).
+			dstPrefix := []byte(kpEdgeDstIdx + oid + "|")
+			for it.Seek(dstPrefix); it.Valid(); it.Next() {
+				key := it.Item().Key()
+				if !bytes.HasPrefix(key, dstPrefix) {
+					break
+				}
+				var edgeKey []byte
+				_ = it.Item().Value(func(val []byte) error {
+					edgeKey = append([]byte(nil), val...)
+					return nil
+				})
+				if e, ok := s.getEdgeTxn(txn, string(edgeKey)); ok && !set[e.EdgeID] {
+					out = append(out, e)
+				}
+			}
+		}
+		return nil
+	})
+	// Dedup via seen map.
+	seen := make(map[string]bool, len(out))
+	deduped := make([]schemas.Edge, 0, len(out))
+	for _, e := range out {
+		if !seen[e.EdgeID] {
+			seen[e.EdgeID] = true
+			deduped = append(deduped, e)
 		}
 	}
-	return out
+	return deduped
 }
 
 func (s *badgerGraphEdgeStore) ListEdges() []schemas.Edge {

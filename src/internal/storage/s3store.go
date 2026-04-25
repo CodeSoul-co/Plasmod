@@ -319,12 +319,19 @@ func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
 }
 
 func (s *S3ColdStore) DeleteEdge(id string) error {
-	err := DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
-	if err == nil {
-		s.invalidateListCache(s.edgePrefix())
+	// Fetch edge to get src/dst IDs so we can clean up the .ref secondary index files.
+	edge, ok := s.GetEdge(id)
+	var refErr error
+	if ok {
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeBySrcKey(edge.SrcObjectID, edge.EdgeID))
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeByDstKey(edge.DstObjectID, edge.EdgeID))
 	}
-	return err
-
+	err := DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
+	if err != nil {
+		refErr = err
+	}
+	s.invalidateListCache(s.edgePrefix())
+	return refErr
 }
 
 func (s *S3ColdStore) ListEdgeIDsByObjectID(objectID string) ([]string, error) {

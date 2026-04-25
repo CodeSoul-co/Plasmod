@@ -237,7 +237,9 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 	// ── Persist canonical objects ─────────────────────────────────────────
 	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
-	// are kept in sync and cold queries (IncludeCold=true) can find results.
+	// are kept in sync. Cold-tier persistence is deferred to explicit archive
+	// (TTL expiry or manual tier migration) via TieredObjectStore.ArchiveMemory;
+	// it is NOT written on every ingest to avoid write amplification.
 	if r.tieredObjects != nil {
 		// Compute salience from the event importance if available, default 0.5.
 		salience := mat.Memory.Importance
@@ -245,13 +247,6 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 			salience = 0.5
 		}
 		r.tieredObjects.PutMemory(mat.Memory, salience)
-		r.tieredObjects.ArchiveColdRecord(
-			mat.Memory.MemoryID,
-			record.Text,
-			record.Attributes,
-			record.Namespace,
-			record.EventUnixTS,
-		)
 	} else {
 		// Fallback for tests or code paths that don't initialise TieredObjectStore.
 		r.storage.PutMemoryWithBaseEdges(mat.Memory)
@@ -1002,51 +997,66 @@ func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
 		return map[string]any{"enabled": false}
 	}
 	return map[string]any{
-		"enabled":      true,
-		"queue_size":   len(r.deleteOutbox),
-		"queue_cap":    cap(r.deleteOutbox),
-		"queued_total": atomic.LoadInt64(&r.deleteOutboxQueued),
-		"done_total":   atomic.LoadInt64(&r.deleteOutboxDone),
-		"failed_total": atomic.LoadInt64(&r.deleteOutboxFailed),
+		"enabled":       true,
+		"queue_size":    len(r.deleteOutbox),
+		"queue_cap":     cap(r.deleteOutbox),
+		"workers":       resolveMemoryDeleteOutboxWorkers(),
+		"queued_total":  atomic.LoadInt64(&r.deleteOutboxQueued),
+		"done_total":    atomic.LoadInt64(&r.deleteOutboxDone),
+		"failed_total":  atomic.LoadInt64(&r.deleteOutboxFailed),
 		"dropped_total": atomic.LoadInt64(&r.deleteOutboxDropped),
 	}
 }
 
 func (r *Runtime) runMemoryDeleteOutbox(ctx context.Context) {
+	workers := resolveMemoryDeleteOutboxWorkers()
+	jobs := make(chan memoryDeleteTask, cap(r.deleteOutbox))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.deleteOutboxWorker(ctx, jobs)
+		}()
+	}
+	for task := range r.deleteOutbox {
+		jobs <- task
+	}
+	close(jobs)
+	wg.Wait()
+}
+
+// deleteOutboxWorker processes tasks from the shared jobs channel until closed.
+func (r *Runtime) deleteOutboxWorker(ctx context.Context, jobs <-chan memoryDeleteTask) {
 	maxRetries := resolveMemoryDeleteOutboxRetries()
 	retryDelay := resolveMemoryDeleteOutboxRetryDelay()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case task := <-r.deleteOutbox:
-			var err error
-			for attempt := 0; attempt <= maxRetries; attempt++ {
-				callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				if task.Hard {
-					err = r.memoryBackend.HardDelete(callCtx, task.MemoryID, task.Reason)
-				} else {
-					err = r.memoryBackend.SoftDelete(callCtx, task.MemoryID, task.Reason)
-				}
-				cancel()
-				if err == nil {
-					break
-				}
-				if attempt < maxRetries {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(retryDelay):
-					}
+	for task := range jobs {
+		var err error
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			if task.Hard {
+				err = r.memoryBackend.HardDelete(callCtx, task.MemoryID, task.Reason)
+			} else {
+				err = r.memoryBackend.SoftDelete(callCtx, task.MemoryID, task.Reason)
+			}
+			cancel()
+			if err == nil {
+				break
+			}
+			if attempt < maxRetries {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(retryDelay):
 				}
 			}
-			if err != nil {
-				atomic.AddInt64(&r.deleteOutboxFailed, 1)
-				log.Printf("[memory-backend] delete_outbox failed hard=%t memory=%s err=%v", task.Hard, task.MemoryID, err)
-				continue
-			}
-			atomic.AddInt64(&r.deleteOutboxDone, 1)
 		}
+		if err != nil {
+			atomic.AddInt64(&r.deleteOutboxFailed, 1)
+			log.Printf("[memory-backend] delete_outbox failed hard=%t memory=%s err=%v", task.Hard, task.MemoryID, err)
+			continue
+		}
+		atomic.AddInt64(&r.deleteOutboxDone, 1)
 	}
 }
 
@@ -1097,6 +1107,23 @@ func resolveMemoryDeleteOutboxRetryDelay() time.Duration {
 		n = 10000
 	}
 	return time.Duration(n) * time.Millisecond
+}
+
+func resolveMemoryDeleteOutboxWorkers() int {
+	const defaultWorkers = 8
+	const maxWorkers = 64
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_WORKERS"))
+	if raw == "" {
+		return defaultWorkers
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultWorkers
+	}
+	if n > maxWorkers {
+		n = maxWorkers
+	}
+	return n
 }
 
 // DispatchShare copies a memory to a target agent's namespace and fires
