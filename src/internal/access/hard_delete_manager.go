@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"plasmod/src/internal/metrics"
@@ -52,12 +53,15 @@ type hardDeleteBatchStats struct {
 }
 
 type hardDeleteManager struct {
-	mu    sync.Mutex
-	path  string
-	workers int
-	batchMu sync.Mutex
-	stopCh  chan struct{}
-	tasks map[string]*hardDeleteTask
+	mu       sync.Mutex
+	path     string
+	workers  int
+	batchMu  sync.Mutex
+	stopCh   chan struct{}
+	tasks    map[string]*hardDeleteTask
+	flushCh  chan struct{}
+	flushWg  sync.WaitGroup
+	stopped  atomic.Bool
 }
 
 type hardDeleteSnapshot struct {
@@ -75,11 +79,14 @@ func newHardDeleteManagerFromEnv() *hardDeleteManager {
 		}
 	}
 	m := &hardDeleteManager{
-		path:  path,
-		tasks: map[string]*hardDeleteTask{},
-		stopCh: make(chan struct{}),
+		path:    path,
+		tasks:   map[string]*hardDeleteTask{},
+		stopCh:  make(chan struct{}),
+		flushCh: make(chan struct{}, 1),
 	}
 	_ = m.load()
+	m.flushWg.Add(1)
+	go m.flushLoop()
 	return m
 }
 
@@ -100,7 +107,8 @@ func (m *hardDeleteManager) enqueue(task *hardDeleteTask) bool {
 		}
 	}
 	m.tasks[task.TaskID] = task
-	return m.persistLocked() == nil
+	m.scheduleFlush()
+	return true
 }
 
 func (m *hardDeleteManager) getActiveByIdempotencyKey(key string) (*hardDeleteTask, bool) {
@@ -179,7 +187,8 @@ func (m *hardDeleteManager) nextRunnable() *hardDeleteTask {
 			t.StartedAt = now
 		}
 		t.UpdatedAt = now
-		_ = m.persistLocked()
+		// Async persist: state change is flushed by flushLoop without blocking.
+		m.scheduleFlush()
 		cp := *t
 		cp.MemoryIDs = append([]string(nil), t.MemoryIDs...)
 		return &cp
@@ -214,7 +223,7 @@ func (m *hardDeleteManager) applyResult(taskID string, processed, failed, batchS
 			t.Error = runErr.Error()
 			t.CompletedAt = now
 		}
-		_ = m.persistLocked()
+		m.scheduleFlush()
 		return
 	}
 	if done {
@@ -223,7 +232,7 @@ func (m *hardDeleteManager) applyResult(taskID string, processed, failed, batchS
 			t.CompletedAt = now
 		}
 	}
-	_ = m.persistLocked()
+	m.scheduleFlush()
 }
 
 func (m *hardDeleteManager) recommendBatchSize(prev int) int {
@@ -334,4 +343,61 @@ func (m *hardDeleteManager) persistLocked() error {
 		return err
 	}
 	return nil
+}
+
+// scheduleFlush triggers an async flush without holding any lock.
+// Uses a non-blocking send so concurrent calls coalesce into one persist
+// within the debounce window.
+func (m *hardDeleteManager) scheduleFlush() {
+	if m == nil || m.stopped.Load() {
+		return
+	}
+	select {
+	case m.flushCh <- struct{}{}:
+	default:
+	}
+}
+
+// flushLoop runs in a background goroutine. It debounces persist calls so that
+// rapid state changes coalesce into a single fsync every 2 seconds.
+func (m *hardDeleteManager) flushLoop() {
+	defer m.flushWg.Done()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopCh:
+			m.mu.Lock()
+			_ = m.persistLocked()
+			m.mu.Unlock()
+			return
+		case <-ticker.C:
+			m.mu.Lock()
+			_ = m.persistLocked()
+			m.mu.Unlock()
+		case <-m.flushCh:
+			// Drain any additional signals that arrived during persist.
+		flush:
+			for {
+				select {
+				case <-m.flushCh:
+				default:
+					break flush
+				}
+			}
+			m.mu.Lock()
+			_ = m.persistLocked()
+			m.mu.Unlock()
+		}
+	}
+}
+
+// StopFlush stops the flush loop and waits for the final persist to complete.
+func (m *hardDeleteManager) StopFlush() {
+	if m == nil {
+		return
+	}
+	m.stopped.Store(true)
+	close(m.stopCh)
+	m.flushWg.Wait()
 }
