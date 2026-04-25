@@ -220,7 +220,7 @@ func TestTieredObjectStore_ArchiveMemory_WritesS3ColdEmbedding(t *testing.T) {
 	if gotMem.MemoryID != mem.MemoryID {
 		t.Fatalf("unexpected memory id: got %q want %q", gotMem.MemoryID, mem.MemoryID)
 	}
-	if _, ok := warm.GetMemory(mem.MemoryID); ok {
+	if _, warmOk := warm.GetMemory(mem.MemoryID); warmOk {
 		t.Fatal("expected archived memory to be evicted from warm store")
 	}
 
@@ -274,8 +274,8 @@ func TestTieredObjectStore_GetMemoryActivated_DeletesS3ColdEmbedding(t *testing.
 
 	// Put memory + embedding directly into cold tier
 	cold.PutMemory(mem)
-	if err := cold.PutMemoryEmbedding(mem.MemoryID, []float32{1.1, 2.2, 3.3}); err != nil {
-		t.Fatalf("PutMemoryEmbedding failed: %v", err)
+	if putErr := cold.PutMemoryEmbedding(mem.MemoryID, []float32{1.1, 2.2, 3.3}); putErr != nil {
+		t.Fatalf("PutMemoryEmbedding failed: %v", putErr)
 	}
 
 	// Reactivate from cold
