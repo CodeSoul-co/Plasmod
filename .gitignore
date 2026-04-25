@@ -91,3 +91,7 @@ Zep_in_Plasmod.md
 .gitignore
 .andb_data/
 import_dataset.py
+
+# Local benchmark workspace (knowhere-vs-faiss comparison)
+TEST/
+cpp/build-docker/
