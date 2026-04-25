@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -92,19 +93,56 @@ public:
         cfg_ = cfg;
         if (cfg_.dim <= 0) return false;
 
-        int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : kDefaultM;
-        int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
+        // Resolve index type. Empty string defaults to HNSW for backward
+        // compatibility with the historical "plasmod_retriever_init(HNSW, ...)"
+        // invocation pattern.
+        index_type_ = cfg_.index_type.empty() ? std::string("HNSW") : cfg_.index_type;
 
-        // Use metric from config, default to IP if not specified
+        // Common configuration shared by HNSW / IVF_FLAT.
         std::string metric = cfg_.metric_type.empty() ? "IP" : cfg_.metric_type;
-        build_cfg_[knowhere::meta::METRIC_TYPE]         = metric;
-        build_cfg_[knowhere::indexparam::M]             = M;
-        build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
-        build_cfg_[knowhere::meta::DIM]                 = cfg_.dim;
-        build_cfg_[knowhere::meta::TOPK]                = kDefaultEfSearch;
+        build_cfg_[knowhere::meta::METRIC_TYPE] = metric;
+        build_cfg_[knowhere::meta::DIM]         = cfg_.dim;
+        build_cfg_[knowhere::meta::TOPK]        = kDefaultEfSearch;
+
+        if (index_type_ == "HNSW") {
+            int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : kDefaultM;
+            int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
+            build_cfg_[knowhere::indexparam::M]             = M;
+            build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
+        } else if (index_type_ == "IVF_FLAT") {
+            // IVF clustering: NLIST = #coarse centroids built at index time;
+            // NPROBE = #lists probed at query time (set in Search()).
+            int nlist = cfg_.ivf_nlist > 0 ? cfg_.ivf_nlist : 128;
+            build_cfg_[knowhere::indexparam::NLIST] = nlist;
+        } else if (index_type_ == "DISKANN") {
+            // DiskANN's constructor asserts that the Object parameter passed
+            // to IndexFactory.Create is a Pack<shared_ptr<FileManager>> —
+            // it owns the lifecycle of on-disk PQ shards, navigation graph,
+            // and metadata files.  Our flat plasmod_retriever_init() path
+            // doesn't yet plumb a FileManager through, so attempting to
+            // construct DISKANN via the default Create<float>(name, version)
+            // overload fires the C++ assert and SIGABRT.
+            //
+            // Return false here with a clear log line. A future change should
+            // expose a dedicated plasmod_retriever_init_diskann(...) C API
+            // that accepts an index_prefix path and constructs an embedded
+            // LocalFileManager, then call Create with the Pack object.
+            std::fprintf(stderr,
+                "plasmod: DISKANN backend compiled in but runtime wiring "
+                "is incomplete (FileManager not plumbed through). Use HNSW "
+                "or IVF_FLAT for now, or extend plasmod_retriever_init to "
+                "accept a DiskANN file-manager prefix.\n");
+            return false;
+        } else {
+            // Unknown index type — reject early with a clear log line.
+            std::fprintf(stderr,
+                "plasmod: unsupported dense index_type=%s (HNSW|IVF_FLAT|DISKANN)\n",
+                index_type_.c_str());
+            return false;
+        }
 
         auto result = knowhere::IndexFactory::Instance().Create<float>(
-            "HNSW", knowhere::Version::GetCurrentVersion().VersionNumber());
+            index_type_, knowhere::Version::GetCurrentVersion().VersionNumber());
         if (!result.has_value()) return false;
         index_ = std::make_unique<knowhere::Index<knowhere::IndexNode>>(
             std::move(result.value()));
@@ -139,8 +177,14 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
 
         knowhere::Json search_cfg = build_cfg_;
-        search_cfg[knowhere::meta::TOPK]     = topk;
-        search_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kDefaultEfSearch);
+        search_cfg[knowhere::meta::TOPK] = topk;
+
+        if (index_type_ == "HNSW") {
+            search_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kDefaultEfSearch);
+        } else if (index_type_ == "IVF_FLAT") {
+            int nprobe = cfg_.ivf_nprobe > 0 ? cfg_.ivf_nprobe : 8;
+            search_cfg[knowhere::indexparam::NPROBE] = nprobe;
+        }
 
         auto qds = knowhere::GenDataSet(nq, dim_, query);
 
@@ -165,6 +209,7 @@ public:
 
 private:
     IndexConfig cfg_;
+    std::string index_type_; // "HNSW" | "IVF_FLAT"
     int         dim_         = 0;
     int64_t     num_vectors_ = 0;
     knowhere::Json  build_cfg_;
