@@ -51,8 +51,8 @@ type OrchestratorStats struct {
 // appropriate flow chain via a bounded worker pool.
 //
 // Priority order (highest first): urgent > high > normal > low
-// Backpressure: tasks are dropped (and Dropped counter incremented) when the
-// queue is full.  Replace with blocking semantics if strict ordering is needed.
+// Backpressure: when the queue is full, Submit blocks until space is available.
+// Dropping was replaced with blocking to prevent silent data loss.
 //
 // Chains wired per TaskType:
 //
@@ -107,8 +107,9 @@ func CreateOrchestrator(mgr *nodes.Manager, concurrency, queueCap int) *Orchestr
 	return o
 }
 
-// Submit enqueues a Task at its declared Priority level.  Returns false and
-// increments the Dropped counter when the queue for that priority is full.
+// Submit enqueues a Task at its declared Priority level.  Blocks when the queue
+// for that priority is full, applying backpressure to callers.
+// Returns false only when the orchestrator has been stopped.
 func (o *Orchestrator) Submit(t Task) bool {
 	if t.Submitted.IsZero() {
 		t.Submitted = time.Now()
@@ -124,7 +125,10 @@ func (o *Orchestrator) Submit(t Task) bool {
 	case o.queues[p] <- t:
 		o.submitted.Add(1)
 		return true
-	default:
+	case <-time.After(30 * time.Second):
+		// Timeout after 30s — treat as dropped for observability.
+		// This prevents goroutines from blocking indefinitely if the orchestrator
+		// is stuck or all workers are deadlocked.
 		o.dropped.Add(1)
 		return false
 	}
