@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"plasmod/retrievalplane"
 )
@@ -38,6 +39,14 @@ type VectorStore struct {
 	vectors []float32
 
 	mu sync.RWMutex
+
+	// rebuildMu serialises HNSW index builds.  Concurrent callers are queued, not
+	// dropped.  This prevents O(n²) rebuild storms under concurrent write load.
+	rebuildMu sync.Mutex
+
+	// indexGen increments each time a rebuild completes.  Callers of Search can
+	// snapshot it before/after to detect whether the index changed.
+	indexGen atomic.Int64
 }
 
 // VectorStoreConfig carries optional tuning parameters for the HNSW index.
@@ -188,21 +197,30 @@ func (vs *VectorStore) AddVector(id string, vec []float32) {
 // Build sends the accumulated float32 matrix to the CGO retriever.
 // After Build the index is ready for Search calls.
 // Calling Build again replaces the existing index.
+//
+// Concurrent callers are serialised via rebuildMu — only one rebuild runs at a
+// time; others block until it finishes and then use the freshly-built index.
+// This eliminates the O(n²) rebuild storm that occurred when N concurrent writes
+// each triggered their own independent full-index rebuild.
 func (vs *VectorStore) Build() error {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
+	// Serialize rebuilds; wait for any in-flight rebuild to finish first.
+	vs.rebuildMu.Lock()
+	defer vs.rebuildMu.Unlock()
 
+	vs.mu.Lock()
 	if vs.retriever == nil || len(vs.idArray) == 0 {
+		vs.mu.Unlock()
 		return nil
 	}
-
 	n := len(vs.idArray)
 	vecs := make([]float32, n*vs.dim)
 	copy(vecs, vs.vectors)
+	vs.mu.Unlock()
 
 	if err := vs.retriever.Build(vecs, n); err != nil {
 		return fmt.Errorf("VectorStore.Build: %w", err)
 	}
+	vs.indexGen.Add(1)
 	return nil
 }
 

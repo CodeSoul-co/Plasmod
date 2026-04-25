@@ -68,6 +68,14 @@ type Runtime struct {
 	deleteOutboxDone   int64
 	deleteOutboxFailed int64
 	deleteOutboxDropped int64
+
+	// flushTicker drives the background index-rebuild goroutine.  By decoupling
+	// flush from write, we eliminate the O(n²) rebuild storm that occurred when N
+	// concurrent writes each triggered their own synchronous full-index rebuild.
+	flushTicker     *time.Ticker
+	flushStopCh     chan struct{}
+	flushInterval   time.Duration
+	flushLoopOnce   sync.Once
 }
 
 type memoryDeleteTask struct {
@@ -169,6 +177,55 @@ func (r *Runtime) StartMemoryDeleteOutbox(ctx context.Context) {
 	}
 	r.deleteWorkerOnce.Do(func() {
 		go r.runMemoryDeleteOutbox(ctx)
+	})
+}
+
+// resolveFlushInterval reads PLASMOD_FLUSH_INTERVAL from the environment.
+// Default: 5 seconds.  A value of 0 disables the background flush loop.
+func resolveFlushInterval() time.Duration {
+	const defaultInterval = 5 * time.Second
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_FLUSH_INTERVAL"))
+	if raw == "" {
+		return defaultInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultInterval
+	}
+	return d
+}
+
+// StartFlushLoop launches a background goroutine that rebuilds the retrieval index
+// at a fixed interval, completely decoupled from the write path.  This prevents
+// the O(n²) rebuild storm that occurred when N concurrent writes each triggered
+// their own synchronous full-index rebuild.  The goroutine exits when ctx is
+// cancelled.
+func (r *Runtime) StartFlushLoop(ctx context.Context) {
+	if r == nil || r.plane == nil {
+		return
+	}
+	r.flushInterval = resolveFlushInterval()
+	if r.flushInterval == 0 {
+		return // disabled via PLASMOD_FLUSH_INTERVAL=0
+	}
+	r.flushLoopOnce.Do(func() {
+		r.flushStopCh = make(chan struct{})
+		r.flushTicker = time.NewTicker(r.flushInterval)
+		go func() {
+			defer r.flushTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-r.flushTicker.C:
+					if err := r.plane.Flush(); err != nil {
+						log.Printf("[flush-loop] periodic flush failed: %v", err)
+					}
+				case <-r.flushStopCh:
+					return
+				}
+			}
+		}()
 	})
 }
 
