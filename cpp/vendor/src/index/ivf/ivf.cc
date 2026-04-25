@@ -424,12 +424,14 @@ Status
 IvfIndexNode<DataType, IndexType>::Train(const DataSetPtr dataset, std::shared_ptr<Config> cfg) {
     // use build_pool_ to make sure the OMP threads spawded by index_->train etc
     // can inherit the low nice value of threads in build_pool_.
-    auto tryObj = build_pool_->push([&] { return TrainInternal(dataset, std::move(cfg)); }).getTry();
-    if (tryObj.hasValue()) {
-        return tryObj.value();
+    // CogDB shim: ThreadPool::push returns std::future<T>, not folly::Future.
+    // Replace .getTry()/.hasValue() with try/catch around .get().
+    try {
+        return build_pool_->push([&] { return TrainInternal(dataset, std::move(cfg)); }).get();
+    } catch (const std::exception& e) {
+        LOG_KNOWHERE_WARNING_ << "faiss internal error: " << e.what();
+        return Status::faiss_inner_error;
     }
-    LOG_KNOWHERE_WARNING_ << "faiss internal error: " << tryObj.exception().what();
-    return Status::faiss_inner_error;
 }
 
 template <typename DataType, typename IndexType>
@@ -647,24 +649,27 @@ IvfIndexNode<DataType, IndexType>::Add(const DataSetPtr dataset, std::shared_ptr
     const BaseConfig& base_cfg = static_cast<const IvfConfig&>(*cfg);
     // use build_pool_ to make sure the OMP threads spawded by index_->add
     // can inherit the low nice value of threads in build_pool_.
-    auto tryObj = build_pool_
-                      ->push([&] {
-                          std::unique_ptr<ThreadPool::ScopedBuildOmpSetter> setter;
-                          if (base_cfg.num_build_thread.has_value()) {
-                              setter =
-                                  std::make_unique<ThreadPool::ScopedBuildOmpSetter>(base_cfg.num_build_thread.value());
-                          } else {
-                              setter = std::make_unique<ThreadPool::ScopedBuildOmpSetter>();
-                          }
-                          if constexpr (std::is_same<faiss::IndexBinaryIVF, IndexType>::value) {
-                              index_->add(rows, (const uint8_t*)data);
-                          } else {
-                              index_->add(rows, (const float*)data);
-                          }
-                      })
-                      .getTry();
-    if (tryObj.hasException()) {
-        LOG_KNOWHERE_WARNING_ << "faiss internal error: " << tryObj.exception().what();
+    // CogDB shim: ThreadPool::push returns std::future<void>; we wrap the
+    // body in try/catch around .get() instead of folly's .getTry().
+    try {
+        build_pool_
+            ->push([&] {
+                std::unique_ptr<ThreadPool::ScopedBuildOmpSetter> setter;
+                if (base_cfg.num_build_thread.has_value()) {
+                    setter =
+                        std::make_unique<ThreadPool::ScopedBuildOmpSetter>(base_cfg.num_build_thread.value());
+                } else {
+                    setter = std::make_unique<ThreadPool::ScopedBuildOmpSetter>();
+                }
+                if constexpr (std::is_same<faiss::IndexBinaryIVF, IndexType>::value) {
+                    index_->add(rows, (const uint8_t*)data);
+                } else {
+                    index_->add(rows, (const float*)data);
+                }
+            })
+            .get();
+    } catch (const std::exception& e) {
+        LOG_KNOWHERE_WARNING_ << "faiss internal error: " << e.what();
         return Status::faiss_inner_error;
     }
     return Status::success;
