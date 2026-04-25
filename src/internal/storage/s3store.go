@@ -319,12 +319,19 @@ func (s *S3ColdStore) GetEdge(id string) (schemas.Edge, bool) {
 }
 
 func (s *S3ColdStore) DeleteEdge(id string) error {
-	err := DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
-	if err == nil {
-		s.invalidateListCache(s.edgePrefix())
+	// Fetch edge to get src/dst IDs so we can clean up the .ref secondary index files.
+	edge, ok := s.GetEdge(id)
+	var refErr error
+	if ok {
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeBySrcKey(edge.SrcObjectID, edge.EdgeID))
+		_ = DeleteObject(context.Background(), nil, s.cfg, s.edgeByDstKey(edge.DstObjectID, edge.EdgeID))
 	}
-	return err
-
+	err := DeleteObject(context.Background(), nil, s.cfg, s.edgeKey(id))
+	if err != nil {
+		refErr = err
+	}
+	s.invalidateListCache(s.edgePrefix())
+	return refErr
 }
 
 func (s *S3ColdStore) ListEdgeIDsByObjectID(objectID string) ([]string, error) {
@@ -1088,13 +1095,17 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 		page := keys[start:end]
 
 		for _, key := range page {
-			data, err := GetBytes(ctx, nil, s.cfg, key)
-			if err != nil || data == nil {
+			var data []byte
+			var errGet error
+			data, errGet = GetBytes(ctx, nil, s.cfg, key)
+			if errGet != nil || data == nil {
 				continue
 			}
 
-			vec, err := bytesToFloat32Slice(data)
-			if err != nil {
+			var vec []float32
+			var errConv error
+			vec, errConv = bytesToFloat32Slice(data)
+			if errConv != nil {
 				continue
 			}
 			if len(vec) != dim {
@@ -1134,12 +1145,13 @@ func (s *S3ColdStore) ColdHNSWSearch(queryVec []float32, topK int) []string {
 	}
 	defer retriever.Close()
 
-	if err := retriever.Build(vectors, len(ids)); err != nil {
+	var buildErr error
+	if buildErr = retriever.Build(vectors, len(ids)); buildErr != nil {
 		return nil
 	}
 
-	intIDs, _, err := retriever.Search(queryVec, topK, nil)
-	if err != nil || len(intIDs) == 0 {
+	intIDs, _, searchErr := retriever.Search(queryVec, topK, nil)
+	if searchErr != nil || len(intIDs) == 0 {
 		return nil
 	}
 

@@ -336,7 +336,7 @@ func TestTieredObjectStore_GetStateAndArtifactActivated_FromCold(t *testing.T) {
 	if !ok || st.StateID != "state_cold_1" {
 		t.Fatalf("GetStateActivated cold hit failed: ok=%v state=%+v", ok, st)
 	}
-	if _, ok := warm.GetState("state_cold_1"); !ok {
+	if _, stateOk := warm.GetState("state_cold_1"); !stateOk {
 		t.Fatal("GetStateActivated: expected state promoted to warm")
 	}
 
@@ -344,7 +344,7 @@ func TestTieredObjectStore_GetStateAndArtifactActivated_FromCold(t *testing.T) {
 	if !ok || art.ArtifactID != "art_cold_1" {
 		t.Fatalf("GetArtifactActivated cold hit failed: ok=%v art=%+v", ok, art)
 	}
-	if _, ok := warm.GetArtifact("art_cold_1"); !ok {
+	if _, artOk := warm.GetArtifact("art_cold_1"); !artOk {
 		t.Fatal("GetArtifactActivated: expected artifact promoted to warm")
 	}
 }

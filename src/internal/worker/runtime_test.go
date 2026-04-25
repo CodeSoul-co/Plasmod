@@ -896,8 +896,8 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 		Payload:    map[string]any{"text": "archived cold retrieval target"},
 	}
 
-	if _, err := r.SubmitIngest(ev); err != nil {
-		t.Fatalf("SubmitIngest failed: %v", err)
+	if _, ingestErr := r.SubmitIngest(ev); ingestErr != nil {
+		t.Fatalf("SubmitIngest failed: %v", ingestErr)
 	}
 
 	memID := "mem_evt_cold_runtime_1"
@@ -912,10 +912,10 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 	tieredObjs.ArchiveMemory(memID)
 
 	// 验证 cold 中已经有对象
-	if _, ok := cold.GetMemory(memID); !ok {
+	if _, coldOk := cold.GetMemory(memID); !coldOk {
 		t.Fatalf("expected archived memory %s in cold store", memID)
 	}
-	if _, ok := store.Objects().GetMemory(memID); ok {
+	if _, warmOk := store.Objects().GetMemory(memID); warmOk {
 		t.Fatalf("expected archived memory %s to be removed from warm store", memID)
 	}
 

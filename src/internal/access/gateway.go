@@ -122,6 +122,12 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 	} else {
 		storage.PurgeMemoryWarmOnly(g.store, memoryID)
 	}
+	// Clean up orphaned segment records referencing this memory.
+	if g.store != nil {
+		if seg := g.store.Segments(); seg != nil {
+			_ = seg.DeleteByStorageRef(memoryID)
+		}
+	}
 	phase.deleteNs = time.Since(startDelete).Nanoseconds()
 
 	startAudit := time.Now()

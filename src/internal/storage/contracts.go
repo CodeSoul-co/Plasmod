@@ -30,6 +30,9 @@ type IndexRecord struct {
 type SegmentStore interface {
 	Upsert(record SegmentRecord)
 	List(namespace string) []SegmentRecord
+	// DeleteByStorageRef removes all SegmentRecords that reference the given object ID,
+	// preventing orphaned segment entries after a memory/object hard delete.
+	DeleteByStorageRef(objectID string) int
 }
 
 type IndexStore interface {
@@ -116,10 +119,13 @@ type ShareContractStore interface {
 // AuditStore is an append-only log of memory governance actions.
 // All operations that change memory visibility, sharing, or lifecycle
 // should emit an AuditRecord here.
+// DeleteByTargetID implements GDPR right-to-erasure: all audit records
+// for a given target memory are removed when the memory is hard-deleted.
 type AuditStore interface {
 	AppendAudit(r schemas.AuditRecord)
 	GetAudits(targetMemoryID string) []schemas.AuditRecord
 	ListAudits() []schemas.AuditRecord
+	DeleteByTargetID(targetMemoryID string) int
 }
 
 // ColdTierDiagnostics is an optional benchmark-facing summary exposed by cold
