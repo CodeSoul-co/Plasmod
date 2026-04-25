@@ -479,6 +479,11 @@ def main() -> None:
         help="Stable import batch id written to payload.import_batch_id (default auto-generated per run)",
     )
     ap.add_argument(
+        "--import-batch-id-file",
+        default=".out/latest_import_batch_id",
+        help="Ingest only: write the effective import_batch_id to this file (default .out/latest_import_batch_id; set empty to disable)",
+    )
+    ap.add_argument(
         "--event-id-scope",
         choices=("batch", "legacy"),
         default="batch",
@@ -782,6 +787,12 @@ def main() -> None:
     lim_disp = "none" if args.limit is None else args.limit
     ck_disp = checkpoint_path or "none"
     import_batch_id = args.import_batch_id or _default_import_batch_id()
+    batch_id_file = (args.import_batch_id_file or "").strip()
+    if batch_id_file:
+        out_path = Path(batch_id_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(import_batch_id + "\n", encoding="utf-8")
+        print(f"[import] import_batch_id_file={out_path}")
     event_scope = args.event_id_scope
     print(
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "

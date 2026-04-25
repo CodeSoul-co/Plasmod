@@ -950,12 +950,12 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 		end = len(task.MemoryIDs)
 	}
 	ids := task.MemoryIDs[start:end]
-	workers := resolveHardDeleteBatchWorkers(len(ids))
+	itemTimeout := resolveHardDeleteItemTimeout()
+	workers := resolveAdaptiveHardDeleteBatchWorkers(task, len(ids), itemTimeout)
 	stats = hardDeleteBatchStats{
 		Workers:   workers,
 		BatchSize: len(ids),
 	}
-	itemTimeout := resolveHardDeleteItemTimeout()
 	if workers <= 1 {
 		var pAtomic, fAtomic int64
 		var deleteNsAtomic int64
@@ -1038,6 +1038,94 @@ func resolveHardDeleteBatchWorkers(batchLen int) int {
 		return 1
 	}
 	return n
+}
+
+func resolveAdaptiveHardDeleteBatchWorkers(task *hardDeleteTask, batchLen int, itemTimeout time.Duration) int {
+	baseWorkers := resolveHardDeleteBatchWorkers(batchLen)
+	workers := baseWorkers
+	if task != nil && task.Workers > 0 {
+		workers = task.Workers
+	}
+	var failRate float64
+	var avgDeleteMs float64
+	if task != nil {
+		total := task.Processed + task.Failed
+		if total > 0 {
+			failRate = float64(task.Failed) / float64(total)
+		}
+		if task.Processed > 0 {
+			avgDeleteMs = task.DeleteObjectMs / float64(task.Processed)
+		}
+	}
+	snap := metrics.Global().Snapshot()
+	pressureHigh := snap.ConcurrentQueries > 4 || snap.GoAllocBytes > 2*1024*1024*1024
+	pressureMedium := !pressureHigh && (snap.ConcurrentQueries > 2 || snap.GoAllocBytes > 1*1024*1024*1024)
+	return tuneHardDeleteWorkers(workers, baseWorkers, batchLen, pressureHigh, pressureMedium, failRate, avgDeleteMs, itemTimeout)
+}
+
+func tuneHardDeleteWorkers(
+	current int,
+	base int,
+	batchLen int,
+	pressureHigh bool,
+	pressureMedium bool,
+	failRate float64,
+	avgDeleteMs float64,
+	itemTimeout time.Duration,
+) int {
+	const maxWorkers = 64
+	if current < 1 {
+		current = 1
+	}
+	if base < 1 {
+		base = 1
+	}
+	adaptiveMax := base * 2
+	if adaptiveMax > maxWorkers {
+		adaptiveMax = maxWorkers
+	}
+	switch {
+	case pressureHigh:
+		current = current / 2
+		if current < 1 {
+			current = 1
+		}
+	case pressureMedium:
+		current -= 2
+		if current < 1 {
+			current = 1
+		}
+	default:
+		switch {
+		case failRate >= 0.10:
+			current -= 2
+		case failRate >= 0.03:
+			current -= 1
+		default:
+			slowThresholdMs := float64(itemTimeout.Milliseconds()) * 0.6
+			if slowThresholdMs < 200 {
+				slowThresholdMs = 200
+			}
+			if avgDeleteMs > 0 && avgDeleteMs >= slowThresholdMs {
+				current -= 1
+			} else {
+				current += 2
+			}
+		}
+		if current < 1 {
+			current = 1
+		}
+	}
+	if current > adaptiveMax {
+		current = adaptiveMax
+	}
+	if batchLen > 0 && current > batchLen {
+		current = batchLen
+	}
+	if current < 1 {
+		current = 1
+	}
+	return current
 }
 
 func resolveHardDeleteItemTimeout() time.Duration {
