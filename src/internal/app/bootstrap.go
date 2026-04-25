@@ -461,6 +461,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	subscriber := worker.CreateEventSubscriber(wal, nodeManager)
 	runtime.StartSubscriber(ctx, subscriber)
 	runtime.StartMemoryDeleteOutbox(ctx)
+	runtime.StartFlushLoop(ctx)
 	coord.Registry.Register("event_subscriber", subscriber)
 
 	// ── Execution Orchestrator ─────────────────────────────────────────────────
@@ -482,5 +483,15 @@ func BuildServer() (*http.Server, func() error, error) {
 		cancel()
 		return bundle.Close()
 	}
-	return &http.Server{Addr: addr, Handler: handler}, shutdown, nil
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
+	}
+	return srv, shutdown, nil
 }
