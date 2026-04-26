@@ -293,3 +293,33 @@ func (s *SegmentRetriever) SegmentSize(segmentID string) int64 {
 	defer C.free(unsafe.Pointer(cs))
 	return int64(C.plasmod_segment_size(cs))
 }
+
+// RegisterWarmSegment exposes a built cgo segment to the HTTP server's
+// SegmentDataPlane.segments map so that SearchWarmSegment lookups succeed.
+// After BuildSegment + this call, the segment is visible to the HTTP path.
+func (s *SegmentRetriever) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	if segmentID == "" || len(objectIDs) == 0 {
+		return fmt.Errorf("RegisterWarmSegment: invalid args")
+	}
+	cs := C.CString(segmentID)
+	defer C.free(unsafe.Pointer(cs))
+
+	// Build array of C strings
+	cIDs := make([]*C.char, len(objectIDs))
+	for i, id := range objectIDs {
+		cIDs[i] = C.CString(id)
+	}
+	for i := range cIDs {
+		defer C.free(unsafe.Pointer(cIDs[i]))
+	}
+
+	// Slice of pointers for passing to C — reinterpret &cIDs[0] as the
+	// **char that the extern "C" prototype expects.
+	cIDPtrs := (**C.char)(unsafe.Pointer(&cIDs[0]))
+
+	rc := C.plasmod_segment_register_warm(cs, cIDPtrs, C.int64_t(len(objectIDs)))
+	if rc != 0 {
+		return fmt.Errorf("plasmod_segment_register_warm(%q, n=%d): rc=%d", segmentID, len(objectIDs), rc)
+	}
+	return nil
+}
