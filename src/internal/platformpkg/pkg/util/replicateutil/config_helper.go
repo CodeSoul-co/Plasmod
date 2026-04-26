@@ -25,7 +25,7 @@ import (
 	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type Role int

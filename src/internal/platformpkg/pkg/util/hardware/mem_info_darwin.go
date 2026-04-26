@@ -21,7 +21,7 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 // GetUsedMemoryCount returns the memory usage in bytes.

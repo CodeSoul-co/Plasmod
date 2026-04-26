@@ -3,7 +3,7 @@
 
 package consumer
 
-import "andb/platformpkg/pkg/proto/streamingpb"
+import "plasmod/platformpkg/pkg/proto/streamingpb"
 
 // consumeGrpcServerHelper is a wrapped consumer server of log messages.
 type consumeGrpcServerHelper struct {

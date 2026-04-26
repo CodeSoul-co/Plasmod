@@ -5,8 +5,8 @@ package adaptor
 
 import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 var (

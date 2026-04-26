@@ -28,8 +28,8 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster/broadcast"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster/registry"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // RegisterDDLCallbacks registers the ddl callbacks.

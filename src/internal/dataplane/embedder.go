@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"context"
 	"hash/fnv"
 	"math"
 	"sort"
@@ -108,6 +109,45 @@ func (e *TfidfEmbedder) Generate(text string) ([]float32, error) {
 	// L2-normalize
 	e.l2Normalize(vec)
 	return vec, nil
+}
+
+// BatchGenerate returns TF-IDF vectors for multiple texts in one call.
+// ObserveTokens is called for each text so document-frequency counters
+// stay in sync. Thread-safe.
+func (e *TfidfEmbedder) BatchGenerate(_ context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	results := make([][]float32, len(texts))
+	for i, text := range texts {
+		results[i] = make([]float32, e.dim)
+		if text == "" {
+			continue
+		}
+		tokens := e.tokenize(text)
+		if len(tokens) == 0 {
+			continue
+		}
+		bucketCounts := make(map[int]int, len(tokens))
+		for _, tok := range tokens {
+			bucket := e.hashBucket(tok)
+			bucketCounts[bucket]++
+		}
+		docLen := float64(len(tokens))
+
+		e.mu.Lock()
+		n := e.totalDocs
+		df := e.docFreq
+		e.mu.Unlock()
+
+		for bucket, count := range bucketCounts {
+			tf := float64(count) / docLen
+			idf := math.Log((float64(n)+1)/(float64(df[bucket])+1)) + 1
+			results[i][bucket] = float32(tf * idf)
+		}
+		e.l2Normalize(results[i])
+	}
+	return results, nil
 }
 
 // ObserveTokens updates the document-frequency counters for the given text.

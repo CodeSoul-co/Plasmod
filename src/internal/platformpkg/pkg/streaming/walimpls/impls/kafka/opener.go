@@ -10,10 +10,10 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/walimpls"
-	"andb/platformpkg/pkg/streaming/walimpls/helper"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/streaming/walimpls/helper"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 var _ walimpls.OpenerImpls = (*openerImpl)(nil)

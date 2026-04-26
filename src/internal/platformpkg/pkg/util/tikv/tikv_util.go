@@ -23,7 +23,7 @@ import (
 	"github.com/tikv/client-go/v2/config"
 	"github.com/tikv/client-go/v2/txnkv"
 
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 func GetTiKVClient(cfg *paramtable.TiKVConfig) (*txnkv.Client, error) {

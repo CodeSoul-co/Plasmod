@@ -6,9 +6,9 @@ package producer
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // newProducerMetrics creates a new producer metrics.

@@ -5,10 +5,10 @@
 S3_ENDPOINT ?= 127.0.0.1:9000
 S3_ACCESS_KEY ?= minioadmin
 S3_SECRET_KEY ?= minioadmin
-S3_BUCKET ?= andb-integration
+S3_BUCKET ?= plasmod-integration
 S3_SECURE ?= false
 S3_REGION ?= us-east-1
-S3_PREFIX ?= andb/integration_tests
+S3_PREFIX ?= plasmod/integration_tests
 
 # RETRIEVAL_TAG enables the CGO Knowhere/HNSW retriever.
 # It is only safe to set when cpp/build/libplasmod_retrieval.so/dylib exists.

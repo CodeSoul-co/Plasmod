@@ -23,7 +23,7 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus/internal/metastore/model"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func (s *DDLCallbacks) createIndexV2AckCallback(ctx context.Context, result message.BroadcastResultCreateIndexMessageV2) error {

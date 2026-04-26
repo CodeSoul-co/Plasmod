@@ -18,10 +18,10 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/proxy/privilege"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/contextutil"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/contextutil"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 type PrivilegeFunc func(ctx context.Context, req interface{}) (context.Context, error)

@@ -18,9 +18,9 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/service"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/util"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/util/conc"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/util/conc"
 )
 
 // Server is the streamingcoord server.

@@ -45,9 +45,9 @@ services:
           sleep 2
         done
         mc alias set local http://minio:9000 minioadmin minioadmin
-        mc mb local/andb-integration || true
+        mc mb local/plasmod-integration || true
 
-  andb:
+  plasmod:
     build:
       context: .
       dockerfile: Dockerfile
@@ -59,7 +59,7 @@ services:
         GOSUMDB: ${GOSUMDB:-}
     image: plasmod:latest
     volumes:
-      - andb_data:/data
+      - plasmod_data:/data
     ports:
       - "8080:8080"
     environment:
@@ -75,10 +75,10 @@ services:
       S3_ENDPOINT: minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
-      S3_BUCKET: andb-integration
+      S3_BUCKET: plasmod-integration
       S3_SECURE: "false"
       S3_REGION: us-east-1
-      S3_PREFIX: andb/docker
+      S3_PREFIX: plasmod/docker
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
       interval: 10s
@@ -91,4 +91,4 @@ services:
 
 volumes:
   minio_data:
-  andb_data:
+  plasmod_data:

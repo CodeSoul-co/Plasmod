@@ -20,8 +20,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/mq/common"
 )
 
 type consumer struct {

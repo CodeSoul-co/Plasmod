@@ -31,7 +31,7 @@ import (
 	"github.com/spaolacci/murmur3"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/common"
 )
 
 const substringLengthForCRC = 100

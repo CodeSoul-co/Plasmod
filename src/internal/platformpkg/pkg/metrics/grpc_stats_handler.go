@@ -25,7 +25,7 @@ import (
 
 	"google.golang.org/grpc/stats"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // milvusStatsKey is context key type.

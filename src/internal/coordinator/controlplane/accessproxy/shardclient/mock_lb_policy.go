@@ -8,7 +8,7 @@ package shardclient
 import (
 	context "context"
 
-	internalpb "andb/platformpkg/pkg/proto/internalpb"
+	internalpb "plasmod/platformpkg/pkg/proto/internalpb"
 	mock "github.com/stretchr/testify/mock"
 )
 

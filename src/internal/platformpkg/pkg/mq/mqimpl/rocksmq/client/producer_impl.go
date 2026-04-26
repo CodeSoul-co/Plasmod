@@ -17,9 +17,9 @@ package client
 import (
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/server"
 )
 
 // assertion make sure implementation

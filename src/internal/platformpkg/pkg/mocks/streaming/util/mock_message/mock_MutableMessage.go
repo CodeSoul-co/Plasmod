@@ -6,8 +6,8 @@
 package mock_message
 
 import (
-	messagespb "andb/platformpkg/pkg/proto/messagespb"
-	message "andb/platformpkg/pkg/streaming/util/message"
+	messagespb "plasmod/platformpkg/pkg/proto/messagespb"
+	message "plasmod/platformpkg/pkg/streaming/util/message"
 
 	mock "github.com/stretchr/testify/mock"
 

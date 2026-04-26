@@ -5,7 +5,7 @@ package broadcast
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 func ResetBroadcaster() {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 // ChannelID is the unique id of a channel.

@@ -6,7 +6,7 @@ package meta
 import (
 	"sort"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // collectionAssignmentHelper is a helper to manage the replica assignment in same collection.

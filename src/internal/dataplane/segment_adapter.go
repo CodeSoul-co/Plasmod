@@ -120,8 +120,12 @@ func (p *SegmentDataPlane) Ingest(record IngestRecord) error {
 	}
 	p.index.InsertObject(record.ObjectID, record.Text, record.Attributes, namespace, record.EventUnixTS)
 
-	if p.vecStore != nil && p.embedder != nil {
-		p.vecStore.AddText(record.ObjectID, record.Text)
+	if p.vecStore != nil {
+		if len(record.Embedding) > 0 {
+			p.vecStore.AddVector(record.ObjectID, record.Embedding)
+		} else if p.embedder != nil {
+			p.vecStore.AddText(record.ObjectID, record.Text)
+		}
 	}
 	return nil
 }
@@ -185,9 +189,20 @@ func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
 
 	// ── Vector search (optional) ──────────────────────────────────────────────
 	vecIDs := []string{}
-	if p.vecStore != nil && p.vecStore.Ready() && p.embedder != nil {
-		queryVec, err := p.embedder.Generate(input.QueryText)
-		if err == nil && len(queryVec) > 0 {
+	if p.vecStore != nil && p.vecStore.Ready() {
+		var queryVec []float32
+
+		// Use precomputed query embedding when provided (bypasses embedder).
+		if len(input.QueryEmbedding) > 0 {
+			queryVec = input.QueryEmbedding
+		} else if p.embedder != nil {
+			v, err := p.embedder.Generate(input.QueryText)
+			if err == nil && len(v) > 0 {
+				queryVec = v
+			}
+		}
+
+		if len(queryVec) > 0 {
 			if ids, _, err := p.vecStore.Search(queryVec, input.TopK); err == nil && len(ids) > 0 {
 				vecIDs = ids
 			}
@@ -319,19 +334,24 @@ func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectID
 }
 
 // SearchWarmSegment runs ANN query against a prebuilt warm segment.
-func (p *SegmentDataPlane) SearchWarmSegment(segmentID, queryText string, topK int) ([]string, error) {
+// queryVec is an optional precomputed embedding — when provided, bypasses
+// the embedder.  When nil, the embedder generates the vector from queryText.
+func (p *SegmentDataPlane) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
 	if segmentID == "" {
 		return nil, fmt.Errorf("segment_id is required")
-	}
-	if p.embedder == nil {
-		return nil, fmt.Errorf("embedder unavailable")
 	}
 	if topK <= 0 {
 		topK = 10
 	}
-	queryVec, err := p.embedder.Generate(queryText)
-	if err != nil {
-		return nil, err
+	if len(queryVec) == 0 {
+		if p.embedder == nil {
+			return nil, fmt.Errorf("embedder unavailable")
+		}
+		v, err := p.embedder.Generate(queryText)
+		if err != nil {
+			return nil, err
+		}
+		queryVec = v
 	}
 	intIDs, _, err := retrievalplane.GlobalSegmentRetriever.Search(segmentID, queryVec, 1, topK)
 	if err != nil {
@@ -347,4 +367,17 @@ func (p *SegmentDataPlane) SearchWarmSegment(segmentID, queryText string, topK i
 		}
 	}
 	return out, nil
+}
+
+// RegisterWarmSegment stores a segment's object-ID list so SearchWarmSegment
+// lookups succeed.  Called by the HTTP registration endpoint after a segment
+// is built via cgo (plasmod_segment_build) so the HTTP path can find it.
+func (p *SegmentDataPlane) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	if segmentID == "" || len(objectIDs) == 0 {
+		return fmt.Errorf("RegisterWarmSegment: invalid args")
+	}
+	p.segMu.Lock()
+	p.segments[segmentID] = append([]string(nil), objectIDs...)
+	p.segMu.Unlock()
+	return nil
 }

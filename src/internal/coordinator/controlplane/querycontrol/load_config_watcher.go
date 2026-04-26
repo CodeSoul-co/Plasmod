@@ -25,10 +25,10 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/syncutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // NewLoadConfigWatcher creates a new load config watcher.

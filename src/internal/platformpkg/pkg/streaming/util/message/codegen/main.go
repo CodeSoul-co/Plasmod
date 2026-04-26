@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	messagePackage  = "andb/platformpkg/pkg/streaming/util/message"
+	messagePackage  = "plasmod/platformpkg/pkg/streaming/util/message"
 	reflectInfoFile = "reflect_info.json"
 	reflectInfoGo   = "../reflect_info.go"
 )

@@ -4,8 +4,8 @@
 package ack
 
 import (
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 var _ typeutil.HeapInterface = (*ackersOrderByTimestamp)(nil)

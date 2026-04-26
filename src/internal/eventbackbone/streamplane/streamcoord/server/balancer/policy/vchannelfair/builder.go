@@ -7,7 +7,7 @@ import (
 	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 const (

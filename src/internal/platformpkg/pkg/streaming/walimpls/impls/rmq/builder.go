@@ -4,11 +4,11 @@
 package rmq
 
 import (
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/client"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/walimpls"
-	"andb/platformpkg/pkg/streaming/walimpls/registry"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/client"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/streaming/walimpls/registry"
 )
 
 func init() {

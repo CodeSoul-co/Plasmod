@@ -43,6 +43,10 @@ type QueryRequest struct {
 	WarmSegmentID       string     `json:"warm_segment_id,omitempty"`
 	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
 	IncludeCold bool `json:"include_cold,omitempty"`
+	// EmbeddingVector is a precomputed search vector. When non-nil, the
+	// retrieval plane uses it directly instead of calling the embedder,
+	// bypassing ONNX/TF-IDF for the embedding step.
+	EmbeddingVector []float32 `json:"embedding_vector,omitempty"`
 }
 
 // EvidenceCacheStats summarizes pre-computed fragment lookups for the returned object IDs.

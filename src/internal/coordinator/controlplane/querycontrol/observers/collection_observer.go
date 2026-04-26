@@ -35,13 +35,13 @@ import (
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/proxyutil"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/eventlog"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/proxypb"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/eventlog"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/proxypb"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type CollectionObserver struct {

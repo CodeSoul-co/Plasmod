@@ -5,7 +5,7 @@ package replicates
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // newSecondaryState creates a new secondary state.

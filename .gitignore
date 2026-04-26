@@ -91,3 +91,7 @@ Zep_in_Plasmod.md
 .gitignore
 .andb_data/
 import_dataset.py
+
+# Top-level build artifacts from local experiments
+/benchmark
+/server

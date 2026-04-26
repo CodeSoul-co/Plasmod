@@ -8,7 +8,7 @@ import (
 
 	"github.com/cockroachdb/errors"
 
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // newConfig creates a new config for the recovery module.

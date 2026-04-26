@@ -24,7 +24,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"andb/platformpkg/pkg/proto/rootcoordpb"
+	"plasmod/platformpkg/pkg/proto/rootcoordpb"
 )
 
 // use interface tsoAllocator to keep other components testable
