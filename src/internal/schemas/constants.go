@@ -327,7 +327,7 @@ func DefaultAlgorithmConfig() AlgorithmConfig {
 
 		HNSWM:             16,
 		HNSEfConstruction: 256,
-		HNSEfSearch:       64,
+		HNSEfSearch:       256,
 
 		DFSRelevanceThreshold: 0.2,
 		ColdSearchWeights: ColdSearchWeights{

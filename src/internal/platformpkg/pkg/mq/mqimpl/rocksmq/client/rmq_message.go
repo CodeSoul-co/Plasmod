@@ -15,9 +15,9 @@
 package client
 
 import (
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // Check rmqMessage implements ConsumerMessage

@@ -4,7 +4,7 @@
 package paramtable
 
 import (
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 const cipherYamlFile = "hook.yaml"

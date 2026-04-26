@@ -6,7 +6,7 @@ package lifetime
 import (
 	"sync"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // SafeChan is the utility type combining chan struct{} & sync.Once.

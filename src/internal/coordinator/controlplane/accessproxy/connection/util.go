@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 func ZapClientInfo(info *commonpb.ClientInfo) []zap.Field {

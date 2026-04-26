@@ -3,7 +3,7 @@
 
 package types
 
-import "andb/platformpkg/pkg/proto/streamingpb"
+import "plasmod/platformpkg/pkg/proto/streamingpb"
 
 const (
 	UpdateMaskPathWALBalancePolicyAllowRebalance = "config.allow_rebalance"

@@ -6,8 +6,8 @@ package consumer
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // newConsumerMetrics creates a new consumer metrics.

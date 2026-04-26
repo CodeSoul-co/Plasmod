@@ -8,7 +8,7 @@ package msgstream
 import (
 	context "context"
 
-	common "andb/platformpkg/pkg/mq/common"
+	common "plasmod/platformpkg/pkg/mq/common"
 
 	mock "github.com/stretchr/testify/mock"
 

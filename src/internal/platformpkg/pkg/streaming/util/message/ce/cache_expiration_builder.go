@@ -4,8 +4,8 @@
 package ce
 
 import (
-	"andb/platformpkg/pkg/proto/messagespb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/proto/messagespb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func NewBuilder() *CacheExpirationsBuilder {

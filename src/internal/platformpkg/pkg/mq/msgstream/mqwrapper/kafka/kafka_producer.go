@@ -12,12 +12,12 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/metrics"
-	mqcommon "andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/metrics"
+	mqcommon "plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 type kafkaProducer struct {

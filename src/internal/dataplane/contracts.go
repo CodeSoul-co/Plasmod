@@ -8,6 +8,9 @@ type IngestRecord struct {
 	Namespace   string
 	Attributes  map[string]string
 	EventUnixTS int64
+	// Embedding is a precomputed vector. When non-nil, the SegmentDataPlane
+	// stores it directly instead of calling the embedder (bypassing ONNX/TF-IDF).
+	Embedding []float32
 }
 
 // SearchInput is the query descriptor passed from the semantic layer to the
@@ -31,6 +34,10 @@ type SearchInput struct {
 	// MemoryTypes restricts Memory results to specific sub-types.
 	// Empty means no restriction.
 	MemoryTypes []string
+	// QueryEmbedding is a precomputed search vector. When non-nil, the
+	// TieredDataPlane uses it directly instead of calling the embedder,
+	// bypassing ONNX/TF-IDF for the embedding step.
+	QueryEmbedding []float32
 }
 
 // SegmentTrace describes one physical shard that was evaluated during search.

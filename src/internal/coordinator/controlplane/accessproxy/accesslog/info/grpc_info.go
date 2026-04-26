@@ -39,9 +39,9 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/proxy/connection"
-	"andb/platformpkg/pkg/util/logutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/requestutil"
+	"plasmod/platformpkg/pkg/util/logutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/requestutil"
 )
 
 type GrpcAccessInfo struct {

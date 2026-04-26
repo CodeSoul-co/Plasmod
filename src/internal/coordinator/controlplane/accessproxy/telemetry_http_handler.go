@@ -31,9 +31,9 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/proxy/privilege"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/crypto"
-	"andb/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/crypto"
+	"plasmod/platformpkg/pkg/util/merr"
 )
 
 // TelemetryAuthMiddleware creates a Gin middleware that validates Basic Auth

@@ -32,12 +32,12 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/util/lock"
-	"andb/platformpkg/pkg/util/retry"
-	"andb/platformpkg/pkg/util/tsoutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/util/lock"
+	"plasmod/platformpkg/pkg/util/retry"
+	"plasmod/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // allocPool pool of Allocation, to reduce allocation of Allocation

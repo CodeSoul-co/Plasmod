@@ -6,8 +6,8 @@ package utility
 import (
 	"github.com/cockroachdb/errors"
 
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 var ErrTimeTickVoilation = errors.New("time tick violation")

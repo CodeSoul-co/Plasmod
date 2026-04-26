@@ -6,10 +6,10 @@ package metricsutil
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 func NewScanMetrics(pchannel types.PChannelInfo) *ScanMetrics {

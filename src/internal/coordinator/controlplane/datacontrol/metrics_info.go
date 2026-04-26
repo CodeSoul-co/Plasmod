@@ -33,14 +33,14 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/types"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/util/hardware"
-	"andb/platformpkg/pkg/util/metricsinfo"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/tsoutil"
-	"andb/platformpkg/pkg/util/typeutil"
-	"andb/platformpkg/pkg/util/uniquegenerator"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/metricsinfo"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/uniquegenerator"
 )
 
 // getQuotaMetrics returns DataCoordQuotaMetrics.

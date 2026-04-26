@@ -13,9 +13,9 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/idalloc"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/syncutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 var r *resourceImpl // singleton resource instance

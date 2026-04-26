@@ -22,7 +22,7 @@ package proxy
 import (
 	"fmt"
 
-	"andb/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/mq/msgstream"
 )
 
 // insertRepackFunc deprecated, use defaultInsertRepackFunc instead.

@@ -30,12 +30,12 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	pcommon "andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/mq/common"
-	kafkamqwrapper "andb/platformpkg/pkg/mq/msgstream/mqwrapper/kafka"
-	pulsarmqwrapper "andb/platformpkg/pkg/mq/msgstream/mqwrapper/pulsar"
-	"andb/platformpkg/pkg/util/paramtable"
+	pcommon "plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/mq/common"
+	kafkamqwrapper "plasmod/platformpkg/pkg/mq/msgstream/mqwrapper/kafka"
+	pulsarmqwrapper "plasmod/platformpkg/pkg/mq/msgstream/mqwrapper/pulsar"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // unsubscribeChannels create consumer first, and unsubscribe channel through msgStream.close()

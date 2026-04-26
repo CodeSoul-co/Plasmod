@@ -17,12 +17,12 @@ package rmq
 import (
 	"context"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/client"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
-	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/client"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"plasmod/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 var _ mqwrapper.Producer = (*rmqProducer)(nil)

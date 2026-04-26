@@ -29,9 +29,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/proxy/accesslog/info"
-	configEvent "andb/platformpkg/pkg/config"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
+	configEvent "plasmod/platformpkg/pkg/config"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 var (

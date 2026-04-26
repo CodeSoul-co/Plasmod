@@ -6,7 +6,7 @@
 package datacoord
 
 import (
-	indexpb "andb/platformpkg/pkg/proto/indexpb"
+	indexpb "plasmod/platformpkg/pkg/proto/indexpb"
 	mock "github.com/stretchr/testify/mock"
 )
 

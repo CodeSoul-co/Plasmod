@@ -50,7 +50,7 @@ func LoadFromEnv() (S3Config, error) {
 	prefix := firstNonEmptyEnv("S3_PREFIX", "MINIO_ROOT_PATH")
 	prefix = strings.TrimRight(prefix, "/")
 	if prefix == "" {
-		prefix = "andb/integration_tests"
+		prefix = "plasmod/integration_tests"
 	}
 
 	return S3Config{

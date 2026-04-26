@@ -5,8 +5,8 @@ package utility
 
 import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 const (

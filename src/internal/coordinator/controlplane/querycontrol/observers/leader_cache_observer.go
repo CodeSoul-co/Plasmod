@@ -27,10 +27,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/util/proxyutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/proxypb"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/proxypb"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 type CollectionShardLeaderCache = map[string]*querypb.ShardLeadersList

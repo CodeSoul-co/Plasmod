@@ -12,8 +12,8 @@ import (
 	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 // Define max/min offset boundaries in seconds for validation, exported for external checks if necessary.

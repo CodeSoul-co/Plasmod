@@ -10,7 +10,7 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func UnmarshalMessageID(data string) (message.MessageID, error) {

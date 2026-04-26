@@ -35,14 +35,14 @@ import (
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/metastore"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/metricsinfo"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/syncutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/metricsinfo"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 var (

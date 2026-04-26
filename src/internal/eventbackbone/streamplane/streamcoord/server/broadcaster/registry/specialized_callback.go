@@ -5,8 +5,8 @@ package registry
 
 import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // init the message ack callbacks

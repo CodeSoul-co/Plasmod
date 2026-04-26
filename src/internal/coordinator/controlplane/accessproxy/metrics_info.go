@@ -25,14 +25,14 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/util/hardware"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/metricsinfo"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/ratelimitutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/metricsinfo"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/ratelimitutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type (

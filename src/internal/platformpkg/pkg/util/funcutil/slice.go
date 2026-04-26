@@ -22,7 +22,7 @@ package funcutil
 import (
 	"reflect"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // SliceContain returns true if slice s contains item.

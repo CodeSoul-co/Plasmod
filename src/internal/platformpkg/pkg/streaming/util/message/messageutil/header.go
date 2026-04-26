@@ -19,7 +19,7 @@
 
 package messageutil
 
-import "andb/platformpkg/pkg/streaming/util/message"
+import "plasmod/platformpkg/pkg/streaming/util/message"
 
 // IsSchemaChange checks if the put collection message is a schema change message.
 func IsSchemaChange(header *message.AlterCollectionMessageHeader) bool {

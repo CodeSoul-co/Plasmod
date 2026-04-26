@@ -23,9 +23,9 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus/internal/util/proxyutil"
-	"andb/platformpkg/pkg/proto/proxypb"
-	"andb/platformpkg/pkg/util/commonpbutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/proxypb"
+	"plasmod/platformpkg/pkg/util/commonpbutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // ExpireMetaCache will call invalidate collection meta cache

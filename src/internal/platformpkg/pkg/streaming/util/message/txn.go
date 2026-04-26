@@ -6,7 +6,7 @@ package message
 import (
 	"time"
 
-	"andb/platformpkg/pkg/proto/messagespb"
+	"plasmod/platformpkg/pkg/proto/messagespb"
 )
 
 type (

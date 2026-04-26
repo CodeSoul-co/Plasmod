@@ -23,9 +23,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/client"
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/client"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/server"
 )
 
 // Consumer is a client that used to consume messages from rocksmq

@@ -25,8 +25,8 @@ import (
 	"github.com/milvus-io/milvus/internal/flushcommon/writebuffer"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type (

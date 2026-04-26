@@ -6,7 +6,7 @@ package assignment
 import (
 	"context"
 
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 var _ Watcher = (*watcherImpl)(nil)

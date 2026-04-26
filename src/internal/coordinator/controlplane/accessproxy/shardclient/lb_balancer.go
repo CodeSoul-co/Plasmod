@@ -22,7 +22,7 @@ package shardclient
 import (
 	"context"
 
-	"andb/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/proto/internalpb"
 )
 
 type LBBalancer interface {

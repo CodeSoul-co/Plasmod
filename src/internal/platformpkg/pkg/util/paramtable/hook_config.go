@@ -6,8 +6,8 @@ package paramtable
 import (
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/config"
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/config"
+	"plasmod/platformpkg/pkg/log"
 )
 
 const hookYamlFile = "hook.yaml"

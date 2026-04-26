@@ -20,7 +20,7 @@
 package querycoordv2
 
 import (
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 func (s *Server) StopCheckerForTestOnly() {

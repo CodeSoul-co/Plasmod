@@ -4,8 +4,8 @@
 package kafka
 
 import (
-	"andb/platformpkg/pkg/common"
-	mqcommon "andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/common"
+	mqcommon "plasmod/platformpkg/pkg/mq/common"
 )
 
 func NewKafkaID(messageID int64) mqcommon.MessageID {
