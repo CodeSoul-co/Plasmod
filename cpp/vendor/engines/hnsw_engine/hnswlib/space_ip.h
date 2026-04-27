@@ -2,14 +2,50 @@
 
 #include "hnswlib.h"
 #include "simd/hook.h"
+#if defined(__x86_64__) || defined(_M_X64)
+#  if defined(__AVX512F__)
+#    include "simd/distances_avx512.h"
+#  endif
+#  if defined(__AVX2__) || defined(__AVX__)
+#    include "simd/distances_avx.h"
+#  endif
+#  if defined(__SSE4_2__)
+#    include "simd/distances_sse.h"
+#  endif
+#endif
 
 namespace hnswlib {
 
+// Direct call to the SIMD-specific implementation, bypassing faiss's
+// runtime function-pointer dispatch (`faiss::fvec_inner_product` is a
+// `decltype(...) =` indirect-call hook).  In hnsw search the kernel is
+// invoked ~4000 times per query at d=100; the indirect-call overhead
+// alone is ~10 cycles each → ~40 µs per query — exactly the gap vs the
+// official knowhere build, which uses faiss's newer compile-time
+// `with_selected_simd_levels<...>` template-dispatch to inline AVX512.
+//
+// This file is compiled with `-mavx2 -mfma -mf16c` (and `-mavx512f...`
+// when the host CPU advertises AVX512 — see CMakeLists below), so the
+// compiler can emit a direct AVX512/AVX2 `call` instead of an indirect
+// jump through a function pointer.
 template <typename DataType, typename DistanceType>
-static DistanceType
+__attribute__((always_inline))
+static inline DistanceType
 InnerProduct(const void* pVect1, const void* pVect2, const void* qty_ptr) {
     if constexpr (std::is_same_v<DataType, knowhere::fp32>) {
-        return faiss::fvec_inner_product((const DataType*)pVect1, (const DataType*)pVect2, *((size_t*)qty_ptr));
+#if defined(__AVX512F__)
+        return faiss::fvec_inner_product_avx512(
+            (const float*)pVect1, (const float*)pVect2, *((size_t*)qty_ptr));
+#elif defined(__AVX2__) || defined(__AVX__)
+        return faiss::fvec_inner_product_avx(
+            (const float*)pVect1, (const float*)pVect2, *((size_t*)qty_ptr));
+#elif defined(__SSE4_2__)
+        return faiss::fvec_inner_product_sse(
+            (const float*)pVect1, (const float*)pVect2, *((size_t*)qty_ptr));
+#else
+        return faiss::fvec_inner_product(
+            (const DataType*)pVect1, (const DataType*)pVect2, *((size_t*)qty_ptr));
+#endif
     } else if constexpr (std::is_same_v<DataType, knowhere::fp16>) {
         return faiss::fp16_vec_inner_product((const DataType*)pVect1, (const DataType*)pVect2, *((size_t*)qty_ptr));
     } else if constexpr (std::is_same_v<DataType, knowhere::bf16>) {
