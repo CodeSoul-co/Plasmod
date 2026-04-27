@@ -1,0 +1,64 @@
+# Layer 2: Event Stream - Bounded Staleness Mode
+name: bounded_staleness
+consistency_mode: bounded_staleness
+
+event_schema:
+  - event_id: string (UUID)
+  - session_id: string
+  - timestamp: float (Unix time)
+  - event_type: enum[observation, tool_result, summary, memory, artifact, relation]
+  - payload:
+      content: string
+      source: enum[user, agent, tool, system]
+      priority: enum[low, medium, high]
+  - embedding: float[] (optional, dim=100)
+  - triggers_state_update: boolean
+  - triggers_relation_update: boolean
+
+workload_config:
+  write_rate: [1, 10, 50, 100]  # events per second
+  payload_size_min: 100
+  payload_size_max: 1000
+  embedding_rate: 0.8
+  state_update_rate: 0.2
+  relation_update_rate: 0.1
+  duration_seconds: 10
+  staleness_bound_ms: 500  # Maximum allowed staleness
+
+metrics:
+  - write_to_visible_latency_ms:
+      description: Time from write to visibility (bounded)
+      targets:
+        p50: < 100
+        p95: < 500
+        p99: < 1000
+
+  - materialization_lag_ms:
+      description: Async materialization delay
+      targets:
+        max: < 500
+
+  - freshness_ratio:
+      description: Ratio of queries within staleness bound
+      targets:
+        min: 0.90
+
+  - stale_result_rate:
+      description: Rate of results exceeding staleness bound
+      targets:
+        max: 0.10
+
+  - throughput_gain:
+      description: Expected throughput improvement vs strict mode
+      targets:
+        min: 1.5  # 50% improvement expected
+
+# Comparison with strict visibility
+comparison:
+  baseline: strict_visibility
+  expected_improvements:
+    - write_throughput: 1.5-2.0x
+    - query_throughput: 1.2-1.5x
+  acceptable_tradeoffs:
+    - write_to_visible_latency: +50-100ms
+    - freshness_ratio: -5-10%

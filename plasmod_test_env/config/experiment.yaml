@@ -1,0 +1,73 @@
+# Plasmod Experiment Framework Configuration
+# Phase 1: Layer 1 & Layer 2
+
+server:
+  base_url: "http://127.0.0.1:8080"
+  timeout: 30
+  admin_key: ""  # PLASMOD_ADMIN_API_KEY
+
+llm:
+  # Read from environment: PLASMOD_AGENT_LLM_BASE_URL, PLASMOD_AGENT_LLM_API_KEY, PLASMOD_AGENT_LLM_MODEL
+
+datasets:
+  testQuery10K:
+    name: testQuery10K
+    file: "${PLASMOD_TEST_ENV}/data/testQuery10K.fbin"
+    format: fbin
+    dim: 100
+    workspace: w_benchmark
+    agent: agent_benchmark
+    session: sess_benchmark
+    limit: 0
+    ingest_mode: bulk_dataset
+
+layers:
+  layer1:
+    enabled: true
+    profiles:
+      - plasmod_vector_only
+      - plasmod_full
+    repeats: 3
+    top_k: [5, 10, 20, 50]
+    warmup_rounds: 1
+    baselines:
+      - vector_metadata
+    # Baselines:
+      # - plasmod_vector_only: Vector index + filtering, no object graph/version/policy
+      # - plasmod_full: Complete agent-native unified object model
+
+  layer2:
+    enabled: true
+    write_rates: [1, 10, 50, 100]  # events per second
+    consistency_modes: [strict_visible, bounded_staleness]
+    repeats: 2
+    event_types:
+      - observation
+      - tool_result
+      - summary
+      - memory
+      - artifact
+    baselines:
+      - vector_metadata
+      - plasmod_vector_only
+    # Baselines:
+      # - vector_metadata: Use timestamp/session as metadata, filter for "latest visible"
+      # - plasmod_vector_only: Write chunks only, no event stream materialization
+      # - plasmod_full: Event log, async materialization, version queries
+
+outputs:
+  results_dir: "${PLASMOD_TEST_ENV}/results"
+  formats: [json, md, csv]
+  keep_raw: true
+
+# Layer 1 Metrics:
+#   - Recall@k
+#   - QPS, p50/p95/p99 latency
+#   - Memory footprint
+#
+# Layer 2 Metrics:
+#   - write-to-visible latency
+#   - materialization lag
+#   - freshness under load
+#   - stale result rate
+#   - retrieval latency under write

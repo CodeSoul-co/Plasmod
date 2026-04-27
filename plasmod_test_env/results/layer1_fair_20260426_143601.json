@@ -1,0 +1,44 @@
+{
+  "config": {
+    "nb_vectors": 10000,
+    "dim": 384,
+    "embedder": "ONNX(all-MiniLM-L6-v2)",
+    "nquery": 500,
+    "topk": 10,
+    "concurrency": 16,
+    "hnsw_m": 16,
+    "hnsw_efc": 200,
+    "hnsw_efs": 256,
+    "plasmod_url": "http://127.0.0.1:8080"
+  },
+  "results": [
+    {
+      "group": "FAISS HNSW (pure, no HTTP)",
+      "build_ms": 198.3,
+      "recall": 0.414,
+      "qps": 32164.2,
+      "p50_ms": 0.135,
+      "p95_ms": 0.184,
+      "p99_ms": 0.249
+    },
+    {
+      "group": "Plasmod Recall (HNSW search, via HTTP)",
+      "ingest_s": 3.81,
+      "qps": 61.1,
+      "avg_ms": 257.91,
+      "p50_ms": 260.231,
+      "p95_ms": 273.628,
+      "p99_ms": 281.616,
+      "ok_pct": 100.0
+    },
+    {
+      "group": "Plasmod Full Pipeline (/v1/query, end-to-end)",
+      "qps": 61.0,
+      "avg_ms": 258.076,
+      "p50_ms": 258.575,
+      "p95_ms": 288.317,
+      "p99_ms": 305.427,
+      "ok_pct": 100.0
+    }
+  ]
+}

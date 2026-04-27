@@ -1,0 +1,61 @@
+# Layer 1: Plasmod Full System Fixture
+name: plasmod_full
+profile: plasmod_full
+
+setup:
+  workspace: w_benchmark_full
+  agent: agent_benchmark_full
+  session: sess_benchmark_full
+  dataset: testQuery10K
+  enable_features:
+    - object_graph
+    - versioning
+    - provenance
+    - policy
+
+tasks:
+  - id: full_system_search
+    task_type: full_system_retrieval
+    description: Retrieval with full Plasmod features (graph, versioning, provenance)
+    params:
+      top_k: [5, 10, 20, 50]
+      warmup_rounds: 1
+      repeats: 3
+      include_provenance: true
+      include_version: true
+    checks:
+      - type: recall_at_k
+        min: 0.95
+      - type: latency_p50_ms
+        max: 150
+      - type: latency_p95_ms
+        max: 800
+      - type: qps
+        min: 5
+
+  - id: provenance_query
+    task_type: provenance_aware_retrieval
+    description: Retrieval with provenance tracking
+    params:
+      top_k: 10
+      include_evidence: true
+      repeats: 3
+    checks:
+      - type: evidence_returned
+        min: 0.8
+      - type: latency_p95_ms
+        max: 1000
+
+  - id: full_under_write
+    task_type: concurrent_full_system
+    description: Full system performance during writes
+    params:
+      top_k: 10
+      write_rate: 10
+      duration_seconds: 10
+      repeats: 2
+    checks:
+      - type: latency_p95_ms
+        max: 1500
+      - type: freshness_ratio
+        min: 0.95

@@ -1,0 +1,54 @@
+{
+  "benchmark": "four_group",
+  "dataset": "/Users/erwin/Downloads/codespace/Plasmod/plasmod_test_env/data/testQuery10K.fbin",
+  "dim": 100,
+  "n_indexed": 9000,
+  "n_queries": 1000,
+  "topk": 10,
+  "hnsw": {
+    "M": 16,
+    "efConstruction": 256,
+    "efSearch": 256
+  },
+  "groups": {
+    "G1_FAISS_direct": {
+      "name": "G1_FAISS_direct",
+      "build_ms": 244.43329199999997,
+      "qps": 7262.505520684297,
+      "batch_qps": 52748.18018778344,
+      "batch_ms": 18.95800000000003,
+      "p50_ms": 0.13604199999994737,
+      "p95_ms": 0.15125000000004718,
+      "p99_ms": 0.17979199999995643,
+      "mean_ms": 0.13769352700000137,
+      "recall_at_k": 0.9994,
+      "errors": 0
+    },
+    "G2_Knowhere_direct": {
+      "name": "G2_Knowhere_direct",
+      "build_ms": 180.650666,
+      "qps": 6730.613643574443,
+      "batch_qps": 35105.78584424496,
+      "batch_ms": 28.48533299999989,
+      "p50_ms": 0.1474999999999671,
+      "p95_ms": 0.16120799999996827,
+      "p99_ms": 0.20008299999996204,
+      "mean_ms": 0.14857486299999945,
+      "recall_at_k": 0.9975,
+      "errors": 0
+    },
+    "G3_Plasmod_vector_only": {
+      "name": "G3_Plasmod_vector_only",
+      "build_ms": 170.912709,
+      "qps": 3164.273248879872,
+      "batch_qps": 0.0,
+      "batch_ms": 316.028333,
+      "p50_ms": 0.14650000000000002,
+      "p95_ms": 0.164375,
+      "p99_ms": 0.243,
+      "mean_ms": 0.14914826999999978,
+      "recall_at_k": null,
+      "errors": 0
+    }
+  }
+}
