@@ -81,7 +81,6 @@ plasmod_test_env/
 
 # Member A: local files
 .gocache/
-Zep.docx
 MemoryBank.docx
 HARD_DELETE_ZEP_EXECUTION_PLAN.md
 /home/yangyongsheng/Plasmod/scripts/e2e/import_dataset.py
@@ -97,3 +96,4 @@ models/minilm-l6-v2/
 # Top-level build artifacts from local experiments
 /benchmark
 /server
+Zep.docx
