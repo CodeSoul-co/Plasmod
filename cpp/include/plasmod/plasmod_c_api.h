@@ -33,6 +33,21 @@ int   plasmod_retriever_init(
     int         rrf_k
 );
 
+/* DiskANN-specific init.  DiskANN is on-disk: it writes a vamana graph,
+ * PQ shards and metadata files prefixed by `index_prefix` (the directory
+ * containing the prefix must already exist and be writable).  After this
+ * succeeds, follow the normal plasmod_retriever_build / _search flow.
+ *
+ * metric_type must be one of: "L2", "IP", "COSINE".
+ * Returns 1 on success, 0 on failure.
+ */
+int   plasmod_retriever_init_diskann(
+    void*       retriever,
+    const char* metric_type,
+    int         dim,
+    const char* index_prefix
+);
+
 int   plasmod_retriever_build(
     void*        retriever,
     const float* dense_vectors,

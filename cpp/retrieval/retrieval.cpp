@@ -72,6 +72,24 @@ int plasmod_retriever_init(void* handle,
     return h->dense.Init(cfg) ? 1 : 0;
 }
 
+int plasmod_retriever_init_diskann(void*       handle,
+                                   const char* metric_type,
+                                   int         dim,
+                                   const char* index_prefix) {
+    if (!handle || dim <= 0 || !index_prefix || index_prefix[0] == '\0') return 0;
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
+
+    plasmod::IndexConfig cfg;
+    cfg.index_type           = "DISKANN";
+    cfg.metric_type          = metric_type ? metric_type : "L2";
+    cfg.dim                  = dim;
+    cfg.diskann_index_prefix = index_prefix;
+    // Other DiskANN params left at struct defaults; tunable via a richer
+    // C API in a follow-up if needed.
+
+    return h->dense.Init(cfg) ? 1 : 0;
+}
+
 int plasmod_retriever_build(void* handle,
                          const float* vectors,
                          int64_t      n,

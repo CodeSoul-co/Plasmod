@@ -98,6 +98,27 @@ struct IndexConfig {
     // IVF specific
     int32_t ivf_nlist = 128;
     int32_t ivf_nprobe = 8;
+
+    // DiskANN specific.
+    //   diskann_index_prefix : on-disk path prefix where DiskANN will write
+    //                          its vamana graph + PQ shards + metadata.
+    //                          REQUIRED when index_type == "DISKANN".
+    //                          The directory containing the prefix must exist
+    //                          and be writable; the prefix itself does NOT
+    //                          need to exist (DiskANN refuses to clobber
+    //                          existing index files at the prefix).
+    //   diskann_max_degree     : R param (default 48)
+    //   diskann_search_list    : L param at build time (default 128)
+    //   diskann_pq_code_budget_gb / diskann_build_dram_budget_gb :
+    //       budgets that bound the PQ code size and build memory.
+    //       0.0 = use a small default (sufficient for ≤ 100k vectors @ 100d).
+    //   diskann_beamwidth      : query-side IO concurrency (default 8).
+    std::string diskann_index_prefix;
+    int32_t     diskann_max_degree         = 48;
+    int32_t     diskann_search_list        = 128;
+    float       diskann_pq_code_budget_gb  = 0.0f;
+    float       diskann_build_dram_budget_gb = 0.0f;
+    int32_t     diskann_beamwidth          = 8;
 };
 
 // RRF merge configuration
