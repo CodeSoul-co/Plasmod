@@ -13,9 +13,6 @@
 // The segment path (plasmod_segment_*) delegates to SegmentIndexManager.
 
 #include "plasmod/retrieval.h"
-// plasmod_c_api.h declares plasmod_segment_register_warm (and its siblings)
-// inside an extern "C" block; including it here forces C linkage on the
-// definitions below so the Go side can resolve the unmangled symbol.
 #include "plasmod/plasmod_c_api.h"
 #include "plasmod/segment_index.h"
 #include "plasmod/sparse.h"
