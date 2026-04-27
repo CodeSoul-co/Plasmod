@@ -75,6 +75,7 @@ add_library(plasmod_retrieval SHARED
     retrieval/segment_index.cpp   # SegmentIndexManager — per-segment HNSW
     retrieval/dense.cpp           # DenseRetriever — HNSW via ann_core
     retrieval/sparse.cpp          # SparseRetriever — C++ inverted index
+    retrieval/batch_optimizer.cpp    # DefaultQueryClusteringPlugin — k-means++ query reorder
 )
 
 target_include_directories(plasmod_retrieval PUBLIC

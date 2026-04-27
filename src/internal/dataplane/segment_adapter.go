@@ -462,6 +462,21 @@ func (p *SegmentDataPlane) SearchWarmSegment(segmentID, queryText string, topK i
 	return out, nil
 }
 
+// UnloadWarmSegment evicts a warm segment from the CGO index manager so a
+// subsequent ingest call can rebuild it from scratch (fresh index build).
+func (p *SegmentDataPlane) UnloadWarmSegment(segmentID string) error {
+	if segmentID == "" {
+		return fmt.Errorf("segment_id required")
+	}
+	if err := retrievalplane.GlobalSegmentRetriever.UnloadSegment(segmentID); err != nil {
+		return err
+	}
+	p.segMu.Lock()
+	delete(p.segments, segmentID)
+	p.segMu.Unlock()
+	return nil
+}
+
 // RegisterWarmSegment stores a segment's object-ID list so SearchWarmSegment
 // lookups succeed.  Called by the HTTP registration endpoint after a segment
 // is built via cgo (plasmod_segment_build) so the HTTP path can find it.
@@ -487,4 +502,16 @@ func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK
 		return nil, nil, fmt.Errorf("invalid args: nq=%d topK=%d len(queries)=%d", nq, topK, len(queries))
 	}
 	return retrievalplane.GlobalSegmentRetriever.Search(segmentID, queries, nq, topK)
+}
+
+// SearchWarmSegmentBatchRaw performs batch ANN search via SearchRaw (no plugin reorder).
+// Used by the HTTP query_warm_batch_raw endpoint for the standard Knowhere baseline.
+func (p *SegmentDataPlane) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if segmentID == "" {
+		return nil, nil, fmt.Errorf("segment_id is required")
+	}
+	if nq <= 0 || topK <= 0 || len(queries) == 0 {
+		return nil, nil, fmt.Errorf("invalid args: nq=%d topK=%d len(queries)=%d", nq, topK, len(queries))
+	}
+	return retrievalplane.GlobalSegmentRetriever.SearchRaw(segmentID, queries, nq, topK)
 }

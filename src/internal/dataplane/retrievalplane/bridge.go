@@ -295,6 +295,32 @@ func (s *SegmentRetriever) SearchWithFilter(
 	return outIDs, outDists, nil
 }
 
+// SearchRaw performs ANN search via the standard Knowhere Index::Search path
+// (no OpenMP, no HnswFastSearchFloat hot-path).  Used as the "standard"
+// Knowhere batch baseline for fair comparison with the optimized Search().
+func (s *SegmentRetriever) SearchRaw(segmentID string, query []float32, nq, topk int) ([]int64, []float32, error) {
+	if len(query) == 0 || nq <= 0 || topk <= 0 {
+		return nil, nil, fmt.Errorf("SearchRaw: invalid args")
+	}
+	total := nq * topk
+	outIDs := make([]int64, total)
+	outDists := make([]float32, total)
+
+	cs := cachedSegmentCString(segmentID)
+	rc := C.plasmod_segment_search_raw(
+		cs,
+		(*C.float)(unsafe.Pointer(&query[0])),
+		C.int64_t(nq),
+		C.int(topk),
+		(*C.int64_t)(unsafe.Pointer(&outIDs[0])),
+		(*C.float)(unsafe.Pointer(&outDists[0])),
+	)
+	if rc != 0 {
+		return nil, nil, fmt.Errorf("plasmod_segment_search_raw(%q): rc=%d", segmentID, rc)
+	}
+	return outIDs, outDists, nil
+}
+
 // UnloadSegment removes a segment index from memory.
 func (s *SegmentRetriever) UnloadSegment(segmentID string) error {
 	cs := cachedSegmentCString(segmentID)

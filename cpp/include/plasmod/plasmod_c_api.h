@@ -86,6 +86,15 @@ int     plasmod_segment_search_filter(
     float*         out_dists
 );
 
+int     plasmod_segment_search_raw(
+    const char*  segment_id,
+    const float* query,
+    int64_t      nq,
+    int          topk,
+    int64_t*     out_ids,
+    float*       out_dists
+);
+
 int     plasmod_segment_unload(const char* segment_id);
 int     plasmod_segment_exists(const char* segment_id);
 int64_t plasmod_segment_size(const char* segment_id);

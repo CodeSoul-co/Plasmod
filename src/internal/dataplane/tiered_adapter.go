@@ -181,6 +181,13 @@ func (t *TieredDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs
 	return t.warm.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
 }
 
+func (t *TieredDataPlane) UnloadWarmSegment(segmentID string) error {
+	if t == nil || t.warm == nil {
+		return fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.UnloadWarmSegment(segmentID)
+}
+
 func (t *TieredDataPlane) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
 	if t == nil || t.warm == nil {
 		return nil, fmt.Errorf("warm plane unavailable")
@@ -205,6 +212,14 @@ func (t *TieredDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK 
 		return nil, nil, fmt.Errorf("warm plane unavailable")
 	}
 	return t.warm.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
+// SearchWarmSegmentBatchRaw forwards batch search to the warm segment via SearchRaw (no plugin).
+func (t *TieredDataPlane) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if t == nil || t.warm == nil {
+		return nil, nil, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
 }
 
 func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, bool) {
