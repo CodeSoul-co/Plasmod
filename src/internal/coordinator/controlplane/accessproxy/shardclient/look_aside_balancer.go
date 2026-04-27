@@ -30,12 +30,12 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/util/conc"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/util/conc"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type CostMetrics struct {

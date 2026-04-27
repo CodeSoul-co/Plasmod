@@ -6,7 +6,7 @@ package kafka
 import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 
-	"andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/common"
 )
 
 type kafkaMessage struct {

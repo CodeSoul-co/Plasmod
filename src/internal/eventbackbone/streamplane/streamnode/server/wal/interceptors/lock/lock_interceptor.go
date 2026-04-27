@@ -9,9 +9,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/txn"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/lock"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/lock"
 )
 
 type lockAppendInterceptor struct {

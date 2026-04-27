@@ -31,8 +31,8 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/etcd"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/etcd"
 )
 
 const (

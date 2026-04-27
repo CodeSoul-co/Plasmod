@@ -11,10 +11,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/metastore"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 const emptyPartitionStatsVersion = int64(0)

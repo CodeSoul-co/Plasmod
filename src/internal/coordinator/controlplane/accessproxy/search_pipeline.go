@@ -39,13 +39,13 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/function/rerank"
 	"github.com/milvus-io/milvus/internal/util/segcore"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/proto/planpb"
-	"andb/platformpkg/pkg/util/commonpbutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/proto/planpb"
+	"plasmod/platformpkg/pkg/util/commonpbutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type opMsg map[string]any

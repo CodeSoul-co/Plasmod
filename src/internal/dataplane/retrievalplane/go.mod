@@ -1,4 +1,4 @@
-module andb/retrievalplane
+module plasmod/retrievalplane
 
 // TODO(fixme): This sub-module imports github.com/milvus-io/milvus/internal/...
 // packages that are NOT present in this repository (upstream Milvus monorepo).

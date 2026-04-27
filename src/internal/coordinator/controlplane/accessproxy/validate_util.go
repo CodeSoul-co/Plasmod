@@ -13,14 +13,14 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/util/nullutil"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/parameterutil"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/timestamptz"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/parameterutil"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/timestamptz"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type validateUtil struct {

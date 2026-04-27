@@ -28,8 +28,8 @@ import (
 	"go.uber.org/automaxprocs/maxprocs"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 var (

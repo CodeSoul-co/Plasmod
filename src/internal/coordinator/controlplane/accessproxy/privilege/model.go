@@ -14,9 +14,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 const (

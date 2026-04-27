@@ -15,8 +15,12 @@
 #include "plasmod/retrieval.h"
 #include "plasmod/plasmod_c_api.h"
 #include "plasmod/segment_index.h"
+#include "plasmod/plasmod_c_api.h"
 #include "plasmod/sparse.h"
+#include "faiss/IndexHNSW.h"
+#include "faiss/MetricType.h"
 #include <algorithm>
+#include <memory>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -24,7 +28,7 @@
 
 namespace plasmod {
 
-static const char* kVersion = "andb-retrieval-0.3.0";
+static const char* kVersion = "plasmod-retrieval-0.3.0";
 
 const char* Version() { return kVersion; }
 
@@ -160,6 +164,19 @@ int plasmod_segment_exists(const char* segment_id) {
 int64_t plasmod_segment_size(const char* segment_id) {
     if (!segment_id) return -1;
     return plasmod::SegmentIndexManager::Instance().SegmentSize(segment_id);
+}
+
+int plasmod_segment_register_warm(const char*        segment_id,
+                                 const char* const  object_ids[],
+                                 int64_t            n_ids) {
+    if (!segment_id || !object_ids || n_ids <= 0) return -2;
+    std::vector<std::string> ids;
+    ids.reserve(static_cast<size_t>(n_ids));
+    for (int64_t i = 0; i < n_ids; ++i) {
+        ids.emplace_back(object_ids[i] ? object_ids[i] : "");
+    }
+    return plasmod::SegmentIndexManager::Instance().RegisterWarmSegment(
+        segment_id, ids);
 }
 
 // ── Sparse retriever C API ────────────────────────────────────────────────────
@@ -312,4 +329,55 @@ int plasmod_sparse_save(void* handle, const char* path) {
 int plasmod_sparse_load(void* handle, const char* path) {
     if (!handle || !path) return 0;
     return static_cast<plasmod::SparseRetriever*>(handle)->Load(std::string(path)) ? 1 : 0;
+}
+
+// ── FAISS HNSW baseline (plasmod_faiss_*) ─────────────────────────────────────
+// Mirrors SegmentIndexManager API: create → build → search → destroy.
+// Uses the same M=16, efC=256, efS=256 defaults as Knowhere for fair comparison.
+// Thread-safety: FAISS index is read-only after Build; Search is thread-safe.
+
+namespace {
+
+struct FaissHNSWHandle {
+    std::unique_ptr<faiss::Index> idx;
+    bool ready = false;
+};
+
+}  // anonymous namespace
+
+void* plasmod_faiss_create() {
+    return new FaissHNSWHandle();
+}
+
+void plasmod_faiss_destroy(void* handle) {
+    delete static_cast<FaissHNSWHandle*>(handle);
+}
+
+int plasmod_faiss_build(void* handle, const float* vectors,
+                      int64_t n, int dim,
+                      int m, int ef_construction) {
+    if (!handle || !vectors || n <= 0 || dim <= 0) return -2;
+    auto* h = static_cast<FaissHNSWHandle*>(handle);
+    if (m <= 0)           m = 16;
+    if (ef_construction <= 0) ef_construction = 256;
+
+    auto* idx = new faiss::IndexHNSWFlat(dim, m, faiss::METRIC_INNER_PRODUCT);
+    idx->hnsw.efConstruction = ef_construction;
+    idx->hnsw.efSearch        = ef_construction;
+    idx->train(n, vectors);
+    idx->add(n, vectors);
+    h->idx.reset(idx);
+    h->ready = true;
+    return 0;
+}
+
+int plasmod_faiss_search(void* handle, const float* queries,
+                        int64_t nq, int topk,
+                        int64_t* out_ids, float* out_dists) {
+    if (!handle || !queries || nq <= 0 || topk <= 0) return -2;
+    auto* h = static_cast<FaissHNSWHandle*>(handle);
+    if (!h->ready || !h->idx) return -2;
+
+    h->idx->search(nq, queries, topk, out_dists, out_ids);
+    return 0;
 }

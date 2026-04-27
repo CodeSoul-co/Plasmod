@@ -6,10 +6,10 @@ package adaptor
 import (
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type ChanMessageHandler chan message.ImmutableMessage

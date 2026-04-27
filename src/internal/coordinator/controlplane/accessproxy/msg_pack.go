@@ -25,9 +25,9 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/util/commonpbutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/util/commonpbutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 func genInsertMsgsByPartition(ctx context.Context,

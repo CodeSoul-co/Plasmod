@@ -21,14 +21,14 @@ import (
 	streamingserviceinterceptor "github.com/milvus-io/milvus/internal/util/streamingutil/service/interceptor"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/lazygrpc"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/resolver"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/tracer"
-	"andb/platformpkg/pkg/util/interceptor"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/replicateutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/tracer"
+	"plasmod/platformpkg/pkg/util/interceptor"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/replicateutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 var _ Client = (*clientImpl)(nil)

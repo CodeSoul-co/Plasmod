@@ -14,7 +14,7 @@
 
 package client
 
-import "andb/platformpkg/pkg/mq/mqimpl/rocksmq/server"
+import "plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/server"
 
 // RocksMQ is the type server.RocksMQ
 type RocksMQ = server.RocksMQ

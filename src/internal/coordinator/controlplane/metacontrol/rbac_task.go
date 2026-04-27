@@ -30,12 +30,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/proxypb"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/proxypb"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 func executeOperatePrivilegeTaskSteps(ctx context.Context, core *Core, entity *milvuspb.GrantEntity, operateType milvuspb.OperatePrivilegeType) error {

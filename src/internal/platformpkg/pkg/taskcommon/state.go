@@ -20,8 +20,8 @@
 package taskcommon
 
 import (
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
 )
 
 type State = indexpb.JobState

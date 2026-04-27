@@ -26,9 +26,9 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
 )
 
 // externalCollectionRefreshChecker drives the external collection job state machine.

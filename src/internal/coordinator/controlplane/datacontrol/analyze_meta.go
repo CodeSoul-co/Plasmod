@@ -28,10 +28,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus/internal/metastore"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/proto/workerpb"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/proto/workerpb"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 type analyzeMeta struct {

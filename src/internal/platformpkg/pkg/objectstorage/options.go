@@ -3,7 +3,7 @@
 
 package objectstorage
 
-import "andb/platformpkg/pkg/util/paramtable"
+import "plasmod/platformpkg/pkg/util/paramtable"
 
 // Config for setting params used by chunk manager client.
 type Config struct {

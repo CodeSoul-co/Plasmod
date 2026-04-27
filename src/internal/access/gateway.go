@@ -24,6 +24,19 @@ import (
 	"plasmod/src/internal/worker"
 )
 
+func resolveMaxConcurrentWrites() int {
+	const defaultMax = 200
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_MAX_CONCURRENT_WRITES"))
+	if raw == "" {
+		return defaultMax
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return defaultMax
+	}
+	return n
+}
+
 type Gateway struct {
 	coord      *coordinator.Hub
 	runtime    *worker.Runtime
@@ -34,6 +47,10 @@ type Gateway struct {
 	consistencyMode string
 	hardDeleteMgr   *hardDeleteManager
 	stopCh          chan struct{}
+
+	// Semaphore limits concurrent writes to prevent resource exhaustion.
+	writeSem       chan struct{}
+	writeSemActive int32
 }
 
 func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
@@ -158,6 +175,7 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 // GET /v1/admin/storage returns the resolved backend configuration.
 // bundle may be nil in tests; admin data wipe still clears in-memory state and omits Badger.DropAll.
 func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
+	maxWrites := resolveMaxConcurrentWrites()
 	g := &Gateway{
 		coord:           coord,
 		runtime:         runtime,
@@ -166,6 +184,7 @@ func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.R
 		bundle:          bundle,
 		consistencyMode: "strict_visible",
 		stopCh:          make(chan struct{}),
+		writeSem:        make(chan struct{}, maxWrites),
 	}
 	g.hardDeleteMgr = newHardDeleteManagerFromEnv()
 	go g.hardDeleteMgr.run(g.stopCh, context.Background(), g.processHardDeleteTaskBatch)
@@ -209,6 +228,9 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
 	mux.HandleFunc("/v1/ingest/vectors", g.handleIngestVectors)
 	mux.HandleFunc("/v1/query", g.handleQuery)
+
+	// Warm segment registration — exposes cgo-built segments to the HTTP SearchWarmSegment path.
+	mux.HandleFunc("/v1/internal/warm-segment/register", g.handleWarmSegmentRegister)
 
 	// Canonical object CRUD
 	mux.HandleFunc("/v1/agents", g.handleAgents)
@@ -308,6 +330,16 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	select {
+	case g.writeSem <- struct{}{}:
+	default:
+		http.Error(w, "too many concurrent writes; try again later", http.StatusServiceUnavailable)
+		return
+	}
+	defer func() { <-g.writeSem }()
+	atomic.AddInt32(&g.writeSemActive, 1)
+	defer atomic.AddInt32(&g.writeSemActive, -1)
+
 	var ev schemas.Event
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -339,7 +371,7 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.WarmSegmentID) != "" {
-		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK)
+		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK, req.EmbeddingVector)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -415,6 +447,36 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		"vector_dim":  len(req.Vectors[0]),
 		"direct_warm": true,
 	})
+}
+
+// handleWarmSegmentRegister registers a warm segment's object-ID list so that
+// SearchWarmSegment lookups succeed for segments built via the cgo binary.
+// POST /v1/internal/warm-segment/register
+// Body: {"segment_id": "...", "object_ids": ["id0", "id1", ...]}
+func (g *Gateway) handleWarmSegmentRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		SegmentID string   `json:"segment_id"`
+		ObjectIDs []string `json:"object_ids"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.SegmentID = strings.TrimSpace(req.SegmentID)
+	if req.SegmentID == "" || len(req.ObjectIDs) == 0 {
+		http.Error(w, "segment_id and object_ids are required", http.StatusBadRequest)
+		return
+	}
+	if err := g.runtime.RegisterWarmSegment(req.SegmentID, req.ObjectIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "segment_id": req.SegmentID, "n_ids": len(req.ObjectIDs)})
 }
 
 func (g *Gateway) handleAdminWarmPrebuild(w http.ResponseWriter, r *http.Request) {
@@ -1561,6 +1623,16 @@ func (g *Gateway) handleMemory(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, filtered)
 	case http.MethodPost:
+		select {
+		case g.writeSem <- struct{}{}:
+		default:
+			http.Error(w, "too many requests", http.StatusServiceUnavailable)
+			return
+		}
+		defer func() { <-g.writeSem }()
+		atomic.AddInt32(&g.writeSemActive, 1)
+		defer atomic.AddInt32(&g.writeSemActive, -1)
+
 		var obj schemas.Memory
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

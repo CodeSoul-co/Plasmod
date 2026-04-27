@@ -31,12 +31,12 @@ import (
 	qcsession "github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/rootcoord"
 	"github.com/milvus-io/milvus/internal/util/fileresource"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/util/conc"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/util/conc"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type NodeType int

@@ -31,14 +31,14 @@ import (
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/datacoord/task"
 	"github.com/milvus-io/milvus/internal/util/fileresource"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type StatsInspector interface {

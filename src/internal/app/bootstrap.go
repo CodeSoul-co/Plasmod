@@ -21,6 +21,7 @@ import (
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
+	"plasmod/src/internal/transport"
 	"plasmod/src/internal/worker"
 	cognitive "plasmod/src/internal/worker/cognitive"
 	baseline "plasmod/src/internal/worker/cognitive/baseline"
@@ -281,18 +282,18 @@ func BuildServer() (*http.Server, func() error, error) {
 			os.Getenv("GOOGLE_CLOUD_PROJECT"), embedderDim)
 	case "onnx":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil && n > 0 {
 				embedderDim = n
 			}
+		}
+		if embedderDim <= 0 {
+			embedderDim = 384 // all-MiniLM-L6-v2
 		}
 		onnxEmbedder, onnxErr := embedding.NewOnnxFromEnv(context.Background(), embedderDim)
 		if onnxErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
 		}
 		embedder = onnxEmbedder
-		if embedderDim <= 0 {
-			embedderDim = onnxEmbedder.Dim()
-		}
 		log.Printf("[bootstrap] embedder: onnx model=%s dim=%d",
 			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
 	case "tensorrt":
@@ -460,7 +461,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	subscriber := worker.CreateEventSubscriber(wal, nodeManager)
 	runtime.StartSubscriber(ctx, subscriber)
-	runtime.StartMemoryDeleteOutbox(ctx)
+	runtime.StartFlushLoop(ctx)
 	coord.Registry.Register("event_subscriber", subscriber)
 
 	// ── Execution Orchestrator ─────────────────────────────────────────────────
@@ -472,9 +473,18 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
 	gateway := access.NewGateway(coord, runtime, store, storageCfg, bundle)
+	gatewayMux := http.NewServeMux()
+	gateway.RegisterRoutes(gatewayMux)
+	wrapped := access.WrapVisibility(access.WrapAdminAuth(gatewayMux))
+
+	// Internal high-throughput transport: binary batch ingest/query and
+	// SSE WAL streaming.  Mounted on the root mux so the visibility wrapper
+	// (which buffers full responses) does not interfere with streaming or
+	// binary payloads.
 	mux := http.NewServeMux()
-	gateway.RegisterRoutes(mux)
-	handler := access.WrapVisibility(access.WrapAdminAuth(mux))
+	transport.NewServer(runtime, wal, bus).RegisterRoutes(mux)
+	mux.Handle("/", wrapped)
+	handler := mux
 
 	// shutdown bundles context cancellation (subscriber/orchestrator) and
 	// Badger close (storage cleanup) into one cleanup function.
@@ -482,5 +492,15 @@ func BuildServer() (*http.Server, func() error, error) {
 		cancel()
 		return bundle.Close()
 	}
-	return &http.Server{Addr: addr, Handler: handler}, shutdown, nil
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
+	}
+	return srv, shutdown, nil
 }

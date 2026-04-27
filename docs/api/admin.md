@@ -27,7 +27,7 @@ Example shape:
 ```json
 {
   "mode": "hybrid",
-  "data_dir": ".andb_data",
+  "data_dir": ".plasmod_data",
   "badger_enabled": true,
   "stores": {
     "segments": "memory",

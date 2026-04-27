@@ -24,8 +24,8 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"andb/platformpkg/pkg/kv/predicates"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/kv/predicates"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // CompareFailedError is a helper type for checking MetaKv CompareAndSwap series func error type

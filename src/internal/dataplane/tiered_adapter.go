@@ -181,14 +181,49 @@ func (t *TieredDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs
 	return t.warm.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
 }
 
-func (t *TieredDataPlane) SearchWarmSegment(segmentID, queryText string, topK int) ([]string, error) {
+func (t *TieredDataPlane) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
 	if t == nil || t.warm == nil {
 		return nil, fmt.Errorf("warm plane unavailable")
 	}
-	return t.warm.SearchWarmSegment(segmentID, queryText, topK)
+	// Forward the caller-provided embedding when present so the warm plane
+	// can bypass the embedder; only fall back to text-driven embedding when
+	// no precomputed vector was supplied.
+	return t.warm.SearchWarmSegment(segmentID, queryText, topK, queryVec)
+}
+
+// RegisterWarmSegment stores a segment's object-ID list in the warm plane.
+func (t *TieredDataPlane) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	if t == nil || t.warm == nil {
+		return fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.RegisterWarmSegment(segmentID, objectIDs)
+}
+
+// SearchWarmSegmentBatch forwards batch search to the warm segment.
+func (t *TieredDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if t == nil || t.warm == nil {
+		return nil, nil, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
 }
 
 func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, bool) {
+	// Use precomputed query embedding when provided (bypasses embedder).
+	if len(input.QueryEmbedding) > 0 {
+		if t.coldHNSWSearch != nil {
+			ids := t.coldHNSWSearch(input.QueryEmbedding, input.TopK)
+			if len(ids) > 0 {
+				return ids, "hnsw", false
+			}
+		}
+		if t.coldVectorSearch != nil {
+			ids := t.coldVectorSearch(input.QueryEmbedding, input.TopK)
+			if len(ids) > 0 {
+				return ids, "vector", t.coldHNSWSearch != nil
+			}
+		}
+	}
+
 	if t.embedder != nil {
 		queryVec, err := t.embedder.Generate(input.QueryText)
 		if err == nil && len(queryVec) > 0 {

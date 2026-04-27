@@ -25,8 +25,8 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/milvus-io/milvus/internal/metastore/model"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func (s *DDLCallbacks) alterIndexV2AckCallback(ctx context.Context, result message.BroadcastResultAlterIndexMessageV2) error {

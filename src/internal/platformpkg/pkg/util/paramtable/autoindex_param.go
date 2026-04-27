@@ -25,10 +25,10 @@ import (
 	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/metric"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/metric"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // /////////////////////////////////////////////////////////////////////////////

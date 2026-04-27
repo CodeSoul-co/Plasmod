@@ -6,7 +6,7 @@ package helper
 import (
 	"context"
 
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // NewScannerHelper creates a new ScannerHelper.

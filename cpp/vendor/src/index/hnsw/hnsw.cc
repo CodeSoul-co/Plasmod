@@ -28,6 +28,7 @@
 #include "knowhere/log.h"
 #include "knowhere/range_util.h"
 #include "knowhere/utils.h"
+#include "knowhere/comp/hnsw_fast.h"
 
 namespace knowhere {
 
@@ -216,36 +217,96 @@ class HnswIndexNode : public IndexNode {
             feder_result = std::make_unique<feder::hnsw::FederResult>();
         }
 
-        auto p_id = std::make_unique<int64_t[]>(k * nq);
-        auto p_dist = std::make_unique<DistType[]>(k * nq);
+        // Per-thread cache for the nq==1 fast path: result buffers and a
+        // non-owning DataSet are reused across calls so the kernel cost
+        // matches FAISS's direct-buffer search profile (no per-call malloc
+        // for output, no per-call shared_ptr<DataSet>).  Buffers grow
+        // monotonically.
+        struct TlsResult {
+            std::vector<int64_t>  ids;
+            std::vector<DistType> dists;
+            DataSetPtr            ds = std::make_shared<DataSet>();
+        };
+        thread_local TlsResult tls_res;
+
+        std::unique_ptr<int64_t[]>  p_id;
+        std::unique_ptr<DistType[]> p_dist;
+        int64_t* id_ptr   = nullptr;
+        DistType* dist_ptr = nullptr;
+        const size_t need = (size_t)k * (size_t)nq;
+
+        if (nq == 1) {
+            if (tls_res.ids.size() < need)   tls_res.ids.resize(need);
+            if (tls_res.dists.size() < need) tls_res.dists.resize(need);
+            id_ptr   = tls_res.ids.data();
+            dist_ptr = tls_res.dists.data();
+        } else {
+            p_id     = std::make_unique<int64_t[]>(need);
+            p_dist   = std::make_unique<DistType[]>(need);
+            id_ptr   = p_id.get();
+            dist_ptr = p_dist.get();
+        }
 
         hnswlib::SearchParam param{(size_t)hnsw_cfg.ef.value()};
         bool transform =
             (index_->metric_type_ == hnswlib::Metric::INNER_PRODUCT || index_->metric_type_ == hnswlib::Metric::COSINE);
 
-        std::vector<knowhere::Future<knowhere::Unit>> futs;
-        futs.reserve(nq);
-        for (int i = 0; i < nq; ++i) {
-            futs.emplace_back(search_pool_->push([&, idx = i, p_id_ptr = p_id.get(), p_dist_ptr = p_dist.get()]() {
-                auto single_query = (const char*)xq + idx * index_->data_size_;
-                auto rst = index_->searchKnn(single_query, k, bitset, &param, feder_result);
-                size_t rst_size = rst.size();
-                auto p_single_dis = p_dist_ptr + idx * k;
-                auto p_single_id = p_id_ptr + idx * k;
-                for (size_t idx = 0; idx < rst_size; ++idx) {
-                    const auto& [dist, id] = rst[idx];
-                    p_single_dis[idx] = transform ? (-dist) : dist;
-                    p_single_id[idx] = id;
-                }
-                for (size_t idx = rst_size; idx < (size_t)k; idx++) {
-                    p_single_dis[idx] = DistType(1.0 / 0.0);
-                    p_single_id[idx] = -1;
-                }
-            }));
-        }
-        WaitAllSuccess(futs);
+        // Per-query work that fills the [idx*k .. (idx+1)*k) slot of the
+        // output buffers.  Pulled out into a lambda so the nq==1 fast path
+        // can run it inline without going through the thread pool.
+        auto run_one = [&](int idx, int64_t* p_id_ptr, DistType* p_dist_ptr) {
+            auto single_query = (const char*)xq + idx * index_->data_size_;
+            auto rst = index_->searchKnn(single_query, k, bitset, &param, feder_result);
+            size_t rst_size = rst.size();
+            auto p_single_dis = p_dist_ptr + idx * k;
+            auto p_single_id = p_id_ptr + idx * k;
+            for (size_t j = 0; j < rst_size; ++j) {
+                const auto& [dist, id] = rst[j];
+                p_single_dis[j] = transform ? (-dist) : dist;
+                p_single_id[j] = id;
+            }
+            for (size_t j = rst_size; j < (size_t)k; j++) {
+                p_single_dis[j] = DistType(1.0 / 0.0);
+                p_single_id[j] = -1;
+            }
+        };
 
-        auto res = GenResultDataSet(nq, k, std::move(p_id), std::move(p_dist));
+        if (nq == 1) {
+            // Fast path: skip thread-pool dispatch + future wait.  For
+            // single-query workloads (the dominant online retrieval shape)
+            // this removes ~50-100us of per-call synchronisation overhead
+            // compared to the futures-based path used for batch queries.
+            run_one(0, id_ptr, dist_ptr);
+        } else {
+            std::vector<knowhere::Future<knowhere::Unit>> futs;
+            futs.reserve(nq);
+            for (int i = 0; i < nq; ++i) {
+                futs.emplace_back(search_pool_->push([&, idx = i,
+                                                       p_id_ptr = id_ptr,
+                                                       p_dist_ptr = dist_ptr]() {
+                    run_one(idx, p_id_ptr, p_dist_ptr);
+                }));
+            }
+            WaitAllSuccess(futs);
+        }
+
+        DataSetPtr res;
+        if (nq == 1) {
+            // Reuse the thread-local DataSet — it points into the TLS
+            // buffers without ownership.  Caller must read GetIds /
+            // GetDistance synchronously before issuing another Search on
+            // this thread, which the SegmentIndexManager::DoSearch path
+            // already does (it copies the results into caller buffers
+            // immediately and returns).
+            tls_res.ds->SetRows(nq);
+            tls_res.ds->SetDim(k);
+            tls_res.ds->SetIds(id_ptr);
+            tls_res.ds->SetDistance(dist_ptr);
+            tls_res.ds->SetIsOwner(false);
+            res = tls_res.ds;
+        } else {
+            res = GenResultDataSet(nq, k, std::move(p_id), std::move(p_dist));
+        }
 
         // set visit_info json string into result dataset
         if (feder_result != nullptr) {
@@ -256,6 +317,34 @@ class HnswIndexNode : public IndexNode {
             res->SetJsonIdSet(json_id_set.dump());
         }
         return res;
+    }
+
+    // Fast-path single-query search that bypasses Index<T>::Search,
+    // CreateConfig, LoadConfig and result-DataSet allocation.  Caller
+    // supplies pre-validated parameters and result buffers.  Returns 0 on
+    // success, -1 on empty index.
+    int
+    FastSearchKnnSingle(const float* query, int k, int ef,
+                        const BitsetView& bitset,
+                        int64_t* out_ids, float* out_dists) const {
+        if (!index_) return -1;
+        hnswlib::SearchParam param{(size_t)ef};
+        const bool transform =
+            (index_->metric_type_ == hnswlib::Metric::INNER_PRODUCT ||
+             index_->metric_type_ == hnswlib::Metric::COSINE);
+        feder::hnsw::FederResultUniq feder_result;  // unused; matches signature
+        auto rst = index_->searchKnn((const char*)query, k, bitset, &param, feder_result);
+        const size_t rst_size = rst.size();
+        for (size_t j = 0; j < rst_size; ++j) {
+            const auto& [dist, id] = rst[j];
+            out_dists[j] = transform ? (-dist) : dist;
+            out_ids[j]   = id;
+        }
+        for (size_t j = rst_size; j < (size_t)k; ++j) {
+            out_dists[j] = DistType(1.0 / 0.0);
+            out_ids[j]   = -1;
+        }
+        return 0;
     }
 
  private:
@@ -632,4 +721,26 @@ KNOWHERE_SIMPLE_REGISTER_DENSE_ALL_GLOBAL(HNSW, HnswIndexNode, knowhere::feature
 KNOWHERE_SIMPLE_REGISTER_DENSE_FLOAT_ALL_GLOBAL(HNSW_SQ8, HnswIndexNode, knowhere::feature::MMAP, QuantType::SQ8)
 KNOWHERE_SIMPLE_REGISTER_DENSE_FLOAT_ALL_GLOBAL(HNSW_SQ8_REFINE, HnswIndexNode, knowhere::feature::MMAP,
                                                 QuantType::SQ8Refine)
+
+// Fast-path entry: dynamic_cast the IndexNode to the float/no-quant
+// HnswIndexNode and call the bypass method.  Returns -2 if the node is
+// not an HNSW float index.
+int
+HnswFastSearchFloat(IndexNode* node,
+                    const float* query,
+                    int          k,
+                    int          ef,
+                    const uint8_t* bitset_data,
+                    size_t       bitset_bits,
+                    int64_t*     out_ids,
+                    float*       out_dists) {
+    if (!node || !query || !out_ids || !out_dists || k <= 0) return -2;
+    auto* hnsw = dynamic_cast<HnswIndexNode<float, hnswlib::QuantType::None>*>(node);
+    if (!hnsw) return -2;
+    BitsetView bitset = (bitset_data && bitset_bits > 0)
+                            ? BitsetView(bitset_data, bitset_bits)
+                            : BitsetView();
+    return hnsw->FastSearchKnnSingle(query, k, ef, bitset, out_ids, out_dists);
+}
+
 }  // namespace knowhere

@@ -4,7 +4,7 @@
 
 # Generated / local data (not needed to compile server)
 out
-.andb_data
+.plasmod_data
 .acceptance-e2e-data
 .minio-data
 *.exe

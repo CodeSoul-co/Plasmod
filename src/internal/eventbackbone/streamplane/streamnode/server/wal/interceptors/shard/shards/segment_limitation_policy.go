@@ -8,8 +8,8 @@ import (
 	"math"
 	"math/rand"
 
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // getSegmentLimitationPolicy returns the segment limitation policy.

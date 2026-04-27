@@ -90,6 +90,18 @@ int     plasmod_segment_unload(const char* segment_id);
 int     plasmod_segment_exists(const char* segment_id);
 int64_t plasmod_segment_size(const char* segment_id);
 
+/* Register a warm segment's object-ID list with the Go SegmentDataPlane.
+ * After calling plasmod_segment_build, call this to make the segment
+ * visible to the HTTP server's SearchWarmSegment path.
+ * object_ids: flat array of object ID strings (char* pointers)
+ * n_ids: number of object IDs
+ * Returns 0 on success, negative on error. */
+int plasmod_segment_register_warm(
+    const char*       segment_id,
+    const char* const object_ids[],
+    int64_t           n_ids
+);
+
 /* ── Sparse retriever (SPARSE_INVERTED_INDEX / SPARSE_WAND) ───────────────
  * Wraps plasmod::SparseRetriever. Sparse vectors are passed in CSR-flattened
  * form: doc_lengths[i] = nnz of doc i; indices_flat / values_flat are
@@ -172,6 +184,16 @@ int plasmod_sparse_text_to_vector(
 int plasmod_sparse_save(void* sparse, const char* path);
 int plasmod_sparse_load(void* sparse, const char* path);
 
+/* ── FAISS HNSW baseline ──────────────────────────────────────────────────────
+ * Mirrors the SegmentIndexManager API but uses FAISS directly.
+ * Used for fair kernel-level baseline comparison (same algorithm, different lib).
+ * create/destroy return/accept handle; build/search return 0 on success, <0 on error. */
+void* plasmod_faiss_create(void);
+void  plasmod_faiss_destroy(void* handle);
+int   plasmod_faiss_build(void* handle, const float* vectors, int64_t n, int dim,
+                          int m, int ef_construction);
+int   plasmod_faiss_search(void* handle, const float* queries, int64_t nq,
+                           int topk, int64_t* out_ids, float* out_dists);
 #ifdef __cplusplus
 }
 #endif

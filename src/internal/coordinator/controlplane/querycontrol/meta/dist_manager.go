@@ -24,8 +24,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/metricsinfo"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/metricsinfo"
 )
 
 type DistributionManager struct {

@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build libandb_retrieval.so (Knowhere HNSW retrieval library)
-# Member B task: Linux build script for C++ retrieval plane
+# Build libplasmod_retrieval.so (Knowhere HNSW retrieval library)
+# C++ retrieval plane build script
 #
 # Usage:
-#   ./scripts/build_cpp.sh              # CPU-only build
-#   ANDB_WITH_GPU=ON ./scripts/build_cpp.sh  # GPU-enabled build
+#   ./scripts/build_cpp.sh                    # CPU-only build
+#   PLASMOD_WITH_GPU=ON ./scripts/build_cpp.sh  # GPU-enabled build
 
 set -e
 
@@ -14,19 +14,19 @@ CPP_DIR="$PROJECT_ROOT/cpp"
 BUILD_DIR="$CPP_DIR/build"
 
 # Build options
-ANDB_WITH_GPU="${ANDB_WITH_GPU:-OFF}"
+PLASMOD_WITH_GPU="${PLASMOD_WITH_GPU:-OFF}"
 CMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES:-70;75;80;86}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
 echo "========================================="
-echo "Building libandb_retrieval.so"
+echo "Building libplasmod_retrieval.so"
 echo "========================================="
 echo "Project root: $PROJECT_ROOT"
 echo "C++ source:   $CPP_DIR"
 echo "Build dir:    $BUILD_DIR"
-echo "GPU support:  $ANDB_WITH_GPU"
-if [ "$ANDB_WITH_GPU" = "ON" ]; then
+echo "GPU support:  $PLASMOD_WITH_GPU"
+if [ "$PLASMOD_WITH_GPU" = "ON" ]; then
     echo "CUDA archs:   $CMAKE_CUDA_ARCHITECTURES"
 fi
 echo "Build type:   $BUILD_TYPE"
@@ -40,13 +40,13 @@ cd "$BUILD_DIR"
 # Configure with CMake
 CMAKE_ARGS=(
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-    -DANDB_WITH_GPU="$ANDB_WITH_GPU"
+    -DANDB_WITH_GPU="$PLASMOD_WITH_GPU"
     -DANDB_WITH_TESTS=OFF
     -DANDB_KNOWHERE_FAISS=OFF
     -DANDB_KNOWHERE_DISKANN=OFF
 )
 
-if [ "$ANDB_WITH_GPU" = "ON" ]; then
+if [ "$PLASMOD_WITH_GPU" = "ON" ]; then
     CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$CMAKE_CUDA_ARCHITECTURES")
 
     # Locate nvcc — may live in /usr/bin on Ubuntu even without full CUDA Toolkit
@@ -61,7 +61,7 @@ if [ "$ANDB_WITH_GPU" = "ON" ]; then
     if [ -z "$NVCC_BIN" ]; then
         echo "ERROR: nvcc not found. CUDA Toolkit is required for GPU build."
         echo "  Install: apt-get install nvidia-cuda-toolkit"
-        echo "  Or set:  ANDB_WITH_GPU=OFF for CPU-only build."
+        echo "  Or set:  PLASMOD_WITH_GPU=OFF for CPU-only build."
         exit 1
     fi
 
@@ -91,7 +91,7 @@ echo ""
 echo "========================================="
 echo "Build completed successfully!"
 echo "========================================="
-echo "Output library: $BUILD_DIR/libandb_retrieval.so"
+echo "Output library: $BUILD_DIR/libplasmod_retrieval.so"
 echo ""
 echo "To use in Go:"
 echo "  export LD_LIBRARY_PATH=$BUILD_DIR:\$LD_LIBRARY_PATH"
@@ -99,10 +99,10 @@ echo "  go build -tags retrieval ./..."
 echo ""
 
 # Verify output
-if [ -f "$BUILD_DIR/libandb_retrieval.so" ]; then
-    echo "✓ libandb_retrieval.so created successfully"
-    ls -lh "$BUILD_DIR/libandb_retrieval.so"
+if [ -f "$BUILD_DIR/libplasmod_retrieval.so" ]; then
+    echo "✓ libplasmod_retrieval.so created successfully"
+    ls -lh "$BUILD_DIR/libplasmod_retrieval.so"
 else
-    echo "✗ ERROR: libandb_retrieval.so not found"
+    echo "✗ ERROR: libplasmod_retrieval.so not found"
     exit 1
 fi

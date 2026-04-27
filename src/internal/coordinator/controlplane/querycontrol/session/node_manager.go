@@ -29,9 +29,9 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 type Manager interface {

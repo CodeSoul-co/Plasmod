@@ -8,7 +8,7 @@ package datacoord
 import (
 	context "context"
 
-	datapb "andb/platformpkg/pkg/proto/datapb"
+	datapb "plasmod/platformpkg/pkg/proto/datapb"
 	mock "github.com/stretchr/testify/mock"
 )
 

@@ -29,8 +29,8 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/querypb"
 )
 
 type SyncNewCreatedPartitionJob struct {

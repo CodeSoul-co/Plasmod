@@ -75,6 +75,13 @@ public:
     // Returns the number of vectors in a segment, or -1 if not found.
     int64_t SegmentSize(const std::string& segment_id) const;
 
+    // RegisterWarmSegment stores object IDs for a segment so the Go layer can
+    // map int search results back to object IDs.
+    // object_ids: flat list of object ID strings, index i = vector i in the segment.
+    // Returns 0 on success, kErrNotFound if segment does not exist.
+    int RegisterWarmSegment(const std::string&              segment_id,
+                            const std::vector<std::string>& object_ids);
+
 private:
     SegmentIndexManager() = default;
     ~SegmentIndexManager() = default;
@@ -90,6 +97,7 @@ private:
         void*   config_ptr  = nullptr;  // internal: andb index config
         int     dim         = 0;
         int64_t num_vectors = 0;
+        std::vector<std::string> object_ids; // Go-visible IDs for SearchWarmSegment
     };
 
     mutable std::shared_mutex                                   mu_;

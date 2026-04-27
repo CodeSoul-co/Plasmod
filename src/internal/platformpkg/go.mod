@@ -1,3 +1,3 @@
-module andb/platformpkg
+module plasmod/platformpkg
 
 go 1.22

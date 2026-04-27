@@ -8,7 +8,7 @@ package syncmgr
 import (
 	context "context"
 
-	conc "andb/platformpkg/pkg/util/conc"
+	conc "plasmod/platformpkg/pkg/util/conc"
 
 	mock "github.com/stretchr/testify/mock"
 

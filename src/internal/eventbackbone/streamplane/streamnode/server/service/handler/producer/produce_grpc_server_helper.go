@@ -4,7 +4,7 @@
 package producer
 
 import (
-	"andb/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
 )
 
 // produceGrpcServerHelper is a wrapped producer server of log messages.

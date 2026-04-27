@@ -31,11 +31,11 @@ import (
 	"github.com/milvus-io/milvus/internal/datacoord/session"
 	globalTask "github.com/milvus-io/milvus/internal/datacoord/task"
 	"github.com/milvus-io/milvus/internal/metastore"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/taskcommon"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/taskcommon"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // refreshExternalCollectionTask wraps ExternalCollectionRefreshTask for scheduling.
