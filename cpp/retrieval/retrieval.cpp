@@ -15,7 +15,6 @@
 #include "plasmod/retrieval.h"
 #include "plasmod/plasmod_c_api.h"
 #include "plasmod/segment_index.h"
-#include "plasmod/plasmod_c_api.h"
 #include "plasmod/sparse.h"
 #include "faiss/IndexHNSW.h"
 #include "faiss/MetricType.h"
