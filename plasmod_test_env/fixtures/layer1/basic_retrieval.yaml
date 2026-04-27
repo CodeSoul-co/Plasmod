@@ -1,0 +1,55 @@
+# Layer 1: Basic Vector Retrieval Fixture
+name: basic_retrieval
+profile: plasmod_vector_only
+
+setup:
+  workspace: w_benchmark
+  agent: agent_benchmark
+  session: sess_benchmark
+  dataset: testQuery10K
+
+tasks:
+  - id: basic_search
+    task_type: basic_vector_retrieval
+    description: Basic vector similarity search
+    params:
+      top_k: [5, 10, 20, 50]
+      warmup_rounds: 1
+      repeats: 3
+    checks:
+      - type: recall_at_k
+        min: 0.95
+      - type: latency_p50_ms
+        max: 100
+      - type: latency_p95_ms
+        max: 500
+      - type: qps
+        min: 10
+
+  - id: hybrid_search
+    task_type: hybrid_retrieval
+    description: Vector search with metadata filtering
+    params:
+      top_k: 10
+      filters:
+        session_id: sess_benchmark
+      repeats: 3
+    checks:
+      - type: recall_at_k
+        min: 0.95
+      - type: latency_p95_ms
+        max: 600
+
+  - id: retrieval_under_write
+    task_type: concurrent_retrieval_write
+    description: Retrieval performance during concurrent writes
+    params:
+      top_k: 10
+      write_rate: 10
+      duration_seconds: 10
+      repeats: 2
+    checks:
+      - type: latency_p95_ms
+        max: 1000
+      - type: stale_result_rate
+        max: 0.05
