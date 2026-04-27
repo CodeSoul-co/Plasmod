@@ -32,10 +32,10 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/syncutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // check replica, find read only nodes and remove it from replica if all segment/channel has been moved

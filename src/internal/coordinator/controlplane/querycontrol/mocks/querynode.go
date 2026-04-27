@@ -34,10 +34,10 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type MockQueryNode struct {

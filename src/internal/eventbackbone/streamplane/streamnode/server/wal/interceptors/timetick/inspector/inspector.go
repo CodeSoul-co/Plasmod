@@ -8,7 +8,7 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/timetick/mvcc"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/wab"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 type TimeTickSyncOperator interface {

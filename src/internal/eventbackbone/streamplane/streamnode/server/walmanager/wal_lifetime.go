@@ -11,8 +11,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal"
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 // newWALLifetime create a WALLifetime with opener.

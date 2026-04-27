@@ -10,11 +10,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/message/messageutil"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message/messageutil"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/tsoutil"
 )
 
 // newVChannelRecoveryInfoFromCreateCollectionMessage creates a new vchannel recovery info from a create collection message.

@@ -6,7 +6,7 @@
 package mock_walimpls
 
 import (
-	message "andb/platformpkg/pkg/streaming/util/message"
+	message "plasmod/platformpkg/pkg/streaming/util/message"
 	mock "github.com/stretchr/testify/mock"
 )
 

@@ -31,9 +31,9 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/crypto"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/crypto"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 var ClusterPrefix atomic.String

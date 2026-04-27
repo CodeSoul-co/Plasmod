@@ -19,7 +19,7 @@
 
 package mqwrapper
 
-import "andb/platformpkg/pkg/mq/common"
+import "plasmod/platformpkg/pkg/mq/common"
 
 const DefaultPartitionIdx = 0
 

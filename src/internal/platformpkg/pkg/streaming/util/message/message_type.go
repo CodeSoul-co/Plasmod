@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
-	"andb/platformpkg/pkg/proto/messagespb"
+	"plasmod/platformpkg/pkg/proto/messagespb"
 )
 
 type MessageType messagespb.MessageType

@@ -31,9 +31,9 @@ import (
 	"github.com/milvus-io/milvus/internal/coordinator/snmanager"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 func GetPartitions(ctx context.Context, targetMgr meta.TargetManagerInterface, collectionID int64) ([]int64, error) {

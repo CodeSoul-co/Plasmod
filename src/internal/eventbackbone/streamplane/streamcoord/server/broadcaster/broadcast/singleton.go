@@ -10,8 +10,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer/balance"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 var (

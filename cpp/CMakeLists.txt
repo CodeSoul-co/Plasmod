@@ -82,6 +82,7 @@ target_include_directories(plasmod_retrieval PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include   # knowhere/ internal API
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/compat    # glog+nlohmann+omp shims
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/engines/hnsw_engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/engines/faiss_engine # faiss/IndexHNSW.h etc.
 )
 
 # On macOS with Homebrew libomp, add its include dir so our compat/omp.h

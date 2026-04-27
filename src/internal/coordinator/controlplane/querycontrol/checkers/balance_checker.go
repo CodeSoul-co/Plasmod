@@ -36,10 +36,10 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // balanceConfig holds all configuration parameters for balance operations.

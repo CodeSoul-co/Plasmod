@@ -29,8 +29,8 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus/internal/datacoord/task"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
 )
 
 // Copy Segment Task Inspector

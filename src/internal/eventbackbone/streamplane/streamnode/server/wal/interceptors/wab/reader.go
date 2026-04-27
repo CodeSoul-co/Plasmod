@@ -6,7 +6,7 @@ package wab
 import (
 	"context"
 
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // WriteAheadBufferReader is used to read messages from WriteAheadBuffer.

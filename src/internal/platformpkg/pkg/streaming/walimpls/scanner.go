@@ -4,8 +4,8 @@
 package walimpls
 
 import (
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/options"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/options"
 )
 
 type ReadOption struct {

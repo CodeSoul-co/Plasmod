@@ -12,9 +12,9 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 const (

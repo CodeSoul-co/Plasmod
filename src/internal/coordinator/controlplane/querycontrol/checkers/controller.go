@@ -33,7 +33,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 var errTypeNotFound = errors.New("checker type not found")

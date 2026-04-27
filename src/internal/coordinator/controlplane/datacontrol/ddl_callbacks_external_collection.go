@@ -25,9 +25,9 @@ import (
 	"github.com/cockroachdb/errors"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/merr"
 )
 
 // refreshExternalCollectionV2AckCallback handles the callback for RefreshExternalCollection DDL message.

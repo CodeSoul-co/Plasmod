@@ -21,7 +21,7 @@ package utils
 
 import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 const (

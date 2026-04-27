@@ -2,7 +2,7 @@
 //
 // Two deployment modes:
 //
-//  1. Go module: import "andb/internal/agent", create an AgentSession
+//  1. Go module: import "plasmod/internal/agent", create an AgentSession
 //     directly, and call methods on it (AgentSession proxies to CogDB via HTTP).
 //
 //  2. HTTP server: use AgentGateway to expose a REST API; agents connect via

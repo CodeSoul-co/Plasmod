@@ -12,8 +12,8 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/resource"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"andb/platformpkg/pkg/kv"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/kv"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // ServerBuilder is used to build a server.

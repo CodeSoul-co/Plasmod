@@ -33,10 +33,10 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	grpcquerynodeclient "github.com/milvus-io/milvus/internal/distributed/querynode/client"
 	"github.com/milvus-io/milvus/internal/types"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 var ErrNodeNotFound = errors.New("NodeNotFound")

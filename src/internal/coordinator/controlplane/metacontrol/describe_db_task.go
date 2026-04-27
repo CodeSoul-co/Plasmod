@@ -22,9 +22,9 @@ package rootcoord
 import (
 	"context"
 
-	"andb/platformpkg/pkg/proto/rootcoordpb"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/rootcoordpb"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // describeDBTask describe database request task

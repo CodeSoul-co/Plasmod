@@ -6,8 +6,8 @@ package types
 import (
 	"time"
 
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/util/tsoutil"
 )
 
 var (

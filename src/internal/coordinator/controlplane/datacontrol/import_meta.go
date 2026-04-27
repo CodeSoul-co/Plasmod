@@ -30,10 +30,10 @@ import (
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/metastore"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/taskcommon"
-	"andb/platformpkg/pkg/util/lock"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/taskcommon"
+	"plasmod/platformpkg/pkg/util/lock"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 type ImportMeta interface {

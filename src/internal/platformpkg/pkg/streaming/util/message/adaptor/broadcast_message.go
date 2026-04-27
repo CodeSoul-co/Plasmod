@@ -6,8 +6,8 @@ package adaptor
 import (
 	"github.com/cockroachdb/errors"
 
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func NewMsgPackFromMutableMessageV1(msg message.MutableMessage) (msgstream.TsMsg, error) {

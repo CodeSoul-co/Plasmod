@@ -20,8 +20,8 @@
 package paramtable
 
 import (
-	"andb/platformpkg/pkg/config"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/config"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 type roleConfig struct {

@@ -22,7 +22,7 @@ package datacoord
 import (
 	"github.com/cockroachdb/errors"
 
-	"andb/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/datapb"
 )
 
 var ErrIgnoredSegmentMetaOperation = errors.New("ignored segment meta operation")

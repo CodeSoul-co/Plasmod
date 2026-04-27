@@ -13,7 +13,7 @@ import (
 	commonpb "github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	milvuspb "github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	schemapb "github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	planpb "andb/platformpkg/pkg/proto/planpb"
+	planpb "plasmod/platformpkg/pkg/proto/planpb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

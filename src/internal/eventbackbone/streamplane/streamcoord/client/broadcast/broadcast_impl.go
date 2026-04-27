@@ -7,9 +7,9 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus/internal/util/streamingutil/service/lazygrpc"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 // NewGRPCBroadcastService creates a new broadcast service with grpc.

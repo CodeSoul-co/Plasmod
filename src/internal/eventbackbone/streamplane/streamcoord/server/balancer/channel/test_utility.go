@@ -6,8 +6,8 @@ package channel
 import (
 	"sync"
 
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 func ResetStaticPChannelStatsManager() {

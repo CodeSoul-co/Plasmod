@@ -28,10 +28,10 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type dropCollectionTask struct {

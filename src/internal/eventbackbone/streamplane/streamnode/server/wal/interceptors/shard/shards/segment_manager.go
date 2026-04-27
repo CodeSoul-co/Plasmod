@@ -11,9 +11,9 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/stats"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/shard/utils"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/recovery"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 // newSegmentAllocManagerFromProto creates a new segment assignment meta from proto.

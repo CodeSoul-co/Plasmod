@@ -8,8 +8,8 @@ import (
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/storage"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/util/retry"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/util/retry"
 )
 
 func NewSyncTask() *SyncTask {

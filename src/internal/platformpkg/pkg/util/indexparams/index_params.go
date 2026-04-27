@@ -28,11 +28,11 @@ import (
 	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/hardware"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 const (

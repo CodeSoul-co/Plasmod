@@ -24,7 +24,7 @@ import (
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // alterLoadConfigV2AckCallback is called when the put load config message is acknowledged

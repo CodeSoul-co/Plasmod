@@ -14,13 +14,13 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/metastore/model"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/proto/messagespb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/timestamptz"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/proto/messagespb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/timestamptz"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // broadcastAlterCollectionForAddField broadcasts the put collection message for add field.

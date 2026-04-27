@@ -34,13 +34,13 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/importutilv2"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type importTask struct {

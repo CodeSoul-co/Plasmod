@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"andb/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
 )
 
 // properties keys

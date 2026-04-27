@@ -32,12 +32,12 @@ import (
 
 	"github.com/milvus-io/milvus/internal/coordinator/snmanager"
 	"github.com/milvus-io/milvus/internal/util/streamingutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type dmlMsgStream struct {

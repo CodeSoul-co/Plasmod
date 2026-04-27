@@ -6,7 +6,7 @@
 package metacache
 
 import (
-	datapb "andb/platformpkg/pkg/proto/datapb"
+	datapb "plasmod/platformpkg/pkg/proto/datapb"
 	mock "github.com/stretchr/testify/mock"
 
 	pkoracle "github.com/milvus-io/milvus/internal/flushcommon/metacache/pkoracle"

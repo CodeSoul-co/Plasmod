@@ -41,6 +41,10 @@ type Event struct {
 	ParentEventID string         `json:"parent_event_id"`
 	CausalRefs    []string       `json:"causal_refs"`
 	Payload       map[string]any `json:"payload"`
+	// EmbeddingVector bypasses Payload["embedding"] dimension validation.
+	// When set, the materializer uses it directly instead of calling the ONNX embedder.
+	// JSON tag "embedding_vector" lets callers pass precomputed embeddings of any dim.
+	EmbeddingVector []float32      `json:"embedding_vector"`
 	Source        string         `json:"source"`
 	Importance    float64        `json:"importance"`
 	Visibility    string         `json:"visibility"`

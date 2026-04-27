@@ -61,7 +61,7 @@ Strongly recommended fields:
   "parent_event_id": "",
   "causal_refs": [],
   "payload": {
-    "text": "hello andb",
+    "text": "hello plasmod",
     "artifact_uri": "s3://bucket/demo.bin"
   },
   "source": "api",

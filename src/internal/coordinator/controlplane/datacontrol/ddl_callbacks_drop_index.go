@@ -22,7 +22,7 @@ package datacoord
 import (
 	"context"
 
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func (s *DDLCallbacks) dropIndexV2Callback(ctx context.Context, result message.BroadcastResultDropIndexMessageV2) error {

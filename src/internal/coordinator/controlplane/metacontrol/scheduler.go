@@ -29,9 +29,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/tso"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/lock"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/lock"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type IScheduler interface {

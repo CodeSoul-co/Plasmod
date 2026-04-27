@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"andb/platformpkg/pkg/proto/messagespb"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/messagespb"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // NewResourceKeyFromProto creates a ResourceKey from proto.

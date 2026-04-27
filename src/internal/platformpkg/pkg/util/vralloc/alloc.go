@@ -25,7 +25,7 @@ import (
 
 	"github.com/shirou/gopsutil/v3/disk"
 
-	"andb/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/hardware"
 )
 
 var zero = &Resource{0, 0, 0}

@@ -20,11 +20,11 @@ import (
 	"github.com/milvus-io/milvus/internal/proxy/shardclient"
 	"github.com/milvus-io/milvus/internal/util/function/highlight"
 	"github.com/milvus-io/milvus/internal/util/function/models"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 const (

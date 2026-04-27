@@ -11,12 +11,12 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/resource"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/message/adaptor"
-	"andb/platformpkg/pkg/util/conc"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/retry"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message/adaptor"
+	"plasmod/platformpkg/pkg/util/conc"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/retry"
 )
 
 var defaultCollectionNotFoundTolerance = 10

@@ -8,10 +8,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/syncutil"
-	"andb/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/util/tsoutil"
 )
 
 // TimeTickMetrics is the metrics for time tick.

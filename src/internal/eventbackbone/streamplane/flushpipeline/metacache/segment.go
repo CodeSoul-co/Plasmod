@@ -27,8 +27,8 @@ import (
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache/pkoracle"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/storagecommon"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
 )
 
 type SegmentInfo struct {

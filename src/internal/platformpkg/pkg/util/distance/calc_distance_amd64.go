@@ -8,8 +8,8 @@ import (
 
 	"golang.org/x/sys/cpu"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/distance/asm"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/distance/asm"
 )
 
 func init() {

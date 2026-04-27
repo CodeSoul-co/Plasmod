@@ -12,13 +12,13 @@ This document records Member A deliverables for Linux server migration tasks:
 
 - Docker daemon is reachable by current user.
 - Required images are available from your configured registry (internet or intranet mirror).
-- `andb` service can boot (`GET /healthz` returns 200).
+- `plasmod` service can boot (`GET /healthz` returns 200).
 
 ### Run
 
 ```bash
-docker compose up -d minio minio-init andb
-ANDB_BASE_URL=http://127.0.0.1:8080 python3 scripts/e2e/member_a_capture.py --out-dir ./out/member_a_fullstack_verify
+docker compose up -d minio minio-init plasmod
+PLASMOD_BASE_URL=http://127.0.0.1:8080 python3 scripts/e2e/member_a_capture.py --out-dir ./out/member_a_fullstack_verify
 ```
 
 Or use the bundled one-command script:
@@ -39,8 +39,8 @@ bash scripts/e2e/run_acceptance_scenario_a.sh
 ```bash
 docker compose run --rm --entrypoint /bin/sh minio-init -lc \
   'mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null && \
-   printf "{\"ok\":true}\n" | mc pipe local/andb-integration/andb/task4_probe.json >/dev/null && \
-   mc stat local/andb-integration/andb/task4_probe.json >/dev/null'
+   printf "{\"ok\":true}\n" | mc pipe local/plasmod-integration/plasmod/task4_probe.json >/dev/null && \
+   mc stat local/plasmod-integration/plasmod/task4_probe.json >/dev/null'
 ```
 
 Notes:
@@ -56,7 +56,7 @@ Notes:
 docker build --platform=linux/amd64 --target builder -t cogdb:test-builder .
 docker run --rm -v "$PWD:/src" -w /src --platform=linux/amd64 \
   cogdb:test-builder /bin/sh -lc \
-  '/usr/local/go/bin/go test $(/usr/local/go/bin/go list ./src/internal/... | grep -v "^andb/src/internal/app$" | grep -v "^andb/src/internal/dataplane/embedding$") -count=1 -timeout 120s'
+  '/usr/local/go/bin/go test $(/usr/local/go/bin/go list ./src/internal/... | grep -v "^plasmod/src/internal/app$" | grep -v "^plasmod/src/internal/dataplane/embedding$") -count=1 -timeout 120s'
 ```
 
 ### Expected failures and root causes
@@ -70,7 +70,7 @@ The following failures are expected in environments that do not provide required
    - TensorRT: requires Linux + CUDA + TensorRT runtime and engine/model artifacts.
 
 2. **CGO/retrieval optional native library path issues (if retrieval tag is enabled)**  
-   Root cause: `libandb_retrieval.so` not built or not visible via linker/runtime path.
+   Root cause: `libplasmod_retrieval.so` not built or not visible via linker/runtime path.
 
 ### Triage guidance
 
@@ -84,20 +84,20 @@ Use this matrix when switching deployment scenarios.
 
 | Scenario | Required environment variables |
 |---|---|
-| In-memory only (local smoke) | `ANDB_STORAGE=inmemory`, `ANDB_EMBEDDER=tfidf` |
-| Disk only | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=tfidf` |
-| ONNX CPU | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=onnx`, `ANDB_EMBEDDER_DEVICE=cpu` |
-| ONNX CUDA | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=onnx`, `ANDB_EMBEDDER_DEVICE=cuda` |
-| GGUF CUDA | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=gguf`, `ANDB_EMBEDDER_DEVICE=cuda` |
-| TensorRT CUDA | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=tensorrt`, `ANDB_EMBEDDER_DEVICE=cuda` |
-| Metal (macOS) | `ANDB_STORAGE=disk`, `ANDB_DATA_DIR=/data`, `ANDB_EMBEDDER=gguf` or `onnx`, `ANDB_EMBEDDER_DEVICE=metal` |
+| In-memory only (local smoke) | `PLASMOD_STORAGE=inmemory`, `PLASMOD_EMBEDDER=tfidf` |
+| Disk only | `PLASMOD_STORAGE=disk`, `PLASMOD_DATA_DIR=/data`, `PLASMOD_EMBEDDER=tfidf` |
+| ONNX CPU | `PLASMOD_STORAGE=disk`, `PLASMOD_DATA_DIR=/data`, `PLASMOD_EMBEDDER=onnx`, `PLASMOD_EMBEDDER_DEVICE=cpu` |
+| ONNX CUDA | `PLASMOD_STORAGE=disk`, `PLASMOD_DATA_DIR=/data`, `PLASMOD_EMBEDDER=onnx`, `PLASMOD_EMBEDDER_DEVICE=cuda` |
+| GGUF CUDA | `PLASMOD_STORAGE=disk`, `PLASMOD_DATA_DIR=/data`, `PLASMOD_EMBEDDER=gguf`, `PLASMOD_EMBEDDER_DEVICE=cuda` |
+| TensorRT CUDA | `PLASMOD_STORAGE=disk`, `PLASMOD_DATA_DIR=/data`, `PLASMOD_EMBEDDER=tensorrt`, `PLASMOD_EMBEDDER_DEVICE=cuda` |
+| Metal (macOS) | `PLASMOD_STORAGE=disk`, `PLASMOD_DATA_DIR=/data`, `PLASMOD_EMBEDDER=gguf` or `onnx`, `PLASMOD_EMBEDDER_DEVICE=metal` |
 | S3/MinIO cold tier enabled | `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE`, `S3_REGION`, `S3_PREFIX` |
 | S3/MinIO cold query protection (recommended) | `S3_COLD_MAX_PAGES` (default `20`), `S3_COLD_MAX_CANDIDATES` (default `1000`) |
 
 Canonical values:
 
-- `ANDB_STORAGE=disk|inmemory`
-- `ANDB_DATA_DIR=/data`
+- `PLASMOD_STORAGE=disk|inmemory`
+- `PLASMOD_DATA_DIR=/data`
 - `ANDB_EMBEDDER=tfidf|openai|zhipuai|onnx|gguf|tensorrt`
 - `ANDB_EMBEDDER_DEVICE=cpu|cuda|metal`
 - `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE`, `S3_REGION`, `S3_PREFIX`
