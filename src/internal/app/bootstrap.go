@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"plasmod/src/internal/access"
@@ -413,11 +414,31 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Algorithm Dispatch worker ─────────────────────────────────────────────
 	// Bridges MemoryManagementAlgorithm plugins into the cognitive pipeline.
-	// MemoryBank is the default active algorithm (loaded from configs/algorithm_memorybank.yaml).
-	// Baseline is available as a fallback registered with a different worker ID.
+	// Active algorithm is selected by PLASMOD_ACTIVE_ALGORITHM (memorybank|zep|baseline).
+	// Note: zep profile currently reuses the MemoryBank engine with zep config root.
+	activeAlgo := strings.ToLower(strings.TrimSpace(os.Getenv("PLASMOD_ACTIVE_ALGORITHM")))
+	if activeAlgo == "" {
+		activeAlgo = "memorybank"
+	}
+	activeAlgoID := "memorybank_v1"
+	var activeAlgoImpl schemas.MemoryManagementAlgorithm
+	switch activeAlgo {
+	case "baseline":
+		activeAlgoID = "baseline_v1"
+		activeAlgoImpl = baseline.NewDefault()
+	case "zep":
+		activeAlgoID = "zep_v1"
+		activeAlgoImpl = memorybank.NewDefault(activeAlgoID)
+	default:
+		activeAlgo = "memorybank"
+		activeAlgoID = "memorybank_v1"
+		activeAlgoImpl = memorybank.NewDefault(activeAlgoID)
+	}
+	log.Printf("[bootstrap] active algorithm profile: %s (%s)", activeAlgo, activeAlgoID)
+
 	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
 		"algo-dispatch-1",
-		memorybank.NewDefault("memorybank_v1"),
+		activeAlgoImpl,
 		store.Objects(),
 		store.AlgorithmStates(),
 		store.Audits(),
