@@ -9,8 +9,16 @@ import (
 )
 
 // MemoryBackendLocalOnly is the only supported mode.
-// Memory governance is handled by the algorithm dispatcher (e.g. MemoryBank),
-// which drives storage lifecycle via SuggestedLifecycleState.
+//
+// IMPORTANT ARCHITECTURE NOTE:
+// Plasmod keeps a single source of truth for memory storage internally.
+// Governance strategies (for example MemoryBank and Zep-style logic) are
+// expected to run as algorithm plugins through AlgorithmDispatch, not as an
+// external storage backend.
+//
+// This router is retained only as a compatibility shim for existing admin/API
+// fields that still expose "backend mode". Its behavior is intentionally
+// local-only and non-routing.
 const MemoryBackendLocalOnly = "local_only"
 
 type memoryBackendRouter struct {
@@ -52,10 +60,14 @@ func (m *memoryBackendRouter) ShouldHybridRecall() bool {
 	return false
 }
 
+// WriteShadow is a no-op in local-only architecture. Governance algorithms
+// should influence lifecycle/ranking via AlgorithmDispatch instead.
 func (m *memoryBackendRouter) WriteShadow(ctx context.Context, mem schemas.Memory, ev schemas.Event) error {
 	return nil
 }
 
+// RecallZep is a legacy compatibility stub. Recall should come from local
+// storage + algorithm re-ranking in DispatchRecall.
 func (m *memoryBackendRouter) RecallZep(
 	ctx context.Context,
 	query string,
