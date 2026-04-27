@@ -24,6 +24,10 @@
 #include "knowhere/dataset.h"
 #include "knowhere/config.h"
 #include "knowhere/comp/thread_pool.h"
+#include "knowhere/comp/index_param.h"
+#include "knowhere/comp/local_file_manager.h"
+#include "knowhere/object.h"
+#include "knowhere/binaryset.h"
 
 #ifdef ANDB_WITH_GPU
 #include <cuda_runtime_api.h>
@@ -34,6 +38,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
@@ -82,6 +87,41 @@ tryCreateGpuIndex(const IndexConfig& cfg, const knowhere::Json& cfg_obj) {
 #endif
 }
 
+// ── DiskANN helpers ──────────────────────────────────────────────────────────
+// DiskANN's binary format = int32 nrows, int32 ncols, then nrows*ncols of T.
+// The same layout as the .fbin format we use elsewhere in CogDB.
+static bool WriteDiskANNBinFile(const std::string& path,
+                                const float* vecs,
+                                int64_t n,
+                                int32_t dim) {
+    std::ofstream os(path, std::ios::binary | std::ios::trunc);
+    if (!os) return false;
+    int32_t n32 = static_cast<int32_t>(n);
+    os.write(reinterpret_cast<const char*>(&n32),  sizeof(int32_t));
+    os.write(reinterpret_cast<const char*>(&dim),  sizeof(int32_t));
+    os.write(reinterpret_cast<const char*>(vecs),
+             static_cast<std::streamsize>(n) * dim * sizeof(float));
+    return os.good();
+}
+
+// DiskANN refuses to overwrite an index at an existing prefix.  Delete any
+// stale artefacts so a re-Init+Build cycle on the same prefix succeeds.
+// Listed names mirror diskann::GetNecessaryFilenames + GetOptionalFilenames.
+static void CleanDiskANNFiles(const std::string& prefix) {
+    static const char* kSuffixes[] = {
+        "_disk.index",      "_pq_pivots.bin",  "_pq_compressed.bin",
+        "_sample_data.bin", "_sample_ids.bin", "_centroids.bin",
+        "_max_base_norm.bin", "_disk.index_medoids.bin",
+        "_disk.index_centroids.bin",  "_disk.index_pq_pivots.bin",
+        "_pq_pivots.bin_centroid.bin","_pq_pivots.bin_chunk_offsets.bin",
+        "_pq_pivots.bin_rearrangement_perm.bin",
+    };
+    for (const char* s : kSuffixes) {
+        std::string p = prefix + s;
+        std::remove(p.c_str());
+    }
+}
+
 // ── HNSWIndexWrapper ─────────────────────────────────────────────────────────
 // Wraps a single Knowhere HNSW index (CPU fallback, always available).
 //
@@ -119,24 +159,58 @@ class HNSWIndexWrapper {
             int nlist = cfg_.ivf_nlist > 0 ? cfg_.ivf_nlist : 128;
             build_cfg_[knowhere::indexparam::NLIST] = nlist;
         } else if (index_type_ == "DISKANN") {
-            // DiskANN's constructor asserts that the Object parameter passed
-            // to IndexFactory.Create is a Pack<shared_ptr<FileManager>> —
-            // it owns the lifecycle of on-disk PQ shards, navigation graph,
-            // and metadata files.  Our flat plasmod_retriever_init() path
-            // doesn't yet plumb a FileManager through, so attempting to
-            // construct DISKANN via the default Create<float>(name, version)
-            // overload fires the C++ assert and SIGABRT.
+            // DiskANN is on-disk: it owns a graph file + PQ shards + metadata
+            // at `index_prefix` and reads the raw vectors from `data_path`
+            // (DiskANN's binary format = int32 nrows, int32 ncols, then
+            //  nrows*ncols floats — identical to the .fbin format we use).
             //
-            // Return false here with a clear log line. A future change should
-            // expose a dedicated plasmod_retriever_init_diskann(...) C API
-            // that accepts an index_prefix path and constructs an embedded
-            // LocalFileManager, then call Create with the Pack object.
-            std::fprintf(stderr,
-                "plasmod: DISKANN backend compiled in but runtime wiring "
-                "is incomplete (FileManager not plumbed through). Use HNSW "
-                "or IVF_FLAT for now, or extend plasmod_retriever_init to "
-                "accept a DiskANN file-manager prefix.\n");
-            return false;
+            // The constructor asserts the Object parameter is exactly
+            // `Pack<std::shared_ptr<FileManager>>`.  We use a LocalFileManager
+            // (a no-op stub: LoadFile=true, AddFile records names) because in
+            // our embedded-process scenario DiskANN reads files directly via
+            // LinuxAlignedFileReader; the manager just rubber-stamps the API.
+            if (cfg_.diskann_index_prefix.empty()) {
+                std::fprintf(stderr,
+                    "plasmod: DISKANN requires non-empty diskann_index_prefix\n");
+                return false;
+            }
+            if (metric != "L2" && metric != "IP" && metric != "COSINE") {
+                std::fprintf(stderr,
+                    "plasmod: DISKANN only supports L2|IP|COSINE, got %s\n",
+                    metric.c_str());
+                return false;
+            }
+            file_manager_ = std::make_shared<knowhere::LocalFileManager>();
+            knowhere::Pack<std::shared_ptr<knowhere::FileManager>> pack(file_manager_);
+            auto disk_result = knowhere::IndexFactory::Instance().Create<float>(
+                index_type_,
+                knowhere::Version::GetCurrentVersion().VersionNumber(),
+                pack);
+            if (!disk_result.has_value()) return false;
+            index_ = std::make_unique<knowhere::Index<knowhere::IndexNode>>(
+                std::move(disk_result.value()));
+            dim_ = cfg_.dim;
+
+            // Build-time params; vec_field_size_gb is finalized in Build()
+            // once we know n.  See diskann_config.h for parameter semantics.
+            const std::string data_path = cfg_.diskann_index_prefix + ".raw_data.bin";
+            build_cfg_["data_path"]        = data_path;
+            build_cfg_["index_prefix"]     = cfg_.diskann_index_prefix;
+            build_cfg_["max_degree"]       = cfg_.diskann_max_degree   > 0
+                                              ? cfg_.diskann_max_degree   : 48;
+            build_cfg_["search_list_size"] = cfg_.diskann_search_list  > 0
+                                              ? cfg_.diskann_search_list : 128;
+            // pq/dram budgets: 0 means "auto-pick a default at Build()".
+            build_cfg_["pq_code_budget_gb"]    = cfg_.diskann_pq_code_budget_gb;
+            build_cfg_["build_dram_budget_gb"] = cfg_.diskann_build_dram_budget_gb;
+            build_cfg_["disk_pq_dims"]         = 0;     // store uncompressed → 100% recall
+            build_cfg_["accelerate_build"]     = false;
+            build_cfg_["shuffle_build"]        = false;
+            // Deserialize-time params:
+            build_cfg_["search_cache_budget_gb"] = 0.0f; // no cache (small dataset)
+            build_cfg_["warm_up"]                = false;
+            build_cfg_["use_bfs_cache"]          = false;
+            return true;
         } else {
             // Unknown index type — reject early with a clear log line.
             std::fprintf(stderr,
@@ -157,6 +231,70 @@ class HNSWIndexWrapper {
     bool Build(const float* vectors, int64_t n) {
         if (!index_ || !vectors || n <= 0) return false;
         std::unique_lock<std::shared_mutex> lk(mu_);
+
+        if (index_type_ == "DISKANN") {
+            // 1. DiskANN reads the raw vectors from a file on disk; write them
+            //    out in DiskANN's bin format (int32 npts, int32 ncols, then
+            //    raw float32 row-major).
+            const std::string data_path =
+                build_cfg_["data_path"].get<std::string>();
+            const std::string index_prefix =
+                build_cfg_["index_prefix"].get<std::string>();
+            if (!WriteDiskANNBinFile(data_path, vectors, n, dim_)) {
+                std::fprintf(stderr,
+                    "plasmod: DISKANN failed to write %s\n", data_path.c_str());
+                return false;
+            }
+
+            // 2. Finalize size-dependent build params.  vec_field_size_gb is
+            //    used by DiskANNConfig::CheckAndAdjust to derive PQ/cache
+            //    budgets when the *_ratio variants are non-zero.
+            const float bytes      = static_cast<float>(n) * dim_ * sizeof(float);
+            const float gb         = bytes / static_cast<float>(1ULL << 30);
+            build_cfg_["vec_field_size_gb"] = gb;
+            // Auto-pick budgets if caller left them at 0.
+            if (build_cfg_["pq_code_budget_gb"].get<float>() <= 0.0f) {
+                // Tiny lower bound (1 MB) so DiskANN doesn't reject as
+                // "too small"; for big datasets the caller should tune.
+                build_cfg_["pq_code_budget_gb"] = std::max(gb * 0.125f, 0.001f);
+            }
+            if (build_cfg_["build_dram_budget_gb"].get<float>() <= 0.0f) {
+                // 4× raw size, with a 1 GB floor.
+                build_cfg_["build_dram_budget_gb"] = std::max(gb * 4.0f, 1.0f);
+            }
+
+            // 3. DiskANN refuses to clobber pre-existing index files at the
+            //    prefix; remove any leftover from a prior run.
+            CleanDiskANNFiles(index_prefix);
+
+            // 4. Build (writes the on-disk graph + PQ shards).
+            auto ds     = knowhere::GenDataSet(n, dim_, vectors);  // ignored
+            auto status = index_->Build(ds, build_cfg_);
+            if (status != knowhere::Status::success) return false;
+
+            // 5. After Build the engine is NOT yet query-ready
+            //    (`is_prepared_=false`).  Serialize is a no-op for DiskANN;
+            //    Deserialize loads the PQ flash index from disk and flips
+            //    is_prepared_ to true.
+            knowhere::BinarySet empty_binset;
+            (void)index_->Serialize(empty_binset);
+            knowhere::Json deser_cfg;
+            deser_cfg["index_prefix"]            = index_prefix;
+            deser_cfg["metric_type"]             = build_cfg_[knowhere::meta::METRIC_TYPE];
+            deser_cfg["search_cache_budget_gb"]  = build_cfg_["search_cache_budget_gb"];
+            deser_cfg["warm_up"]                 = false;
+            deser_cfg["use_bfs_cache"]           = false;
+            auto dstatus = index_->Deserialize(empty_binset, deser_cfg);
+            if (dstatus != knowhere::Status::success) {
+                std::fprintf(stderr,
+                    "plasmod: DISKANN Deserialize after Build failed (%d)\n",
+                    static_cast<int>(dstatus));
+                return false;
+            }
+            num_vectors_ = n;
+            return true;
+        }
+
         auto ds     = knowhere::GenDataSet(n, dim_, vectors);
         auto status = index_->Build(ds, build_cfg_);
         if (status != knowhere::Status::success) return false;
@@ -205,6 +343,15 @@ class HNSWIndexWrapper {
         } else if (index_type_ == "IVF_FLAT") {
             int nprobe = cfg_.ivf_nprobe > 0 ? cfg_.ivf_nprobe : 8;
             tls_cfg[knowhere::indexparam::NPROBE] = nprobe;
+        } else if (index_type_ == "DISKANN") {
+            // search_list_size must be >= topk per DiskANN's own check.
+            // beamwidth = number of concurrent IO requests per query.
+            int lsize = std::max(topk, 16);
+            int bw    = cfg_.diskann_beamwidth > 0 ? cfg_.diskann_beamwidth : 8;
+            tls_cfg["search_list_size"]    = lsize;
+            tls_cfg["beamwidth"]           = bw;
+            tls_cfg["filter_threshold"]    = -1.0f;
+            tls_cfg["index_prefix"]        = build_cfg_["index_prefix"];
         }
 
         if (!tls_qds) {
@@ -236,11 +383,14 @@ class HNSWIndexWrapper {
 
   private:
     IndexConfig cfg_;
-    std::string index_type_; // "HNSW" | "IVF_FLAT"
+    std::string index_type_; // "HNSW" | "IVF_FLAT" | "DISKANN"
     int         dim_         = 0;
     int64_t     num_vectors_ = 0;
     knowhere::Json  build_cfg_;
     std::unique_ptr<knowhere::Index<knowhere::IndexNode>> index_;
+    // DISKANN-only: kept alive for the lifetime of the index because the
+    // engine retains a copy of the shared_ptr internally.
+    std::shared_ptr<knowhere::FileManager> file_manager_;
     mutable std::shared_mutex mu_;
 };
 
