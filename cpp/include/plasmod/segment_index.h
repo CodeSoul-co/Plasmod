@@ -50,6 +50,16 @@ public:
                int64_t*           out_ids,
                float*             out_dists);
 
+    // SearchRaw — standard Knowhere Index::Search path (no OpenMP, no hot-path
+    // plugin).  This is the "standard" Knowhere batch baseline for comparison
+    // with the optimized OpenMP-parallel Search() path.
+    int SearchRaw(const std::string& segment_id,
+                  const float*       query,
+                  int64_t            nq,
+                  int                topk,
+                  int64_t*           out_ids,
+                  float*             out_dists);
+
     // ANN search with allow-list filter (BitsetView).
     // allow_bits  : bitmask — bit i=1 means vector i is a valid candidate
     // allow_count : total number of vectors the bitmask covers (bits, not bytes)

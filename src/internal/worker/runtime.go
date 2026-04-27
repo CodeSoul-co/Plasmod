@@ -131,6 +131,14 @@ func (r *Runtime) IngestVectorsToWarmSegment(segmentID string, objectIDs []strin
 	return tp.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
 }
 
+func (r *Runtime) UnloadWarmSegment(segmentID string) error {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.UnloadWarmSegment(segmentID)
+}
+
 func (r *Runtime) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
 	tp, ok := r.plane.(*dataplane.TieredDataPlane)
 	if !ok {
@@ -153,6 +161,14 @@ func (r *Runtime) SearchWarmSegmentBatch(segmentID string, nq int, topK int, que
 		return nil, nil, fmt.Errorf("tiered plane unavailable")
 	}
 	return tp.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
+func (r *Runtime) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
 }
 
 func (r *Runtime) AdminWarmPrebuild() error {

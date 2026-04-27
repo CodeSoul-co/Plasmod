@@ -12,6 +12,7 @@
 //   - nq == 1 (no filter): HnswFastSearchFloat hot-path bypasses Knowhere wrapper.
 
 #include "plasmod/segment_index.h"
+#include "plasmod/batch_optimizer.h"
 
 #include "knowhere/index/index_factory.h"
 #include "knowhere/dataset.h"
@@ -23,6 +24,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -109,6 +111,11 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     const bool use_omp = HAVE_OMP && nq > 1;
 
     if (use_omp) {
+        // Step 1: plugin reorder (serial, once before parallel region)
+        std::vector<int64_t> order(nq);
+        plasmod::GetDefaultPlugin().ReorderQueryBatch(
+            query, nq, entry.dim, order.data());
+
         #pragma omp parallel
         {
             // Thread-local search state — allocated once per thread and reused
@@ -136,9 +143,11 @@ int SegmentIndexManager::DoSearch(Entry& entry,
 
             #pragma omp for schedule(dynamic)
             for (int64_t qi = 0; qi < nq; ++qi) {
-                const float* qptr = query + qi * entry.dim;
-                int64_t*     id_out   = out_ids   + qi * topk;
-                float*       dist_out = out_dists  + qi * topk;
+                // Step 2: plugin-reordered query index
+                const int64_t orig = order[qi];
+                const float*  qptr = query + orig * entry.dim;
+                int64_t*     id_out   = out_ids   + orig * topk;
+                float*       dist_out = out_dists + orig * topk;
 
                 tls_qds->SetRows(1);
                 tls_qds->SetDim(entry.dim);
@@ -271,6 +280,41 @@ int SegmentIndexManager::Search(const std::string& segment_id,
     if (it == segments_.end() || !it->second) return kErrNotFound;
     return DoSearch(*it->second, query, nq, topk,
                     nullptr, 0, out_ids, out_dists);
+}
+
+// ── SearchRaw ──────────────────────────────────────────────────────────────────
+// Standard Knowhere Index::Search path — no OpenMP, no HnswFastSearchFloat.
+// This bypasses the DoSearch plugin logic and uses a single-threaded
+// Knowhere call for the "standard" batch baseline.
+int SegmentIndexManager::SearchRaw(const std::string& segment_id,
+                                    const float* query, int64_t nq, int topk,
+                                    int64_t* out_ids, float* out_dists) {
+    std::shared_lock lk(mu_);
+    auto it = segments_.find(segment_id);
+    if (it == segments_.end() || !it->second) return kErrNotFound;
+    auto& entry = *it->second;
+
+    using KnowhereIndex = knowhere::Index<knowhere::IndexNode>;
+    auto* idx = static_cast<KnowhereIndex*>(entry.index_ptr);
+    if (!idx) return kErrNotFound;
+
+    // Build standard config (no OpenMP, no hot-path)
+    knowhere::Json cfg;
+    cfg[knowhere::meta::METRIC_TYPE]          = kMetricType;
+    cfg[knowhere::indexparam::M]              = kHNSW_M;
+    cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
+    cfg[knowhere::meta::DIM]                 = entry.dim;
+    cfg[knowhere::meta::TOPK]                 = topk;
+    cfg[knowhere::indexparam::EF]            = std::max(topk * 2, kHNSW_EfSearch);
+
+    auto ds = knowhere::GenDataSet(nq, entry.dim, query);
+    auto res = idx->Search(ds, cfg, knowhere::BitsetView());
+    if (!res.has_value()) return kErrSearchFailed;
+
+    const int64_t total = nq * topk;
+    std::memcpy(out_ids,   res.value()->GetIds(),      total * sizeof(int64_t));
+    std::memcpy(out_dists, res.value()->GetDistance(), total * sizeof(float));
+    return kOK;
 }
 
 int SegmentIndexManager::SearchWithFilter(const std::string& segment_id,

@@ -71,12 +71,22 @@ func main() {
 	switch *mode {
 	case "faiss":
 		runFAISS()
+	case "faiss-single":
+		runFAISSSingle()
 	case "vector-only":
 		runVectorOnly()
 	case "knowhere-build":
 		runKnowhereBuild()
+	case "knowhere-single":
+		runKnowhereSingle()
+	case "knowhere-raw":
+		runKnowhereRaw()
+	case "vector-only-raw":
+		runVectorOnlyRaw()
 	case "http-query":
 		runHTTPQuery()
+	case "http-query-raw":
+		runHTTPQueryRaw()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode: %s\n", *mode)
 		os.Exit(1)
@@ -304,6 +314,127 @@ func runFAISS() {
 	json.NewEncoder(os.Stdout).Encode(result)
 }
 
+// ── G1-single: FAISS HNSW — serial-per-query path (nq=1 loop) ─────────────────
+func runFAISSSingle() {
+	if *dataset == "" {
+		fmt.Fprintf(os.Stderr, "--dataset required for faiss-single mode\n")
+		os.Exit(1)
+	}
+	vecs, n, dim, err := loadFbin(*dataset, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load fbin: %v\n", err)
+		os.Exit(1)
+	}
+	dim = len(vecs) / n
+	fmt.Fprintf(os.Stderr, "[G1-single FAISS] loaded %d vecs dim=%d from %s\n", n, dim, *dataset)
+
+	nIndexed := *indexedCount
+	if nIndexed == 0 {
+		nIndexed = n
+	}
+	if nIndexed > n {
+		nIndexed = n
+	}
+	nq := *nquery
+	if nq > n {
+		nq = n
+	}
+
+	norms := make([]float64, n)
+	for i := 0; i < n; i++ {
+		s := 0.0
+		for j := 0; j < dim; j++ {
+			v := float64(vecs[i*dim+j])
+			s += v * v
+		}
+		norms[i] = math.Sqrt(s)
+		if norms[i] == 0 {
+			norms[i] = 1
+		}
+	}
+	normVecs := make([]float32, n*dim)
+	for i := 0; i < n; i++ {
+		for j := 0; j < dim; j++ {
+			normVecs[i*dim+j] = float32(float64(vecs[i*dim+j]) / norms[i])
+		}
+	}
+
+	faissIdx := retrievalplane.NewFaissHNSW()
+	defer faissIdx.Close()
+	t0 := time.Now()
+	if err := faissIdx.Build(normVecs, nIndexed, dim, 16, 256); err != nil {
+		fmt.Fprintf(os.Stderr, "FAISS BuildSegment: %v\n", err)
+		os.Exit(1)
+	}
+	buildMs := time.Since(t0).Seconds() * 1000
+
+	qstart := n - nq
+	if qstart < 0 {
+		qstart = 0
+	}
+	flatQueries := make([]float32, nq*dim)
+	for i := 0; i < nq; i++ {
+		copy(flatQueries[i*dim:(i+1)*dim], normVecs[(qstart+i)*dim:(qstart+i)*dim+dim])
+	}
+
+	// Warm-up
+	_, _, _ = faissIdx.Search(flatQueries[:dim], 1, *topk)
+
+	// Serial path: nq individual nq=1 calls (FAISS HnswFastSearchFloat hot path)
+	latencies := make([]float64, nq)
+	for i := 0; i < nq; i++ {
+		start := time.Now()
+		_, _, _ = faissIdx.Search(flatQueries[i*dim:(i+1)*dim], 1, *topk)
+		latencies[i] = time.Since(start).Seconds() * 1000
+	}
+	serialMs := 0.0
+	for _, l := range latencies {
+		serialMs += l
+	}
+	serialQPS := float64(nq) / (serialMs / 1000.0)
+
+	sortedL := make([]float64, len(latencies))
+	copy(sortedL, latencies)
+	sort.Float64s(sortedL)
+	p50 := percentile(sortedL, 0.50)
+	p95 := percentile(sortedL, 0.95)
+	p99 := percentile(sortedL, 0.99)
+	mean := 0.0
+	for _, l := range latencies {
+		mean += l
+	}
+	if nq > 0 {
+		mean /= float64(nq)
+	}
+
+	// Batch search for recall reference (nq=1 calls too, just collect int IDs)
+	batchIntIDs := make([]int64, 0, nq*(*topk))
+	for i := 0; i < nq; i++ {
+		ids, _, _ := faissIdx.Search(flatQueries[i*dim:(i+1)*dim], 1, *topk)
+		batchIntIDs = append(batchIntIDs, ids...)
+	}
+
+	result := BenchResult{
+		Mode:      "G1_FAISS_single",
+		NIndexed:  nIndexed,
+		NQueries:  nq,
+		TopK:      *topk,
+		Dim:       dim,
+		BuildMs:   buildMs,
+		BatchMs:   serialMs,
+		BatchQPS:  serialQPS,
+		SerialMs:  serialMs,
+		SerialQPS: serialQPS,
+		MeanMs:    mean,
+		P50Ms:     p50,
+		P95Ms:     p95,
+		P99Ms:     p99,
+		Errors:    0,
+		IntIDs:    batchIntIDs,
+	}
+	json.NewEncoder(os.Stdout).Encode(result)
+}
+
 // ── G2: Knowhere via CGO (OpenMP parallel batch search) ────────────────────
 func runKnowhereBuild() {
 	if *dataset == "" {
@@ -331,6 +462,7 @@ func runKnowhereBuild() {
 	}
 
 	segID := *segmentID
+	_ = retrievalplane.GlobalSegmentRetriever.UnloadSegment(segID)
 	t0 := time.Now()
 	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segID, vecs, nIndexed, dim); err != nil {
 		fmt.Fprintf(os.Stderr, "BuildSegment: %v\n", err)
@@ -370,6 +502,208 @@ func runKnowhereBuild() {
 	json.NewEncoder(os.Stdout).Encode(result)
 }
 
+// ── G2-single: Knowhere via CGO — serial-per-query path (loop nq=1) ───────────
+func runKnowhereSingle() {
+	if *dataset == "" {
+		fmt.Fprintf(os.Stderr, "--dataset required\n")
+		os.Exit(1)
+	}
+	vecs, n, dim, err := loadFbin(*dataset, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load: %v\n", err)
+		os.Exit(1)
+	}
+	dim = len(vecs) / n
+	fmt.Fprintf(os.Stderr, "[G2-single Knowhere] loaded %d vecs dim=%d from %s\n", n, dim, *dataset)
+
+	nIndexed := *indexedCount
+	if nIndexed == 0 {
+		nIndexed = n
+	}
+	if nIndexed > n {
+		nIndexed = n
+	}
+	nq := *nquery
+	if nq > n {
+		nq = n
+	}
+
+	segID := *segmentID
+	t0 := time.Now()
+	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segID, vecs, nIndexed, dim); err != nil {
+		fmt.Fprintf(os.Stderr, "BuildSegment: %v\n", err)
+		os.Exit(1)
+	}
+	buildMs := time.Since(t0).Seconds() * 1000
+
+	qstart := n - nq
+	if qstart < 0 {
+		qstart = 0
+	}
+	flatQueries := make([]float32, nq*dim)
+	for i := 0; i < nq; i++ {
+		copy(flatQueries[i*dim:(i+1)*dim], vecs[(qstart+i)*dim:(qstart+i)*dim+dim])
+	}
+
+	// Serial search: nq individual nq=1 calls (HnswFastSearchFloat hot path)
+	latencies := make([]float64, nq)
+	for i := 0; i < nq; i++ {
+		start := time.Now()
+		_, _, _ = retrievalplane.GlobalSegmentRetriever.Search(segID, flatQueries[i*dim:(i+1)*dim], 1, *topk)
+		latencies[i] = time.Since(start).Seconds() * 1000
+	}
+	serialMs := 0.0
+	for _, l := range latencies {
+		serialMs += l
+	}
+	serialQPS := float64(nq) / (serialMs / 1000.0)
+
+	sortedL := make([]float64, len(latencies))
+	copy(sortedL, latencies)
+	sort.Float64s(sortedL)
+	p50 := percentile(sortedL, 0.50)
+	p95 := percentile(sortedL, 0.95)
+	p99 := percentile(sortedL, 0.99)
+	mean := 0.0
+	for _, l := range latencies {
+		mean += l
+	}
+	if nq > 0 {
+		mean /= float64(nq)
+	}
+
+	// Collect int IDs for recall reference
+	intIDs := make([]int64, 0, nq*(*topk))
+	for i := 0; i < nq; i++ {
+		ids, _, _ := retrievalplane.GlobalSegmentRetriever.Search(segID, flatQueries[i*dim:(i+1)*dim], 1, *topk)
+		intIDs = append(intIDs, ids...)
+	}
+
+	result := BenchResult{
+		Mode:      "G2_Knowhere_single",
+		NIndexed:  nIndexed,
+		NQueries:  nq,
+		TopK:      *topk,
+		Dim:       dim,
+		BuildMs:   buildMs,
+		BatchMs:   serialMs,
+		BatchQPS:  serialQPS,
+		SerialMs:  serialMs,
+		SerialQPS: serialQPS,
+		MeanMs:    mean,
+		P50Ms:     p50,
+		P95Ms:     p95,
+		P99Ms:     p99,
+		Errors:    0,
+		IntIDs:    intIDs,
+	}
+	json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// ── G2-raw: Knowhere via CGO — standard Knowhere batch (NO plugin reorder) ────
+func runKnowhereRaw() {
+	if *dataset == "" {
+		fmt.Fprintf(os.Stderr, "--dataset required\n")
+		os.Exit(1)
+	}
+	vecs, n, dim, err := loadFbin(*dataset, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load: %v\n", err)
+		os.Exit(1)
+	}
+	dim = len(vecs) / n
+	fmt.Fprintf(os.Stderr, "[G2-raw Knowhere] loaded %d vecs dim=%d from %s\n", n, dim, *dataset)
+
+	nIndexed := *indexedCount
+	if nIndexed == 0 {
+		nIndexed = n
+	}
+	if nIndexed > n {
+		nIndexed = n
+	}
+	nq := *nquery
+	if nq > n {
+		nq = n
+	}
+
+	segID := *segmentID
+	_ = retrievalplane.GlobalSegmentRetriever.UnloadSegment(segID)
+	t0 := time.Now()
+	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segID, vecs, nIndexed, dim); err != nil {
+		fmt.Fprintf(os.Stderr, "BuildSegment: %v\n", err)
+		os.Exit(1)
+	}
+	buildMs := time.Since(t0).Seconds() * 1000
+
+	qstart := n - nq
+	if qstart < 0 {
+		qstart = 0
+	}
+	flatQueries := make([]float32, nq*dim)
+	for i := 0; i < nq; i++ {
+		copy(flatQueries[i*dim:(i+1)*dim], vecs[(qstart+i)*dim:(qstart+i)*dim+dim])
+	}
+
+	// Warm-up
+	_, _, _ = retrievalplane.GlobalSegmentRetriever.Search(segID, flatQueries[:dim], 1, *topk)
+
+	// Batch search via SearchRaw (standard Knowhere, no plugin reorder)
+	tBatch := time.Now()
+	intIDs, _, err := retrievalplane.GlobalSegmentRetriever.SearchRaw(segID, flatQueries, nq, *topk)
+	batchMs := time.Since(tBatch).Seconds() * 1000
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SearchRaw batch: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Serial: nq individual SearchRaw calls
+	latencies := make([]float64, nq)
+	for i := 0; i < nq; i++ {
+		start := time.Now()
+		_, _, _ = retrievalplane.GlobalSegmentRetriever.SearchRaw(segID, flatQueries[i*dim:(i+1)*dim], 1, *topk)
+		latencies[i] = time.Since(start).Seconds() * 1000
+	}
+	serialMs := 0.0
+	for _, l := range latencies {
+		serialMs += l
+	}
+	serialQPS := float64(nq) / (serialMs / 1000.0)
+
+	sortedL := make([]float64, len(latencies))
+	copy(sortedL, latencies)
+	sort.Float64s(sortedL)
+	p50 := percentile(sortedL, 0.50)
+	p95 := percentile(sortedL, 0.95)
+	p99 := percentile(sortedL, 0.99)
+	mean := 0.0
+	for _, l := range latencies {
+		mean += l
+	}
+	if nq > 0 {
+		mean /= float64(nq)
+	}
+
+	result := BenchResult{
+		Mode:      "G2_Knowhere_raw",
+		NIndexed:  nIndexed,
+		NQueries:  nq,
+		TopK:      *topk,
+		Dim:       dim,
+		BuildMs:   buildMs,
+		BatchMs:   batchMs,
+		BatchQPS:  float64(nq) / (batchMs / 1000.0),
+		SerialMs:  serialMs,
+		SerialQPS: serialQPS,
+		MeanMs:    mean,
+		P50Ms:     p50,
+		P95Ms:     p95,
+		P99Ms:     p99,
+		Errors:    0,
+		IntIDs:    intIDs,
+	}
+	json.NewEncoder(os.Stdout).Encode(result)
+}
+
 // ── G3: GlobalSegmentRetriever.Search via CGO ─────────────────────────────────
 func runVectorOnly() {
 	if *dataset == "" {
@@ -398,6 +732,7 @@ func runVectorOnly() {
 	}
 
 	segID := *segmentID
+	_ = retrievalplane.GlobalSegmentRetriever.UnloadSegment(segID)
 	t0 := time.Now()
 	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segID, vecs, nIndexed, dim); err != nil {
 		fmt.Fprintf(os.Stderr, "BuildSegment: %v\n", err)
@@ -432,6 +767,111 @@ func runVectorOnly() {
 		P95Ms:     p95,
 		P99Ms:     p99,
 		Errors:    errors,
+		IntIDs:    intIDs,
+	}
+	json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// ── G3-raw: Plasmod Bridge — standard Knowhere batch (no plugin reorder) ──────
+func runVectorOnlyRaw() {
+	if *dataset == "" {
+		fmt.Fprintf(os.Stderr, "--dataset required for vector-only-raw mode\n")
+		os.Exit(1)
+	}
+
+	vecs, n, dim, err := loadFbin(*dataset, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load fbin: %v\n", err)
+		os.Exit(1)
+	}
+	dim = len(vecs) / n
+	fmt.Fprintf(os.Stderr, "[G3-raw Plasmod] loaded %d vecs dim=%d from %s\n", n, dim, *dataset)
+
+	nIndexed := *indexedCount
+	if nIndexed == 0 {
+		nIndexed = n
+	}
+	if nIndexed > n {
+		nIndexed = n
+	}
+	nq := *nquery
+	if nq > n {
+		nq = n
+	}
+
+	segID := *segmentID
+	_ = retrievalplane.GlobalSegmentRetriever.UnloadSegment(segID)
+	t0 := time.Now()
+	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segID, vecs, nIndexed, dim); err != nil {
+		fmt.Fprintf(os.Stderr, "BuildSegment: %v\n", err)
+		os.Exit(1)
+	}
+	buildMs := time.Since(t0).Seconds() * 1000
+
+	qstart := n - nq
+	if qstart < 0 {
+		qstart = 0
+	}
+	flatQueries := make([]float32, nq*dim)
+	for i := 0; i < nq; i++ {
+		copy(flatQueries[i*dim:(i+1)*dim], vecs[(qstart+i)*dim:(qstart+i)*dim+dim])
+	}
+
+	// Warm-up
+	_, _, _ = retrievalplane.GlobalSegmentRetriever.SearchRaw(segID, flatQueries[:dim], 1, *topk)
+
+	// Batch search via SearchRaw (standard Knowhere, no plugin reorder)
+	tBatch := time.Now()
+	intIDs, _, err := retrievalplane.GlobalSegmentRetriever.SearchRaw(segID, flatQueries, nq, *topk)
+	batchMs := time.Since(tBatch).Seconds() * 1000
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SearchRaw batch: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Serial: nq individual SearchRaw calls (nq=1 each, Knowhere Index::Search)
+	latencies := make([]float64, nq)
+	for i := 0; i < nq; i++ {
+		start := time.Now()
+		_, _, _ = retrievalplane.GlobalSegmentRetriever.SearchRaw(segID, flatQueries[i*dim:(i+1)*dim], 1, *topk)
+		latencies[i] = time.Since(start).Seconds() * 1000
+	}
+	serialMs := 0.0
+	for _, l := range latencies {
+		serialMs += l
+	}
+	serialQPS := float64(nq) / (serialMs / 1000.0)
+
+	sortedL := make([]float64, len(latencies))
+	copy(sortedL, latencies)
+	sort.Float64s(sortedL)
+	p50 := percentile(sortedL, 0.50)
+	p95 := percentile(sortedL, 0.95)
+	p99 := percentile(sortedL, 0.99)
+	mean := 0.0
+	for _, l := range latencies {
+		mean += l
+	}
+	if nq > 0 {
+		mean /= float64(nq)
+	}
+
+	result := BenchResult{
+		Mode:      "G3_Plasmod_raw",
+		NIndexed:  nIndexed,
+		NQueries:  nq,
+		TopK:      *topk,
+		Dim:       dim,
+		BuildMs:   buildMs,
+		BatchMs:   batchMs,
+		BatchQPS:  float64(nq) / (batchMs / 1000.0),
+		SerialMs:  serialMs,
+		SerialQPS: serialQPS,
+		MeanMs:    mean,
+		P50Ms:     p50,
+		P95Ms:     p95,
+		P99Ms:     p99,
+		Errors:    0,
 		IntIDs:    intIDs,
 	}
 	json.NewEncoder(os.Stdout).Encode(result)
@@ -475,6 +915,18 @@ func runHTTPQuery() {
 
 	segID := *segmentID
 	ingestURL := *serverURL + "/v1/internal/rpc/ingest_batch"
+	unloadURL := *serverURL + "/v1/internal/rpc/unload_segment"
+
+	// Evict any stale segment so the next ingest triggers a fresh HNSW build.
+	fmt.Fprintf(os.Stderr, "[G4 http] unloading stale segment=%s\n", segID)
+	unloadReq, _ := http.NewRequest("POST", unloadURL, bytes.NewBufferString(
+		fmt.Sprintf(`{"segment_id":%q}`, segID)))
+	unloadReq.Header.Set("Content-Type", "application/json")
+	unloadResp, unloadErr := (&http.Client{Timeout: 10 * time.Second}).Do(unloadReq)
+	if unloadErr == nil {
+		unloadResp.Body.Close()
+	} // ignore errors (segment may not exist yet)
+
 	fmt.Fprintf(os.Stderr, "[G4 http] ingesting %d indexed vectors into segment=%s\n", nIndexed, segID)
 
 	var buf bytes.Buffer
@@ -626,6 +1078,241 @@ func runHTTPQuery() {
 		P95Ms:     p95,
 		P99Ms:     p99,
 		Errors:    errors,
+		IntIDs:    allIntIDs,
+	}
+	json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// ── G4-raw: Plasmod HTTP E2E — standard Knowhere batch (no plugin reorder) ─────
+func runHTTPQueryRaw() {
+	if *dataset == "" {
+		fmt.Fprintf(os.Stderr, "--dataset required for http-query-raw mode\n")
+		os.Exit(1)
+	}
+
+	vecs, n, dim, err := loadFbin(*dataset, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load: %v\n", err)
+		os.Exit(1)
+	}
+	dim = len(vecs) / n
+	fmt.Fprintf(os.Stderr, "[G4-raw HTTP] loaded %d vecs dim=%d from %s\n", n, dim, *dataset)
+
+	nIndexed := *indexedCount
+	if nIndexed == 0 {
+		nIndexed = n
+	}
+	if nIndexed > n {
+		nIndexed = n
+	}
+	nq := *nquery
+	if nq > n {
+		nq = n
+	}
+
+	qstart := n - nq
+	if qstart < 0 {
+		qstart = 0
+	}
+	flatQueries := make([]float32, nq*dim)
+	for i := 0; i < nq; i++ {
+		copy(flatQueries[i*dim:(i+1)*dim], vecs[(qstart+i)*dim:(qstart+i)*dim+dim])
+	}
+
+	segID := *segmentID
+	ingestURL := *serverURL + "/v1/internal/rpc/ingest_batch"
+	unloadURL := *serverURL + "/v1/internal/rpc/unload_segment"
+
+	fmt.Fprintf(os.Stderr, "[G4-raw http] unloading stale segment=%s\n", segID)
+	unloadReq, _ := http.NewRequest("POST", unloadURL, bytes.NewBufferString(
+		fmt.Sprintf(`{"segment_id":%q}`, segID)))
+	unloadReq.Header.Set("Content-Type", "application/json")
+	unloadResp, _ := (&http.Client{Timeout: 10 * time.Second}).Do(unloadReq)
+	if unloadResp != nil {
+		unloadResp.Body.Close()
+	}
+
+	fmt.Fprintf(os.Stderr, "[G4-raw http] ingesting %d indexed vectors into segment=%s\n", nIndexed, segID)
+
+	var buf bytes.Buffer
+	buf.Write([]byte("PLIB"))
+	buf.WriteByte(2)
+	binary.Write(&buf, binary.LittleEndian, uint16(len(segID)))
+	buf.WriteString(segID)
+	binary.Write(&buf, binary.LittleEndian, uint32(nIndexed))
+	binary.Write(&buf, binary.LittleEndian, uint32(dim))
+	for i := 0; i < nIndexed; i++ {
+		for j := 0; j < dim; j++ {
+			binary.Write(&buf, binary.LittleEndian, vecs[i*dim+j])
+		}
+	}
+	for i := 0; i < nIndexed; i++ {
+		id := fmt.Sprintf("bench-g4r-%06d", i)
+		binary.Write(&buf, binary.LittleEndian, uint16(len(id)))
+		buf.WriteString(id)
+	}
+
+	t0 := time.Now()
+	req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest request: %v\n", err)
+		os.Exit(1)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		fmt.Fprintf(os.Stderr, "ingest HTTP %d: %s\n", resp.StatusCode, string(body))
+		os.Exit(1)
+	}
+	ingestMs := time.Since(t0).Seconds() * 1000
+	fmt.Fprintf(os.Stderr, "[G4-raw http] ingest done (%.1f ms)\n", ingestMs)
+
+	// Register the warm segment with object IDs
+	registerURL := *serverURL + "/v1/internal/rpc/register_warm"
+	regIDs := make([]string, nIndexed)
+	for i := 0; i < nIndexed; i++ {
+		regIDs[i] = fmt.Sprintf("bench-g4r-%06d", i)
+	}
+	regBody, _ := json.Marshal(map[string]any{"segment_id": segID, "object_ids": regIDs})
+	regReq, _ := http.NewRequest("POST", registerURL, bytes.NewReader(regBody))
+	regReq.Header.Set("Content-Type", "application/json")
+	regResp, _ := client.Do(regReq)
+	if regResp != nil {
+		regResp.Body.Close()
+	}
+
+	// SearchWarmSegmentBatch uses SearchRaw internally
+	batchSz := *batchSize
+	if batchSz <= 0 {
+		batchSz = 1000
+	}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        batchSz,
+			MaxIdleConnsPerHost: batchSz,
+			IdleConnTimeout:     120 * time.Second,
+			DisableKeepAlives:   false,
+		},
+		Timeout: 30 * time.Second,
+	}
+
+	// ── Batch query via SearchWarmSegmentBatchRaw (SearchRaw path) ─────────────
+	batchStart := time.Now()
+	allIntIDs := make([]int64, 0, nq*(*topk))
+	for batchStartIdx := 0; batchStartIdx < nq; batchStartIdx += batchSz {
+		batchEnd := batchStartIdx + batchSz
+		if batchEnd > nq {
+			batchEnd = nq
+		}
+		batchNQ := batchEnd - batchStartIdx
+
+		var qbuf bytes.Buffer
+		qbuf.Write([]byte("PLQB"))
+		qbuf.WriteByte(1)
+		binary.Write(&qbuf, binary.LittleEndian, uint16(len(segID)))
+		qbuf.WriteString(segID)
+		binary.Write(&qbuf, binary.LittleEndian, uint32(*topk))
+		binary.Write(&qbuf, binary.LittleEndian, uint32(batchNQ))
+		binary.Write(&qbuf, binary.LittleEndian, uint32(dim))
+		for i := batchStartIdx; i < batchEnd; i++ {
+			for j := 0; j < dim; j++ {
+				binary.Write(&qbuf, binary.LittleEndian, flatQueries[i*dim+j])
+			}
+		}
+
+		qStart := time.Now()
+		qreq, _ := http.NewRequest("POST",
+			*serverURL+"/v1/internal/rpc/query_warm_batch_raw",
+			bytes.NewReader(qbuf.Bytes()))
+		qreq.Header.Set("Content-Type", "application/octet-stream")
+		qresp, err := httpClient.Do(qreq)
+		qElapsed := time.Since(qStart).Seconds() * 1000
+
+		if err != nil || qresp.StatusCode != http.StatusOK {
+			if qresp != nil {
+				qresp.Body.Close()
+			}
+			continue
+		}
+
+		body, _ := io.ReadAll(qresp.Body)
+		qresp.Body.Close()
+
+		if len(body) >= 8 {
+			for i := 0; i < batchNQ*(*topk); i++ {
+				id := int64(binary.LittleEndian.Uint64(body[8+i*8 : 8+i*8+8]))
+				allIntIDs = append(allIntIDs, id)
+			}
+		}
+		_ = qElapsed
+	}
+
+	batchMs := time.Since(batchStart).Seconds() * 1000
+
+	// Serial: nq individual calls (for S-QPS reference, not a real HTTP path)
+	serialMs := 0.0
+	for i := 0; i < nq; i++ {
+		start := time.Now()
+		var qbuf bytes.Buffer
+		qbuf.Write([]byte("PLQB"))
+		qbuf.WriteByte(1)
+		binary.Write(&qbuf, binary.LittleEndian, uint16(len(segID)))
+		qbuf.WriteString(segID)
+		binary.Write(&qbuf, binary.LittleEndian, uint32(*topk))
+		binary.Write(&qbuf, binary.LittleEndian, uint32(1))
+		binary.Write(&qbuf, binary.LittleEndian, uint32(dim))
+		for j := 0; j < dim; j++ {
+			binary.Write(&qbuf, binary.LittleEndian, flatQueries[i*dim+j])
+		}
+		qreq, _ := http.NewRequest("POST",
+			*serverURL+"/v1/internal/rpc/query_warm_batch",
+			bytes.NewReader(qbuf.Bytes()))
+		qreq.Header.Set("Content-Type", "application/octet-stream")
+		qresp, _ := httpClient.Do(qreq)
+		if qresp != nil {
+			qresp.Body.Close()
+		}
+		serialMs += time.Since(start).Seconds() * 1000
+	}
+	serialQPS := float64(nq) / (serialMs / 1000.0)
+
+	latencies := make([]float64, nq)
+	for i := 0; i < nq; i++ {
+		latencies[i] = serialMs / float64(nq)
+	}
+	sortedL := make([]float64, len(latencies))
+	copy(sortedL, latencies)
+	sort.Float64s(sortedL)
+	p50 := percentile(sortedL, 0.50)
+	p95 := percentile(sortedL, 0.95)
+	p99 := percentile(sortedL, 0.99)
+	mean := 0.0
+	for _, l := range latencies {
+		mean += l
+	}
+	if nq > 0 {
+		mean /= float64(nq)
+	}
+
+	result := BenchResult{
+		Mode:      "G4_HTTP_raw",
+		NIndexed:  nIndexed,
+		NQueries:  nq,
+		TopK:      *topk,
+		Dim:       dim,
+		BuildMs:   ingestMs,
+		BatchMs:   batchMs,
+		BatchQPS:  float64(nq) / (batchMs / 1000.0),
+		SerialMs:  serialMs,
+		SerialQPS: serialQPS,
+		MeanMs:    mean,
+		P50Ms:     p50,
+		P95Ms:     p95,
+		P99Ms:     p99,
+		Errors:    0,
 		IntIDs:    allIntIDs,
 	}
 	json.NewEncoder(os.Stdout).Encode(result)

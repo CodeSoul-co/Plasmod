@@ -140,6 +140,17 @@ int plasmod_segment_search(const char* segment_id, const float* query,
         segment_id, query, nq, topk, out_ids, out_dists);
 }
 
+// plasmod_segment_search_raw — standard Knowhere Index::Search path
+// (no OpenMP parallel for, no HnswFastSearchFloat hot-path plugin).
+// Used as the "standard" Knowhere batch baseline for fair comparison.
+int plasmod_segment_search_raw(const char* segment_id, const float* query,
+                               int64_t nq, int topk,
+                               int64_t* out_ids, float* out_dists) {
+    if (!segment_id || !query || nq <= 0 || topk <= 0) return -2;
+    return plasmod::SegmentIndexManager::Instance().SearchRaw(
+        segment_id, query, nq, topk, out_ids, out_dists);
+}
+
 int plasmod_segment_search_filter(const char* segment_id, const float* query,
                                int64_t nq, int topk,
                                const uint8_t* allow_bits, int64_t allow_count,

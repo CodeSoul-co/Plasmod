@@ -16,9 +16,11 @@ import (
 // layer.  Defining it as an interface here avoids an import cycle.
 type RuntimeAPI interface {
 	IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error)
+	UnloadWarmSegment(segmentID string) error
 	SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error)
 	RegisterWarmSegment(segmentID string, objectIDs []string) error
 	SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error)
+	SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error)
 }
 
 // Server hosts the binary and streaming transport endpoints that complement
@@ -39,14 +41,19 @@ func NewServer(runtime RuntimeAPI, wal eventbackbone.WAL, bus eventbackbone.Bus)
 // Endpoints:
 //
 //	POST /v1/internal/rpc/ingest_batch      (binary, application/octet-stream)
+//
+//	POST /v1/internal/rpc/unload_segment   (JSON, {segment_id: string})
 //	POST /v1/internal/rpc/query_warm          (binary, application/octet-stream)
 //	POST /v1/internal/rpc/query_warm_batch    (binary, application/octet-stream)
+//	POST /v1/internal/rpc/query_warm_batch_raw (binary, application/octet-stream, no plugin)
 //	POST /v1/internal/rpc/register_warm      (JSON, convenience)
 //	GET  /v1/wal/stream                       (SSE, text/event-stream)
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/rpc/ingest_batch", s.handleIngestBatch)
+	mux.HandleFunc("/v1/internal/rpc/unload_segment", s.handleUnloadSegment)
 	mux.HandleFunc("/v1/internal/rpc/query_warm", s.handleQueryWarm)
 	mux.HandleFunc("/v1/internal/rpc/query_warm_batch", s.handleQueryWarmBatch)
+	mux.HandleFunc("/v1/internal/rpc/query_warm_batch_raw", s.handleQueryWarmBatchRaw)
 	mux.HandleFunc("/v1/internal/rpc/register_warm", s.handleRegisterWarm)
 	mux.HandleFunc("/v1/wal/stream", s.handleWALStream)
 }
@@ -149,6 +156,65 @@ func (s *Server) handleQueryWarmBatch(w http.ResponseWriter, r *http.Request) {
 		IDs:   ids,
 		Dists: dists,
 	})
+}
+
+func (s *Server) handleQueryWarmBatchRaw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	defer r.Body.Close()
+	req, err := DecodeQueryWarmBatch(r.Body)
+	if err != nil {
+		http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.SegmentID) == "" {
+		http.Error(w, "segment_id required", http.StatusBadRequest)
+		return
+	}
+	if req.NQ <= 0 || req.TopK <= 0 {
+		http.Error(w, "nq and topk must be positive", http.StatusBadRequest)
+		return
+	}
+	ids, dists, err := s.runtime.SearchWarmSegmentBatchRaw(req.SegmentID, req.NQ, req.TopK, req.Queries)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	EncodeQueryWarmBatchResponse(w, &QueryWarmBatchResponse{
+		NQ:    req.NQ,
+		TopK:  req.TopK,
+		IDs:   ids,
+		Dists: dists,
+	})
+}
+
+func (s *Server) handleUnloadSegment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	defer r.Body.Close()
+	type body struct {
+		SegmentID string `json:"segment_id"`
+	}
+	var req body
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.SegmentID == "" {
+		http.Error(w, "segment_id required", http.StatusBadRequest)
+		return
+	}
+	if err := s.runtime.UnloadWarmSegment(req.SegmentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "segment_id": req.SegmentID})
 }
 
 func (s *Server) handleRegisterWarm(w http.ResponseWriter, r *http.Request) {
