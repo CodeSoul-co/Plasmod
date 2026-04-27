@@ -38,6 +38,22 @@ using Future = std::future<T>;
 // folly::Unit equivalent — used as Future<Unit> for fire-and-forget tasks
 struct Unit {};
 
+}  // namespace knowhere
+
+// ── folly compat shim ──────────────────────────────────────────────────────
+// Upstream DiskANN sources use `folly::Future<folly::Unit>` verbatim and
+// only #include "knowhere/comp/thread_pool.h" to get their definitions.
+// We don't vendor folly itself, so alias the names to our std-future-based
+// types here. This keeps the DiskANN sources unmodified and makes any future
+// folly-typed Knowhere code transparent to compile.
+namespace folly {
+template <typename T>
+using Future = std::future<T>;
+using Unit   = ::knowhere::Unit;
+}  // namespace folly
+
+namespace knowhere {
+
 // ── Task queue (FIFO or LIFO, lock-based) ─────────────────────────────────
 class TaskQueue {
 public:

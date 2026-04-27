@@ -33,13 +33,22 @@ struct LogStream {
     std::ostringstream oss;
     LogStream(int s,const char*f,int l):sev(s),file(f),line(l){}
     template<typename T> LogStream& operator<<(const T& v){oss<<v;return *this;}
+    // Overloads for stream manipulators (std::endl, std::flush, std::ends).
+    // These are function templates that can't be deduced through the
+    // generic operator<<(const T&) above, so we accept them explicitly.
+    LogStream& operator<<(std::ostream& (*manip)(std::ostream&)) { oss << manip; return *this; }
+    LogStream& operator<<(std::ios_base& (*manip)(std::ios_base&)) { oss << manip; return *this; }
     ~LogStream(){
         static const char* lbl[]={"INFO","WARNING","ERROR","FATAL"};
         std::fprintf(stderr,"[%s %s:%d] %s\n",lbl[sev<4?sev:2],file,line,oss.str().c_str());
         if(sev==3)std::abort();
     }
 };
-struct NullStream{ template<typename T> NullStream& operator<<(const T&){return *this;} };
+struct NullStream{
+    template<typename T> NullStream& operator<<(const T&){return *this;}
+    NullStream& operator<<(std::ostream& (*)(std::ostream&)) { return *this; }
+    NullStream& operator<<(std::ios_base& (*)(std::ios_base&)) { return *this; }
+};
 }
 #define _KW_LOG(sev) andb_log_detail::LogStream(sev,__FILE__,__LINE__)
 #define LOG(sev)     _KW_LOG(sev)

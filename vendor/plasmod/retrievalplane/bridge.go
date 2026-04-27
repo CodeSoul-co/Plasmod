@@ -4,10 +4,10 @@
 // bridge.go — CGO bridge to libplasmod_retrieval (Knowhere HNSW).
 //
 // Build: go build -tags retrieval ./...
-// Requires: make cpp (builds cpp/build/libplasmod_retrieval.dylib)
+// Requires: make cpp-with-knowhere (builds cpp/build/libplasmod_retrieval.dylib)
 //
 // This file provides the real implementations of Retriever and SegmentRetriever
-// by calling the extern "C" functions in cpp/include/plasmod/retrieval.h via CGO.
+// by calling the extern "C" functions in cpp/include/plasmod/plasmod_c_api.h via CGO.
 // The stub file (bridge_stub.go) is used for non-CGO builds.
 
 package retrievalplane
@@ -50,26 +50,71 @@ func NewRetriever(dim, m, efConstr, rrfK, _ int) (*Retriever, error) {
 }
 
 // NewRetrieverWithMetric creates a Retriever with configurable distance metric.
-// Supported metrics: "IP" (inner product), "L2" (Euclidean), "COSINE"
+// Supported metrics: "IP" (inner product), "L2" (Euclidean), "COSINE".
+// Index type defaults to "HNSW".
 func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriever, error) {
+	return NewRetrieverWithIndexType(dim, "HNSW", metric)
+}
+
+// Supported dense index types exposed by the C++ retrieval library.
+// Build-time gates:
+//   - HNSW     : always available (knowhere_hnsw, MIT)
+//   - IVF_FLAT : ANDB_KNOWHERE_FAISS=ON (faiss IVF, needs OpenBLAS)
+//   - DISKANN  : ANDB_KNOWHERE_DISKANN=ON (Microsoft DiskANN, needs
+//                OpenBLAS + libaio on Linux)
+const (
+	IndexHNSW    = "HNSW"
+	IndexIVFFlat = "IVF_FLAT"
+	IndexDISKANN = "DISKANN"
+)
+
+// NewRetrieverWithIndexType creates a Retriever for the given (indexType,
+// metric) pair. indexType must be one of:
+//   - "HNSW"     : in-memory HNSW (always available)
+//   - "IVF_FLAT" : faiss IVF clustering (build with ANDB_KNOWHERE_FAISS=ON)
+//   - "DISKANN"  : disk-resident DiskANN (build with ANDB_KNOWHERE_DISKANN=ON)
+// An empty string defaults to "HNSW". metric defaults to "IP".
+//
+// IVF-specific tuning parameters (nlist, nprobe) currently use the C++
+// defaults (nlist=128, nprobe=8). Expose them through this Go API only when
+// a future call site needs to override them. DISKANN parameters are taken
+// from the Knowhere defaults (search_list, max_degree).
+//
+// Returns an error if the requested backend was not compiled into the
+// shared library; callers may detect this and fall back to HNSW.
+func NewRetrieverWithIndexType(dim int, indexType, metric string) (*Retriever, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("NewRetrieverWithIndexType: dim must be > 0")
+	}
+	if indexType == "" {
+		indexType = IndexHNSW
+	}
 	if metric == "" {
 		metric = "IP"
 	}
+
 	ptr := C.plasmod_retriever_create()
 	if ptr == nil {
-		return nil, fmt.Errorf("andb_retriever_create: returned nil")
+		return nil, fmt.Errorf("plasmod_retriever_create: returned nil")
 	}
+	cIdx := C.CString(indexType)
+	defer C.free(unsafe.Pointer(cIdx))
+	cMetric := C.CString(metric)
+	defer C.free(unsafe.Pointer(cMetric))
+	cReserved := C.CString("SPARSE_INVERTED_INDEX")
+	defer C.free(unsafe.Pointer(cReserved))
+
 	rc := C.plasmod_retriever_init(
 		ptr,
-		C.CString("HNSW"),
-		C.CString(metric),
+		cIdx,
+		cMetric,
 		C.int(dim),
-		C.CString("SPARSE_INVERTED_INDEX"),
+		cReserved,
 		C.int(60),
 	)
 	if rc == 0 {
 		C.plasmod_retriever_destroy(ptr)
-		return nil, fmt.Errorf("andb_retriever_init: failed (rc=%d)", rc)
+		return nil, fmt.Errorf("plasmod_retriever_init(%s,%s): failed", indexType, metric)
 	}
 	return &Retriever{ptr: ptr, dim: dim}, nil
 }

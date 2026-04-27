@@ -14,18 +14,21 @@ const defaultRRFK = 60
 
 // SegmentDataPlane is the first-party retrieval execution module used by ANDB.
 //
-// Primary search path: pure vector search via CGO Knowhere/HNSW (VectorStore).
-// When the CGO library is unavailable, unavailable, or not yet built,
-// Search falls back to pure lexical search (segmentstore.Index) transparently.
-// RRF fusion (lexical + vector) is NOT performed — they are mutually exclusive
-// modes, not complementary.
+// Primary search path: hybrid retrieval combining
+//   - lexical (segmentstore.Index, pure-Go string match)
+//   - dense vectors via CGO Knowhere/HNSW (VectorStore)
+//   - sparse / BM25-style via CGO Knowhere SPARSE_INVERTED_INDEX (SparseStore)
+// Results from each ready channel are fused with Reciprocal Rank Fusion.
+// When CGO is unavailable or the index has not been built yet, the absent
+// channels are simply skipped — Search degrades gracefully and never fails.
 type SegmentDataPlane struct {
-	index    *segmentstore.Index
-	vecStore *VectorStore
-	embedder EmbeddingGenerator
-	rrfK     int
-	segMu    sync.RWMutex
-	segments map[string][]string
+	index       *segmentstore.Index
+	vecStore    *VectorStore
+	sparseStore *SparseStore
+	embedder    EmbeddingGenerator
+	rrfK        int
+	segMu       sync.RWMutex
+	segments    map[string][]string
 }
 
 // NewSegmentDataPlane creates a SegmentDataPlane that performs only lexical search.
@@ -35,10 +38,15 @@ func NewSegmentDataPlane() *SegmentDataPlane {
 }
 
 func NewSegmentDataPlaneWithConfig(cfg schemas.AlgorithmConfig) *SegmentDataPlane {
+	// SparseStore is text-only and needs no embedder, so we always attempt
+	// to construct it; Ready()=false will keep it out of fusion when the
+	// CGO library is unavailable.
+	sparseStore, _ := NewSparseStore(SparseStoreConfig{})
 	return &SegmentDataPlane{
-		index: segmentstore.NewIndex(),
-		rrfK:  normalizeRRFK(cfg),
-		segments: map[string][]string{},
+		index:       segmentstore.NewIndex(),
+		sparseStore: sparseStore,
+		rrfK:        normalizeRRFK(cfg),
+		segments:    map[string][]string{},
 	}
 }
 
@@ -61,12 +69,14 @@ func NewSegmentDataPlaneWithEmbedderAndConfig(embedder EmbeddingGenerator, cfg s
 	if err != nil {
 		return nil, err
 	}
+	sparseStore, _ := NewSparseStore(SparseStoreConfig{})
 	return &SegmentDataPlane{
-		index:    segmentstore.NewIndex(),
-		vecStore: vecStore,
-		embedder: embedder,
-		rrfK:     normalizeRRFK(cfg),
-		segments: map[string][]string{},
+		index:       segmentstore.NewIndex(),
+		vecStore:    vecStore,
+		sparseStore: sparseStore,
+		embedder:    embedder,
+		rrfK:        normalizeRRFK(cfg),
+		segments:    map[string][]string{},
 	}, nil
 }
 
@@ -74,7 +84,7 @@ type errEmbedderNil struct{}
 
 func (e *errEmbedderNil) Error() string { return "embedder is nil" }
 
-// Flush builds the vector index from accumulated embeddings.
+// Flush builds the vector and sparse indexes from accumulated documents.
 // Also resets IDF counters so the next ingest batch starts fresh.
 func (p *SegmentDataPlane) Flush() error {
 	if p.vecStore != nil && p.embedder != nil {
@@ -83,6 +93,11 @@ func (p *SegmentDataPlane) Flush() error {
 		}
 		_ = p.prebuildDefaultWarmSegment()
 		p.embedder.Reset()
+	}
+	if p.sparseStore != nil {
+		if err := p.sparseStore.Build(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -127,6 +142,9 @@ func (p *SegmentDataPlane) Ingest(record IngestRecord) error {
 			p.vecStore.AddText(record.ObjectID, record.Text)
 		}
 	}
+	if p.sparseStore != nil {
+		p.sparseStore.AddText(record.ObjectID, record.Text)
+	}
 	return nil
 }
 
@@ -144,26 +162,31 @@ func (p *SegmentDataPlane) BatchIngest(records []IngestRecord) error {
 		p.index.InsertObject(records[i].ObjectID, records[i].Text, records[i].Attributes, records[i].Namespace, records[i].EventUnixTS)
 	}
 
-	if p.vecStore == nil || p.embedder == nil {
-		return nil
-	}
-
 	ids := make([]string, len(records))
 	texts := make([]string, len(records))
 	for i, r := range records {
 		ids[i] = r.ObjectID
 		texts[i] = r.Text
 	}
-	p.vecStore.AddTexts(ids, texts)
+	if p.vecStore != nil && p.embedder != nil {
+		p.vecStore.AddTexts(ids, texts)
+	}
+	if p.sparseStore != nil {
+		p.sparseStore.AddTexts(ids, texts)
+	}
 	return nil
 }
 
-// Search is the primary retrieval entry point.
+// Search is the primary retrieval entry point. It runs three independent
+// recall channels and fuses the ranked candidate lists with Reciprocal Rank
+// Fusion (RRF):
 //
-//   - Vector mode (CGO Knowhere/HNSW): used when vecStore is ready.
-//     Embeds QueryText via TfidfEmbedder → VectorStore.Search → CGO retriever.
-//   - Lexical fallback mode: used when vecStore is unavailable, not yet built,
-//     or the embedder fails. Pure string match via segmentstore.Index.
+//   - lexical: always-available pure-string match via segmentstore.Index
+//   - dense  : CGO Knowhere/HNSW when vecStore is ready and embedder is set
+//   - sparse : CGO Knowhere SPARSE_INVERTED_INDEX when sparseStore is ready
+//
+// Channels that are not ready (CGO unavailable, no docs, no embedder, etc.)
+// are silently skipped, and Tier reflects the channels that contributed.
 func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
 	// ── Lexical search (always available) ─────────────────────────────────────
 	lexResult := p.index.Search(segmentstore.SearchRequest{
@@ -187,7 +210,7 @@ func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
 		Tier:            "lexical",
 	}
 
-	// ── Vector search (optional) ──────────────────────────────────────────────
+	// ── Dense vector search (optional) ────────────────────────────────────────
 	vecIDs := []string{}
 	if p.vecStore != nil && p.vecStore.Ready() {
 		var queryVec []float32
@@ -209,29 +232,97 @@ func (p *SegmentDataPlane) Search(input SearchInput) SearchOutput {
 		}
 	}
 
-	// No vector results → lexical only
-	if len(vecIDs) == 0 {
-		return lexOut
-	}
-
-	// No lexical results → vector only
-	if len(lexIDs) == 0 {
-		return SearchOutput{
-			ObjectIDs:       vecIDs,
-			ScannedSegments: lexOut.ScannedSegments,
-			PlannedSegments: lexOut.PlannedSegments,
-			Tier:            "vector",
+	// ── Sparse / BM25-style search (optional) ─────────────────────────────────
+	sparseIDs := []string{}
+	if p.sparseStore != nil && p.sparseStore.Ready() {
+		if ids, _, err := p.sparseStore.Search(input.QueryText, input.TopK); err == nil && len(ids) > 0 {
+			sparseIDs = ids
 		}
 	}
 
-	// Hybrid fusion via RRF
-	fused := fuseRRF(lexIDs, vecIDs, p.rrfK, input.TopK)
+	// ── Fusion ────────────────────────────────────────────────────────────────
+	// Collect every channel that returned at least one hit.
+	type chanList struct {
+		name string
+		ids  []string
+	}
+	chans := []chanList{}
+	if len(lexIDs) > 0 {
+		chans = append(chans, chanList{"lexical", lexIDs})
+	}
+	if len(vecIDs) > 0 {
+		chans = append(chans, chanList{"vector", vecIDs})
+	}
+	if len(sparseIDs) > 0 {
+		chans = append(chans, chanList{"sparse", sparseIDs})
+	}
+
+	// Nothing matched anywhere → return empty (preserve trace metadata).
+	if len(chans) == 0 {
+		return lexOut
+	}
+
+	// Single channel → return as-is, label the tier with that channel.
+	if len(chans) == 1 {
+		return SearchOutput{
+			ObjectIDs:       chans[0].ids,
+			ScannedSegments: lexOut.ScannedSegments,
+			PlannedSegments: lexOut.PlannedSegments,
+			Tier:            chans[0].name,
+		}
+	}
+
+	// Multi-channel → RRF fusion across all participating channels.
+	lists := make([][]string, 0, len(chans))
+	names := make([]string, 0, len(chans))
+	for _, c := range chans {
+		lists = append(lists, c.ids)
+		names = append(names, c.name)
+	}
+	fused := fuseRRFN(lists, p.rrfK, input.TopK)
 	return SearchOutput{
 		ObjectIDs:       fused,
 		ScannedSegments: lexOut.ScannedSegments,
 		PlannedSegments: lexOut.PlannedSegments,
-		Tier:            "lexical+vector",
+		Tier:            joinChannels(names),
 	}
+}
+
+// joinChannels formats the list of contributing channels into a stable
+// "a+b+c" tier label (e.g. "lexical+vector+sparse").
+func joinChannels(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	out := names[0]
+	for _, n := range names[1:] {
+		out += "+" + n
+	}
+	return out
+}
+
+// fuseRRFN generalises fuseRRF to N ranked lists.
+func fuseRRFN(lists [][]string, k int, topK int) []string {
+	if k <= 0 {
+		k = defaultRRFK
+	}
+	scores := map[string]float64{}
+	seenOrder := make([]string, 0)
+	for _, ids := range lists {
+		for rank, id := range ids {
+			if _, ok := scores[id]; !ok {
+				seenOrder = append(seenOrder, id)
+			}
+			scores[id] += 1.0 / float64(k+rank+1)
+		}
+	}
+	sort.SliceStable(seenOrder, func(i, j int) bool {
+		return scores[seenOrder[i]] > scores[seenOrder[j]]
+	})
+	if topK > 0 && len(seenOrder) > topK {
+		return seenOrder[:topK]
+	}
+	return seenOrder
 }
 
 func (p *SegmentDataPlane) plannedSegments(metas []segmentstore.ShardMeta) []SegmentTrace {
@@ -278,8 +369,10 @@ func fuseRRF(lexIDs, vecIDs []string, k int, topK int) []string {
 	return seenOrder
 }
 
-// SetEmbedder enables vector search using the provided embedder.
-// Call before ingesting records; Flush is needed before Search.
+// SetEmbedder enables dense vector search using the provided embedder.
+// Call before ingesting records; Flush is needed before Search. Sparse
+// search is unaffected by this call (it indexes raw text and is enabled
+// independently of the embedder).
 func (p *SegmentDataPlane) SetEmbedder(embedder EmbeddingGenerator) error {
 	if embedder == nil {
 		p.vecStore = nil
