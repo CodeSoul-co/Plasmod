@@ -92,6 +92,6 @@ Zep_in_Plasmod.md
 .andb_data/
 import_dataset.py
 
-# Top-level build artifacts from local experiments
-/benchmark
-/server
+# Local benchmark workspace (knowhere-vs-faiss comparison)
+TEST/
+cpp/build-docker/

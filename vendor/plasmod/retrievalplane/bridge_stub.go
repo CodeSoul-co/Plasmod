@@ -30,6 +30,18 @@ func NewRetrieverWithMetric(dim, _, _, _ int, _ string) (*Retriever, error) {
 	return &Retriever{dim: dim}, nil
 }
 
+// Supported dense index types (mirrored from the CGO build for API parity).
+const (
+	IndexHNSW    = "HNSW"
+	IndexIVFFlat = "IVF_FLAT"
+	IndexDISKANN = "DISKANN"
+)
+
+// NewRetrieverWithIndexType is a stub that records dim and ignores indexType/metric.
+func NewRetrieverWithIndexType(dim int, _ string, _ string) (*Retriever, error) {
+	return &Retriever{dim: dim}, nil
+}
+
 // Build is a no-op on the stub retriever.
 func (r *Retriever) Build(_ []float32, _ int) error { return nil }
 
