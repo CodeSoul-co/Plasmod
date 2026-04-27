@@ -95,9 +95,13 @@ struct IndexConfig {
     int32_t hnsw_ef_construction = 200;
     int32_t hnsw_ef_search = 100;
     
-    // IVF specific
+    // IVF specific.
+    // nprobe=32 is a Pareto-balanced default validated by the IVF sweep
+    // bench: vs the old nprobe=8 it lifts recall@10 from 0.67 → 0.82 on the
+    // testQuery10K.fbin self-query set, at the cost of QPS 487→331.  Use
+    // plasmod_retriever_init_ivf() to override per-call.
     int32_t ivf_nlist = 128;
-    int32_t ivf_nprobe = 8;
+    int32_t ivf_nprobe = 32;
 
     // DiskANN specific.
     //   diskann_index_prefix : on-disk path prefix where DiskANN will write
