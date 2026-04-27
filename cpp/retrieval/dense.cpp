@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <shared_mutex>
@@ -96,27 +97,56 @@ class HNSWIndexWrapper {
         cfg_ = cfg;
         if (cfg_.dim <= 0) return false;
 
-        int M   = cfg_.hnsw_m > 0 ? cfg_.hnsw_m : kDefaultM;
-        int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
+// Resolve index type. Empty string defaults to HNSW for backward
+        // compatibility with the historical "plasmod_retriever_init(HNSW, ...)"
+        // invocation pattern.
+        index_type_ = cfg_.index_type.empty() ? std::string("HNSW") : cfg_.index_type;
+
+        // Common configuration shared by HNSW / IVF_FLAT.
         std::string metric = cfg_.metric_type.empty() ? "IP" : cfg_.metric_type;
+        build_cfg_[knowhere::meta::METRIC_TYPE] = metric;
+        build_cfg_[knowhere::meta::DIM]         = cfg_.dim;
+        build_cfg_[knowhere::meta::TOPK]        = kDefaultEfSearch;
 
-        // build_cfg_: written once at Build time
-        build_cfg_[knowhere::meta::METRIC_TYPE]          = metric;
-        build_cfg_[knowhere::indexparam::HNSW_M]         = M;
-        build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
-        build_cfg_[knowhere::meta::DIM]                  = cfg_.dim;
-        build_cfg_[knowhere::meta::TOPK]                 = kDefaultEfSearch;
-
-        // search_cfg_: pre-allocated, fields updated in-place per Search() call.
-        // Copies metric/dim/M/efConstruction from build_cfg_ so they don't
-        // need to be re-assigned on every call.
-        search_cfg_[knowhere::meta::METRIC_TYPE]          = metric;
-        search_cfg_[knowhere::indexparam::HNSW_M]         = M;
-        search_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
-        search_cfg_[knowhere::meta::DIM]                  = cfg_.dim;
+        if (index_type_ == "HNSW") {
+            int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : kDefaultM;
+            int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
+            build_cfg_[knowhere::indexparam::M]             = M;
+            build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
+        } else if (index_type_ == "IVF_FLAT") {
+            // IVF clustering: NLIST = #coarse centroids built at index time;
+            // NPROBE = #lists probed at query time (set in Search()).
+            int nlist = cfg_.ivf_nlist > 0 ? cfg_.ivf_nlist : 128;
+            build_cfg_[knowhere::indexparam::NLIST] = nlist;
+        } else if (index_type_ == "DISKANN") {
+            // DiskANN's constructor asserts that the Object parameter passed
+            // to IndexFactory.Create is a Pack<shared_ptr<FileManager>> —
+            // it owns the lifecycle of on-disk PQ shards, navigation graph,
+            // and metadata files.  Our flat plasmod_retriever_init() path
+            // doesn't yet plumb a FileManager through, so attempting to
+            // construct DISKANN via the default Create<float>(name, version)
+            // overload fires the C++ assert and SIGABRT.
+            //
+            // Return false here with a clear log line. A future change should
+            // expose a dedicated plasmod_retriever_init_diskann(...) C API
+            // that accepts an index_prefix path and constructs an embedded
+            // LocalFileManager, then call Create with the Pack object.
+            std::fprintf(stderr,
+                "plasmod: DISKANN backend compiled in but runtime wiring "
+                "is incomplete (FileManager not plumbed through). Use HNSW "
+                "or IVF_FLAT for now, or extend plasmod_retriever_init to "
+                "accept a DiskANN file-manager prefix.\n");
+            return false;
+        } else {
+            // Unknown index type — reject early with a clear log line.
+            std::fprintf(stderr,
+                "plasmod: unsupported dense index_type=%s (HNSW|IVF_FLAT|DISKANN)\n",
+                index_type_.c_str());
+            return false;
+        }
 
         auto result = knowhere::IndexFactory::Instance().Create<float>(
-            "HNSW", knowhere::Version::GetCurrentVersion().VersionNumber());
+            index_type_, knowhere::Version::GetCurrentVersion().VersionNumber());
         if (!result.has_value()) return false;
         index_ = std::make_unique<knowhere::Index<knowhere::IndexNode>>(
             std::move(result.value()));
@@ -153,21 +183,29 @@ class HNSWIndexWrapper {
         // exclusive lock above.
         std::shared_lock<std::shared_mutex> lk(mu_);
 
-        // Per-thread search config and DataSet — eliminates the per-call
+// Per-thread search config and DataSet — eliminates the per-call
         // Json deep copy and DataSet heap allocation.  Only the fields that
         // change per call (TOPK/EF, Rows/Dim/Tensor) are updated in place.
         thread_local knowhere::Json   tls_cfg;
         thread_local bool             tls_cfg_static_init = false;
         thread_local knowhere::DataSetPtr tls_qds;
         if (!tls_cfg_static_init) {
-            tls_cfg[knowhere::meta::METRIC_TYPE]          = build_cfg_[knowhere::meta::METRIC_TYPE];
-            tls_cfg[knowhere::indexparam::HNSW_M]         = build_cfg_[knowhere::indexparam::HNSW_M];
-            tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = build_cfg_[knowhere::indexparam::EFCONSTRUCTION];
+            // Build up the static portion of the search config.
+            tls_cfg[knowhere::meta::METRIC_TYPE] = build_cfg_[knowhere::meta::METRIC_TYPE];
+            if (index_type_ == "HNSW") {
+                tls_cfg[knowhere::indexparam::M]             = build_cfg_[knowhere::indexparam::M];
+                tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = build_cfg_[knowhere::indexparam::EFCONSTRUCTION];
+            }
             tls_cfg_static_init = true;
         }
         tls_cfg[knowhere::meta::DIM]          = dim_;
         tls_cfg[knowhere::meta::TOPK]         = topk;
-        tls_cfg[knowhere::indexparam::EF]     = std::max(topk * 2, kDefaultEfSearch);
+        if (index_type_ == "HNSW") {
+            tls_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kDefaultEfSearch);
+        } else if (index_type_ == "IVF_FLAT") {
+            int nprobe = cfg_.ivf_nprobe > 0 ? cfg_.ivf_nprobe : 8;
+            tls_cfg[knowhere::indexparam::NPROBE] = nprobe;
+        }
 
         if (!tls_qds) {
             tls_qds = std::make_shared<knowhere::DataSet>();
@@ -198,10 +236,10 @@ class HNSWIndexWrapper {
 
   private:
     IndexConfig cfg_;
-    int         dim_          = 0;
-    int64_t     num_vectors_   = 0;
-    knowhere::Json  build_cfg_;   // written once at Build time
-    knowhere::Json  search_cfg_;  // legacy; per-thread tls_cfg is used in Search
+    std::string index_type_; // "HNSW" | "IVF_FLAT"
+    int         dim_         = 0;
+    int64_t     num_vectors_ = 0;
+    knowhere::Json  build_cfg_;
     std::unique_ptr<knowhere::Index<knowhere::IndexNode>> index_;
     mutable std::shared_mutex mu_;
 };
