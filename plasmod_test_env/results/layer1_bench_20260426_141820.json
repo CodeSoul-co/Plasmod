@@ -1,0 +1,32 @@
+{
+  "config": {
+    "nb_vectors": 10000,
+    "nquery": 500,
+    "dim": 384,
+    "topk": 10,
+    "seed": 20260419,
+    "concurrency": 16,
+    "plasmod_url": "http://127.0.0.1:8080"
+  },
+  "results": [
+    {
+      "group": "FAISS HNSW",
+      "build_ms": 599.7,
+      "recall": 0.54,
+      "qps": 20621.5,
+      "p50_ms": 0.212,
+      "p95_ms": 0.249,
+      "p99_ms": 0.29
+    },
+    {
+      "group": "Plasmod vector-only (fast path)",
+      "ingest_s": 3.71,
+      "qps": 60.8,
+      "avg_ms": 258.976,
+      "p50_ms": 259.283,
+      "p95_ms": 295.102,
+      "p99_ms": 299.652,
+      "ok_pct": 100.0
+    }
+  ]
+}

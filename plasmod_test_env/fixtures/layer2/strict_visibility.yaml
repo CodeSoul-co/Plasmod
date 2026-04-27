@@ -1,0 +1,54 @@
+# Layer 2: Event Stream - Strict Visibility Mode
+name: strict_visibility
+consistency_mode: strict_visible
+
+event_schema:
+  - event_id: string (UUID)
+  - session_id: string
+  - timestamp: float (Unix time)
+  - event_type: enum[observation, tool_result, summary, memory, artifact, relation]
+  - payload:
+      content: string
+      source: enum[user, agent, tool, system]
+      priority: enum[low, medium, high]
+  - embedding: float[] (optional, dim=100)
+  - triggers_state_update: boolean
+  - triggers_relation_update: boolean
+
+workload_config:
+  write_rate: [1, 10, 50, 100]  # events per second
+  payload_size_min: 100
+  payload_size_max: 1000
+  embedding_rate: 0.8
+  state_update_rate: 0.2
+  relation_update_rate: 0.1
+  duration_seconds: 10
+
+metrics:
+  - write_to_visible_latency_ms:
+      description: Time from write to visibility in queries
+      targets:
+        p50: < 50
+        p95: < 200
+        p99: < 500
+
+  - materialization_lag_ms:
+      description: Time for event to appear in materialized state view
+      targets:
+        max: < 100
+
+  - freshness_ratio:
+      description: Ratio of queries returning latest state
+      targets:
+        min: 0.95
+
+  - stale_result_rate:
+      description: Rate of queries returning outdated results
+      targets:
+        max: 0.05
+
+  - retrieval_latency_under_write:
+      description: Query latency during concurrent writes
+      targets:
+        p50: < 200
+        p95: < 1000

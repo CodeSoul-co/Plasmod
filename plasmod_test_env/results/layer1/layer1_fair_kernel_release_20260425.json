@@ -1,0 +1,48 @@
+{
+  "benchmark": "layer1_fair_kernel_direct",
+  "dataset": "/Users/erwin/Downloads/codespace/Plasmod/plasmod_test_env/data/testQuery10K.fbin",
+  "limit": 10000,
+  "num_queries": 1000,
+  "topk": 10,
+  "metric": "inner_product_on_l2_normalized_vectors",
+  "hnsw": {
+    "M": 16,
+    "efConstruction": 256,
+    "efSearch": 256
+  },
+  "groups": {
+    "kernel_direct": {
+      "description": "In-process ANN kernel comparison only. No HTTP, embedding, persistence, object graph, or policy.",
+      "results": {
+        "FAISS_HNSW_direct": {
+          "qps": 2076.916707818321,
+          "batch_qps": 21349.7869024394,
+          "batch_ms": 46.83887500000017,
+          "p50_ms": 0.3914580000001777,
+          "p95_ms": 0.7742920000000098,
+          "p99_ms": 1.128083000000224,
+          "mean_ms": 0.4814829580000062,
+          "build_ms": 866.7277499999997,
+          "recall_at_k": 0.9997,
+          "errors": 0
+        },
+        "Plasmod_Knowhere_direct": {
+          "qps": 1467.722901319443,
+          "batch_qps": 12020.29627025237,
+          "batch_ms": 83.19262499999968,
+          "p50_ms": 0.4817919999995368,
+          "p95_ms": 1.7269160000008554,
+          "p99_ms": 2.776792000000583,
+          "mean_ms": 0.6813275169999917,
+          "build_ms": 479.34500000000037,
+          "recall_at_k": 1.0,
+          "errors": 0
+        }
+      }
+    },
+    "system_e2e": {
+      "description": "Not measured by this script. Full-system results require a baseline with the same HTTP, embedding, storage, filtering, and persistence boundaries.",
+      "results": {}
+    }
+  }
+}
