@@ -95,3 +95,7 @@ import_dataset.py
 # Local benchmark workspace (knowhere-vs-faiss comparison)
 TEST/
 cpp/build-docker/
+
+# Local-only: bench binaries + exp-branch test harness
+/bin/
+/plasmod_test_env/

@@ -268,6 +268,18 @@ if(HAVE_OPENMP)
     endif()
 endif()
 
+# SIMD flags so hnswlib's space_ip.h / space_l2.h can call the
+# faiss::fvec_inner_product_avx512 / _avx variants directly (compile-time
+# dispatch) instead of going through the runtime-hooked function pointer
+# `faiss::fvec_inner_product`.  Indirect call is ~10 cycles per dispatch
+# and we make ~4000 distance calls per HNSW search at d=100, accounting
+# for ~40 µs/query of the gap vs the official knowhere build (which
+# already uses faiss's newer template dispatch).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(knowhere_hnsw PRIVATE
+        -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx2 -mfma -mf16c)
+endif()
+
 # ── Main shared library: knowhere ────────────────────────────────────────────
 set(KNOWHERE_ALL_OBJECTS
     $<TARGET_OBJECTS:knowhere_common>
@@ -366,19 +378,27 @@ endif()
 list(APPEND KNOWHERE_ALL_OBJECTS $<TARGET_OBJECTS:faiss_slim>)
 
 if(KNOWHERE_WITH_FAISS)
-    # Full IVF support (needs BLAS).
-    # faiss_hnsw.cc is intentionally NOT compiled: the upstream source uses
-    # folly::Future::getTry()/.hasValue() which is not available in our
-    # std::future-only vendored shim. We don't expose a "FAISS_HNSW" backend
-    # to Go callers (we use the dedicated knowhere_hnsw engine for HNSW), so
-    # dropping this file lets ANDB_KNOWHERE_FAISS=ON build cleanly while
-    # still registering IVF_FLAT/IVF_PQ/IVF_SQ8 with the IndexFactory.
+    # Full IVF + faiss-HNSW support (needs BLAS).
+    #
+    # faiss_hnsw.cc has been shimmed for our std::future-only ThreadPool
+    # (folly::Future::getTry()/.hasValue() replaced with try/catch around
+    # .get()).  Compiling it registers FAISS_HNSW_FLAT/SQ/PQ/PRQ with the
+    # IndexFactory.  FAISS_HNSW_FLAT is materially faster than the default
+    # hnswlib-based "HNSW" backend (~2× kernel speedup on amd64) because it
+    # uses faiss's heavily SIMD-optimised distance kernels and a per-thread
+    # VisitedTable instead of hnswlib's pool-acquire model.
     set(KNOWHERE_FAISS_SRCS
         ${KW_ROOT}/src/index/ivf/ivf.cc
+        ${KW_ROOT}/src/index/hnsw/faiss_hnsw.cc
     )
     add_library(knowhere_faiss_idx OBJECT ${KNOWHERE_FAISS_SRCS})
     target_include_directories(knowhere_faiss_idx PUBLIC
         ${KW_ROOT}/compat ${KW_ROOT}/include ${KW_ROOT}/engines/faiss_engine)
+    if(HAVE_OPENMP)
+        if(APPLE)
+            target_compile_options(knowhere_faiss_idx PRIVATE -Xpreprocessor -fopenmp)
+        endif()
+    endif()
     list(APPEND KNOWHERE_ALL_OBJECTS $<TARGET_OBJECTS:knowhere_faiss_idx>)
 endif()
 
