@@ -9,7 +9,6 @@
 // This file provides the real implementations of Retriever and SegmentRetriever
 // by calling the extern "C" functions in cpp/include/plasmod/plasmod_c_api.h via CGO.
 // The stub file (bridge_stub.go) is used for non-CGO builds.
-
 package retrievalplane
 
 /*
@@ -349,11 +348,72 @@ func (s *SegmentRetriever) RegisterWarmSegment(segmentID string, objectIDs []str
 	}
 
 	// Slice of pointers for passing to C
-	cIDPtrs := (*[200000]*C.char)(unsafe.Pointer(&cIDs[0]))
-
+	cIDPtrs := (**C.char)(unsafe.Pointer(&cIDs[0]))
 	rc := C.plasmod_segment_register_warm(cs, cIDPtrs, C.int64_t(len(objectIDs)))
 	if rc != 0 {
 		return fmt.Errorf("plasmod_segment_register_warm(%q, n=%d): rc=%d", segmentID, len(objectIDs), rc)
 	}
 	return nil
+}
+
+// ── FAISS HNSW baseline (plasmod_faiss_*) ──────────────────────────────────────
+
+// FaissHNSW is a thin wrapper around the FAISS HNSWFlat C API.
+// Used for kernel-level baseline comparison (same algorithm, same params as Knowhere).
+type FaissHNSW struct {
+	ptr unsafe.Pointer
+}
+
+// NewFaissHNSW creates a new FAISS HNSW handle.
+func NewFaissHNSW() *FaissHNSW {
+	return &FaissHNSW{ptr: C.plasmod_faiss_create()}
+}
+
+// Build builds the FAISS HNSW index from a flat float32 slice.
+// vectors must have length == n * dim. m/efConstruction default to 16/256.
+func (f *FaissHNSW) Build(vectors []float32, n, dim, m, efConstruction int) error {
+	if len(vectors) == 0 || n <= 0 || dim <= 0 {
+		return fmt.Errorf("FaissHNSW.Build: invalid args")
+	}
+	rc := C.plasmod_faiss_build(
+		f.ptr,
+		(*C.float)(unsafe.Pointer(&vectors[0])),
+		C.int64_t(n),
+		C.int(dim),
+		C.int(m),
+		C.int(efConstruction),
+	)
+	if rc != 0 {
+		return fmt.Errorf("plasmod_faiss_build: rc=%d", rc)
+	}
+	return nil
+}
+
+// Search performs ANN search and returns (ids[nq*topk], dists[nq*topk], error).
+func (f *FaissHNSW) Search(queries []float32, nq, topk int) ([]int64, []float32, error) {
+	if len(queries) == 0 || nq <= 0 || topk <= 0 {
+		return nil, nil, fmt.Errorf("FaissHNSW.Search: invalid args")
+	}
+	outIDs := make([]int64, nq*topk)
+	outDists := make([]float32, nq*topk)
+	rc := C.plasmod_faiss_search(
+		f.ptr,
+		(*C.float)(unsafe.Pointer(&queries[0])),
+		C.int64_t(nq),
+		C.int(topk),
+		(*C.int64_t)(unsafe.Pointer(&outIDs[0])),
+		(*C.float)(unsafe.Pointer(&outDists[0])),
+	)
+	if rc != 0 {
+		return nil, nil, fmt.Errorf("plasmod_faiss_search: rc=%d", rc)
+	}
+	return outIDs, outDists, nil
+}
+
+// Close destroys the underlying FAISS index.
+func (f *FaissHNSW) Close() {
+	if f.ptr != nil {
+		C.plasmod_faiss_destroy(f.ptr)
+		f.ptr = nil
+	}
 }

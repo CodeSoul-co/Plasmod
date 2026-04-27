@@ -354,9 +354,16 @@ ProofTrace stages observed:
 
 Run benchmarks:
 ```bash
-# HNSW direct retrieval (requires CGO + libandb_retrieval.dylib)
-CGO_LDFLAGS="-L$PWD/build -landb_retrieval -Wl,-rpath,$PWD/build -framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
-go test -tags retrieval -v -run TestVectorStore_Deep1B_Recall ./src/internal/dataplane
+# Build the C++ library first (requires cmake + Knowhere deps)
+make cpp
+
+# Build and run the retrieval benchmark
+make build-benchmark
+./plasmod_test_env/bin/benchmark --help
+
+# HNSW direct retrieval tests
+CGO_LDFLAGS="-L$(pwd)/cpp/build -lplasmod_retrieval -Wl,-rpath,$(pwd)/cpp/build" \
+  go test -tags retrieval -v -run TestVectorStore_Deep1B_Recall ./src/internal/dataplane
 
 # QueryChain E2E
 go test -v -run TestQueryChain_E2E_Latency ./src/internal/worker/
