@@ -183,6 +183,17 @@ int plasmod_sparse_text_to_vector(
 /* Persistence: save/load index to/from a file path. */
 int plasmod_sparse_save(void* sparse, const char* path);
 int plasmod_sparse_load(void* sparse, const char* path);
+
+/* ── FAISS HNSW baseline ──────────────────────────────────────────────────────
+ * Mirrors the SegmentIndexManager API but uses FAISS directly.
+ * Used for fair kernel-level baseline comparison (same algorithm, different lib).
+ * create/destroy return/accept handle; build/search return 0 on success, <0 on error. */
+void* plasmod_faiss_create(void);
+void  plasmod_faiss_destroy(void* handle);
+int   plasmod_faiss_build(void* handle, const float* vectors, int64_t n, int dim,
+                          int m, int ef_construction);
+int   plasmod_faiss_search(void* handle, const float* queries, int64_t nq,
+                           int topk, int64_t* out_ids, float* out_dists);
 #ifdef __cplusplus
 }
 #endif

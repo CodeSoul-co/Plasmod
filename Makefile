@@ -1,4 +1,4 @@
-.PHONY: dev build test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
+.PHONY: dev build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -34,6 +34,9 @@ dev:
 
 build:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/plasmod ./src/cmd/server'
+
+build-benchmark:
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o plasmod_test_env/bin/benchmark ./src/cmd/benchmark'
 
 cpp:
 	cmake -S cpp -B cpp/build && cmake --build cpp/build --parallel $(shell nproc)
