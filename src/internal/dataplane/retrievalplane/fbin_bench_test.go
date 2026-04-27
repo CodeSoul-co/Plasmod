@@ -457,7 +457,7 @@ func TestBenchFbinIVFLoop(t *testing.T) {
 
 	latMS := make([]float64, n)
 	hits := 0
-	t.Logf("running %d single-query searches (topK=%d, nprobe=8 default)...", n, topK)
+	t.Logf("running %d single-query searches (topK=%d, nprobe=32 default)...", n, topK)
 	t0 = time.Now()
 	for q := 0; q < n; q++ {
 		qv := vecs[q*dim : (q+1)*dim]
@@ -489,7 +489,7 @@ func TestBenchFbinIVFLoop(t *testing.T) {
 
 	fmt.Println("\n========== plasmod IVF_FLAT (LOOP) =================")
 	fmt.Printf("dataset      : TEST/testQuery10K.fbin (n=%d, dim=%d, self-query)\n", n, dim)
-	fmt.Printf("params       : nlist=128  nprobe=8  topK=%d  metric=L2 (C++ defaults)\n", topK)
+	fmt.Printf("params       : nlist=128  nprobe=32  topK=%d  metric=L2 (C++ defaults)\n", topK)
 	fmt.Printf("build_s      : %.3f\n", buildSec)
 	fmt.Printf("QPS          : %.1f\n", qps)
 	fmt.Printf("p50_ms       : %.4f\n", percentile(latMS, 50))
@@ -512,9 +512,174 @@ func TestBenchFbinIVFLoop(t *testing.T) {
 		"mean_ms":      round4(mean(latMS)),
 		"recall_at_10": round4(recall),
 		"params": map[string]any{
-			"index": "IVF_FLAT", "nlist": 128, "nprobe": 8,
+			"index": "IVF_FLAT", "nlist": 128, "nprobe": 32,
 			"nb": n, "nq": n, "dim": dim, "topK": topK, "metric": "L2",
 		},
+	}, "", "  ")
+	_ = os.WriteFile(out, bs, 0644)
+	fmt.Printf("output JSON  : %s\n", out)
+}
+
+// TestBenchFbinIVFSweep walks IVF_FLAT through (nlist, nprobe) combinations
+// and dumps a Pareto curve of QPS vs recall@10 to TEST/metrics_plasmod_ivf_sweep.json.
+//
+// Methodology: same single-query loop as the other LOOP benches, with one
+// short warm-up. Each row is a fresh (Init, Build) cycle so build_s can be
+// observed independently per (nlist, nprobe) combination.
+func TestBenchFbinIVFSweep(t *testing.T) {
+	const topK = 10
+	root, fbinPath := locateFbin(t)
+	t.Logf("data: %s", fbinPath)
+
+	vecs, n, dim, err := loadFbin(fbinPath)
+	if err != nil {
+		t.Fatalf("loadFbin: %v", err)
+	}
+	t.Logf("loaded %d × %d", n, dim)
+	gt := bruteForceL2TopK(vecs, vecs, n, n, dim, topK)
+	t.Log("ground truth ready")
+
+	// Sweep grid: nlist around the rule-of-thumb 4*sqrt(N) ≈ 400, also
+	// classic sqrt(N) ≈ 100 and the previous default 128.
+	// nprobe ranges from "fast" (8) to "thorough" (128).
+	nlists  := []int{64, 128, 256, 512}
+	nprobes := []int{8, 16, 32, 64, 128}
+
+	type row struct {
+		Nlist     int     `json:"nlist"`
+		Nprobe    int     `json:"nprobe"`
+		BuildS    float64 `json:"build_s"`
+		QPS       float64 `json:"qps"`
+		P50ms     float64 `json:"p50_ms"`
+		P95ms     float64 `json:"p95_ms"`
+		P99ms     float64 `json:"p99_ms"`
+		MeanMs    float64 `json:"mean_ms"`
+		Recall10  float64 `json:"recall_at_10"`
+	}
+	rows := make([]row, 0, len(nlists)*len(nprobes))
+
+	for _, nl := range nlists {
+		// nprobe must be ≤ nlist, also clamp the upper end.
+		// Build the index once per nlist; rebuild only when nlist changes.
+		r, err := NewIVFRetriever(dim, "L2", nl, /*nprobe ignored: re-Init below*/8)
+		if err != nil {
+			t.Fatalf("NewIVFRetriever(nlist=%d): %v", nl, err)
+		}
+		t0 := time.Now()
+		if err := r.Build(vecs, n); err != nil {
+			r.Close()
+			t.Fatalf("Build(nlist=%d): %v", nl, err)
+		}
+		buildSec := time.Since(t0).Seconds()
+		t.Logf("nlist=%d build=%.3fs", nl, buildSec)
+
+		for _, np := range nprobes {
+			if np > nl {
+				continue
+			}
+			// Re-init with the new nprobe but reuse the same indexed data:
+			// since Knowhere reads nprobe from search-cfg per query, we
+			// destroy r and create a fresh one with the desired nprobe,
+			// rebuilding the index.  This isolates per-row build time too.
+			r.Close()
+			rr, err := NewIVFRetriever(dim, "L2", nl, np)
+			if err != nil {
+				t.Fatalf("NewIVFRetriever(nlist=%d nprobe=%d): %v", nl, np, err)
+			}
+			tb := time.Now()
+			if err := rr.Build(vecs, n); err != nil {
+				rr.Close()
+				t.Fatalf("Build(nlist=%d nprobe=%d): %v", nl, np, err)
+			}
+			rowBuild := time.Since(tb).Seconds()
+
+			// warm-up
+			for i := 0; i < 32; i++ {
+				_, _, _ = rr.Search(vecs[i*dim:(i+1)*dim], topK, nil)
+			}
+			latMS := make([]float64, n)
+			hits := 0
+			t0 := time.Now()
+			for q := 0; q < n; q++ {
+				qv := vecs[q*dim : (q+1)*dim]
+				ts := time.Now()
+				ids, _, err := rr.Search(qv, topK, nil)
+				latMS[q] = float64(time.Since(ts).Nanoseconds()) / 1e6
+				if err != nil {
+					t.Fatalf("Search nlist=%d nprobe=%d q=%d: %v", nl, np, q, err)
+				}
+				gtRow := gt[q*topK : (q+1)*topK]
+				gtSet := make(map[int64]struct{}, topK)
+				for _, id := range gtRow {
+					gtSet[id] = struct{}{}
+				}
+				k := topK
+				if len(ids) < k {
+					k = len(ids)
+				}
+				for i := 0; i < k; i++ {
+					if _, ok := gtSet[ids[i]]; ok {
+						hits++
+					}
+				}
+			}
+			wallSec := time.Since(t0).Seconds()
+			rr.Close()
+
+			rec := row{
+				Nlist: nl, Nprobe: np, BuildS: round3(rowBuild),
+				QPS:    round1(float64(n) / wallSec),
+				P50ms:  round4(percentile(latMS, 50)),
+				P95ms:  round4(percentile(latMS, 95)),
+				P99ms:  round4(percentile(latMS, 99)),
+				MeanMs: round4(mean(latMS)),
+				Recall10: round4(float64(hits) / float64(n*topK)),
+			}
+			rows = append(rows, rec)
+			fmt.Printf("nlist=%4d nprobe=%4d  build=%.2fs  QPS=%7.1f  p50=%6.3fms  p99=%7.3fms  recall@10=%.4f\n",
+				rec.Nlist, rec.Nprobe, rec.BuildS, rec.QPS, rec.P50ms, rec.P99ms, rec.Recall10)
+
+			// Re-create r with default nprobe so the outer loop's "Close"
+			// at top of next iteration is well-defined.
+			r, _ = NewIVFRetriever(dim, "L2", nl, 8)
+		}
+		r.Close()
+	}
+
+	// Pareto: filter rows whose (recall, qps) is dominated by another row.
+	pareto := make([]row, 0, len(rows))
+	for i, a := range rows {
+		dominated := false
+		for j, b := range rows {
+			if i == j {
+				continue
+			}
+			if b.Recall10 >= a.Recall10 && b.QPS >= a.QPS &&
+				(b.Recall10 > a.Recall10 || b.QPS > a.QPS) {
+				dominated = true
+				break
+			}
+		}
+		if !dominated {
+			pareto = append(pareto, a)
+		}
+	}
+
+	fmt.Println("\n========== plasmod IVF_FLAT sweep — Pareto front ==========")
+	fmt.Println("dataset      : TEST/testQuery10K.fbin (n=10000, dim=100, self-query, L2)")
+	for _, p := range pareto {
+		fmt.Printf("  nlist=%4d nprobe=%4d  QPS=%7.1f  recall@10=%.4f  p99=%6.2fms\n",
+			p.Nlist, p.Nprobe, p.QPS, p.Recall10, p.P99ms)
+	}
+	fmt.Println("============================================================")
+
+	out := filepath.Join(root, "TEST", "metrics_plasmod_ivf_sweep.json")
+	bs, _ := json.MarshalIndent(map[string]any{
+		"engine":  "plasmod IVF_FLAT (nlist × nprobe sweep) via CGO",
+		"dataset": "TEST/testQuery10K.fbin (self-query, L2)",
+		"params":  map[string]any{"nb": n, "nq": n, "dim": dim, "topK": topK},
+		"all":     rows,
+		"pareto":  pareto,
 	}, "", "  ")
 	_ = os.WriteFile(out, bs, 0644)
 	fmt.Printf("output JSON  : %s\n", out)

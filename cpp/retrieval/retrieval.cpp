@@ -72,6 +72,24 @@ int plasmod_retriever_init(void* handle,
     return h->dense.Init(cfg) ? 1 : 0;
 }
 
+int plasmod_retriever_init_ivf(void*       handle,
+                               const char* metric_type,
+                               int         dim,
+                               int         nlist,
+                               int         nprobe) {
+    if (!handle || dim <= 0) return 0;
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
+
+    plasmod::IndexConfig cfg;
+    cfg.index_type  = "IVF_FLAT";
+    cfg.metric_type = metric_type ? metric_type : "L2";
+    cfg.dim         = dim;
+    if (nlist  > 0) cfg.ivf_nlist  = nlist;
+    if (nprobe > 0) cfg.ivf_nprobe = nprobe;
+
+    return h->dense.Init(cfg) ? 1 : 0;
+}
+
 int plasmod_retriever_init_diskann(void*       handle,
                                    const char* metric_type,
                                    int         dim,

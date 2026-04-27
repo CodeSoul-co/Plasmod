@@ -48,6 +48,24 @@ int   plasmod_retriever_init_diskann(
     const char* index_prefix
 );
 
+/* IVF_FLAT-specific init with explicit (nlist, nprobe) tuning.
+ *
+ * nlist  : number of coarse Voronoi cells the dataset is partitioned into
+ *          at build time.  Rule of thumb: nlist ≈ 4 * sqrt(N).
+ * nprobe : number of cells visited per query.  Higher → higher recall,
+ *          lower QPS.  Pass <=0 to use the C++ default (nprobe=8).
+ *
+ * metric_type must be one of: "L2", "IP", "COSINE".
+ * Returns 1 on success, 0 on failure.
+ */
+int   plasmod_retriever_init_ivf(
+    void*       retriever,
+    const char* metric_type,
+    int         dim,
+    int         nlist,
+    int         nprobe
+);
+
 int   plasmod_retriever_build(
     void*        retriever,
     const float* dense_vectors,
