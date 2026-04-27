@@ -394,3 +394,129 @@ func TestBenchFbinKnowhereBatch(t *testing.T) {
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 func round4(v float64) float64 { return math.Round(v*10000) / 10000 }
+
+// locateFbin walks up from the package dir until it finds TEST/testQuery10K.fbin
+// and returns (workspaceRoot, fbinPath).  Fatal on failure.
+func locateFbin(t *testing.T) (string, string) {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	root := wd
+	for i := 0; i < 8; i++ {
+		if _, err := os.Stat(filepath.Join(root, "TEST", "testQuery10K.fbin")); err == nil {
+			return root, filepath.Join(root, "TEST", "testQuery10K.fbin")
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			break
+		}
+		root = parent
+	}
+	t.Fatalf("could not locate TEST/testQuery10K.fbin from %s", wd)
+	return "", ""
+}
+
+// TestBenchFbinIVFLoop runs IVF_FLAT on the same fbin dataset using the
+// single-query loop methodology (10000 × Search(nq=1)). Reports QPS,
+// p50/p95/p99, recall@10. IVF-specific tuning (nlist, nprobe) uses the
+// C++ defaults (nlist=128, nprobe=8).
+func TestBenchFbinIVFLoop(t *testing.T) {
+	const topK = 10
+	root, fbinPath := locateFbin(t)
+	t.Logf("data: %s", fbinPath)
+
+	vecs, n, dim, err := loadFbin(fbinPath)
+	if err != nil {
+		t.Fatalf("loadFbin: %v", err)
+	}
+	t.Logf("loaded %d × %d", n, dim)
+
+	r, err := NewRetrieverWithIndexType(dim, "IVF_FLAT", "L2")
+	if err != nil {
+		t.Skipf("IVF_FLAT not available in this build: %v", err)
+	}
+	defer r.Close()
+
+	t.Logf("building IVF_FLAT (n=%d, dim=%d, nlist=128 default)...", n, dim)
+	t0 := time.Now()
+	if err := r.Build(vecs, n); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	buildSec := time.Since(t0).Seconds()
+	t.Logf("build: %.3fs", buildSec)
+
+	t.Log("computing brute-force GT...")
+	gt := bruteForceL2TopK(vecs, vecs, n, n, dim, topK)
+
+	// Warm-up.
+	for i := 0; i < 32; i++ {
+		_, _, _ = r.Search(vecs[i*dim:(i+1)*dim], topK, nil)
+	}
+
+	latMS := make([]float64, n)
+	hits := 0
+	t.Logf("running %d single-query searches (topK=%d, nprobe=8 default)...", n, topK)
+	t0 = time.Now()
+	for q := 0; q < n; q++ {
+		qv := vecs[q*dim : (q+1)*dim]
+		ts := time.Now()
+		ids, _, err := r.Search(qv, topK, nil)
+		latMS[q] = float64(time.Since(ts).Nanoseconds()) / 1e6
+		if err != nil {
+			t.Fatalf("Search q=%d: %v", q, err)
+		}
+		gtRow := gt[q*topK : (q+1)*topK]
+		gtSet := make(map[int64]struct{}, topK)
+		for _, id := range gtRow {
+			gtSet[id] = struct{}{}
+		}
+		k := topK
+		if len(ids) < k {
+			k = len(ids)
+		}
+		for i := 0; i < k; i++ {
+			if _, ok := gtSet[ids[i]]; ok {
+				hits++
+			}
+		}
+	}
+	wallSec := time.Since(t0).Seconds()
+
+	qps := float64(n) / wallSec
+	recall := float64(hits) / float64(n*topK)
+
+	fmt.Println("\n========== plasmod IVF_FLAT (LOOP) =================")
+	fmt.Printf("dataset      : TEST/testQuery10K.fbin (n=%d, dim=%d, self-query)\n", n, dim)
+	fmt.Printf("params       : nlist=128  nprobe=8  topK=%d  metric=L2 (C++ defaults)\n", topK)
+	fmt.Printf("build_s      : %.3f\n", buildSec)
+	fmt.Printf("QPS          : %.1f\n", qps)
+	fmt.Printf("p50_ms       : %.4f\n", percentile(latMS, 50))
+	fmt.Printf("p95_ms       : %.4f\n", percentile(latMS, 95))
+	fmt.Printf("p99_ms       : %.4f\n", percentile(latMS, 99))
+	fmt.Printf("mean_ms      : %.4f\n", mean(latMS))
+	fmt.Printf("recall@10    : %.4f\n", recall)
+	fmt.Println("=====================================================")
+
+	out := filepath.Join(root, "TEST", "metrics_plasmod_ivf_loop.json")
+	bs, _ := json.MarshalIndent(map[string]any{
+		"engine":       "plasmod IVF_FLAT (loop) via CGO",
+		"dataset":      "TEST/testQuery10K.fbin (self-query)",
+		"build_s":      round3(buildSec),
+		"wall_s":       round3(wallSec),
+		"qps":          round1(qps),
+		"p50_ms":       round4(percentile(latMS, 50)),
+		"p95_ms":       round4(percentile(latMS, 95)),
+		"p99_ms":       round4(percentile(latMS, 99)),
+		"mean_ms":      round4(mean(latMS)),
+		"recall_at_10": round4(recall),
+		"params": map[string]any{
+			"index": "IVF_FLAT", "nlist": 128, "nprobe": 8,
+			"nb": n, "nq": n, "dim": dim, "topK": topK, "metric": "L2",
+		},
+	}, "", "  ")
+	_ = os.WriteFile(out, bs, 0644)
+	fmt.Printf("output JSON  : %s\n", out)
+}
+
