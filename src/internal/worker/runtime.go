@@ -147,6 +147,14 @@ func (r *Runtime) RegisterWarmSegment(segmentID string, objectIDs []string) erro
 	return tp.RegisterWarmSegment(segmentID, objectIDs)
 }
 
+func (r *Runtime) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
 func (r *Runtime) AdminWarmPrebuild() error {
 	if r.plane == nil {
 		return fmt.Errorf("data plane unavailable")
