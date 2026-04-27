@@ -260,8 +260,8 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
 	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
 	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
-	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminMemoryProvidersMode)
-	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminMemoryProvidersHealth)
+	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminAlgorithmProfileMode)
+	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminAlgorithmProfileHealth)
 
 	// Task lifecycle (3-MT1~MT7, 4-M6)
 	mux.HandleFunc("/v1/internal/task/start", g.handleTaskStart)
@@ -2396,7 +2396,9 @@ func (g *Gateway) handleAdminRuntimeMode(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func (g *Gateway) handleAdminMemoryProvidersMode(w http.ResponseWriter, r *http.Request) {
+// handleAdminAlgorithmProfileMode is a compatibility endpoint keeping the
+// existing URL while exposing algorithm profile mode (not external backends).
+func (g *Gateway) handleAdminAlgorithmProfileMode(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, map[string]any{
@@ -2424,7 +2426,9 @@ func (g *Gateway) handleAdminMemoryProvidersMode(w http.ResponseWriter, r *http.
 	}
 }
 
-func (g *Gateway) handleAdminMemoryProvidersHealth(w http.ResponseWriter, r *http.Request) {
+// handleAdminAlgorithmProfileHealth is a compatibility endpoint keeping the
+// existing URL while exposing algorithm profile health semantics.
+func (g *Gateway) handleAdminAlgorithmProfileHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
