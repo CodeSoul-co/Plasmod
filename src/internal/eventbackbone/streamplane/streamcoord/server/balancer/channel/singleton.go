@@ -4,8 +4,8 @@
 package channel
 
 import (
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 var singleton = syncutil.NewFuture[*ChannelManager]()

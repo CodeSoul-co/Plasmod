@@ -8,7 +8,7 @@ package msgdispatcher
 import (
 	context "context"
 
-	msgstream "andb/platformpkg/pkg/mq/msgstream"
+	msgstream "plasmod/platformpkg/pkg/mq/msgstream"
 	mock "github.com/stretchr/testify/mock"
 )
 

@@ -99,7 +99,7 @@
 **状态**: 🟡 部分完成
 
 **已创建**:
-- ✅ `scripts/build_cpp.sh` - 构建 `libandb_retrieval.so`
+- ✅ `scripts/build_cpp.sh` - 构建 `libplasmod_retrieval.so`
   - 支持 `ANDB_WITH_GPU=ON` 启用 CUDA
   - 支持自定义 CUDA 架构
   - 自动检测 `nvcc`
@@ -279,7 +279,7 @@ echo "  go build -tags cuda ./..."
 [ ] TensorRT: engine loads without error, inference produces output
     🟡 部分完成 - CUDA 内存管理完成，缺引擎加载
 
-[ ] retrievalplane: libandb_retrieval.so builds on Linux (make -C cpp)
+[ ] retrievalplane: libplasmod_retrieval.so builds on Linux (make -C cpp)
     ✅ 可以验证 - build_cpp.sh 已创建
 
 [ ] retrievalplane: Search works inside Docker with HNSW index

@@ -20,8 +20,8 @@
 package metricsinfo
 
 import (
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // RateMetricLabel defines the metric label collected from nodes.

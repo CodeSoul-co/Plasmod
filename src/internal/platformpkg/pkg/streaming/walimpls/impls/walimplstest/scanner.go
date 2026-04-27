@@ -4,9 +4,9 @@
 package walimplstest
 
 import (
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/walimpls"
-	"andb/platformpkg/pkg/streaming/walimpls/helper"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/streaming/walimpls/helper"
 )
 
 var _ walimpls.ScannerImpls = &scannerImpls{}

@@ -22,7 +22,7 @@ package pulsar
 import (
 	"github.com/apache/pulsar-client-go/pulsar"
 
-	"andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/common"
 )
 
 // Check pulsarMessage implements ConsumerMessage

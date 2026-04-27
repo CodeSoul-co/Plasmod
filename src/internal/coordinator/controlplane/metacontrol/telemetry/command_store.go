@@ -35,8 +35,8 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/merr"
 )
 
 // PushClientConfigRequest is a request to push a persistent config

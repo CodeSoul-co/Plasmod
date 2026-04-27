@@ -93,3 +93,7 @@ Zep_in_Plasmod.md
 import_dataset.py
 MEMORYBANK_IMPLEMENTATION_CHECK.md
 models/minilm-l6-v2/
+
+# Top-level build artifacts from local experiments
+/benchmark
+/server

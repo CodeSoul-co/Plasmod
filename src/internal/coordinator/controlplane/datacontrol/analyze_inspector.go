@@ -25,7 +25,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus/internal/datacoord/task"
-	"andb/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
 )
 
 type analyzeInspector struct {

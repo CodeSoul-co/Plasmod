@@ -18,11 +18,11 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/proxy/privilege"
 	"github.com/milvus-io/milvus/internal/util/hookutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/crypto"
-	"andb/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/crypto"
+	"plasmod/platformpkg/pkg/util/merr"
 )
 
 func parseMD(rawToken string) (username, password string) {

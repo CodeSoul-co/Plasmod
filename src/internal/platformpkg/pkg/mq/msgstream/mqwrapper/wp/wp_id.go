@@ -6,7 +6,7 @@ package wp
 import (
 	"github.com/zilliztech/woodpecker/woodpecker/log"
 
-	"andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/common"
 )
 
 func NewWoodpeckerID(id *log.LogMessageId) *woodpeckerID {

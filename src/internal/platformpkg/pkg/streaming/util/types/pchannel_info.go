@@ -6,7 +6,7 @@ package types
 import (
 	"fmt"
 
-	"andb/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
 )
 
 const (

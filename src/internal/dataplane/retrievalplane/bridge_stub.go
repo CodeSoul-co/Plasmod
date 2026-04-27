@@ -10,7 +10,7 @@ import "fmt"
 
 // ErrRetrievalNotAvailable is returned by all stub methods when the CGO bridge
 // is not compiled in (build tag `retrieval` absent).
-var ErrRetrievalNotAvailable = fmt.Errorf("andb_retrieval: CGO_ENABLED=0, C++ bridge unavailable")
+var ErrRetrievalNotAvailable = fmt.Errorf("plasmod_retrieval: CGO_ENABLED=0, C++ bridge unavailable")
 
 // Version returns a placeholder when CGO is disabled.
 func Version() string { return "stub (CGO_ENABLED=0)" }

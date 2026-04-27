@@ -12,8 +12,8 @@ import (
 	tinspector "github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/timetick/inspector"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/idalloc"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // InitForTest initializes the singleton of resources for test.

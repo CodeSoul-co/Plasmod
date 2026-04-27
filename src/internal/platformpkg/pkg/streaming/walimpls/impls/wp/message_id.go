@@ -11,7 +11,7 @@ import (
 	wp "github.com/zilliztech/woodpecker/woodpecker/log"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func NewWpID(id *wp.LogMessageId) message.MessageID {

@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // in topology graph, the name of all nodes are consisted of role name and its' id

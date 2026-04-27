@@ -19,12 +19,12 @@ import (
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/json"
 	"github.com/milvus-io/milvus/internal/storage"
-	"andb/platformpkg/pkg/config"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/conc"
-	"andb/platformpkg/pkg/util/hardware"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/config"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/conc"
+	"plasmod/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type SyncManagerOption struct {

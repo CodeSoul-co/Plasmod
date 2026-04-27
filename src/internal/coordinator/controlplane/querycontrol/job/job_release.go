@@ -31,9 +31,9 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/util/proxyutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/proxypb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/proxypb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 type ReleaseCollectionJob struct {

@@ -4,8 +4,8 @@
 package types
 
 import (
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // NewAckedPendings creates a new AckedPendings.

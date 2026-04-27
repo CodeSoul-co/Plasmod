@@ -17,20 +17,24 @@ namespace hnswlib {
 
 class VisitedListPool {
     int numelements;
-    std::unordered_map<std::thread::id, std::vector<bool>> map;
-    std::mutex mtx;
 
  public:
     VisitedListPool(int numelements1) {
         numelements = numelements1;
     }
 
+    // Returns a per-thread scratch vector, one per pool instance.  The
+    // storage is thread_local so there is no mutex, no atomic, and no
+    // cross-thread contention on the hot HNSW search path — previously
+    // every call took a std::mutex, which serialised concurrent
+    // searchKnn invocations and capped wall-QPS.  The per-thread map is
+    // keyed by `this` so callers that query multiple indexes from the
+    // same thread each get their own scratch.
     std::vector<bool>&
     getFreeVisitedList() {
-        std::unique_lock lk(mtx);
-        auto& res = map[std::this_thread::get_id()];
-        lk.unlock();
-        if (res.size() != numelements) {
+        thread_local std::unordered_map<const VisitedListPool*, std::vector<bool>> tls;
+        auto& res = tls[this];
+        if (res.size() != (size_t)numelements) {
             res.assign(numelements, false);
         } else {
             std::fill(res.begin(), res.end(), false);

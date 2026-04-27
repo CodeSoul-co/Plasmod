@@ -6,12 +6,12 @@
 package task
 
 import (
-	indexpb "andb/platformpkg/pkg/proto/indexpb"
+	indexpb "plasmod/platformpkg/pkg/proto/indexpb"
 	mock "github.com/stretchr/testify/mock"
 
 	session "github.com/milvus-io/milvus/internal/datacoord/session"
 
-	taskcommon "andb/platformpkg/pkg/taskcommon"
+	taskcommon "plasmod/platformpkg/pkg/taskcommon"
 
 	time "time"
 )

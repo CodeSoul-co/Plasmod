@@ -24,8 +24,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // createSnapshotV2AckCallback handles the callback for CreateSnapshot DDL message.

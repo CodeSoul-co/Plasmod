@@ -5,8 +5,8 @@ package replicates
 
 import (
 	"github.com/milvus-io/milvus/internal/util/streamingutil/status"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // newReplicateTxnHelper creates a new replicate txn helper.

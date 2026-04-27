@@ -6,8 +6,8 @@ package proxy
 import (
 	"fmt"
 
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // validator is a generic interface for validating tasks

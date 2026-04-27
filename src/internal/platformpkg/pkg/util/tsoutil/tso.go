@@ -22,7 +22,7 @@ package tsoutil
 import (
 	"time"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 const (

@@ -15,7 +15,7 @@
 package client
 
 import (
-	"andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/common"
 )
 
 // ProducerOptions is the options of a producer

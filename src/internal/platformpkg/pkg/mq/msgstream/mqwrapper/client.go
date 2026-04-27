@@ -22,7 +22,7 @@ package mqwrapper
 import (
 	"context"
 
-	"andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/common"
 )
 
 // Client is the interface that provides operations of message queues

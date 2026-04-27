@@ -6,9 +6,9 @@ package metricsutil
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/tsoutil"
 )
 
 // NewWriteAheadBufferMetrics creates a new WriteAheadBufferMetrics.

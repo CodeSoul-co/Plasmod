@@ -37,7 +37,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/common"
 )
 
 type getVariableFieldLengthPolicy int

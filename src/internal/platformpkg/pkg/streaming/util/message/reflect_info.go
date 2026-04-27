@@ -10,7 +10,7 @@ import (
 	"reflect"
 
 	msgpb "github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
-	messagespb "andb/platformpkg/pkg/proto/messagespb"
+	messagespb "plasmod/platformpkg/pkg/proto/messagespb"
 )
 
 // Export consts

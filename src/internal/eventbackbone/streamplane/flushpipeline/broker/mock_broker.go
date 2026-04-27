@@ -8,8 +8,8 @@ package broker
 import (
 	context "context"
 
-	datapb "andb/platformpkg/pkg/proto/datapb"
-	internalpb "andb/platformpkg/pkg/proto/internalpb"
+	datapb "plasmod/platformpkg/pkg/proto/datapb"
+	internalpb "plasmod/platformpkg/pkg/proto/internalpb"
 
 	mock "github.com/stretchr/testify/mock"
 

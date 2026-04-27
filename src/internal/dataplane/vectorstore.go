@@ -88,7 +88,7 @@ func NewVectorStore(embedder EmbeddingGenerator, cfg VectorStoreConfig) (*Vector
 	}
 	efSearch := cfg.EfSearch
 	if efSearch <= 0 {
-		efSearch = 64
+		efSearch = 256 // default 256 for better recall; 64 is too conservative
 	}
 	rrfK := cfg.RRFK
 	if rrfK <= 0 {
@@ -184,9 +184,6 @@ func (vs *VectorStore) AddVector(id string, vec []float32) {
 	if id == "" || len(vec) == 0 {
 		return
 	}
-	if len(vec) != vs.dim {
-		return
-	}
 
 	vs.mu.Lock()
 	vs.idArray = append(vs.idArray, id)
@@ -223,6 +220,7 @@ func (vs *VectorStore) Build() error {
 	vs.indexGen.Add(1)
 	return nil
 }
+
 
 // Snapshot returns copies of buffered ids/vectors for prebuild workflows.
 func (vs *VectorStore) Snapshot() (ids []string, vectors []float32, dim int) {
