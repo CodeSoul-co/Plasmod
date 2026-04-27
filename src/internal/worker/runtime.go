@@ -66,12 +66,11 @@ type Runtime struct {
 	// flushTicker drives the background index-rebuild goroutine.  By decoupling
 	// flush from write, we eliminate the O(n²) rebuild storm that occurred when N
 	// concurrent writes each triggered their own synchronous full-index rebuild.
-	flushTicker     *time.Ticker
-	flushStopCh     chan struct{}
-	flushInterval   time.Duration
-	flushLoopOnce   sync.Once
+	flushTicker   *time.Ticker
+	flushStopCh   chan struct{}
+	flushInterval time.Duration
+	flushLoopOnce sync.Once
 }
-
 
 func CreateRuntime(
 	wal eventbackbone.WAL,
@@ -506,7 +505,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
-	
+
 	// In VECTOR-ONLY MODE or MINIMAL MODE: skip provenance attachment
 	if !r.VectorOnlyMode && !r.MinimalMode {
 		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
@@ -941,6 +940,11 @@ func (r *Runtime) DispatchRecall(
 	} else {
 		algoNotes = []string{"search_fallback:no_algo_worker"}
 	}
+	activeAlgo := strings.TrimSpace(os.Getenv("PLASMOD_ACTIVE_ALGORITHM"))
+	if activeAlgo == "" {
+		activeAlgo = "memorybank"
+	}
+	algoNotes = append(algoNotes, "algorithm_profile="+activeAlgo)
 	// Convert ProofStep slice to string slice for MemoryView.ConstructionTrace
 	proofStrs := make([]string, len(resp.ProofTrace))
 	for i, step := range resp.ProofTrace {
@@ -1030,7 +1034,6 @@ func (r *Runtime) EnqueueMemoryDelete(memoryID string, hard bool, reason string)
 func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
 	return map[string]any{"enabled": false}
 }
-
 
 // DispatchShare copies a memory to a target agent's namespace and fires
 // CommunicationWorker for any side-effects.

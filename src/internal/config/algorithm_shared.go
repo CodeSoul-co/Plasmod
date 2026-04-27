@@ -64,7 +64,6 @@ func LoadSharedAlgorithmConfig() (schemas.AlgorithmConfig, error) {
 	case "memorybank":
 		root = "memorybank"
 		path = "configs/algorithm_memorybank.yaml"
-		}
 	case "zep":
 		root = "zep"
 		path = "configs/algorithm_zep.yaml"

@@ -27,6 +27,7 @@ import (
 	cognitive "plasmod/src/internal/worker/cognitive"
 	baseline "plasmod/src/internal/worker/cognitive/baseline"
 	"plasmod/src/internal/worker/cognitive/memorybank"
+	"plasmod/src/internal/worker/cognitive/zep"
 	"plasmod/src/internal/worker/coordination"
 	"plasmod/src/internal/worker/indexing"
 	"plasmod/src/internal/worker/ingestion"
@@ -428,7 +429,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		activeAlgoImpl = baseline.NewDefault()
 	case "zep":
 		activeAlgoID = "zep_v1"
-		activeAlgoImpl = memorybank.NewDefault(activeAlgoID)
+		activeAlgoImpl = zep.NewDefault(activeAlgoID)
 	default:
 		activeAlgo = "memorybank"
 		activeAlgoID = "memorybank_v1"
