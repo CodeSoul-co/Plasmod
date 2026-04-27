@@ -22,7 +22,7 @@ package datacoord
 import (
 	"context"
 
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 func (s *DDLCallbacks) flushAllV2AckCallback(ctx context.Context, result message.BroadcastResultFlushAllMessageV2) error {

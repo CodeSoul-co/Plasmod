@@ -12,9 +12,9 @@ package rootcoordpb
 import (
 	commonpb "github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	milvuspb "github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	etcdpb "andb/platformpkg/pkg/proto/etcdpb"
-	internalpb "andb/platformpkg/pkg/proto/internalpb"
-	proxypb "andb/platformpkg/pkg/proto/proxypb"
+	etcdpb "plasmod/platformpkg/pkg/proto/etcdpb"
+	internalpb "plasmod/platformpkg/pkg/proto/internalpb"
+	proxypb "plasmod/platformpkg/pkg/proto/proxypb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

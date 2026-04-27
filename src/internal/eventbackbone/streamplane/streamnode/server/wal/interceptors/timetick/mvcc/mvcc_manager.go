@@ -6,7 +6,7 @@ package mvcc
 import (
 	"sync"
 
-	"andb/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message"
 )
 
 // NewMVCCManager creates a new mvcc timestamp manager.

@@ -28,7 +28,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 // GetFunctionName returns the name of input

@@ -229,6 +229,9 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/ingest/vectors", g.handleIngestVectors)
 	mux.HandleFunc("/v1/query", g.handleQuery)
 
+	// Warm segment registration — exposes cgo-built segments to the HTTP SearchWarmSegment path.
+	mux.HandleFunc("/v1/internal/warm-segment/register", g.handleWarmSegmentRegister)
+
 	// Canonical object CRUD
 	mux.HandleFunc("/v1/agents", g.handleAgents)
 	mux.HandleFunc("/v1/sessions", g.handleSessions)
@@ -368,7 +371,7 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.WarmSegmentID) != "" {
-		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK)
+		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK, req.EmbeddingVector)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -444,6 +447,36 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		"vector_dim":  len(req.Vectors[0]),
 		"direct_warm": true,
 	})
+}
+
+// handleWarmSegmentRegister registers a warm segment's object-ID list so that
+// SearchWarmSegment lookups succeed for segments built via the cgo binary.
+// POST /v1/internal/warm-segment/register
+// Body: {"segment_id": "...", "object_ids": ["id0", "id1", ...]}
+func (g *Gateway) handleWarmSegmentRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type reqBody struct {
+		SegmentID string   `json:"segment_id"`
+		ObjectIDs []string `json:"object_ids"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.SegmentID = strings.TrimSpace(req.SegmentID)
+	if req.SegmentID == "" || len(req.ObjectIDs) == 0 {
+		http.Error(w, "segment_id and object_ids are required", http.StatusBadRequest)
+		return
+	}
+	if err := g.runtime.RegisterWarmSegment(req.SegmentID, req.ObjectIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "segment_id": req.SegmentID, "n_ids": len(req.ObjectIDs)})
 }
 
 func (g *Gateway) handleAdminWarmPrebuild(w http.ResponseWriter, r *http.Request) {

@@ -8,7 +8,7 @@ package mock_types
 import (
 	context "context"
 
-	types "andb/platformpkg/pkg/streaming/util/types"
+	types "plasmod/platformpkg/pkg/streaming/util/types"
 	mock "github.com/stretchr/testify/mock"
 )
 

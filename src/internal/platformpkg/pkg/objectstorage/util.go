@@ -24,13 +24,13 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/objectstorage/aliyun"
-	"andb/platformpkg/pkg/objectstorage/gcp"
-	"andb/platformpkg/pkg/objectstorage/huawei"
-	"andb/platformpkg/pkg/objectstorage/tencent"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/retry"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/objectstorage/aliyun"
+	"plasmod/platformpkg/pkg/objectstorage/gcp"
+	"plasmod/platformpkg/pkg/objectstorage/huawei"
+	"plasmod/platformpkg/pkg/objectstorage/tencent"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/retry"
 )
 
 const (

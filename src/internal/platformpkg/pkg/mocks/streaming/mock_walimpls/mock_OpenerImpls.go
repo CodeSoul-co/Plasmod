@@ -8,7 +8,7 @@ package mock_walimpls
 import (
 	context "context"
 
-	walimpls "andb/platformpkg/pkg/streaming/walimpls"
+	walimpls "plasmod/platformpkg/pkg/streaming/walimpls"
 	mock "github.com/stretchr/testify/mock"
 )
 

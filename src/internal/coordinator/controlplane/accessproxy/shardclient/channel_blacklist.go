@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // ChannelBlacklist manages blacklisted nodes per channel with expiration.

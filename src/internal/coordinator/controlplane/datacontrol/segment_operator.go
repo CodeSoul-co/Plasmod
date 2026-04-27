@@ -19,7 +19,7 @@
 
 package datacoord
 
-import "andb/platformpkg/pkg/proto/datapb"
+import "plasmod/platformpkg/pkg/proto/datapb"
 
 // SegmentOperator is function type to update segment info.
 type SegmentOperator func(segment *SegmentInfo) bool

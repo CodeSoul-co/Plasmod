@@ -23,8 +23,36 @@ package retrievalplane
 import "C"
 import (
 	"fmt"
+	"sync"
 	"unsafe"
 )
+
+// segIDCache caches a heap-allocated C string per Go segment ID so the hot
+// search path does not pay a malloc + free + memcpy every call (each
+// C.CString is a malloc, and the deferred C.free is another lock on the C
+// allocator).  Entries live for the process lifetime; the working set of
+// segments is small in practice (typically O(10s)).
+var (
+	segIDMu    sync.RWMutex
+	segIDCache = map[string]*C.char{}
+)
+
+func cachedSegmentCString(id string) *C.char {
+	segIDMu.RLock()
+	if p, ok := segIDCache[id]; ok {
+		segIDMu.RUnlock()
+		return p
+	}
+	segIDMu.RUnlock()
+	segIDMu.Lock()
+	defer segIDMu.Unlock()
+	if p, ok := segIDCache[id]; ok {
+		return p
+	}
+	p := C.CString(id)
+	segIDCache[id] = p
+	return p
+}
 
 // Version returns the C++ library version string.
 func Version() string {
@@ -57,7 +85,7 @@ func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriev
 	}
 	ptr := C.plasmod_retriever_create()
 	if ptr == nil {
-		return nil, fmt.Errorf("andb_retriever_create: returned nil")
+		return nil, fmt.Errorf("plasmod_retriever_create: returned nil")
 	}
 	rc := C.plasmod_retriever_init(
 		ptr,
@@ -69,7 +97,7 @@ func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriev
 	)
 	if rc == 0 {
 		C.plasmod_retriever_destroy(ptr)
-		return nil, fmt.Errorf("andb_retriever_init: failed (rc=%d)", rc)
+		return nil, fmt.Errorf("plasmod_retriever_init: failed (rc=%d)", rc)
 	}
 	return &Retriever{ptr: ptr, dim: dim}, nil
 }
@@ -87,7 +115,7 @@ func (r *Retriever) Build(vectors []float32, n int) error {
 		C.int(r.dim),
 	)
 	if rc == 0 {
-		return fmt.Errorf("andb_retriever_build: failed (rc=%d)", rc)
+		return fmt.Errorf("plasmod_retriever_build: failed (rc=%d)", rc)
 	}
 	return nil
 }
@@ -123,7 +151,7 @@ func (r *Retriever) Search(query []float32, topk int, filter []byte) ([]int64, [
 		C.int(topk),
 	)
 	if rc < 0 {
-		return nil, nil, fmt.Errorf("andb_retriever_search: failed (rc=%d)", rc)
+		return nil, nil, fmt.Errorf("plasmod_retriever_search: failed (rc=%d)", rc)
 	}
 	n := int(rc)
 	return outIDs[:n], outDists[:n], nil
@@ -161,7 +189,7 @@ func (s *SegmentRetriever) BuildSegment(segmentID string, vectors []float32, n, 
 		C.int(dim),
 	)
 	if rc != 0 {
-		return fmt.Errorf("andb_segment_build(%q): rc=%d", segmentID, rc)
+		return fmt.Errorf("plasmod_segment_build(%q): rc=%d", segmentID, rc)
 	}
 	return nil
 }
@@ -187,8 +215,7 @@ func (s *SegmentRetriever) SearchWithFilter(
 	outIDs := make([]int64, total)
 	outDists := make([]float32, total)
 
-	cs := C.CString(segmentID)
-	defer C.free(unsafe.Pointer(cs))
+	cs := cachedSegmentCString(segmentID)
 
 	var rc C.int
 	if len(allowList) > 0 {
@@ -219,19 +246,27 @@ func (s *SegmentRetriever) SearchWithFilter(
 		)
 	}
 	if rc != 0 {
-		return nil, nil, fmt.Errorf("andb_segment_search(%q): rc=%d", segmentID, rc)
+		return nil, nil, fmt.Errorf("plasmod_segment_search(%q): rc=%d", segmentID, rc)
 	}
 	return outIDs, outDists, nil
 }
 
 // UnloadSegment removes a segment index from memory.
 func (s *SegmentRetriever) UnloadSegment(segmentID string) error {
-	cs := C.CString(segmentID)
-	defer C.free(unsafe.Pointer(cs))
+	cs := cachedSegmentCString(segmentID)
 	rc := C.plasmod_segment_unload(cs)
 	if rc != 0 {
-		return fmt.Errorf("andb_segment_unload(%q): rc=%d", segmentID, rc)
+		return fmt.Errorf("plasmod_segment_unload(%q): rc=%d", segmentID, rc)
 	}
+	// Drop and free the cached C-string so the segment ID can be reused
+	// without leaking, and so a future BuildSegment with the same name
+	// re-registers a fresh entry.
+	segIDMu.Lock()
+	if p, ok := segIDCache[segmentID]; ok {
+		delete(segIDCache, segmentID)
+		C.free(unsafe.Pointer(p))
+	}
+	segIDMu.Unlock()
 	return nil
 }
 
@@ -247,4 +282,33 @@ func (s *SegmentRetriever) SegmentSize(segmentID string) int64 {
 	cs := C.CString(segmentID)
 	defer C.free(unsafe.Pointer(cs))
 	return int64(C.plasmod_segment_size(cs))
+}
+
+// RegisterWarmSegment exposes a built cgo segment to the HTTP server's
+// SegmentDataPlane.segments map so that SearchWarmSegment lookups succeed.
+// After BuildSegment + this call, the segment is visible to the HTTP path.
+func (s *SegmentRetriever) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	if segmentID == "" || len(objectIDs) == 0 {
+		return fmt.Errorf("RegisterWarmSegment: invalid args")
+	}
+	cs := C.CString(segmentID)
+	defer C.free(unsafe.Pointer(cs))
+
+	// Build array of C strings
+	cIDs := make([]*C.char, len(objectIDs))
+	for i, id := range objectIDs {
+		cIDs[i] = C.CString(id)
+	}
+	for i := range cIDs {
+		defer C.free(unsafe.Pointer(cIDs[i]))
+	}
+
+	// Slice of pointers for passing to C
+	cIDPtrs := (*[200000]*C.char)(unsafe.Pointer(&cIDs[0]))
+
+	rc := C.plasmod_segment_register_warm(cs, cIDPtrs, C.int64_t(len(objectIDs)))
+	if rc != 0 {
+		return fmt.Errorf("plasmod_segment_register_warm(%q, n=%d): rc=%d", segmentID, len(objectIDs), rc)
+	}
+	return nil
 }

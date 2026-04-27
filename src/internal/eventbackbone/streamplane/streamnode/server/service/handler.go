@@ -9,8 +9,8 @@ import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/service/handler/consumer"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/service/handler/producer"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/walmanager"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 var _ HandlerService = (*handlerServiceImpl)(nil)

@@ -90,6 +90,18 @@ int     plasmod_segment_unload(const char* segment_id);
 int     plasmod_segment_exists(const char* segment_id);
 int64_t plasmod_segment_size(const char* segment_id);
 
+/* Register a warm segment's object-ID list with the Go SegmentDataPlane.
+ * After calling plasmod_segment_build, call this to make the segment
+ * visible to the HTTP server's SearchWarmSegment path.
+ * object_ids: flat array of object ID strings (char* pointers)
+ * n_ids: number of object IDs
+ * Returns 0 on success, negative on error. */
+int plasmod_segment_register_warm(
+    const char*       segment_id,
+    const char* const object_ids[],
+    int64_t           n_ids
+);
+
 #ifdef __cplusplus
 }
 #endif

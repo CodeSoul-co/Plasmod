@@ -6,8 +6,8 @@ package wal
 import (
 	"context"
 
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 // OpenerBuilder is the interface for build wal opener.

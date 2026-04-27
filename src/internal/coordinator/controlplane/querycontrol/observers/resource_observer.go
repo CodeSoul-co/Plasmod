@@ -28,8 +28,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/params"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // ResourceObserver is used to observe resource group status.

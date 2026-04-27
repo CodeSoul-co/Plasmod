@@ -20,7 +20,7 @@
 
 namespace plasmod {
 
-static const char* kVersion = "andb-retrieval-0.3.0";
+static const char* kVersion = "plasmod-retrieval-0.3.0";
 
 const char* Version() { return kVersion; }
 
@@ -156,4 +156,17 @@ int plasmod_segment_exists(const char* segment_id) {
 int64_t plasmod_segment_size(const char* segment_id) {
     if (!segment_id) return -1;
     return plasmod::SegmentIndexManager::Instance().SegmentSize(segment_id);
+}
+
+int plasmod_segment_register_warm(const char*        segment_id,
+                                 const char* const  object_ids[],
+                                 int64_t            n_ids) {
+    if (!segment_id || !object_ids || n_ids <= 0) return -2;
+    std::vector<std::string> ids;
+    ids.reserve(static_cast<size_t>(n_ids));
+    for (int64_t i = 0; i < n_ids; ++i) {
+        ids.emplace_back(object_ids[i] ? object_ids[i] : "");
+    }
+    return plasmod::SegmentIndexManager::Instance().RegisterWarmSegment(
+        segment_id, ids);
 }

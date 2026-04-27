@@ -6,9 +6,9 @@ package helper
 import (
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
 )
 
 // NewWALHelper creates a new WALHelper.

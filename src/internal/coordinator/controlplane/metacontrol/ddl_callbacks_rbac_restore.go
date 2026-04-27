@@ -26,10 +26,10 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
-	"andb/platformpkg/pkg/proto/proxypb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/proxypb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 func (c *Core) broadcastRestoreRBACV2(ctx context.Context, req *milvuspb.RestoreRBACMetaRequest) error {

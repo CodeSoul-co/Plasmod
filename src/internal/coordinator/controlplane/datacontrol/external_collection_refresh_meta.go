@@ -29,12 +29,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus/internal/metastore"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/util/lock"
-	"andb/platformpkg/pkg/util/timerecord"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/util/lock"
+	"plasmod/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // externalCollectionRefreshMeta manages both Job and Task metadata for external collection refresh.

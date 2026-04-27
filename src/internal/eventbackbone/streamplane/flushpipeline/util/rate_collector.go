@@ -24,10 +24,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/metricsinfo"
-	"andb/platformpkg/pkg/util/ratelimitutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/metricsinfo"
+	"plasmod/platformpkg/pkg/util/ratelimitutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // rateCol is global RateCollector in DataNode.

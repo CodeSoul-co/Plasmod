@@ -28,7 +28,7 @@ import (
 	"github.com/cockroachdb/errors"
 
 	kvfactory "github.com/milvus-io/milvus/internal/util/dependency/kv"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 var Params *paramtable.ComponentParam = paramtable.Get()

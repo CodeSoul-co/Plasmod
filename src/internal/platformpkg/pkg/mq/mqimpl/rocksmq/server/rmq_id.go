@@ -20,8 +20,8 @@
 package server
 
 import (
-	"andb/platformpkg/pkg/common"
-	mqcommon "andb/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/common"
+	mqcommon "plasmod/platformpkg/pkg/mq/common"
 )
 
 // rmqID wraps message ID for rocksmq

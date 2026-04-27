@@ -13,10 +13,10 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster/broadcast"
 	"github.com/milvus-io/milvus/internal/util/hookutil"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 func (c *Core) broadcastAlterCollectionForRenameCollection(ctx context.Context, req *milvuspb.RenameCollectionRequest) error {

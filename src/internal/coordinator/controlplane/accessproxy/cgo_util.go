@@ -36,9 +36,9 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	_ "github.com/milvus-io/milvus/internal/util/cgo"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/conc"
-	"andb/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/conc"
+	"plasmod/platformpkg/pkg/util/hardware"
 )
 
 var (

@@ -128,6 +128,13 @@ func NewOnnx(_ context.Context, cfg OnnxConfig, dim int) (*OnnxEmbedder, error) 
 		cfg.PoolingMode = "mean"
 	}
 	if dim == 0 {
+		if envDim := os.Getenv("PLASMOD_EMBEDDER_DIM"); envDim != "" {
+			if n, err := strconv.Atoi(envDim); err == nil && n > 0 {
+				dim = n
+			}
+		}
+	}
+	if dim == 0 {
 		dim = 384 // Default for all-MiniLM-L6-v2
 	}
 

@@ -6,9 +6,9 @@ package channel
 import (
 	"sync"
 
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/funcutil"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 var StaticPChannelStatsManager = syncutil.NewFuture[*PchannelStatsManager]()

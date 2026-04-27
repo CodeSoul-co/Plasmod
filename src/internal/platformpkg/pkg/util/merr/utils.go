@@ -29,9 +29,9 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/logutil"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/logutil"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 const InputErrorFlagKey string = "is_input_error"

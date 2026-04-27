@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"unicode"
 
 	"plasmod/src/internal/coordinator"
@@ -63,12 +62,6 @@ type Runtime struct {
 	// true.  Used by 4-B4 to run Plasmod without the governance layer.
 	GovernanceDisabled bool
 	memoryBackend      *memoryBackendRouter
-	deleteOutbox       chan memoryDeleteTask
-	deleteWorkerOnce   sync.Once
-	deleteOutboxQueued int64
-	deleteOutboxDone   int64
-	deleteOutboxFailed int64
-	deleteOutboxDropped int64
 
 	// flushTicker drives the background index-rebuild goroutine.  By decoupling
 	// flush from write, we eliminate the O(n²) rebuild storm that occurred when N
@@ -79,11 +72,6 @@ type Runtime struct {
 	flushLoopOnce   sync.Once
 }
 
-type memoryDeleteTask struct {
-	MemoryID string
-	Hard     bool
-	Reason   string
-}
 
 func CreateRuntime(
 	wal eventbackbone.WAL,
@@ -121,7 +109,6 @@ func CreateRuntime(
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
 		memoryBackend:     newMemoryBackendRouterFromEnv(),
-		deleteOutbox:      make(chan memoryDeleteTask, resolveMemoryDeleteOutboxQueueSize()),
 	}
 }
 
@@ -145,12 +132,20 @@ func (r *Runtime) IngestVectorsToWarmSegment(segmentID string, objectIDs []strin
 	return tp.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
 }
 
-func (r *Runtime) SearchWarmSegment(segmentID, queryText string, topK int) ([]string, error) {
+func (r *Runtime) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
 	tp, ok := r.plane.(*dataplane.TieredDataPlane)
 	if !ok {
 		return nil, fmt.Errorf("tiered plane unavailable")
 	}
-	return tp.SearchWarmSegment(segmentID, queryText, topK)
+	return tp.SearchWarmSegment(segmentID, queryText, topK, queryVec)
+}
+
+func (r *Runtime) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.RegisterWarmSegment(segmentID, objectIDs)
 }
 
 func (r *Runtime) AdminWarmPrebuild() error {
@@ -172,14 +167,8 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 	go sub.Run(ctx)
 }
 
-func (r *Runtime) StartMemoryDeleteOutbox(ctx context.Context) {
-	if r == nil {
-		return
-	}
-	r.deleteWorkerOnce.Do(func() {
-		go r.runMemoryDeleteOutbox(ctx)
-	})
-}
+// StartMemoryDeleteOutbox is a no-op (deleteOutbox removed)
+func (r *Runtime) StartMemoryDeleteOutbox(ctx context.Context) {}
 
 // resolveFlushInterval reads PLASMOD_FLUSH_INTERVAL from the environment.
 // Default: 5 seconds.  A value of 0 disables the background flush loop.
@@ -393,6 +382,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		IncludeCold:    plan.IncludeCold,
 		ObjectTypes:    plan.ObjectTypes,
 		MemoryTypes:    plan.MemoryTypes,
+		QueryEmbedding: req.EmbeddingVector,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
 	if len(result.ObjectIDs) == 0 {
@@ -956,49 +946,6 @@ func (r *Runtime) DispatchRecall(
 	for i, step := range resp.ProofTrace {
 		proofStrs[i] = fmt.Sprintf("%s:%s", step.StepType, step.SourceID)
 	}
-	if r.memoryBackend != nil && r.memoryBackend.ShouldHybridRecall() {
-		zepFallback := false
-		recallSources := []string{"local"}
-		zepRefs, err := r.memoryBackend.RecallZep(
-			context.Background(),
-			query,
-			topK,
-			agentID,
-			sessionID,
-			tenantID,
-			workspaceID,
-		)
-		if err != nil {
-			log.Printf("[memory-backend] hybrid_recall zep fallback to local: %v", err)
-			algoNotes = append(algoNotes, "hybrid_recall_zep_fallback=error")
-			zepFallback = true
-		} else if len(zepRefs) > 0 {
-			orderedRefs = rrfFuseStringLists([][]string{orderedRefs, zepRefs}, 60, topK)
-			algoNotes = append(algoNotes, fmt.Sprintf("hybrid_recall_zep=%d", len(zepRefs)))
-			recallSources = append(recallSources, "zep")
-		}
-		// Collect full Memory payloads for the final ordered refs.
-		payloads := make([]schemas.Memory, 0, len(orderedRefs))
-		for _, id := range orderedRefs {
-			if mem, ok := r.storage.Objects().GetMemory(id); ok {
-				payloads = append(payloads, mem)
-			}
-		}
-		return schemas.MemoryView{
-			RequestID:         fmt.Sprintf("recall_%d", now.UnixNano()),
-			RequesterID:       agentID,
-			AgentID:           agentID,
-			ResolvedScope:     scope,
-			VisibleMemoryRefs: orderedRefs,
-			Payloads:          payloads,
-			BackendMode:       r.MemoryBackendMode(),
-			RecallSources:     recallSources,
-			ZepFallback:       zepFallback,
-			ProvenanceNotes:   []string{fmt.Sprintf("search_rank:%d_algo_rank:%d", len(visibleRefs), len(orderedRefs))},
-			AlgorithmNotes:    algoNotes,
-			ConstructionTrace: proofStrs,
-		}
-	}
 	// Collect full Memory payloads for the final ordered refs.
 	payloads := make([]schemas.Memory, 0, len(orderedRefs))
 	for _, id := range orderedRefs {
@@ -1066,8 +1013,6 @@ func (r *Runtime) MemoryBackendHealth(ctx context.Context) map[string]any {
 		return map[string]any{"mode": MemoryBackendLocalOnly, "status": "ok"}
 	}
 	out := r.memoryBackend.Health(ctx)
-	outbox := r.MemoryDeleteOutboxStats()
-	out["delete_outbox"] = outbox
 	return out
 }
 
@@ -1079,157 +1024,13 @@ func (r *Runtime) SetMemoryBackendMode(mode string) bool {
 }
 
 func (r *Runtime) EnqueueMemoryDelete(memoryID string, hard bool, reason string) bool {
-	if r == nil || strings.TrimSpace(memoryID) == "" || r.memoryBackend == nil {
-		return false
-	}
-	task := memoryDeleteTask{
-		MemoryID: strings.TrimSpace(memoryID),
-		Hard:     hard,
-		Reason:   strings.TrimSpace(reason),
-	}
-	select {
-	case r.deleteOutbox <- task:
-		atomic.AddInt64(&r.deleteOutboxQueued, 1)
-		return true
-	default:
-		atomic.AddInt64(&r.deleteOutboxDropped, 1)
-		return false
-	}
+	return false
 }
 
 func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
-	if r == nil {
-		return map[string]any{"enabled": false}
-	}
-	return map[string]any{
-		"enabled":       true,
-		"queue_size":    len(r.deleteOutbox),
-		"queue_cap":     cap(r.deleteOutbox),
-		"workers":       resolveMemoryDeleteOutboxWorkers(),
-		"queued_total":  atomic.LoadInt64(&r.deleteOutboxQueued),
-		"done_total":    atomic.LoadInt64(&r.deleteOutboxDone),
-		"failed_total":  atomic.LoadInt64(&r.deleteOutboxFailed),
-		"dropped_total": atomic.LoadInt64(&r.deleteOutboxDropped),
-	}
+	return map[string]any{"enabled": false}
 }
 
-func (r *Runtime) runMemoryDeleteOutbox(ctx context.Context) {
-	workers := resolveMemoryDeleteOutboxWorkers()
-	jobs := make(chan memoryDeleteTask, cap(r.deleteOutbox))
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r.deleteOutboxWorker(ctx, jobs)
-		}()
-	}
-	for task := range r.deleteOutbox {
-		jobs <- task
-	}
-	close(jobs)
-	wg.Wait()
-}
-
-// deleteOutboxWorker processes tasks from the shared jobs channel until closed.
-func (r *Runtime) deleteOutboxWorker(ctx context.Context, jobs <-chan memoryDeleteTask) {
-	maxRetries := resolveMemoryDeleteOutboxRetries()
-	retryDelay := resolveMemoryDeleteOutboxRetryDelay()
-	for task := range jobs {
-		var err error
-		for attempt := 0; attempt <= maxRetries; attempt++ {
-			callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			if task.Hard {
-				err = r.memoryBackend.HardDelete(callCtx, task.MemoryID, task.Reason)
-			} else {
-				err = r.memoryBackend.SoftDelete(callCtx, task.MemoryID, task.Reason)
-			}
-			cancel()
-			if err == nil {
-				break
-			}
-			if attempt < maxRetries {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(retryDelay):
-				}
-			}
-		}
-		if err != nil {
-			atomic.AddInt64(&r.deleteOutboxFailed, 1)
-			log.Printf("[memory-backend] delete_outbox failed hard=%t memory=%s err=%v", task.Hard, task.MemoryID, err)
-			continue
-		}
-		atomic.AddInt64(&r.deleteOutboxDone, 1)
-	}
-}
-
-func resolveMemoryDeleteOutboxQueueSize() int {
-	const defaultSize = 2048
-	const maxSize = 20000
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_OUTBOX_SIZE"))
-	if raw == "" {
-		return defaultSize
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
-		return defaultSize
-	}
-	if n > maxSize {
-		return maxSize
-	}
-	return n
-}
-
-func resolveMemoryDeleteOutboxRetries() int {
-	const defaultRetries = 3
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_RETRIES"))
-	if raw == "" {
-		return defaultRetries
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return defaultRetries
-	}
-	if n > 10 {
-		return 10
-	}
-	return n
-}
-
-func resolveMemoryDeleteOutboxRetryDelay() time.Duration {
-	const defaultMS = 300
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_RETRY_DELAY_MS"))
-	if raw == "" {
-		return time.Duration(defaultMS) * time.Millisecond
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
-		return time.Duration(defaultMS) * time.Millisecond
-	}
-	if n > 10000 {
-		n = 10000
-	}
-	return time.Duration(n) * time.Millisecond
-}
-
-func resolveMemoryDeleteOutboxWorkers() int {
-	const defaultWorkers = 8
-	const maxWorkers = 64
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_ZEP_DELETE_WORKERS"))
-	if raw == "" {
-		return defaultWorkers
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
-		return defaultWorkers
-	}
-	if n > maxWorkers {
-		n = maxWorkers
-	}
-	return n
-}
 
 // DispatchShare copies a memory to a target agent's namespace and fires
 // CommunicationWorker for any side-effects.

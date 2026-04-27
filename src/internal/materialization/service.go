@@ -55,6 +55,7 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		Namespace:   namespace,
 		Attributes:  buildAttributes(ev),
 		EventUnixTS: parseEventUnixTS(ev),
+		Embedding:   ev.EmbeddingVector,
 	}
 
 	mem := schemas.Memory{

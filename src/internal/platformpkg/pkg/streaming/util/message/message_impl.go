@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
-	"andb/platformpkg/pkg/proto/messagespb"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/proto/messagespb"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 type messageImpl struct {
