@@ -474,3 +474,17 @@ func (p *SegmentDataPlane) RegisterWarmSegment(segmentID string, objectIDs []str
 	p.segMu.Unlock()
 	return nil
 }
+
+// SearchWarmSegmentBatch performs batch ANN search against a warm segment.
+// Returns raw integer indices (not string IDs) for use by benchmark tools.
+// This is the internal fast path used by the HTTP batch endpoint to avoid
+// string conversion overhead.
+func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if segmentID == "" {
+		return nil, nil, fmt.Errorf("segment_id is required")
+	}
+	if nq <= 0 || topK <= 0 || len(queries) == 0 {
+		return nil, nil, fmt.Errorf("invalid args: nq=%d topK=%d len(queries)=%d", nq, topK, len(queries))
+	}
+	return retrievalplane.GlobalSegmentRetriever.Search(segmentID, queries, nq, topK)
+}

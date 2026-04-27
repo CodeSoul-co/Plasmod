@@ -199,6 +199,14 @@ func (t *TieredDataPlane) RegisterWarmSegment(segmentID string, objectIDs []stri
 	return t.warm.RegisterWarmSegment(segmentID, objectIDs)
 }
 
+// SearchWarmSegmentBatch forwards batch search to the warm segment.
+func (t *TieredDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if t == nil || t.warm == nil {
+		return nil, nil, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
 func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, bool) {
 	// Use precomputed query embedding when provided (bypasses embedder).
 	if len(input.QueryEmbedding) > 0 {

@@ -147,9 +147,6 @@ class HNSWIndexWrapper {
 
         auto result = knowhere::IndexFactory::Instance().Create<float>(
             index_type_, knowhere::Version::GetCurrentVersion().VersionNumber());
-
-        auto result = knowhere::IndexFactory::Instance().Create<float>(
-            index_type_, knowhere::Version::GetCurrentVersion().VersionNumber());
         if (!result.has_value()) return false;
         index_ = std::make_unique<knowhere::Index<knowhere::IndexNode>>(
             std::move(result.value()));
