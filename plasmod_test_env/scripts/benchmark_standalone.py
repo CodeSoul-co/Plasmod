@@ -7,17 +7,23 @@ Pipeline:
   G3: plasmod_bench --mode=vector-only      (GlobalSegmentRetriever.Search via CGO, OpenMP batch)
   G4: plasmod_bench --mode=http-query        (HTTP batch query)
 
+Modes per group:
+  - old: repeated single-query batch
+  - new: OpenMP batch + plugin
+  - raw: Standard batch (no plugin)
+
 Metrics per group:
   build_ms    — HNSW index construction time (separate)
   batch_ms    — single batch_search call (nq queries together, parallel)
   batch_qps   — nq / (batch_ms / 1000)
   serial_ms    — sum of nq individual search calls
   serial_qps   — nq / (serial_ms / 1000)
-  p50/p95/p99 — percentiles of individual search latencies
   recall@K    — vs ground truth from G1 batch results
 
-Recall setup: first n_indexed vectors are indexed, last nq vectors are queries
-  (disjoint sets, no query vector appears in the index).
+For deep/ dataset:
+  --indexed-dataset=data/deep/base.10M.fbin
+  --query-dataset=data/deep/query.public.10K.fbin
+  --groundtruth=data/deep/groundtruth.public.10K.ibin
 """
 from __future__ import annotations
 
@@ -32,7 +38,7 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
-BIN_DIR = ROOT.parent.parent / "bin"
+BIN_DIR = ROOT / "bin"
 BENCH_BIN = BIN_DIR / "plasmod_bench"
 PLASMOD_URL = os.environ.get("PLASMOD_URL", "http://127.0.0.1:8080")
 WARM_SEGMENT_ID = "warm.four_group"
@@ -40,66 +46,31 @@ WARM_SEGMENT_ID = "warm.four_group"
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 
-def run_group(mode: str, dataset: pathlib.Path, limit: int, nq: int,
-              topk: int, segment: str, indexed_count: int,
-              server_url: str = PLASMOD_URL) -> dict | None:
+def run_group(mode: str, indexed_dataset: str, query_dataset: str,
+              indexed_count: int, nq: int, topk: int, segment: str,
+              server_url: str = PLASMOD_URL,
+              groundtruth: str = "") -> dict | None:
     """Run a benchmark group as a Go subprocess and return parsed JSON result."""
-    args = [str(BENCH_BIN), f"--mode={mode}",
-            f"--dataset={dataset}", f"--limit={limit}",
-            f"--queries={nq}", f"--topk={topk}",
-            f"--segment={segment}",
-            f"--indexed-count={indexed_count}"]
-    if mode == "http-query":
+    args = [
+        str(BENCH_BIN),
+        f"--mode={mode}",
+        f"--indexed-dataset={indexed_dataset}",
+        f"--query-dataset={query_dataset}",
+        f"--indexed-count={indexed_count}",
+        f"--queries={nq}",
+        f"--topk={topk}",
+        f"--segment={segment}",
+    ]
+    if groundtruth:
+        args.append(f"--groundtruth={groundtruth}")
+    if mode in ("http-query", "http-query-raw"):
         args.append(f"--server-url={server_url}")
     env = dict(os.environ, KMP_DUPLICATE_LIB_OK="TRUE")
-    r = subprocess.run(args, capture_output=True, text=True, timeout=300, env=env)
+    r = subprocess.run(args, capture_output=True, text=True, timeout=3600, env=env)
     if r.returncode != 0:
         print(f"  [{mode}] failed: {r.stderr[:300].strip()}")
         return None
     return json.loads(r.stdout)
-
-
-def run_benchmark(
-    dataset: pathlib.Path,
-    limit: int,
-    num_queries: int,
-    topk: int,
-) -> list[dict]:
-    """Run all four groups. Returns list of result dicts."""
-    n_indexed = limit - num_queries
-    indexed_count = n_indexed
-
-    results = []
-
-    # G1: FAISS HNSW via CGO
-    print(f"\n[G1] FAISS HNSW via CGO (indexed={indexed_count})…")
-    r = run_group("faiss", dataset, limit, num_queries, topk,
-                  "bench.g1_faiss", indexed_count)
-    if r:
-        results.append(r)
-
-    # G2: Knowhere HNSW via CGO (OpenMP parallel batch search)
-    print(f"\n[G2] Knowhere HNSW via CGO — OpenMP batch (indexed={indexed_count})…")
-    r = run_group("knowhere-build", dataset, limit, num_queries, topk,
-                  "bench.g2_knowhere", indexed_count)
-    if r:
-        results.append(r)
-
-    # G3: GlobalSegmentRetriever.Search via CGO (same OpenMP batch path as G2)
-    print(f"\n[G3] Plasmod GlobalSegmentRetriever.Search via CGO — OpenMP batch (indexed={indexed_count})…")
-    r = run_group("vector-only", dataset, limit, num_queries, topk,
-                  "bench.g3_plasmod", indexed_count)
-    if r:
-        results.append(r)
-
-    # G4: HTTP batch query
-    print(f"\n[G4] HTTP batch query (indexed={indexed_count})…")
-    r = run_group("http-query", dataset, limit, num_queries, topk,
-                  WARM_SEGMENT_ID, indexed_count, server_url=PLASMOD_URL)
-    if r:
-        results.append(r)
-
-    return results
 
 
 def recall_at_k(gt_ids: np.ndarray, got_ids: np.ndarray, topk: int) -> float:
@@ -111,88 +82,206 @@ def recall_at_k(gt_ids: np.ndarray, got_ids: np.ndarray, topk: int) -> float:
 
 def main():
     ap = argparse.ArgumentParser(description="Four-group benchmark")
-    ap.add_argument("--dataset", type=pathlib.Path,
-                    default=DATA_DIR / "testQuery10K.fbin")
-    ap.add_argument("--limit", type=int, default=10000)
-    ap.add_argument("--num-queries", type=int, default=1000)
+    ap.add_argument("--indexed-dataset", type=pathlib.Path,
+                    default="", help="Path to .fbin containing indexed vectors")
+    ap.add_argument("--query-dataset", type=pathlib.Path,
+                    default="", help="Path to .fbin containing query vectors")
+    ap.add_argument("--groundtruth", type=pathlib.Path,
+                    default="", help="Path to .ibin ground truth file")
+    ap.add_argument("--indexed-count", type=int, default=0,
+                    help="Number of indexed vectors (0=use all in dataset)")
+    ap.add_argument("--num-queries", type=int, default=10000)
     ap.add_argument("--topk", type=int, default=10)
     ap.add_argument("--skip-faiss", action="store_true")
     ap.add_argument("--skip-knowhere", action="store_true")
     ap.add_argument("--skip-cgo", action="store_true")
     ap.add_argument("--skip-http", action="store_true")
+    ap.add_argument("--old-only", action="store_true",
+                    help="Run only the 'old' repeated single-query modes")
+    ap.add_argument("--new-raw-only", action="store_true",
+                    help="Run only the 'new' OpenMP batch and 'raw' standard modes")
     args = ap.parse_args()
 
-    n_indexed = args.limit - args.num_queries
+    indexed_ds = str(args.indexed_dataset) if args.indexed_dataset else ""
+    query_ds = str(args.query_dataset) if args.query_dataset else ""
+    groundtruth = str(args.groundtruth) if args.groundtruth else ""
+    indexed_count = args.indexed_count
+    nq = args.num_queries
+    topk = args.topk
+
     results = []
 
-    # G1
-    if not args.skip_faiss:
-        print(f"\n[G1] FAISS HNSW via CGO (indexed={n_indexed})…")
-        r = run_group("faiss", args.dataset, args.limit, args.num_queries,
-                      args.topk, "bench.g1_faiss", n_indexed)
+    # --- G1: FAISS HNSW ---
+    if not args.skip_faiss and not args.new_raw_only:
+        print(f"\n[G1-old] FAISS HNSW — repeated single-query batch (indexed={indexed_count})…")
+        r = run_group("faiss-single", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g1_faiss_old",
+                      groundtruth=groundtruth)
         if r:
+            r["label"] = "G1-old"
             results.append(r)
 
-    # G2
-    if not args.skip_knowhere:
-        print(f"\n[G2] Knowhere HNSW — OpenMP batch (indexed={n_indexed})…")
-        r = run_group("knowhere-build", args.dataset, args.limit,
-                      args.num_queries, args.topk, "bench.g2_knowhere", n_indexed)
+    if not args.skip_faiss and not args.old_only:
+        print(f"\n[G1-new] FAISS HNSW — true batch nq={nq} (indexed={indexed_count})…")
+        r = run_group("faiss", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g1_faiss_new",
+                      groundtruth=groundtruth)
         if r:
+            r["label"] = "G1-new"
             results.append(r)
 
-    # G3
-    if not args.skip_cgo:
-        print(f"\n[G3] Plasmod GlobalSegmentRetriever.Search — OpenMP batch (indexed={n_indexed})…")
-        r = run_group("vector-only", args.dataset, args.limit,
-                      args.num_queries, args.topk, "bench.g3_plasmod", n_indexed)
+    # --- G2: Knowhere HNSW via CGO ---
+    if not args.skip_knowhere and not args.new_raw_only:
+        print(f"\n[G2-old] Knowhere HNSW — repeated single-query batch (indexed={indexed_count})…")
+        r = run_group("knowhere-single", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g2_knowhere_old",
+                      groundtruth=groundtruth)
         if r:
+            r["label"] = "G2-old"
             results.append(r)
 
-    # G4
-    if not args.skip_http:
-        print(f"\n[G4] HTTP batch (indexed={n_indexed})…")
-        r = run_group("http-query", args.dataset, args.limit,
-                      args.num_queries, args.topk, WARM_SEGMENT_ID, n_indexed,
-                      server_url=PLASMOD_URL)
+    if not args.skip_knowhere and not args.old_only:
+        print(f"\n[G2-new] Knowhere HNSW — OpenMP batch + plugin (indexed={indexed_count})…")
+        r = run_group("knowhere-build", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g2_knowhere_new",
+                      groundtruth=groundtruth)
         if r:
+            r["label"] = "G2-new"
             results.append(r)
 
-    # Recall vs G1 ground truth
-    gt_ids = None
-    for r in results:
-        if r.get("mode") == "G1_FAISS" and r.get("int_ids"):
-            nq = r["n_queries"]
-            topk = r["topk"]
-            if len(r["int_ids"]) == nq * topk:
-                gt_ids = np.array(r["int_ids"], dtype="int64").reshape(nq, topk)
-            break
+    if not args.skip_knowhere and not args.old_only:
+        print(f"\n[G2-raw] Knowhere HNSW — standard batch (no plugin) (indexed={indexed_count})…")
+        r = run_group("knowhere-raw", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g2_knowhere_raw",
+                      groundtruth=groundtruth)
+        if r:
+            r["label"] = "G2-raw"
+            results.append(r)
 
-    # Print summary table
-    print("\n" + "=" * 100)
-    print(f"FOUR-GROUP BENCHMARK  (indexed={n_indexed}  queries={args.num_queries}  dim={r.get('dim', '?')}  topk={args.topk})")
-    print("=" * 100)
-    hdr = (f"{'Group':<22} {'Build_ms':>9} {'Batch_ms':>9} {'Batch_QPS':>10} "
-           f"{'Serial_QPS':>11} {'p50_ms':>9} {'Recall@K':>10}")
+    # --- G3: Plasmod Bridge ---
+    if not args.skip_cgo and not args.new_raw_only:
+        print(f"\n[G3-old] Plasmod Bridge — repeated single-query batch (indexed={indexed_count})…")
+        r = run_group("vector-only", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g3_plasmod_old",
+                      groundtruth=groundtruth)
+        if r:
+            r["label"] = "G3-old"
+            results.append(r)
+
+    if not args.skip_cgo and not args.old_only:
+        print(f"\n[G3-new] Plasmod Bridge — OpenMP batch + plugin (indexed={indexed_count})…")
+        # Reuse same segment for G2/G3 since it's the same library
+        r = run_group("vector-only", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g3_plasmod_new",
+                      groundtruth=groundtruth)
+        if r:
+            r["label"] = "G3-new"
+            results.append(r)
+
+    if not args.skip_cgo and not args.old_only:
+        print(f"\n[G3-raw] Plasmod Bridge — standard batch (no plugin) (indexed={indexed_count})…")
+        r = run_group("vector-only-raw", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g3_plasmod_raw",
+                      groundtruth=groundtruth)
+        if r:
+            r["label"] = "G3-raw"
+            results.append(r)
+
+    # --- G4: HTTP E2E ---
+    if not args.skip_http and not args.new_raw_only:
+        print(f"\n[G4-old] Plasmod HTTP E2E — repeated single-query batch (indexed={indexed_count})…")
+        r = run_group("http-query", indexed_ds, query_ds,
+                      indexed_count, nq, topk, WARM_SEGMENT_ID,
+                      server_url=PLASMOD_URL, groundtruth=groundtruth)
+        if r:
+            r["label"] = "G4-old"
+            results.append(r)
+
+    if not args.skip_http and not args.old_only:
+        print(f"\n[G4-new] Plasmod HTTP E2E — OpenMP batch + plugin (indexed={indexed_count})…")
+        r = run_group("http-query", indexed_ds, query_ds,
+                      indexed_count, nq, topk, WARM_SEGMENT_ID,
+                      server_url=PLASMOD_URL, groundtruth=groundtruth)
+        if r:
+            r["label"] = "G4-new"
+            results.append(r)
+
+    if not args.skip_http and not args.old_only:
+        print(f"\n[G4-raw] Plasmod HTTP E2E — standard batch (no plugin) (indexed={indexed_count})…")
+        r = run_group("http-query-raw", indexed_ds, query_ds,
+                      indexed_count, nq, topk, WARM_SEGMENT_ID,
+                      server_url=PLASMOD_URL, groundtruth=groundtruth)
+        if r:
+            r["label"] = "G4-raw"
+            results.append(r)
+
+    # ── Print summary table ──────────────────────────────────────────────────────
+    print("\n" + "=" * 110)
+    print(f"FOUR-GROUP BENCHMARK  (indexed={indexed_count}  queries={nq}  topk={topk})")
+    print("=" * 110)
+    hdr = (f"{'Label':<10} {'Group':<18} {'Layer':<22} {'Mode':<30} "
+           f"{'Build_ms':>9} {'Batch_ms':>9} {'BQPS':>8} {'S-QPS':>8} {'Recall':>8}")
     print(hdr)
-    print("-" * 100)
+    print("-" * 110)
+
     for r in results:
-        int_ids = r.get("int_ids", [])
-        nq = r["n_queries"]
-        topk = r["topk"]
-        recall = None
-        if int_ids and gt_ids is not None and len(int_ids) == nq * topk:
-            got = np.array(int_ids, dtype="int64").reshape(nq, topk)
-            recall = recall_at_k(gt_ids, got, topk)
-        recall_str = f"{recall:.4f}" if recall is not None else "    N/A"
-        print(f"{r.get('mode', '?'):<22} "
-              f"{r.get('build_ms', 0):>9.1f} "
-              f"{r.get('batch_ms', 0):>9.2f} "
-              f"{r.get('batch_qps', 0):>10.0f} "
-              f"{r.get('serial_qps', 0):>11.0f} "
-              f"{r.get('p50_ms', 0):>9.4f} "
-              f"{recall_str:>10}")
+        label = r.get("label", r.get("mode", "?"))
+        mode_str = r.get("mode", "?")
+        build_ms = r.get("build_ms", 0)
+        batch_ms = r.get("batch_ms", 0)
+        bqps = r.get("batch_qps", 0)
+        sqps = r.get("serial_qps", 0)
+        recall = r.get("recall", None)
+        recall_str = f"{recall:.4f}" if recall is not None else "   N/A"
+
+        # Determine layer/mode from mode string
+        if "G1_FAISS" in mode_str:
+            if "single" in mode_str:
+                group = "FAISS HNSW"
+                layer = "Native C++"
+                mode_name = "Repeated single-query batch"
+            else:
+                group = "FAISS HNSW"
+                layer = "Native C++"
+                mode_name = "True batch"
+        elif "G2_Knowhere" in mode_str:
+            group = "Knowhere HNSW"
+            layer = "CGO+OpenMP"
+            if "single" in mode_str:
+                mode_name = "Repeated single-query batch"
+            elif "raw" in mode_str:
+                mode_name = "Standard batch (no plugin)"
+            else:
+                mode_name = "OpenMP batch + plugin"
+        elif "G3_Plasmod" in mode_str or "G3_VectorOnly" in mode_str:
+            group = "Plasmod Bridge"
+            layer = "Go→CGO"
+            if "raw" in mode_str:
+                mode_name = "Standard batch (no plugin)"
+            else:
+                mode_name = "OpenMP batch + plugin"
+        elif "G4_HTTP" in mode_str:
+            group = "Plasmod HTTP E2E"
+            layer = "HTTP→Bridge"
+            if "raw" in mode_str:
+                mode_name = "Standard batch (no plugin)"
+            else:
+                mode_name = "OpenMP batch + plugin"
+        else:
+            group, layer, mode_name = mode_str, "", ""
+
+        print(f"{label:<10} {group:<18} {layer:<22} {mode_name:<30} "
+              f"{build_ms:>9.1f} {batch_ms:>9.1f} {bqps:>8.0f} {sqps:>8.0f} {recall_str:>8}")
+
     print()
+
+    # Save results
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    out = ROOT / "results" / "four_group" / f"deep_bench_{ts}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Results saved to {out}")
 
 
 if __name__ == "__main__":

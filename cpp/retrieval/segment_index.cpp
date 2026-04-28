@@ -148,7 +148,6 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     //
     // Thread safety: tls_qds is thread_local; this function is reentrant —
     // there is no cross-call shared mutable state here.
->>>>>>> origin/feature/retrieval-b
     thread_local knowhere::Json   tls_cfg;
     thread_local bool             tls_cfg_static_init = false;
     thread_local knowhere::DataSetPtr tls_qds;
