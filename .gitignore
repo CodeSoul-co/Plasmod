@@ -71,7 +71,7 @@ go.mod
 .andb_data/00008.mem
 docs/plasmod-fix/experiments/out-exp2.txt
 Plasmod.md
-new.md
+
 
 # dev docs
 reviewlist.md
@@ -105,3 +105,4 @@ cpp/build-docker/
 # Local-only: bench binaries + exp-branch test harness
 /bin/
 /plasmod_test_env/
+new.md
