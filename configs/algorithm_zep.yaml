@@ -1,0 +1,50 @@
+# Zep Governance Algorithm Configuration
+# Soft-coded parameters for Zep profile. Storage remains in Plasmod;
+# algorithm effects are applied via AlgorithmDispatch.
+#
+# Environment variable override:
+#   PLASMOD_ALGORITHM_ZEP_CONFIG=/path/to/this/file
+
+zep:
+  # Core graph construction parameters from Zep paper.
+  graph:
+    context_window_messages: 4     # entity/fact extraction uses current + last n messages
+    entity_embedding_dim: 1024     # entity name embedding dimension
+    episode_types: ["message", "text", "json"]
+    temporal_model: "bi_temporal"  # T (valid time) + T_tx (transaction time)
+    temporal_fields: ["valid_at", "invalid_at", "created_at_tx", "expired_at_tx"]
+
+  # Retrieval pipeline: f = constructor(reranker(search(query))).
+  retrieval:
+    search_methods: ["cosine", "bm25", "bfs"]
+    rerank_methods: ["rrf", "mmr", "episode_mentions", "node_distance", "cross_encoder"]
+    top_k: 20
+    # In DMR-specific runs, paper reports top 10.
+    top_k_dmr: 10
+    bfs:
+      enabled: true
+      # Prefer recent episodes as BFS seeds when available.
+      seed_strategy: "recent_episodes"
+    constructor:
+      include: ["facts", "entities"]
+      include_date_range: true
+
+  # Community graph construction.
+  community:
+    algorithm: "label_propagation" # paper uses label propagation (not Leiden)
+    dynamic_update: true            # one-step incremental assignment for new entities
+    periodic_refresh: true
+
+  # Model selections reported in the paper's experiments.
+  models:
+    embedding: "bge-m3"
+    reranker: "bge-m3"
+    graph_construction_llm: "gpt-4o-mini-2024-07-18"
+    response_llm: ["gpt-4o-mini-2024-07-18", "gpt-4o-2024-11-20", "gpt-4-turbo-2024-04-09"]
+
+  # Temporal extraction constraints.
+  temporal_extraction:
+    datetime_format: "ISO8601"
+    use_reference_timestamp: true
+    present_tense_uses_reference_time: true
+    infer_relative_time: true
