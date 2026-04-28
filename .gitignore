@@ -81,7 +81,6 @@ reviewlist.md
 
 # Member A: local files
 .gocache/
-Zep.docx
 MemoryBank.docx
 HARD_DELETE_ZEP_EXECUTION_PLAN.md
 /home/yangyongsheng/Plasmod/scripts/e2e/import_dataset.py
@@ -91,6 +90,13 @@ Zep_in_Plasmod.md
 .gitignore
 .andb_data/
 import_dataset.py
+MEMORYBANK_IMPLEMENTATION_CHECK.md
+models/minilm-l6-v2/
+
+# Top-level build artifacts from local experiments
+/benchmark
+/server
+Zep.docx
 
 # Local benchmark workspace (knowhere-vs-faiss comparison)
 TEST/

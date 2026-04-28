@@ -37,6 +37,7 @@ type sharedAlgorithmSection struct {
 type sharedAlgorithmConfigDoc struct {
 	Baseline   sharedAlgorithmSection `yaml:"baseline"`
 	MemoryBank sharedAlgorithmSection `yaml:"memorybank"`
+	Zep        sharedAlgorithmSection `yaml:"zep"`
 }
 
 // LoadSharedAlgorithmConfig loads shared retrieval / cold-search / hnsw parameters
@@ -44,7 +45,7 @@ type sharedAlgorithmConfigDoc struct {
 //
 // Priority:
 //  1. code defaults (schemas.DefaultAlgorithmConfig())
-//  2. YAML file (baseline by default; memorybank if PLASMOD_ALGORITHM_MEMORYBANK_CONFIG is set)
+//  2. YAML file selected by PLASMOD_ACTIVE_ALGORITHM (baseline|memorybank|zep)
 //  3. caller may still apply env overrides afterwards
 func LoadSharedAlgorithmConfig() (schemas.AlgorithmConfig, error) {
 	cfg := schemas.DefaultAlgorithmConfig()
@@ -59,6 +60,17 @@ func LoadSharedAlgorithmConfig() (schemas.AlgorithmConfig, error) {
 		path = mbPath
 		root = "memorybank"
 	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PLASMOD_ACTIVE_ALGORITHM"))) {
+	case "memorybank":
+		root = "memorybank"
+		path = "configs/algorithm_memorybank.yaml"
+	case "zep":
+		root = "zep"
+		path = "configs/algorithm_zep.yaml"
+	case "baseline":
+		root = "baseline"
+		path = "configs/algorithm_baseline.yaml"
+	}
 
 	var doc sharedAlgorithmConfigDoc
 	if err := LoadYAML(path, &doc); err != nil {
@@ -68,6 +80,8 @@ func LoadSharedAlgorithmConfig() (schemas.AlgorithmConfig, error) {
 	var sec sharedAlgorithmSection
 	if root == "memorybank" {
 		sec = doc.MemoryBank
+	} else if root == "zep" {
+		sec = doc.Zep
 	} else {
 		sec = doc.Baseline
 	}

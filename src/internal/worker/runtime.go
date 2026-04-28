@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
@@ -65,12 +66,11 @@ type Runtime struct {
 	// flushTicker drives the background index-rebuild goroutine.  By decoupling
 	// flush from write, we eliminate the O(n²) rebuild storm that occurred when N
 	// concurrent writes each triggered their own synchronous full-index rebuild.
-	flushTicker     *time.Ticker
-	flushStopCh     chan struct{}
-	flushInterval   time.Duration
-	flushLoopOnce   sync.Once
+	flushTicker   *time.Ticker
+	flushStopCh   chan struct{}
+	flushInterval time.Duration
+	flushLoopOnce sync.Once
 }
-
 
 func CreateRuntime(
 	wal eventbackbone.WAL,
@@ -408,6 +408,15 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		QueryEmbedding: req.EmbeddingVector,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
+	if len(result.ObjectIDs) == 0 {
+		if altQuery, ok := cjkSpacedFallbackQuery(req.QueryText); ok && altQuery != searchInput.QueryText {
+			searchInput.QueryText = altQuery
+			retry := r.nodeManager.DispatchQuery(searchInput, r.plane)
+			if len(retry.ObjectIDs) > 0 {
+				result = retry
+			}
+		}
+	}
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	if queryUsesStructuredMemorySelectors(req) {
 		selectorIDs := r.fetchMemoryIDsByStructuredSelectors(req)
@@ -520,7 +529,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
-	
+
 	// In VECTOR-ONLY MODE or MINIMAL MODE: skip provenance attachment
 	if !r.VectorOnlyMode && !r.MinimalMode {
 		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
@@ -918,6 +927,12 @@ func (r *Runtime) DispatchRecall(
 	}
 
 	resp := r.ExecuteQuery(req)
+	if len(resp.Objects) == 0 {
+		if altQuery, ok := cjkSpacedFallbackQuery(query); ok {
+			req.QueryText = altQuery
+			resp = r.ExecuteQuery(req)
+		}
+	}
 	visibleRefs := resp.Objects
 	if len(visibleRefs) == 0 {
 		return schemas.MemoryView{
@@ -949,6 +964,11 @@ func (r *Runtime) DispatchRecall(
 	} else {
 		algoNotes = []string{"search_fallback:no_algo_worker"}
 	}
+	activeAlgo := strings.TrimSpace(os.Getenv("PLASMOD_ACTIVE_ALGORITHM"))
+	if activeAlgo == "" {
+		activeAlgo = "memorybank"
+	}
+	algoNotes = append(algoNotes, "algorithm_profile="+activeAlgo)
 	// Convert ProofStep slice to string slice for MemoryView.ConstructionTrace
 	proofStrs := make([]string, len(resp.ProofTrace))
 	for i, step := range resp.ProofTrace {
@@ -975,6 +995,38 @@ func (r *Runtime) DispatchRecall(
 		AlgorithmNotes:    algoNotes,
 		ConstructionTrace: proofStrs,
 	}
+}
+
+func cjkSpacedFallbackQuery(query string) (string, bool) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "", false
+	}
+	hasCJK := false
+	for _, r := range q {
+		if unicode.Is(unicode.Han, r) {
+			hasCJK = true
+			break
+		}
+	}
+	if !hasCJK {
+		return "", false
+	}
+	parts := make([]string, 0, len([]rune(q)))
+	for _, r := range q {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		parts = append(parts, string(r))
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	alt := strings.Join(parts, " ")
+	if alt == q {
+		return "", false
+	}
+	return alt, true
 }
 
 func (r *Runtime) MemoryBackendMode() string {
@@ -1006,7 +1058,6 @@ func (r *Runtime) EnqueueMemoryDelete(memoryID string, hard bool, reason string)
 func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
 	return map[string]any{"enabled": false}
 }
-
 
 // DispatchShare copies a memory to a target agent's namespace and fires
 // CommunicationWorker for any side-effects.

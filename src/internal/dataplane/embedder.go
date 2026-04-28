@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // DefaultEmbeddingDim is the default vector dimensionality used by TfidfEmbedder.
@@ -176,19 +177,37 @@ func (e *TfidfEmbedder) ObserveTokens(text string) {
 	e.mu.Unlock()
 }
 
-// tokenize splits text into lowercase alphanumeric tokens.
+// tokenize splits text into mixed-language tokens.
+// - ASCII letters/digits: grouped into word tokens (len > 1)
+// - CJK Han runes: kept as single-rune tokens
+// This keeps TF-IDF usable for Chinese text without external segmenters.
 func (e *TfidfEmbedder) tokenize(text string) []string {
 	lower := strings.ToLower(text)
-	fields := strings.FieldsFunc(lower, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	})
-	// discard very short tokens
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if len(f) > 1 {
-			out = append(out, f)
+
+	isASCIIAlphaNum := func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	}
+
+	out := make([]string, 0, len(lower))
+	buf := make([]rune, 0, 16)
+	flushASCII := func() {
+		if len(buf) > 1 {
+			out = append(out, string(buf))
+		}
+		buf = buf[:0]
+	}
+
+	for _, r := range lower {
+		if isASCIIAlphaNum(r) {
+			buf = append(buf, r)
+			continue
+		}
+		flushASCII()
+		if unicode.Is(unicode.Han, r) {
+			out = append(out, string(r))
 		}
 	}
+	flushASCII()
 	return out
 }
 

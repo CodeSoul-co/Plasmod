@@ -77,16 +77,19 @@ Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.g
 
 ### Zep integration notes
 
-- Runtime mode switching for memory backend is exposed via:
+- Zep is treated as a memory-governance algorithm profile (plugin-style), not
+  a separate storage backend.
+- Storage remains in Plasmod; algorithm effects are applied through the
+  AlgorithmDispatch pipeline (same architectural direction as MemoryBank).
+- Current compatibility admin endpoints are:
   - `POST /v1/admin/memory/providers/mode`
   - `GET /v1/admin/memory/providers/mode`
   - `GET /v1/admin/memory/providers/health`
-- Supported backend modes are `local_only`, `shadow_write`, `hybrid_recall`, and `zep_only`.
-- Zep wiring is configured via env vars such as:
-  - `PLASMOD_ZEP_BASE_URL`, `PLASMOD_ZEP_API_KEY`, `PLASMOD_ZEP_COLLECTION`
-  - `PLASMOD_ZEP_TIMEOUT_MS`
-  - Optional path overrides: `PLASMOD_ZEP_INGEST_PATH`, `PLASMOD_ZEP_RECALL_PATH`, `PLASMOD_ZEP_HEALTH_PATH`, `PLASMOD_ZEP_SOFT_DELETE_PATH`, `PLASMOD_ZEP_HARD_DELETE_PATH`
-- Hybrid recall verification should target `POST /v1/internal/memory/recall` (Agent SDK bridge). This response includes algorithm-level fields like `backend_mode`, `recall_sources`, and fallback notes. `POST /v1/query` is the core retrieval pipeline and is not the canonical endpoint for validating Zep hybrid-recall participation.
+- At this stage, compatibility mode remains `local_only`.
+- Zep governance parameters are configured in `configs/algorithm_memorybank.yaml`
+  under the `zep` section (soft-coded, no separate storage wiring).
+- Algorithm-level verification should target `POST /v1/internal/memory/recall`
+  (Agent SDK bridge). `POST /v1/query` remains the core retrieval pipeline.
 
 ## Dataset bulk import and CLI delete / purge (E2E)
 
