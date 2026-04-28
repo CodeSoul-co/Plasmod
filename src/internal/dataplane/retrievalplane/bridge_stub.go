@@ -77,6 +77,11 @@ func (s *SegmentRetriever) SearchWithFilter(_ string, _ []float32, _, _ int, _ [
 	return nil, nil, ErrRetrievalNotAvailable
 }
 
+// SearchRaw returns ErrRetrievalNotAvailable.
+func (s *SegmentRetriever) SearchRaw(_ string, _ []float32, _, _ int) ([]int64, []float32, error) {
+	return nil, nil, ErrRetrievalNotAvailable
+}
+
 // UnloadSegment returns ErrRetrievalNotAvailable.
 func (s *SegmentRetriever) UnloadSegment(_ string) error {
 	return ErrRetrievalNotAvailable
