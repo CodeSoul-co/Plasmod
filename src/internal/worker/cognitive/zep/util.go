@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var nonWord = regexp.MustCompile(`[^a-zA-Z0-9_\-\u4e00-\u9fff]+`)
+var nonWord = regexp.MustCompile(`[^a-zA-Z0-9_\-\x{4e00}-\x{9fff}]+`)
 
 func tsNow() string { return time.Now().UTC().Format(time.RFC3339) }
 
