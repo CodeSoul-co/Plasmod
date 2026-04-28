@@ -33,6 +33,39 @@ int   plasmod_retriever_init(
     int         rrf_k
 );
 
+/* DiskANN-specific init.  DiskANN is on-disk: it writes a vamana graph,
+ * PQ shards and metadata files prefixed by `index_prefix` (the directory
+ * containing the prefix must already exist and be writable).  After this
+ * succeeds, follow the normal plasmod_retriever_build / _search flow.
+ *
+ * metric_type must be one of: "L2", "IP", "COSINE".
+ * Returns 1 on success, 0 on failure.
+ */
+int   plasmod_retriever_init_diskann(
+    void*       retriever,
+    const char* metric_type,
+    int         dim,
+    const char* index_prefix
+);
+
+/* IVF_FLAT-specific init with explicit (nlist, nprobe) tuning.
+ *
+ * nlist  : number of coarse Voronoi cells the dataset is partitioned into
+ *          at build time.  Rule of thumb: nlist ≈ 4 * sqrt(N).
+ * nprobe : number of cells visited per query.  Higher → higher recall,
+ *          lower QPS.  Pass <=0 to use the C++ default (nprobe=8).
+ *
+ * metric_type must be one of: "L2", "IP", "COSINE".
+ * Returns 1 on success, 0 on failure.
+ */
+int   plasmod_retriever_init_ivf(
+    void*       retriever,
+    const char* metric_type,
+    int         dim,
+    int         nlist,
+    int         nprobe
+);
+
 int   plasmod_retriever_build(
     void*        retriever,
     const float* dense_vectors,

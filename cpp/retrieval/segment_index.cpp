@@ -110,77 +110,45 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     //   - output buffers (out_ids, out_dists) are partitioned by thread → no race
     const bool use_omp = HAVE_OMP && nq > 1;
 
-    if (use_omp) {
-        // Step 1: plugin reorder (serial, once before parallel region)
-        std::vector<int64_t> order(nq);
-        plasmod::GetDefaultPlugin().ReorderQueryBatch(
-            query, nq, entry.dim, order.data());
-
-        #pragma omp parallel
-        {
-            // Thread-local search state — allocated once per thread and reused
-            // across all parallel iterations.  Eliminates Json deep-copy and
-            // DataSet heap allocation on every call.
-            thread_local knowhere::Json   tls_cfg;
-            thread_local bool             tls_cfg_static_init = false;
-            thread_local knowhere::DataSetPtr tls_qds;
-
-            if (!tls_cfg_static_init) {
-                tls_cfg[knowhere::meta::METRIC_TYPE]     = kMetricType;
-                tls_cfg[knowhere::indexparam::M]          = kHNSW_M;
-                tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
-                tls_cfg_static_init = true;
-            }
-            tls_cfg[knowhere::meta::DIM]  = entry.dim;
-            tls_cfg[knowhere::meta::TOPK] = topk;
-            // ef scales with topk for recall; clamped to search ef max.
-            tls_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kHNSW_EfSearch);
-
-            if (!tls_qds) {
-                tls_qds = std::make_shared<knowhere::DataSet>();
-                tls_qds->SetIsOwner(false);
-            }
-
-            #pragma omp for schedule(dynamic)
-            for (int64_t qi = 0; qi < nq; ++qi) {
-                // Step 2: plugin-reordered query index
-                const int64_t orig = order[qi];
-                const float*  qptr = query + orig * entry.dim;
-                int64_t*     id_out   = out_ids   + orig * topk;
-                float*       dist_out = out_dists + orig * topk;
-
-                tls_qds->SetRows(1);
-                tls_qds->SetDim(entry.dim);
-                tls_qds->SetTensor(qptr);
-
-                if (allow_bits && allow_count > 0) {
-                    knowhere::BitsetView bv(allow_bits, allow_count);
-                    auto res = idx->Search(tls_qds, tls_cfg, bv);
-                    if (res.has_value()) {
-                        std::memcpy(id_out,   res.value()->GetIds(),     topk * sizeof(int64_t));
-                        std::memcpy(dist_out, res.value()->GetDistance(), topk * sizeof(float));
-                    } else {
-                        std::memset(id_out,   0, topk * sizeof(int64_t));
-                        std::memset(dist_out, 0, topk * sizeof(float));
-                    }
-                } else {
-                    auto res = idx->Search(tls_qds, tls_cfg, knowhere::BitsetView());
-                    if (res.has_value()) {
-                        std::memcpy(id_out,   res.value()->GetIds(),     topk * sizeof(int64_t));
-                        std::memcpy(dist_out, res.value()->GetDistance(), topk * sizeof(float));
-                    } else {
-                        std::memset(id_out,   0, topk * sizeof(int64_t));
-                        std::memset(dist_out, 0, topk * sizeof(float));
-                    }
-                }
-            }
-        }
-        return kOK;
-    }
-
-    // ── Fallback: single query with filter (or OpenMP unavailable) ─────────────
-    // Use the original thread-local path for nq==1 with filter.
-    // (OpenMP parallel path handles nq==1 via HnswFastSearchFloat above.)
+// ── Single full-batch path ────────────────────────────────────────────────
+    //
+    // Previously the batch path here ran an outer `#pragma omp parallel for`
+    // that called `idx->Search(tls_qds_with_nq=1)` once per query.  With the
+    // FAISS_HNSW_FLAT backend that triggered:
+    //   1. Knowhere wrapper overhead (CreateConfig + LoadConfig + JSON copy
+    //      + expected wrap + DataSet alloc) on every call → ~10-30 µs × nq.
+    //   2. Nested OMP regions: faiss::IndexHNSW::search has its own
+    //      `#pragma omp parallel for` over the input batch which collapsed
+    //      to a single-iteration loop inside our outer OMP region, missing
+    //      faiss's per-thread VisitedTable reuse optimisation.
+    //
+    // Hand the full nq to faiss in a single call: wrapper cost is paid once,
+    // and faiss::IndexHNSW::search does its own static OpenMP chunking with
+    // a per-thread VisitedTable allocated outside the per-query inner loop.
+    // This matches the G1 FAISS-direct CGO path's parallelism profile.
+    //
+    // Thread safety: tls_qds is thread_local; this function is reentrant —
+    // there is no cross-call shared mutable state here.
+    // ── Single full-batch path ────────────────────────────────────────────────
+    //
+    // Previously the batch path here ran an outer `#pragma omp parallel for`
+    // that called `idx->Search(tls_qds_with_nq=1)` once per query.  With the
+    // FAISS_HNSW_FLAT backend that triggered:
+    //   1. Knowhere wrapper overhead (CreateConfig + LoadConfig + JSON copy
+    //      + expected wrap + DataSet alloc) on every call → ~10-30 µs × nq.
+    //   2. Nested OMP regions: faiss::IndexHNSW::search has its own
+    //      `#pragma omp parallel for` over the input batch which collapsed
+    //      to a single-iteration loop inside our outer OMP region, missing
+    //      faiss's per-thread VisitedTable reuse optimisation.
+    //
+    // Hand the full nq to faiss in a single call: wrapper cost is paid once,
+    // and faiss::IndexHNSW::search does its own static OpenMP chunking with
+    // a per-thread VisitedTable allocated outside the per-query inner loop.
+    // This matches the G1 FAISS-direct CGO path's parallelism profile.
+    //
+    // Thread safety: tls_qds is thread_local; this function is reentrant —
+    // there is no cross-call shared mutable state here.
+>>>>>>> origin/feature/retrieval-b
     thread_local knowhere::Json   tls_cfg;
     thread_local bool             tls_cfg_static_init = false;
     thread_local knowhere::DataSetPtr tls_qds;

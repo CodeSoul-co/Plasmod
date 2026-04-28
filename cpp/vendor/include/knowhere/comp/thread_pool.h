@@ -201,12 +201,24 @@ public:
     static size_t GetSearchThreadPoolPendingTaskCount() { return GetGlobalSearchThreadPool()->GetPendingTaskCount(); }
     static size_t GetBuildThreadPoolPendingTaskCount()  { return GetGlobalBuildThreadPool()->GetPendingTaskCount();  }
 
+    // Pool-size override via env var.  Reads PLASMOD_NUM_THREADS once on
+    // first access; if unset/invalid falls back to hardware_concurrency().
+    // Lets bench harnesses align Knowhere with Faiss for fair comparison
+    // (Knowhere's wrapper overhead is otherwise hidden behind 36-way fan-out).
+    static uint32_t resolve_default_threads() {
+        if (const char* s = std::getenv("PLASMOD_NUM_THREADS")) {
+            char* end = nullptr;
+            unsigned long n = std::strtoul(s, &end, 10);
+            if (end != s && n > 0 && n < 4096) return static_cast<uint32_t>(n);
+        }
+        return std::thread::hardware_concurrency();
+    }
     static std::shared_ptr<ThreadPool> GetGlobalBuildThreadPool() {
-        if (!build_pool_) InitGlobalBuildThreadPool(std::thread::hardware_concurrency());
+        if (!build_pool_) InitGlobalBuildThreadPool(resolve_default_threads());
         return build_pool_;
     }
     static std::shared_ptr<ThreadPool> GetGlobalSearchThreadPool() {
-        if (!search_pool_) InitGlobalSearchThreadPool(std::thread::hardware_concurrency());
+        if (!search_pool_) InitGlobalSearchThreadPool(resolve_default_threads());
         return search_pool_;
     }
 

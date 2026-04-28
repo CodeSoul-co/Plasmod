@@ -13,8 +13,8 @@
 // The segment path (plasmod_segment_*) delegates to SegmentIndexManager.
 
 #include "plasmod/retrieval.h"
-#include "plasmod/segment_index.h"
 #include "plasmod/plasmod_c_api.h"
+#include "plasmod/segment_index.h"
 #include "plasmod/sparse.h"
 #include "faiss/IndexHNSW.h"
 #include "faiss/MetricType.h"
@@ -68,6 +68,42 @@ int plasmod_retriever_init(void* handle,
     cfg.index_type  = index_type  ? index_type  : "HNSW";
     cfg.metric_type = metric_type ? metric_type : "IP";
     cfg.dim         = dim;
+
+    return h->dense.Init(cfg) ? 1 : 0;
+}
+
+int plasmod_retriever_init_ivf(void*       handle,
+                               const char* metric_type,
+                               int         dim,
+                               int         nlist,
+                               int         nprobe) {
+    if (!handle || dim <= 0) return 0;
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
+
+    plasmod::IndexConfig cfg;
+    cfg.index_type  = "IVF_FLAT";
+    cfg.metric_type = metric_type ? metric_type : "L2";
+    cfg.dim         = dim;
+    if (nlist  > 0) cfg.ivf_nlist  = nlist;
+    if (nprobe > 0) cfg.ivf_nprobe = nprobe;
+
+    return h->dense.Init(cfg) ? 1 : 0;
+}
+
+int plasmod_retriever_init_diskann(void*       handle,
+                                   const char* metric_type,
+                                   int         dim,
+                                   const char* index_prefix) {
+    if (!handle || dim <= 0 || !index_prefix || index_prefix[0] == '\0') return 0;
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
+
+    plasmod::IndexConfig cfg;
+    cfg.index_type           = "DISKANN";
+    cfg.metric_type          = metric_type ? metric_type : "L2";
+    cfg.dim                  = dim;
+    cfg.diskann_index_prefix = index_prefix;
+    // Other DiskANN params left at struct defaults; tunable via a richer
+    // C API in a follow-up if needed.
 
     return h->dense.Init(cfg) ? 1 : 0;
 }

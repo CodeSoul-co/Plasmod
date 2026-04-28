@@ -3,6 +3,39 @@ syntax = "proto3";
 package milvus.proto.modelservice;
 option go_package="github.com/milvus-io/milvus/pkg/v2/proto/modelservicepb";
 
+// =============================================================================
+// DEPRECATED — NOT WIRED INTO PLASMOD RUNTIME
+// =============================================================================
+// These three RPC services (TextEmbeddingService / RerankService /
+// HighlightService) are inherited verbatim from Milvus and target a
+// Python-side model server (sentence-transformers, cross-encoder, etc.)
+// that Milvus runs out-of-process via gRPC.
+//
+// Plasmod does NOT call any of these RPCs. As of feature/retrieval-b
+// the production paths are:
+//
+//   * Embeddings  →  src/internal/dataplane/embedding/*.go
+//                    (TfidfEmbedder pure-Go, or HTTPEmbedder against
+//                     OpenAI/ZhipuAI/Cohere REST APIs, or GGUF via
+//                     go-llama.cpp libbinding.a — never Python gRPC)
+//
+//   * Retrieval   →  src/internal/dataplane/retrievalplane/bridge.go
+//                    + sparse_bridge.go  (CGO → C++ Knowhere/FAISS
+//                     for HNSW / IVF_FLAT / DiskANN / SPARSE_INVERTED
+//                     / SPARSE_WAND — never Python)
+//
+//   * Reranking   →  src/internal/retrieval/retriever.go markFinalScores
+//                    (pure-Go RRF + dense+sparse fusion)
+//
+// Verification: `grep -rln modelservicepb src/` returns zero runtime
+// importers — the modelservicepb package below is generated stubs only.
+//
+// Kept here solely so a future re-sync from upstream Milvus pkg/proto
+// does not produce a confusing structural diff.  If you are looking
+// for "where embeddings happen", the file you want is
+// dataplane/embedding/embedding.go, not this one.
+// =============================================================================
+
 service TextEmbeddingService {
     rpc Embedding(TextEmbeddingRequest) returns (TextEmbeddingResponse);
 }

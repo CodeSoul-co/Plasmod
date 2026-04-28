@@ -278,16 +278,28 @@ class HnswIndexNode : public IndexNode {
             // compared to the futures-based path used for batch queries.
             run_one(0, id_ptr, dist_ptr);
         } else {
-            std::vector<knowhere::Future<knowhere::Unit>> futs;
-            futs.reserve(nq);
-            for (int i = 0; i < nq; ++i) {
-                futs.emplace_back(search_pool_->push([&, idx = i,
-                                                       p_id_ptr = id_ptr,
-                                                       p_dist_ptr = dist_ptr]() {
-                    run_one(idx, p_id_ptr, p_dist_ptr);
-                }));
+            // Batch fast path: OpenMP parallel-for instead of submitting one
+            // Future per query to knowhere::ThreadPool.
+            //
+            // Why: search_pool_->push allocates a std::function closure
+            // (heap), enqueues onto a concurrent task queue (lock + cv),
+            // creates a Future shared-state, and signals on completion —
+            // ~10-30 µs per query.  For nq=10000 that's 100-300 ms of pure
+            // scheduling overhead, dominating the 5-15 µs of actual searchKnn
+            // work on small graphs.  This was the root cause of the ~2× gap
+            // vs faiss::IndexHNSW::search (G1=12k QPS, G2=5.5k QPS on amd64
+            // before this fix), since faiss uses #pragma omp parallel for
+            // with static chunking and zero per-query heap alloc.
+            //
+            // Safety: index_->searchKnn is thread-safe per hnswlib's
+            // contract; bitset and param are read-only across threads;
+            // feder_result is null in this branch (trace_visit forces nq==1
+            // upstream); each iteration writes to a disjoint output slot.
+            const int n_threads = static_cast<int>(search_pool_->size());
+#pragma omp parallel for schedule(dynamic, 64) num_threads(n_threads > 0 ? n_threads : 1)
+            for (int i = 0; i < (int)nq; ++i) {
+                run_one(i, id_ptr, dist_ptr);
             }
-            WaitAllSuccess(futs);
         }
 
         DataSetPtr res;
