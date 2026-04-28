@@ -146,6 +146,90 @@ func NewRetrieverWithIndexType(dim int, indexType, metric string) (*Retriever, e
 	return &Retriever{ptr: ptr, dim: dim}, nil
 }
 
+// NewIVFRetriever creates a Retriever backed by faiss IVF_FLAT with
+// explicit (nlist, nprobe) tuning.
+//
+// nlist  : number of coarse Voronoi cells (rule of thumb: 4 * sqrt(N)).
+// nprobe : cells visited per query.  <=0 falls back to C++ default (8).
+//          Higher nprobe → higher recall, lower QPS.
+//
+// metric must be "L2", "IP", or "COSINE".  Returns an error if the
+// IVF backend was not compiled in (build with -DANDB_KNOWHERE_FAISS=ON).
+func NewIVFRetriever(dim int, metric string, nlist, nprobe int) (*Retriever, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("NewIVFRetriever: dim must be > 0")
+	}
+	if metric == "" {
+		metric = "L2"
+	}
+	ptr := C.plasmod_retriever_create()
+	if ptr == nil {
+		return nil, fmt.Errorf("plasmod_retriever_create: returned nil")
+	}
+	cMetric := C.CString(metric)
+	defer C.free(unsafe.Pointer(cMetric))
+
+	rc := C.plasmod_retriever_init_ivf(
+		ptr,
+		cMetric,
+		C.int(dim),
+		C.int(nlist),
+		C.int(nprobe),
+	)
+	if rc == 0 {
+		C.plasmod_retriever_destroy(ptr)
+		return nil, fmt.Errorf("plasmod_retriever_init_ivf(metric=%s nlist=%d nprobe=%d): failed",
+			metric, nlist, nprobe)
+	}
+	return &Retriever{ptr: ptr, dim: dim}, nil
+}
+
+// NewDiskANNRetriever creates a Retriever backed by Microsoft DiskANN.
+//
+// indexPrefix is a path prefix (its parent directory must already exist
+// and be writable; the prefix itself must NOT collide with an existing
+// DiskANN index — Build() will refuse to clobber).  DiskANN writes its
+// vamana graph + PQ shards + metadata at this prefix, and a raw-vector
+// cache file at indexPrefix + ".raw_data.bin".
+//
+// metric must be "L2", "IP", or "COSINE".
+//
+// Tuning (max_degree=48, search_list=128, beamwidth=8) currently uses
+// Knowhere defaults; expose them through this Go API only when a call
+// site needs to override.
+//
+// Returns an error if the DiskANN backend was not compiled into the
+// shared library (build with -DANDB_KNOWHERE_DISKANN=ON) or if Init
+// fails (e.g. invalid metric, unwritable prefix).
+func NewDiskANNRetriever(dim int, metric, indexPrefix string) (*Retriever, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("NewDiskANNRetriever: dim must be > 0")
+	}
+	if indexPrefix == "" {
+		return nil, fmt.Errorf("NewDiskANNRetriever: indexPrefix must be non-empty")
+	}
+	if metric == "" {
+		metric = "L2"
+	}
+
+	ptr := C.plasmod_retriever_create()
+	if ptr == nil {
+		return nil, fmt.Errorf("plasmod_retriever_create: returned nil")
+	}
+	cMetric := C.CString(metric)
+	defer C.free(unsafe.Pointer(cMetric))
+	cPrefix := C.CString(indexPrefix)
+	defer C.free(unsafe.Pointer(cPrefix))
+
+	rc := C.plasmod_retriever_init_diskann(ptr, cMetric, C.int(dim), cPrefix)
+	if rc == 0 {
+		C.plasmod_retriever_destroy(ptr)
+		return nil, fmt.Errorf("plasmod_retriever_init_diskann(%s, %q): failed "+
+			"(check DiskANN was compiled in and prefix is writable)", metric, indexPrefix)
+	}
+	return &Retriever{ptr: ptr, dim: dim}, nil
+}
+
 // Build builds the HNSW index from a flat float32 slice.
 // vectors must have length == n * dim.
 func (r *Retriever) Build(vectors []float32, n int) error {
