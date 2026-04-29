@@ -43,9 +43,11 @@ memory_tiering:
 
     queue:
       protected_ratio: 0.5
+      lru_k_value: 2
 
     dirty:
       max_flush_retries: 3
+      journal_path: ".andb_data/hot_dirty_journal.log"
 
     semantic_rules:
       keyword_boost:
@@ -61,6 +63,21 @@ memory_tiering:
       force_class1_keywords: [core_fact, critical, must_keep]
       force_class2_keywords: [thinking, reasoning, payload]
       force_class3_keywords: [archived, deleted, obsolete]
+      force_class_by_type:
+        memory: 1
+        state: 1
+        artifact: 2
+      memory_lifecycle_class:
+        active: 1
+        reinforced: 1
+        compressed: 2
+        stale: 2
+        archived: 3
+        deleted: 3
+        quarantined: 3
+
+    locator:
+      block_size: 4096
 
     pointer_policy:
       class1_types: [memory, state]

@@ -36,18 +36,25 @@ type MemoryTieringConfig struct {
 			WriteBackByType     map[string]float64 `yaml:"write_back_by_type"`
 			Queue               struct {
 				ProtectedRatio float64 `yaml:"protected_ratio"`
+				LRUKValue      int     `yaml:"lru_k_value"`
 			} `yaml:"queue"`
 			Dirty struct {
-				MaxFlushRetries int `yaml:"max_flush_retries"`
+				MaxFlushRetries int    `yaml:"max_flush_retries"`
+				JournalPath     string `yaml:"journal_path"`
 			} `yaml:"dirty"`
 			SemanticRules struct {
 				KeywordBoost map[string]float64 `yaml:"keyword_boost"`
 			} `yaml:"semantic_rules"`
 			PlacementRules struct {
-				ForceClass1Keywords []string `yaml:"force_class1_keywords"`
-				ForceClass2Keywords []string `yaml:"force_class2_keywords"`
-				ForceClass3Keywords []string `yaml:"force_class3_keywords"`
+				ForceClass1Keywords  []string       `yaml:"force_class1_keywords"`
+				ForceClass2Keywords  []string       `yaml:"force_class2_keywords"`
+				ForceClass3Keywords  []string       `yaml:"force_class3_keywords"`
+				ForceClassByType     map[string]int `yaml:"force_class_by_type"`
+				MemoryLifecycleClass map[string]int `yaml:"memory_lifecycle_class"`
 			} `yaml:"placement_rules"`
+			Locator struct {
+				BlockSize int64 `yaml:"block_size"`
+			} `yaml:"locator"`
 			PointerPolicy struct {
 				Class1Types []string `yaml:"class1_types"`
 				Class2Types []string `yaml:"class2_types"`
@@ -97,7 +104,9 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 		"artifact": 0.50,
 	}
 	h.Queue.ProtectedRatio = 0.5
+	h.Queue.LRUKValue = 2
 	h.Dirty.MaxFlushRetries = 3
+	h.Dirty.JournalPath = ".andb_data/hot_dirty_journal.log"
 	h.SemanticRules.KeywordBoost = map[string]float64{
 		"core_fact":    0.20,
 		"evidence":     0.15,
@@ -110,6 +119,21 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 	h.PlacementRules.ForceClass1Keywords = []string{"core_fact", "critical", "must_keep"}
 	h.PlacementRules.ForceClass2Keywords = []string{"thinking", "reasoning", "payload"}
 	h.PlacementRules.ForceClass3Keywords = []string{"archived", "deleted", "obsolete"}
+	h.PlacementRules.ForceClassByType = map[string]int{
+		"memory":   1,
+		"state":    1,
+		"artifact": 2,
+	}
+	h.PlacementRules.MemoryLifecycleClass = map[string]int{
+		"active":      1,
+		"reinforced":  1,
+		"compressed":  2,
+		"stale":       2,
+		"archived":    3,
+		"deleted":     3,
+		"quarantined": 3,
+	}
+	h.Locator.BlockSize = 4096
 	h.PointerPolicy.Class1Types = []string{"memory", "state"}
 	h.PointerPolicy.Class2Types = []string{"artifact"}
 	h.PointerPolicy.Class3Types = []string{}
