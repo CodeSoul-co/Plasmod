@@ -35,9 +35,16 @@ type MemoryTieringConfig struct {
 			ReloadEaseEWMAAlpha float64            `yaml:"reload_ease_ewma_alpha"`
 			WriteBackByType     map[string]float64 `yaml:"write_back_by_type"`
 			Queue               struct {
-				ProtectedRatio float64 `yaml:"protected_ratio"`
-				LRUKValue      int     `yaml:"lru_k_value"`
+				ProtectedRatio    float64 `yaml:"protected_ratio"`
+				LRUKValue         int     `yaml:"lru_k_value"`
+				CoolingTTLSeconds float64 `yaml:"cooling_ttl_seconds"`
 			} `yaml:"queue"`
+			Pool struct {
+				FixedRatio   float64 `yaml:"fixed_ratio"`
+				HotRatio     float64 `yaml:"hot_ratio"`
+				CoolingRatio float64 `yaml:"cooling_ratio"`
+				FreeRatio    float64 `yaml:"free_ratio"`
+			} `yaml:"pool"`
 			Dirty struct {
 				MaxFlushRetries int    `yaml:"max_flush_retries"`
 				JournalPath     string `yaml:"journal_path"`
@@ -57,6 +64,8 @@ type MemoryTieringConfig struct {
 				ForceClass1Keywords  []string       `yaml:"force_class1_keywords"`
 				ForceClass2Keywords  []string       `yaml:"force_class2_keywords"`
 				ForceClass3Keywords  []string       `yaml:"force_class3_keywords"`
+				FixedTypes           []string       `yaml:"fixed_types"`
+				FixedKeywords        []string       `yaml:"fixed_keywords"`
 				ForceClassByType     map[string]int `yaml:"force_class_by_type"`
 				MemoryLifecycleClass map[string]int `yaml:"memory_lifecycle_class"`
 			} `yaml:"placement_rules"`
@@ -113,6 +122,11 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 	}
 	h.Queue.ProtectedRatio = 0.5
 	h.Queue.LRUKValue = 2
+	h.Queue.CoolingTTLSeconds = 60
+	h.Pool.FixedRatio = 0.20
+	h.Pool.HotRatio = 0.45
+	h.Pool.CoolingRatio = 0.20
+	h.Pool.FreeRatio = 0.15
 	h.Dirty.MaxFlushRetries = 3
 	h.Dirty.JournalPath = ".andb_data/hot_dirty_journal.log"
 	h.SemanticRules.KeywordBoost = map[string]float64{
@@ -133,6 +147,8 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 	h.PlacementRules.ForceClass1Keywords = []string{"core_fact", "critical", "must_keep"}
 	h.PlacementRules.ForceClass2Keywords = []string{"thinking", "reasoning", "payload"}
 	h.PlacementRules.ForceClass3Keywords = []string{"archived", "deleted", "obsolete"}
+	h.PlacementRules.FixedTypes = []string{"index_node", "operator", "metadata_index"}
+	h.PlacementRules.FixedKeywords = []string{"fixed", "always_on", "index"}
 	h.PlacementRules.ForceClassByType = map[string]int{
 		"memory":   1,
 		"state":    1,

@@ -44,6 +44,13 @@ memory_tiering:
     queue:
       protected_ratio: 0.5
       lru_k_value: 2
+      cooling_ttl_seconds: 60
+
+    pool:
+      fixed_ratio: 0.20
+      hot_ratio: 0.45
+      cooling_ratio: 0.20
+      free_ratio: 0.15
 
     dirty:
       max_flush_retries: 3
@@ -70,6 +77,8 @@ memory_tiering:
       force_class1_keywords: [core_fact, critical, must_keep]
       force_class2_keywords: [thinking, reasoning, payload]
       force_class3_keywords: [archived, deleted, obsolete]
+      fixed_types: [index_node, operator, metadata_index]
+      fixed_keywords: [fixed, always_on, index]
       force_class_by_type:
         memory: 1
         state: 1
