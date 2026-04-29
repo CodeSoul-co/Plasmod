@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"hash/fnv"
 	"math"
 	"os"
 	"path/filepath"
@@ -107,6 +108,12 @@ type HotCachePolicy struct {
 	DirtyJournalPath     string
 	LocatorBlockSize     int64
 	SemanticKeywordBoost map[string]float64
+	GraphSemanticEnabled bool
+	WSourceEvents        float64
+	WPolicyTags          float64
+	WImportance          float64
+	WConfidence          float64
+	NormalizeByMaxEdges  float64
 	ForceClass1Keywords  []string
 	ForceClass2Keywords  []string
 	ForceClass3Keywords  []string
@@ -169,9 +176,15 @@ func defaultHotCachePolicy() HotCachePolicy {
 			"retry":        -0.10,
 			"intermediate": -0.08,
 		},
-		ForceClass1Keywords: []string{"core_fact", "critical", "must_keep"},
-		ForceClass2Keywords: []string{"thinking", "reasoning", "payload"},
-		ForceClass3Keywords: []string{"archived", "deleted", "obsolete"},
+		GraphSemanticEnabled: true,
+		WSourceEvents:        0.45,
+		WPolicyTags:          0.25,
+		WImportance:          0.15,
+		WConfidence:          0.15,
+		NormalizeByMaxEdges:  8.0,
+		ForceClass1Keywords:  []string{"core_fact", "critical", "must_keep"},
+		ForceClass2Keywords:  []string{"thinking", "reasoning", "payload"},
+		ForceClass3Keywords:  []string{"archived", "deleted", "obsolete"},
 		ForceClassByType: map[string]int{
 			"memory":   1,
 			"state":    1,
@@ -656,7 +669,30 @@ func (c *HotObjectCache) semanticScore(base float64, objectType string, payload 
 			score += boost
 		}
 	}
+	if c.policy.GraphSemanticEnabled {
+		score += c.graphSemanticScore(payload)
+	}
 	return clamp01(score)
+}
+
+func (c *HotObjectCache) graphSemanticScore(payload any) float64 {
+	maxEdges := c.policy.NormalizeByMaxEdges
+	if maxEdges <= 0 {
+		maxEdges = 8
+	}
+	switch v := payload.(type) {
+	case schemas.Memory:
+		se := clamp01(float64(len(v.SourceEventIDs)) / maxEdges)
+		pt := clamp01(float64(len(v.PolicyTags)) / maxEdges)
+		imp := clamp01(v.Importance)
+		conf := clamp01(v.Confidence)
+		return c.policy.WSourceEvents*se +
+			c.policy.WPolicyTags*pt +
+			c.policy.WImportance*imp +
+			c.policy.WConfidence*conf
+	default:
+		return 0
+	}
 }
 
 func (c *HotObjectCache) extractText(payload any) string {
@@ -1032,7 +1068,7 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 		t.warm.PutMemory(m)
 		t.hot.PutWithOptions(memoryID, "memory", m, salience*0.5, HotPutOptions{
 			Dirty:          false,
-			PointerLocator: t.buildColdMemoryLocator(memoryID),
+			PointerLocator: t.buildColdMemoryLocator(memoryID, int64(estimatePayloadSize(m))),
 		})
 		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		return m, true
@@ -1105,10 +1141,21 @@ func (t *TieredObjectStore) resolveMemoryByLocator(p HotPointerPayload, salience
 	return schemas.Memory{}, false
 }
 
-func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string) string {
+func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string, length int64) string {
+	if length < 0 {
+		length = 0
+	}
+	blockSize := int64(4096)
+	if t != nil && t.hot != nil && t.hot.policy.LocatorBlockSize > 0 {
+		blockSize = t.hot.policy.LocatorBlockSize
+	}
+	offset := stableLocatorOffset(memoryID, blockSize)
 	page := int64(0)
+	if blockSize > 0 {
+		page = offset / blockSize
+	}
 	if t == nil || t.cold == nil {
-		return encodeLocator(physicalLocator{Tier: "cold", Store: "unknown", ID: memoryID, Page: page})
+		return encodeLocator(physicalLocator{Tier: "cold", Store: "unknown", ID: memoryID, Offset: offset, Length: length, Page: page})
 	}
 	switch c := t.cold.(type) {
 	case *S3ColdStore:
@@ -1119,8 +1166,8 @@ func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string) string {
 			Bucket: c.cfg.Bucket,
 			Key:    key,
 			ID:     memoryID,
-			Offset: 0,
-			Length: 0,
+			Offset: offset,
+			Length: length,
 			Page:   page,
 		})
 	case *InMemoryColdStore:
@@ -1129,8 +1176,8 @@ func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string) string {
 			Store:  "inmem",
 			Key:    "cold.memory.map",
 			ID:     memoryID,
-			Offset: 0,
-			Length: 0,
+			Offset: offset,
+			Length: length,
 			Page:   page,
 		})
 	default:
@@ -1138,11 +1185,21 @@ func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string) string {
 			Tier:   "cold",
 			Store:  "generic",
 			ID:     memoryID,
-			Offset: 0,
-			Length: 0,
+			Offset: offset,
+			Length: length,
 			Page:   page,
 		})
 	}
+}
+
+func stableLocatorOffset(id string, blockSize int64) int64 {
+	if blockSize <= 0 {
+		blockSize = 4096
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(id))
+	const spanBlocks int64 = 1 << 20 // bounded pseudo-layout span
+	return int64(h.Sum64()%uint64(spanBlocks)) * blockSize
 }
 
 func encodeLocator(l physicalLocator) string {
