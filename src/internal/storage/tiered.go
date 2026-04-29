@@ -52,12 +52,15 @@ type HotEntry struct {
 	WriteBackCost float64
 	ReloadEase    float64
 	Dirty         bool
+	HitProb       float64
+	Protected     bool
 }
 
 type HotPointerPayload struct {
 	ObjectID    string
 	ObjectType  string
 	PointerType string
+	Locator     string
 }
 
 type HotCachePolicy struct {
@@ -76,14 +79,22 @@ type HotCachePolicy struct {
 	FrequencyNormWindow int
 	RecencyTauSeconds   float64
 	RecencyTauByType    map[string]float64
+	HitProbEWMAAlpha    float64
 	EstimatedPoolBytes  float64
 
-	ObjectTypeWeight map[string]float64
-	ReloadEaseByType map[string]float64
-	WriteBackByType  map[string]float64
-	Class1Types      []string
-	Class2Types      []string
-	Class3Types      []string
+	ObjectTypeWeight     map[string]float64
+	ReloadEaseByType     map[string]float64
+	ReloadEaseEWMAAlpha  float64
+	WriteBackByType      map[string]float64
+	ProtectedRatio       float64
+	MaxFlushRetries      int
+	SemanticKeywordBoost map[string]float64
+	ForceClass1Keywords  []string
+	ForceClass2Keywords  []string
+	ForceClass3Keywords  []string
+	Class1Types          []string
+	Class2Types          []string
+	Class3Types          []string
 }
 
 func defaultHotCachePolicy() HotCachePolicy {
@@ -106,6 +117,7 @@ func defaultHotCachePolicy() HotCachePolicy {
 			"state":    120.0,
 			"artifact": 90.0,
 		},
+		HitProbEWMAAlpha:   0.35,
 		EstimatedPoolBytes: 256 * 1024 * 1024,
 		ObjectTypeWeight: map[string]float64{
 			"memory":   0.95,
@@ -117,14 +129,29 @@ func defaultHotCachePolicy() HotCachePolicy {
 			"state":    0.50,
 			"artifact": 0.70,
 		},
+		ReloadEaseEWMAAlpha: 0.20,
 		WriteBackByType: map[string]float64{
 			"memory":   0.40,
 			"state":    0.60,
 			"artifact": 0.50,
 		},
-		Class1Types: []string{"memory", "state"},
-		Class2Types: []string{"artifact"},
-		Class3Types: []string{},
+		ProtectedRatio:  0.5,
+		MaxFlushRetries: 3,
+		SemanticKeywordBoost: map[string]float64{
+			"core_fact":    0.20,
+			"evidence":     0.15,
+			"summary":      0.10,
+			"final":        0.10,
+			"temporary":    -0.10,
+			"retry":        -0.10,
+			"intermediate": -0.08,
+		},
+		ForceClass1Keywords: []string{"core_fact", "critical", "must_keep"},
+		ForceClass2Keywords: []string{"thinking", "reasoning", "payload"},
+		ForceClass3Keywords: []string{"archived", "deleted", "obsolete"},
+		Class1Types:         []string{"memory", "state"},
+		Class2Types:         []string{"artifact"},
+		Class3Types:         []string{},
 	}
 }
 
@@ -152,7 +179,7 @@ func (e *HotEntry) hotness(policy HotCachePolicy) float64 {
 
 	sizeNorm := clamp01(e.EstimatedSize / policy.EstimatedPoolBytes)
 	writeBack := clamp01(e.WriteBackCost)
-	hitProb := clamp01(freq)
+	hitProb := clamp01(0.6*freq + 0.4*clamp01(e.HitProb))
 	reload := clamp01(e.ReloadEase)
 	penalty := policy.AlphaSize*sizeNorm +
 		policy.BetaWriteBack*writeBack +
@@ -171,12 +198,18 @@ type HotObjectCache struct {
 	entries map[string]*HotEntry
 	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
-	order  []string
-	policy HotCachePolicy
+	order      []string
+	policy     HotCachePolicy
+	probation  []string
+	protected  []string
+	dirtyQ     []string
+	dirtyRetry map[string]int
+	flushFn    func(*HotEntry) error
 }
 
 type HotPutOptions struct {
-	Dirty bool
+	Dirty          bool
+	PointerLocator string
 }
 
 func NewHotObjectCache(maxSize int) *HotObjectCache {
@@ -184,10 +217,14 @@ func NewHotObjectCache(maxSize int) *HotObjectCache {
 		maxSize = 2000
 	}
 	return &HotObjectCache{
-		entries: make(map[string]*HotEntry, maxSize),
-		maxSize: maxSize,
-		order:   make([]string, 0, maxSize),
-		policy:  defaultHotCachePolicy(),
+		entries:    make(map[string]*HotEntry, maxSize),
+		maxSize:    maxSize,
+		order:      make([]string, 0, maxSize),
+		policy:     defaultHotCachePolicy(),
+		probation:  make([]string, 0, maxSize),
+		protected:  make([]string, 0, maxSize),
+		dirtyQ:     make([]string, 0, maxSize),
+		dirtyRetry: map[string]int{},
 	}
 }
 
@@ -215,7 +252,37 @@ func (c *HotObjectCache) ConfigurePolicy(p HotCachePolicy) {
 	if len(p.Class3Types) == 0 && len(c.policy.Class3Types) > 0 {
 		p.Class3Types = c.policy.Class3Types
 	}
+	if p.HitProbEWMAAlpha <= 0 || p.HitProbEWMAAlpha > 1 {
+		p.HitProbEWMAAlpha = c.policy.HitProbEWMAAlpha
+	}
+	if p.ReloadEaseEWMAAlpha <= 0 || p.ReloadEaseEWMAAlpha > 1 {
+		p.ReloadEaseEWMAAlpha = c.policy.ReloadEaseEWMAAlpha
+	}
+	if p.ProtectedRatio <= 0 || p.ProtectedRatio >= 1 {
+		p.ProtectedRatio = c.policy.ProtectedRatio
+	}
+	if p.MaxFlushRetries <= 0 {
+		p.MaxFlushRetries = c.policy.MaxFlushRetries
+	}
+	if len(p.SemanticKeywordBoost) == 0 {
+		p.SemanticKeywordBoost = c.policy.SemanticKeywordBoost
+	}
+	if len(p.ForceClass1Keywords) == 0 {
+		p.ForceClass1Keywords = c.policy.ForceClass1Keywords
+	}
+	if len(p.ForceClass2Keywords) == 0 {
+		p.ForceClass2Keywords = c.policy.ForceClass2Keywords
+	}
+	if len(p.ForceClass3Keywords) == 0 {
+		p.ForceClass3Keywords = c.policy.ForceClass3Keywords
+	}
 	c.policy = p
+}
+
+func (c *HotObjectCache) SetFlushHandler(fn func(*HotEntry) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.flushFn = fn
 }
 
 // Put inserts or refreshes an object in the hot cache with the given salience.
@@ -227,28 +294,37 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	class := c.pointerClass(objectType)
+	class := c.pointerClass(objectType, payload)
 	if class == 3 {
 		return
 	}
 	if class == 2 {
+		locator := opts.PointerLocator
+		if strings.TrimSpace(locator) == "" {
+			locator = "warm:" + objectType + ":" + objectID
+		}
 		payload = HotPointerPayload{
 			ObjectID:    objectID,
 			ObjectType:  objectType,
 			PointerType: "disk_offset",
+			Locator:     locator,
 		}
 	}
 
 	now := time.Now()
 	if existing, ok := c.entries[objectID]; ok {
 		existing.Payload = payload
-		existing.SalienceScore = salience * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0)
+		existing.SalienceScore = c.semanticScore(salience, objectType, payload)
 		existing.LastAccess = now
 		existing.AccessCount++
 		existing.EstimatedSize = estimatePayloadSize(payload)
 		existing.Dirty = existing.Dirty || opts.Dirty
 		existing.WriteBackCost = c.resolveWriteBackCost(objectType, existing.Dirty)
 		existing.ReloadEase = c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
+		existing.HitProb = c.updateEWMA(existing.HitProb, 1.0, c.policy.HitProbEWMAAlpha)
+		if opts.Dirty {
+			c.enqueueDirty(objectID)
+		}
 		return
 	}
 
@@ -261,7 +337,7 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 		ObjectID:      objectID,
 		ObjectType:    objectType,
 		Payload:       payload,
-		SalienceScore: salience * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0),
+		SalienceScore: c.semanticScore(salience, objectType, payload),
 		AccessCount:   1,
 		LastAccess:    now,
 		InsertedAt:    now,
@@ -269,8 +345,14 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 		WriteBackCost: c.resolveWriteBackCost(objectType, opts.Dirty),
 		ReloadEase:    c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5),
 		Dirty:         opts.Dirty,
+		HitProb:       0.5,
+		Protected:     false,
 	}
 	c.order = append(c.order, objectID)
+	c.touchProbation(objectID)
+	if opts.Dirty {
+		c.enqueueDirty(objectID)
+	}
 	c.enforceWatermarkLocked()
 }
 
@@ -282,6 +364,14 @@ func (c *HotObjectCache) Get(objectID string) (*HotEntry, bool) {
 	if ok {
 		e.AccessCount++
 		e.LastAccess = time.Now()
+		e.HitProb = c.updateEWMA(e.HitProb, 1.0, c.policy.HitProbEWMAAlpha)
+		if !e.Protected {
+			e.Protected = true
+			c.moveProbationToProtected(objectID)
+		} else {
+			c.refreshProtected(objectID)
+		}
+		c.enforceProtectedRatioLocked()
 	}
 	return e, ok
 }
@@ -302,6 +392,10 @@ func (c *HotObjectCache) Evict(objectID string) {
 		return
 	}
 	delete(c.entries, objectID)
+	c.removeFromQueue(&c.probation, objectID)
+	c.removeFromQueue(&c.protected, objectID)
+	c.removeFromQueue(&c.dirtyQ, objectID)
+	delete(c.dirtyRetry, objectID)
 	for i, id := range c.order {
 		if id == objectID {
 			c.order = append(c.order[:i], c.order[i+1:]...)
@@ -326,6 +420,10 @@ func (c *HotObjectCache) Clear() {
 	defer c.mu.Unlock()
 	c.entries = make(map[string]*HotEntry)
 	c.order = c.order[:0]
+	c.probation = c.probation[:0]
+	c.protected = c.protected[:0]
+	c.dirtyQ = c.dirtyQ[:0]
+	c.dirtyRetry = map[string]int{}
 }
 
 // evictOne removes the entry with the lowest hotness score.
@@ -335,22 +433,88 @@ func (c *HotObjectCache) evictOne() {
 		return
 	}
 	// scan for lowest hotness
-	worstID := c.order[0]
+	candidates := c.probation
+	if len(candidates) == 0 {
+		candidates = c.protected
+	}
+	if len(candidates) == 0 {
+		candidates = c.order
+	}
+	worstID := candidates[0]
 	worstScore := c.entries[worstID].hotness(c.policy)
-	for _, id := range c.order[1:] {
+	for _, id := range candidates[1:] {
 		score := c.entries[id].hotness(c.policy)
 		if score < worstScore || (score == worstScore && c.entries[id].EstimatedSize > c.entries[worstID].EstimatedSize) {
 			worstScore = score
 			worstID = id
 		}
 	}
+	blockedByDirty := false
+	if e := c.entries[worstID]; e != nil && e.Dirty {
+		if ok := c.tryFlushDirtyLocked(worstID, e); !ok {
+			blockedByDirty = true
+			// keep dirty entry for retry, try another candidate in this round.
+			for _, id := range candidates {
+				if id == worstID {
+					continue
+				}
+				alt := c.entries[id]
+				if alt == nil {
+					continue
+				}
+				if alt.Dirty && !c.tryFlushDirtyLocked(id, alt) {
+					continue
+				}
+				worstID = id
+				blockedByDirty = false
+				break
+			}
+		}
+	}
+	if blockedByDirty {
+		return
+	}
 	delete(c.entries, worstID)
+	c.removeFromQueue(&c.probation, worstID)
+	c.removeFromQueue(&c.protected, worstID)
+	c.removeFromQueue(&c.dirtyQ, worstID)
+	delete(c.dirtyRetry, worstID)
 	for i, id := range c.order {
 		if id == worstID {
 			c.order = append(c.order[:i], c.order[i+1:]...)
 			break
 		}
 	}
+}
+
+func (c *HotObjectCache) enqueueDirty(id string) {
+	c.removeFromQueue(&c.dirtyQ, id)
+	c.dirtyQ = append(c.dirtyQ, id)
+}
+
+func (c *HotObjectCache) tryFlushDirtyLocked(id string, e *HotEntry) bool {
+	if e == nil || !e.Dirty {
+		return true
+	}
+	if c.flushFn == nil {
+		// no flush handler => degrade to best-effort immediate clean.
+		e.Dirty = false
+		e.WriteBackCost = 0
+		return true
+	}
+	if err := c.flushFn(e); err != nil {
+		c.dirtyRetry[id] = c.dirtyRetry[id] + 1
+		if c.dirtyRetry[id] <= c.policy.MaxFlushRetries {
+			return false
+		}
+		// after retry budget, allow eviction to avoid deadlock.
+		return true
+	}
+	e.Dirty = false
+	e.WriteBackCost = 0
+	c.dirtyRetry[id] = 0
+	c.removeFromQueue(&c.dirtyQ, id)
+	return true
 }
 
 func (c *HotObjectCache) lookupByType(m map[string]float64, objectType string, fallback float64) float64 {
@@ -374,7 +538,23 @@ func (c *HotObjectCache) resolveWriteBackCost(objectType string, dirty bool) flo
 	return clamp01(base)
 }
 
-func (c *HotObjectCache) pointerClass(objectType string) int {
+func (c *HotObjectCache) pointerClass(objectType string, payload any) int {
+	text := strings.ToLower(c.extractText(payload))
+	for _, kw := range c.policy.ForceClass3Keywords {
+		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
+			return 3
+		}
+	}
+	for _, kw := range c.policy.ForceClass1Keywords {
+		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
+			return 1
+		}
+	}
+	for _, kw := range c.policy.ForceClass2Keywords {
+		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
+			return 2
+		}
+	}
 	in := func(list []string, typ string) bool {
 		for _, v := range list {
 			if v == typ {
@@ -390,6 +570,96 @@ func (c *HotObjectCache) pointerClass(objectType string) int {
 		return 2
 	}
 	return 1
+}
+
+func (c *HotObjectCache) semanticScore(base float64, objectType string, payload any) float64 {
+	score := base * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0)
+	text := strings.ToLower(c.extractText(payload))
+	for kw, boost := range c.policy.SemanticKeywordBoost {
+		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
+			score += boost
+		}
+	}
+	return clamp01(score)
+}
+
+func (c *HotObjectCache) extractText(payload any) string {
+	switch v := payload.(type) {
+	case schemas.Memory:
+		return v.Content + " " + v.Summary + " " + v.LifecycleState
+	case schemas.State:
+		return v.StateKey + " " + v.StateValue
+	case schemas.Artifact:
+		return v.ContentRef + " " + v.URI + " " + v.MimeType
+	case HotPointerPayload:
+		return v.Locator + " " + v.PointerType
+	case string:
+		return v
+	default:
+		return ""
+	}
+}
+
+func (c *HotObjectCache) updateEWMA(prev, sample, alpha float64) float64 {
+	if alpha <= 0 || alpha >= 1 {
+		alpha = 0.35
+	}
+	return clamp01(alpha*sample + (1-alpha)*prev)
+}
+
+func (c *HotObjectCache) removeFromQueue(q *[]string, id string) {
+	for i, v := range *q {
+		if v == id {
+			*q = append((*q)[:i], (*q)[i+1:]...)
+			return
+		}
+	}
+}
+
+func (c *HotObjectCache) touchProbation(id string) {
+	c.removeFromQueue(&c.probation, id)
+	c.probation = append(c.probation, id)
+}
+
+func (c *HotObjectCache) refreshProtected(id string) {
+	c.removeFromQueue(&c.protected, id)
+	c.protected = append(c.protected, id)
+}
+
+func (c *HotObjectCache) moveProbationToProtected(id string) {
+	c.removeFromQueue(&c.probation, id)
+	c.refreshProtected(id)
+}
+
+func (c *HotObjectCache) enforceProtectedRatioLocked() {
+	if c.maxSize <= 0 {
+		return
+	}
+	maxProtected := int(float64(c.maxSize) * c.policy.ProtectedRatio)
+	if maxProtected < 1 {
+		maxProtected = 1
+	}
+	for len(c.protected) > maxProtected {
+		demote := c.protected[0]
+		c.protected = c.protected[1:]
+		if e, ok := c.entries[demote]; ok {
+			e.Protected = false
+		}
+		c.touchProbation(demote)
+	}
+}
+
+func (c *HotObjectCache) ObserveReloadLatency(objectType string, d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.policy.ReloadEaseByType == nil {
+		c.policy.ReloadEaseByType = map[string]float64{}
+	}
+	sec := d.Seconds()
+	// Easier reload => closer to 1.0; slower reload => closer to 0.0.
+	sampleEase := 1.0 / (1.0 + sec)
+	prev := c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
+	c.policy.ReloadEaseByType[objectType] = c.updateEWMA(prev, sampleEase, c.policy.ReloadEaseEWMAAlpha)
 }
 
 func (c *HotObjectCache) enforceWatermarkLocked() {
@@ -568,7 +838,7 @@ func NewTieredObjectStoreWithEmbedder(
 	if cold == nil {
 		cold = NewInMemoryColdStore()
 	}
-	return &TieredObjectStore{
+	tiered := &TieredObjectStore{
 		hot:          hot,
 		warm:         warm,
 		warmEdge:     warmEdge,
@@ -576,6 +846,24 @@ func NewTieredObjectStoreWithEmbedder(
 		embedder:     embedder,
 		hotThreshold: hotThreshold,
 	}
+	hot.SetFlushHandler(func(e *HotEntry) error {
+		if e == nil || warm == nil {
+			return nil
+		}
+		switch v := e.Payload.(type) {
+		case schemas.Memory:
+			warm.PutMemory(v)
+		case schemas.State:
+			warm.PutState(v)
+		case schemas.Artifact:
+			warm.PutArtifact(v)
+		case HotPointerPayload:
+			// pointer payload has no mutable body to flush
+			return nil
+		}
+		return nil
+	})
+	return tiered
 }
 
 // NewTieredObjectStoreWithThreshold creates a TieredObjectStore with an explicit hot-tier
@@ -603,18 +891,31 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 		if m, ok := entry.Payload.(schemas.Memory); ok {
 			return m, true
 		}
+		if p, ok := entry.Payload.(HotPointerPayload); ok {
+			if m, ok := t.resolveMemoryByLocator(p, salience); ok {
+				return m, true
+			}
+		}
 	}
 
 	// warm path
 	if m, ok := t.warm.GetMemory(memoryID); ok {
-		t.hot.PutWithOptions(memoryID, "memory", m, salience, HotPutOptions{Dirty: false})
+		t.hot.PutWithOptions(memoryID, "memory", m, salience, HotPutOptions{
+			Dirty:          false,
+			PointerLocator: "warm:memory:" + memoryID,
+		})
 		return m, true
 	}
 
 	// cold path
+	coldStart := time.Now()
 	if m, ok := t.cold.GetMemory(memoryID); ok {
+		t.hot.ObserveReloadLatency("memory", time.Since(coldStart))
 		t.warm.PutMemory(m)
-		t.hot.PutWithOptions(memoryID, "memory", m, salience*0.5, HotPutOptions{Dirty: false})
+		t.hot.PutWithOptions(memoryID, "memory", m, salience*0.5, HotPutOptions{
+			Dirty:          false,
+			PointerLocator: "cold:memory:" + memoryID,
+		})
 		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		return m, true
 	}
@@ -633,8 +934,46 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 		}
 	}
 	if salience >= t.hotThreshold {
-		t.hot.PutWithOptions(m.MemoryID, "memory", m, salience, HotPutOptions{Dirty: true})
+		t.hot.PutWithOptions(m.MemoryID, "memory", m, salience, HotPutOptions{
+			Dirty:          true,
+			PointerLocator: "warm:memory:" + m.MemoryID,
+		})
 	}
+}
+
+func (t *TieredObjectStore) resolveMemoryByLocator(p HotPointerPayload, salience float64) (schemas.Memory, bool) {
+	locator := strings.TrimSpace(p.Locator)
+	if locator == "" {
+		return schemas.Memory{}, false
+	}
+	parts := strings.SplitN(locator, ":", 3)
+	if len(parts) < 3 {
+		return schemas.Memory{}, false
+	}
+	tier, objType, objectID := parts[0], parts[1], parts[2]
+	if objType != "memory" {
+		return schemas.Memory{}, false
+	}
+	switch tier {
+	case "warm":
+		if m, ok := t.warm.GetMemory(objectID); ok {
+			return m, true
+		}
+	case "cold":
+		start := time.Now()
+		if m, ok := t.cold.GetMemory(objectID); ok {
+			t.hot.ObserveReloadLatency("memory", time.Since(start))
+			if t.warm != nil {
+				t.warm.PutMemory(m)
+			}
+			t.hot.PutWithOptions(objectID, "memory", m, salience, HotPutOptions{
+				Dirty:          false,
+				PointerLocator: "warm:memory:" + objectID,
+			})
+			return m, true
+		}
+	}
+	return schemas.Memory{}, false
 }
 
 // ArchiveMemory moves a memory from warm to cold (e.g. on TTL expiry).

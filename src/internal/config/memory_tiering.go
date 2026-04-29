@@ -28,11 +28,27 @@ type MemoryTieringConfig struct {
 			FrequencyNormWindow int                `yaml:"frequency_norm_window"`
 			RecencyTauSeconds   float64            `yaml:"recency_tau_seconds"`
 			RecencyTauByType    map[string]float64 `yaml:"recency_tau_by_type"`
+			HitProbEWMAAlpha    float64            `yaml:"hit_prob_ewma_alpha"`
 			EstimatedPoolBytes  float64            `yaml:"estimated_pool_bytes"`
 			ObjectTypeWeight    map[string]float64 `yaml:"object_type_weight"`
 			ReloadEaseByType    map[string]float64 `yaml:"reload_ease_by_type"`
+			ReloadEaseEWMAAlpha float64            `yaml:"reload_ease_ewma_alpha"`
 			WriteBackByType     map[string]float64 `yaml:"write_back_by_type"`
-			PointerPolicy       struct {
+			Queue               struct {
+				ProtectedRatio float64 `yaml:"protected_ratio"`
+			} `yaml:"queue"`
+			Dirty struct {
+				MaxFlushRetries int `yaml:"max_flush_retries"`
+			} `yaml:"dirty"`
+			SemanticRules struct {
+				KeywordBoost map[string]float64 `yaml:"keyword_boost"`
+			} `yaml:"semantic_rules"`
+			PlacementRules struct {
+				ForceClass1Keywords []string `yaml:"force_class1_keywords"`
+				ForceClass2Keywords []string `yaml:"force_class2_keywords"`
+				ForceClass3Keywords []string `yaml:"force_class3_keywords"`
+			} `yaml:"placement_rules"`
+			PointerPolicy struct {
 				Class1Types []string `yaml:"class1_types"`
 				Class2Types []string `yaml:"class2_types"`
 				Class3Types []string `yaml:"class3_types"`
@@ -57,6 +73,7 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 	h.Penalty.DeltaReload = 0.10
 	h.FrequencyNormWindow = 16
 	h.RecencyTauSeconds = 120.0
+	h.HitProbEWMAAlpha = 0.35
 	h.RecencyTauByType = map[string]float64{
 		"memory":   180.0,
 		"state":    120.0,
@@ -73,11 +90,26 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 		"state":    0.50,
 		"artifact": 0.70,
 	}
+	h.ReloadEaseEWMAAlpha = 0.20
 	h.WriteBackByType = map[string]float64{
 		"memory":   0.40,
 		"state":    0.60,
 		"artifact": 0.50,
 	}
+	h.Queue.ProtectedRatio = 0.5
+	h.Dirty.MaxFlushRetries = 3
+	h.SemanticRules.KeywordBoost = map[string]float64{
+		"core_fact":    0.20,
+		"evidence":     0.15,
+		"summary":      0.10,
+		"final":        0.10,
+		"temporary":    -0.10,
+		"retry":        -0.10,
+		"intermediate": -0.08,
+	}
+	h.PlacementRules.ForceClass1Keywords = []string{"core_fact", "critical", "must_keep"}
+	h.PlacementRules.ForceClass2Keywords = []string{"thinking", "reasoning", "payload"}
+	h.PlacementRules.ForceClass3Keywords = []string{"archived", "deleted", "obsolete"}
 	h.PointerPolicy.Class1Types = []string{"memory", "state"}
 	h.PointerPolicy.Class2Types = []string{"artifact"}
 	h.PointerPolicy.Class3Types = []string{}

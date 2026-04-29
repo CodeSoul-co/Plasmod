@@ -22,6 +22,7 @@ memory_tiering:
       memory: 180
       state: 120
       artifact: 90
+    hit_prob_ewma_alpha: 0.35
     estimated_pool_bytes: 268435456
 
     object_type_weight:
@@ -33,11 +34,33 @@ memory_tiering:
       memory: 0.30
       state: 0.50
       artifact: 0.70
+    reload_ease_ewma_alpha: 0.20
 
     write_back_by_type:
       memory: 0.40
       state: 0.60
       artifact: 0.50
+
+    queue:
+      protected_ratio: 0.5
+
+    dirty:
+      max_flush_retries: 3
+
+    semantic_rules:
+      keyword_boost:
+        core_fact: 0.20
+        evidence: 0.15
+        summary: 0.10
+        final: 0.10
+        temporary: -0.10
+        retry: -0.10
+        intermediate: -0.08
+
+    placement_rules:
+      force_class1_keywords: [core_fact, critical, must_keep]
+      force_class2_keywords: [thinking, reasoning, payload]
+      force_class3_keywords: [archived, deleted, obsolete]
 
     pointer_policy:
       class1_types: [memory, state]
