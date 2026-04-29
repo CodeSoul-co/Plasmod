@@ -44,6 +44,14 @@ type MemoryTieringConfig struct {
 			} `yaml:"dirty"`
 			SemanticRules struct {
 				KeywordBoost map[string]float64 `yaml:"keyword_boost"`
+				Graph        struct {
+					Enabled             bool    `yaml:"enabled"`
+					WSourceEvents       float64 `yaml:"w_source_events"`
+					WPolicyTags         float64 `yaml:"w_policy_tags"`
+					WImportance         float64 `yaml:"w_importance"`
+					WConfidence         float64 `yaml:"w_confidence"`
+					NormalizeByMaxEdges float64 `yaml:"normalize_by_max_edges"`
+				} `yaml:"graph"`
 			} `yaml:"semantic_rules"`
 			PlacementRules struct {
 				ForceClass1Keywords  []string       `yaml:"force_class1_keywords"`
@@ -116,6 +124,12 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 		"retry":        -0.10,
 		"intermediate": -0.08,
 	}
+	h.SemanticRules.Graph.Enabled = true
+	h.SemanticRules.Graph.WSourceEvents = 0.45
+	h.SemanticRules.Graph.WPolicyTags = 0.25
+	h.SemanticRules.Graph.WImportance = 0.15
+	h.SemanticRules.Graph.WConfidence = 0.15
+	h.SemanticRules.Graph.NormalizeByMaxEdges = 8.0
 	h.PlacementRules.ForceClass1Keywords = []string{"core_fact", "critical", "must_keep"}
 	h.PlacementRules.ForceClass2Keywords = []string{"thinking", "reasoning", "payload"}
 	h.PlacementRules.ForceClass3Keywords = []string{"archived", "deleted", "obsolete"}

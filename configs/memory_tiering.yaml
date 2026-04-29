@@ -58,6 +58,13 @@ memory_tiering:
         temporary: -0.10
         retry: -0.10
         intermediate: -0.08
+      graph:
+        enabled: true
+        w_source_events: 0.45
+        w_policy_tags: 0.25
+        w_importance: 0.15
+        w_confidence: 0.15
+        normalize_by_max_edges: 8
 
     placement_rules:
       force_class1_keywords: [core_fact, critical, must_keep]
