@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -47,13 +48,119 @@ type HotEntry struct {
 	AccessCount   int
 	LastAccess    time.Time
 	InsertedAt    time.Time
+	EstimatedSize float64
+	WriteBackCost float64
+	ReloadEase    float64
+	Dirty         bool
 }
 
-// hotness returns a composite score used for LRU/salience eviction.
-// Higher = keep in hot tier longer.
-func (e *HotEntry) hotness() float64 {
-	recency := 1.0 / (float64(time.Since(e.LastAccess).Seconds()) + 1)
-	return e.SalienceScore*0.6 + recency*0.3 + float64(e.AccessCount)*0.001
+type HotPointerPayload struct {
+	ObjectID    string
+	ObjectType  string
+	PointerType string
+}
+
+type HotCachePolicy struct {
+	HighWatermarkPercent float64
+	LowWatermarkPercent  float64
+	EvictionBatchSize    int
+
+	Wr, Wf, Ws float64
+	Lambda     float64
+
+	AlphaSize     float64
+	BetaWriteBack float64
+	GammaHitProb  float64
+	DeltaReload   float64
+
+	FrequencyNormWindow int
+	RecencyTauSeconds   float64
+	RecencyTauByType    map[string]float64
+	EstimatedPoolBytes  float64
+
+	ObjectTypeWeight map[string]float64
+	ReloadEaseByType map[string]float64
+	WriteBackByType  map[string]float64
+	Class1Types      []string
+	Class2Types      []string
+	Class3Types      []string
+}
+
+func defaultHotCachePolicy() HotCachePolicy {
+	return HotCachePolicy{
+		HighWatermarkPercent: 0.80,
+		LowWatermarkPercent:  0.60,
+		EvictionBatchSize:    16,
+		Wr:                   0.25,
+		Wf:                   0.20,
+		Ws:                   0.55,
+		Lambda:               0.80,
+		AlphaSize:            0.45,
+		BetaWriteBack:        0.20,
+		GammaHitProb:         0.25,
+		DeltaReload:          0.10,
+		FrequencyNormWindow:  16,
+		RecencyTauSeconds:    120.0,
+		RecencyTauByType: map[string]float64{
+			"memory":   180.0,
+			"state":    120.0,
+			"artifact": 90.0,
+		},
+		EstimatedPoolBytes: 256 * 1024 * 1024,
+		ObjectTypeWeight: map[string]float64{
+			"memory":   0.95,
+			"state":    0.85,
+			"artifact": 0.70,
+		},
+		ReloadEaseByType: map[string]float64{
+			"memory":   0.30,
+			"state":    0.50,
+			"artifact": 0.70,
+		},
+		WriteBackByType: map[string]float64{
+			"memory":   0.40,
+			"state":    0.60,
+			"artifact": 0.50,
+		},
+		Class1Types: []string{"memory", "state"},
+		Class2Types: []string{"artifact"},
+		Class3Types: []string{},
+	}
+}
+
+// hotness returns a configurable score used for eviction.
+// Higher score = keep in hot tier longer.
+func (e *HotEntry) hotness(policy HotCachePolicy) float64 {
+	tau := policy.RecencyTauSeconds
+	if byType, ok := policy.RecencyTauByType[e.ObjectType]; ok && byType > 0 {
+		tau = byType
+	}
+	if tau <= 0 {
+		tau = 120
+	}
+	if policy.FrequencyNormWindow <= 0 {
+		policy.FrequencyNormWindow = 16
+	}
+	if policy.EstimatedPoolBytes <= 0 {
+		policy.EstimatedPoolBytes = 256 * 1024 * 1024
+	}
+
+	ageSec := math.Max(0, time.Since(e.LastAccess).Seconds())
+	recency := math.Exp(-ageSec / tau)
+	freq := 1.0 - math.Exp(-float64(e.AccessCount)/float64(policy.FrequencyNormWindow))
+	semantic := clamp01(e.SalienceScore)
+
+	sizeNorm := clamp01(e.EstimatedSize / policy.EstimatedPoolBytes)
+	writeBack := clamp01(e.WriteBackCost)
+	hitProb := clamp01(freq)
+	reload := clamp01(e.ReloadEase)
+	penalty := policy.AlphaSize*sizeNorm +
+		policy.BetaWriteBack*writeBack +
+		policy.GammaHitProb*(1.0-hitProb) +
+		policy.DeltaReload*reload
+
+	benefit := policy.Wr*recency + policy.Wf*freq + policy.Ws*semantic
+	return benefit - policy.Lambda*penalty
 }
 
 // HotObjectCache is a bounded in-memory cache for the most activation-critical
@@ -64,7 +171,12 @@ type HotObjectCache struct {
 	entries map[string]*HotEntry
 	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
-	order []string
+	order  []string
+	policy HotCachePolicy
+}
+
+type HotPutOptions struct {
+	Dirty bool
 }
 
 func NewHotObjectCache(maxSize int) *HotObjectCache {
@@ -75,20 +187,68 @@ func NewHotObjectCache(maxSize int) *HotObjectCache {
 		entries: make(map[string]*HotEntry, maxSize),
 		maxSize: maxSize,
 		order:   make([]string, 0, maxSize),
+		policy:  defaultHotCachePolicy(),
 	}
+}
+
+func (c *HotObjectCache) ConfigurePolicy(p HotCachePolicy) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if p.HighWatermarkPercent <= 0 || p.HighWatermarkPercent > 1 {
+		p.HighWatermarkPercent = c.policy.HighWatermarkPercent
+	}
+	if p.LowWatermarkPercent <= 0 || p.LowWatermarkPercent > p.HighWatermarkPercent {
+		p.LowWatermarkPercent = c.policy.LowWatermarkPercent
+	}
+	if p.EvictionBatchSize <= 0 {
+		p.EvictionBatchSize = c.policy.EvictionBatchSize
+	}
+	if len(p.RecencyTauByType) == 0 {
+		p.RecencyTauByType = c.policy.RecencyTauByType
+	}
+	if len(p.Class1Types) == 0 && len(c.policy.Class1Types) > 0 {
+		p.Class1Types = c.policy.Class1Types
+	}
+	if len(p.Class2Types) == 0 && len(c.policy.Class2Types) > 0 {
+		p.Class2Types = c.policy.Class2Types
+	}
+	if len(p.Class3Types) == 0 && len(c.policy.Class3Types) > 0 {
+		p.Class3Types = c.policy.Class3Types
+	}
+	c.policy = p
 }
 
 // Put inserts or refreshes an object in the hot cache with the given salience.
 func (c *HotObjectCache) Put(objectID, objectType string, payload any, salience float64) {
+	c.PutWithOptions(objectID, objectType, payload, salience, HotPutOptions{})
+}
+
+func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any, salience float64, opts HotPutOptions) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	class := c.pointerClass(objectType)
+	if class == 3 {
+		return
+	}
+	if class == 2 {
+		payload = HotPointerPayload{
+			ObjectID:    objectID,
+			ObjectType:  objectType,
+			PointerType: "disk_offset",
+		}
+	}
 
 	now := time.Now()
 	if existing, ok := c.entries[objectID]; ok {
 		existing.Payload = payload
-		existing.SalienceScore = salience
+		existing.SalienceScore = salience * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0)
 		existing.LastAccess = now
 		existing.AccessCount++
+		existing.EstimatedSize = estimatePayloadSize(payload)
+		existing.Dirty = existing.Dirty || opts.Dirty
+		existing.WriteBackCost = c.resolveWriteBackCost(objectType, existing.Dirty)
+		existing.ReloadEase = c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
 		return
 	}
 
@@ -101,12 +261,17 @@ func (c *HotObjectCache) Put(objectID, objectType string, payload any, salience 
 		ObjectID:      objectID,
 		ObjectType:    objectType,
 		Payload:       payload,
-		SalienceScore: salience,
+		SalienceScore: salience * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0),
 		AccessCount:   1,
 		LastAccess:    now,
 		InsertedAt:    now,
+		EstimatedSize: estimatePayloadSize(payload),
+		WriteBackCost: c.resolveWriteBackCost(objectType, opts.Dirty),
+		ReloadEase:    c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5),
+		Dirty:         opts.Dirty,
 	}
 	c.order = append(c.order, objectID)
+	c.enforceWatermarkLocked()
 }
 
 // Get retrieves an entry, bumping its access count.
@@ -171,9 +336,10 @@ func (c *HotObjectCache) evictOne() {
 	}
 	// scan for lowest hotness
 	worstID := c.order[0]
-	worstScore := c.entries[worstID].hotness()
+	worstScore := c.entries[worstID].hotness(c.policy)
 	for _, id := range c.order[1:] {
-		if score := c.entries[id].hotness(); score < worstScore {
+		score := c.entries[id].hotness(c.policy)
+		if score < worstScore || (score == worstScore && c.entries[id].EstimatedSize > c.entries[worstID].EstimatedSize) {
 			worstScore = score
 			worstID = id
 		}
@@ -185,6 +351,99 @@ func (c *HotObjectCache) evictOne() {
 			break
 		}
 	}
+}
+
+func (c *HotObjectCache) lookupByType(m map[string]float64, objectType string, fallback float64) float64 {
+	if len(m) == 0 {
+		return fallback
+	}
+	if v, ok := m[objectType]; ok {
+		return v
+	}
+	return fallback
+}
+
+func (c *HotObjectCache) resolveWriteBackCost(objectType string, dirty bool) float64 {
+	if !dirty {
+		return 0
+	}
+	base := c.lookupByType(c.policy.WriteBackByType, objectType, 0.5)
+	if base < 0.7 {
+		return 0.7
+	}
+	return clamp01(base)
+}
+
+func (c *HotObjectCache) pointerClass(objectType string) int {
+	in := func(list []string, typ string) bool {
+		for _, v := range list {
+			if v == typ {
+				return true
+			}
+		}
+		return false
+	}
+	if in(c.policy.Class3Types, objectType) {
+		return 3
+	}
+	if in(c.policy.Class2Types, objectType) {
+		return 2
+	}
+	return 1
+}
+
+func (c *HotObjectCache) enforceWatermarkLocked() {
+	if c.maxSize <= 0 {
+		return
+	}
+	high := int(float64(c.maxSize) * c.policy.HighWatermarkPercent)
+	low := int(float64(c.maxSize) * c.policy.LowWatermarkPercent)
+	if high <= 0 {
+		high = c.maxSize
+	}
+	if low < 0 || low > high {
+		low = int(float64(high) * 0.75)
+	}
+	if len(c.order) <= high {
+		return
+	}
+	target := low
+	if target < 0 {
+		target = 0
+	}
+	maxEvict := c.policy.EvictionBatchSize
+	if maxEvict <= 0 {
+		maxEvict = len(c.order)
+	}
+	for len(c.order) > target && maxEvict > 0 {
+		c.evictOne()
+		maxEvict--
+	}
+}
+
+func estimatePayloadSize(payload any) float64 {
+	switch v := payload.(type) {
+	case schemas.Memory:
+		return float64(len(v.Content)+len(v.Summary)+len(v.MemoryID)) + 128
+	case schemas.State:
+		return float64(len(v.StateID)+len(v.AgentID)+len(v.SessionID)+len(v.StateValue)+len(v.StateKey)) + 128
+	case schemas.Artifact:
+		return float64(len(v.ArtifactID)+len(v.OwnerAgentID)+len(v.ContentRef)+len(v.URI)+len(v.MimeType)+len(v.Hash)) + 128
+	case string:
+		return float64(len(v))
+	default:
+		return 512
+	}
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // ─── TieredObjectStore ────────────────────────────────────────────────────────
@@ -348,14 +607,14 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 
 	// warm path
 	if m, ok := t.warm.GetMemory(memoryID); ok {
-		t.hot.Put(memoryID, "memory", m, salience)
+		t.hot.PutWithOptions(memoryID, "memory", m, salience, HotPutOptions{Dirty: false})
 		return m, true
 	}
 
 	// cold path
 	if m, ok := t.cold.GetMemory(memoryID); ok {
 		t.warm.PutMemory(m)
-		t.hot.Put(memoryID, "memory", m, salience*0.5)
+		t.hot.PutWithOptions(memoryID, "memory", m, salience*0.5, HotPutOptions{Dirty: false})
 		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		return m, true
 	}
@@ -374,7 +633,7 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 		}
 	}
 	if salience >= t.hotThreshold {
-		t.hot.Put(m.MemoryID, "memory", m, salience)
+		t.hot.PutWithOptions(m.MemoryID, "memory", m, salience, HotPutOptions{Dirty: true})
 	}
 }
 
