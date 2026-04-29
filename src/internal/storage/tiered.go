@@ -108,6 +108,7 @@ type HotCachePolicy struct {
 	ProtectedRatio       float64
 	CoolingTTLSeconds    float64
 	FixedPoolRatio       float64
+	FixedStrict          bool
 	HotPoolRatio         float64
 	CoolingPoolRatio     float64
 	FreePoolRatio        float64
@@ -121,6 +122,8 @@ type HotCachePolicy struct {
 	WPolicyTags          float64
 	WImportance          float64
 	WConfidence          float64
+	WOutDegree           float64
+	WInDegree            float64
 	NormalizeByMaxEdges  float64
 	ForceClass1Keywords  []string
 	ForceClass2Keywords  []string
@@ -175,6 +178,7 @@ func defaultHotCachePolicy() HotCachePolicy {
 		ProtectedRatio:    0.5,
 		CoolingTTLSeconds: 60,
 		FixedPoolRatio:    0.20,
+		FixedStrict:       false,
 		HotPoolRatio:      0.45,
 		CoolingPoolRatio:  0.20,
 		FreePoolRatio:     0.15,
@@ -196,6 +200,8 @@ func defaultHotCachePolicy() HotCachePolicy {
 		WPolicyTags:          0.25,
 		WImportance:          0.15,
 		WConfidence:          0.15,
+		WOutDegree:           0.10,
+		WInDegree:            0.10,
 		NormalizeByMaxEdges:  8.0,
 		ForceClass1Keywords:  []string{"core_fact", "critical", "must_keep"},
 		ForceClass2Keywords:  []string{"thinking", "reasoning", "payload"},
@@ -275,6 +281,7 @@ type HotObjectCache struct {
 	dirtyRetry   map[string]int
 	flushFn      func(*HotEntry) error
 	currentBytes float64
+	graphEdges   GraphEdgeStore
 }
 
 type HotPutOptions struct {
@@ -394,6 +401,12 @@ func (c *HotObjectCache) SetFlushHandler(fn func(*HotEntry) error) {
 	c.flushFn = fn
 }
 
+func (c *HotObjectCache) SetGraphEdgeStore(store GraphEdgeStore) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.graphEdges = store
+}
+
 // Put inserts or refreshes an object in the hot cache with the given salience.
 func (c *HotObjectCache) Put(objectID, objectType string, payload any, salience float64) {
 	c.PutWithOptions(objectID, objectType, payload, salience, HotPutOptions{})
@@ -435,7 +448,7 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 	if existing, ok := c.entries[objectID]; ok {
 		prevSize := existing.EstimatedSize
 		existing.Payload = payload
-		existing.SalienceScore = c.semanticScore(salience, objectType, payload)
+		existing.SalienceScore = c.semanticScore(salience, objectID, objectType, payload)
 		existing.LastAccess = now
 		existing.AccessCount++
 		existing.EstimatedSize = estimatePayloadSize(payload)
@@ -475,7 +488,7 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 		ObjectID:      objectID,
 		ObjectType:    objectType,
 		Payload:       payload,
-		SalienceScore: c.semanticScore(salience, objectType, payload),
+		SalienceScore: c.semanticScore(salience, objectID, objectType, payload),
 		AccessCount:   1,
 		LastAccess:    now,
 		InsertedAt:    now,
@@ -693,6 +706,10 @@ func (c *HotObjectCache) tryFlushDirtyLocked(id string, e *HotEntry) bool {
 		e.WriteBackCost = 0
 		return true
 	}
+	e.Pinned = true
+	defer func() {
+		e.Pinned = false
+	}()
 	if err := c.flushFn(e); err != nil {
 		c.dirtyRetry[id] = c.dirtyRetry[id] + 1
 		c.appendDirtyJournal("dirty_flush_fail id=" + id)
@@ -773,7 +790,7 @@ func (c *HotObjectCache) pointerClass(objectType string, payload any) int {
 	return 1
 }
 
-func (c *HotObjectCache) semanticScore(base float64, objectType string, payload any) float64 {
+func (c *HotObjectCache) semanticScore(base float64, objectID, objectType string, payload any) float64 {
 	score := base * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0)
 	text := strings.ToLower(c.extractText(payload))
 	for kw, boost := range c.policy.SemanticKeywordBoost {
@@ -782,15 +799,20 @@ func (c *HotObjectCache) semanticScore(base float64, objectType string, payload 
 		}
 	}
 	if c.policy.GraphSemanticEnabled {
-		score += c.graphSemanticScore(payload)
+		score += c.graphSemanticScore(objectID, payload)
 	}
 	return clamp01(score)
 }
 
-func (c *HotObjectCache) graphSemanticScore(payload any) float64 {
+func (c *HotObjectCache) graphSemanticScore(objectID string, payload any) float64 {
 	maxEdges := c.policy.NormalizeByMaxEdges
 	if maxEdges <= 0 {
 		maxEdges = 8
+	}
+	var outDeg, inDeg float64
+	if c.graphEdges != nil && strings.TrimSpace(objectID) != "" {
+		outDeg = float64(len(c.graphEdges.EdgesFrom(objectID)))
+		inDeg = float64(len(c.graphEdges.EdgesTo(objectID)))
 	}
 	switch v := payload.(type) {
 	case schemas.Memory:
@@ -798,10 +820,14 @@ func (c *HotObjectCache) graphSemanticScore(payload any) float64 {
 		pt := clamp01(float64(len(v.PolicyTags)) / maxEdges)
 		imp := clamp01(v.Importance)
 		conf := clamp01(v.Confidence)
+		outNorm := clamp01(outDeg / maxEdges)
+		inNorm := clamp01(inDeg / maxEdges)
 		return c.policy.WSourceEvents*se +
 			c.policy.WPolicyTags*pt +
 			c.policy.WImportance*imp +
-			c.policy.WConfidence*conf
+			c.policy.WConfidence*conf +
+			c.policy.WOutDegree*outNorm +
+			c.policy.WInDegree*inNorm
 	default:
 		return 0
 	}
@@ -953,35 +979,48 @@ func (c *HotObjectCache) enforceWatermarkLocked() {
 	}
 	c.expireCoolingLocked()
 	totalBudget := c.policy.EstimatedPoolBytes
-	high := totalBudget * c.policy.HighWatermarkPercent
-	low := totalBudget * c.policy.LowWatermarkPercent
+	freeBudget := totalBudget * c.policy.FreePoolRatio
+	if freeBudget < 0 {
+		freeBudget = 0
+	}
+	if freeBudget > totalBudget {
+		freeBudget = totalBudget
+	}
+	usableBudget := totalBudget - freeBudget
+	if usableBudget <= 0 {
+		usableBudget = totalBudget
+	}
+	high := usableBudget * c.policy.HighWatermarkPercent
+	low := usableBudget * c.policy.LowWatermarkPercent
 	if high <= 0 {
-		high = totalBudget * 0.8
+		high = usableBudget * 0.8
 	}
 	if low <= 0 || low > high {
 		low = high * 0.75
 	}
-	fixedBudget := totalBudget * c.policy.FixedPoolRatio
-	hotBudget := totalBudget * c.policy.HotPoolRatio
-	coolingBudget := totalBudget * c.policy.CoolingPoolRatio
-	for c.bytesInTier("fixed") > fixedBudget && len(c.fixed) > 0 {
-		// fixed pool overflow: demote oldest fixed into hot.
-		id := c.fixed[0]
-		c.fixed = c.fixed[1:]
-		if e := c.entries[id]; e != nil {
-			e.Tier = "hot"
-			e.Protected = false
-			c.touchProbation(id)
+	fixedBudget := usableBudget * c.policy.FixedPoolRatio
+	hotBudget := usableBudget * c.policy.HotPoolRatio
+	coolingBudget := usableBudget * c.policy.CoolingPoolRatio
+	if !c.policy.FixedStrict {
+		for c.bytesInTier("fixed") > fixedBudget && len(c.fixed) > 0 {
+			// fixed pool overflow: demote oldest fixed into hot.
+			id := c.fixed[0]
+			c.fixed = c.fixed[1:]
+			if e := c.entries[id]; e != nil {
+				e.Tier = "hot"
+				e.Protected = false
+				c.touchProbation(id)
+			}
 		}
 	}
-	if c.currentBytes <= high && c.bytesInTier("hot") <= hotBudget && c.bytesInTier("cooling") <= coolingBudget {
+	if c.currentBytes <= high && c.currentBytes <= usableBudget && c.bytesInTier("hot") <= hotBudget && c.bytesInTier("cooling") <= coolingBudget {
 		return
 	}
 	maxEvict := c.policy.EvictionBatchSize
 	if maxEvict <= 0 {
 		maxEvict = len(c.order) + len(c.cooling)
 	}
-	for (c.currentBytes > low || c.bytesInTier("hot") > hotBudget || c.bytesInTier("cooling") > coolingBudget) && maxEvict > 0 {
+	for (c.currentBytes > low || c.currentBytes > usableBudget || c.bytesInTier("hot") > hotBudget || c.bytesInTier("cooling") > coolingBudget) && maxEvict > 0 {
 		c.evictOne()
 		for c.bytesInTier("cooling") > coolingBudget || c.currentBytes > low {
 			if !c.evictCoolingOneLocked() {
@@ -1214,6 +1253,7 @@ func NewTieredObjectStoreWithEmbedder(
 		embedder:     embedder,
 		hotThreshold: hotThreshold,
 	}
+	hot.SetGraphEdgeStore(warmEdge)
 	hot.SetFlushHandler(func(e *HotEntry) error {
 		if e == nil || warm == nil {
 			return nil
@@ -1300,6 +1340,10 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 
 // PutMemory writes to warm store and promotes to hot if salience >= threshold.
 func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
+	if t.hot != nil {
+		t.hot.SetPinned(m.MemoryID, true)
+		defer t.hot.SetPinned(m.MemoryID, false)
+	}
 	if t.warm != nil {
 		t.warm.PutMemory(m)
 	}
@@ -1310,7 +1354,8 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 	}
 	if salience >= t.hotThreshold {
 		t.hot.PutWithOptions(m.MemoryID, "memory", m, salience, HotPutOptions{
-			Dirty: true,
+			Dirty:  true,
+			Pinned: true,
 			PointerLocator: encodeLocator(physicalLocator{
 				Tier:   "warm",
 				Store:  "memstore",

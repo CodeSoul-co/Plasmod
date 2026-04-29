@@ -41,6 +41,7 @@ type MemoryTieringConfig struct {
 			} `yaml:"queue"`
 			Pool struct {
 				FixedRatio   float64 `yaml:"fixed_ratio"`
+				FixedStrict  bool    `yaml:"fixed_strict"`
 				HotRatio     float64 `yaml:"hot_ratio"`
 				CoolingRatio float64 `yaml:"cooling_ratio"`
 				FreeRatio    float64 `yaml:"free_ratio"`
@@ -57,6 +58,8 @@ type MemoryTieringConfig struct {
 					WPolicyTags         float64 `yaml:"w_policy_tags"`
 					WImportance         float64 `yaml:"w_importance"`
 					WConfidence         float64 `yaml:"w_confidence"`
+					WOutDegree          float64 `yaml:"w_out_degree"`
+					WInDegree           float64 `yaml:"w_in_degree"`
 					NormalizeByMaxEdges float64 `yaml:"normalize_by_max_edges"`
 				} `yaml:"graph"`
 			} `yaml:"semantic_rules"`
@@ -124,6 +127,7 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 	h.Queue.LRUKValue = 2
 	h.Queue.CoolingTTLSeconds = 60
 	h.Pool.FixedRatio = 0.20
+	h.Pool.FixedStrict = false
 	h.Pool.HotRatio = 0.45
 	h.Pool.CoolingRatio = 0.20
 	h.Pool.FreeRatio = 0.15
@@ -143,6 +147,8 @@ func defaultMemoryTieringConfig() MemoryTieringConfig {
 	h.SemanticRules.Graph.WPolicyTags = 0.25
 	h.SemanticRules.Graph.WImportance = 0.15
 	h.SemanticRules.Graph.WConfidence = 0.15
+	h.SemanticRules.Graph.WOutDegree = 0.10
+	h.SemanticRules.Graph.WInDegree = 0.10
 	h.SemanticRules.Graph.NormalizeByMaxEdges = 8.0
 	h.PlacementRules.ForceClass1Keywords = []string{"core_fact", "critical", "must_keep"}
 	h.PlacementRules.ForceClass2Keywords = []string{"thinking", "reasoning", "payload"}
