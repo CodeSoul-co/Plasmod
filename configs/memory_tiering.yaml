@@ -48,6 +48,7 @@ memory_tiering:
 
     pool:
       fixed_ratio: 0.20
+      fixed_strict: false
       hot_ratio: 0.45
       cooling_ratio: 0.20
       free_ratio: 0.15
@@ -71,6 +72,8 @@ memory_tiering:
         w_policy_tags: 0.25
         w_importance: 0.15
         w_confidence: 0.15
+        w_out_degree: 0.10
+        w_in_degree: 0.10
         normalize_by_max_edges: 8
 
     placement_rules:
