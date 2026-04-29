@@ -2,7 +2,10 @@ package storage
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +57,7 @@ type HotEntry struct {
 	Dirty         bool
 	HitProb       float64
 	Protected     bool
+	AccessHistory []time.Time
 }
 
 type HotPointerPayload struct {
@@ -61,6 +65,17 @@ type HotPointerPayload struct {
 	ObjectType  string
 	PointerType string
 	Locator     string
+}
+
+type physicalLocator struct {
+	Tier   string
+	Store  string
+	Bucket string
+	Key    string
+	ID     string
+	Offset int64
+	Length int64
+	Page   int64
 }
 
 type HotCachePolicy struct {
@@ -88,10 +103,15 @@ type HotCachePolicy struct {
 	WriteBackByType      map[string]float64
 	ProtectedRatio       float64
 	MaxFlushRetries      int
+	LRUKValue            int
+	DirtyJournalPath     string
+	LocatorBlockSize     int64
 	SemanticKeywordBoost map[string]float64
 	ForceClass1Keywords  []string
 	ForceClass2Keywords  []string
 	ForceClass3Keywords  []string
+	ForceClassByType     map[string]int
+	MemoryLifecycleClass map[string]int
 	Class1Types          []string
 	Class2Types          []string
 	Class3Types          []string
@@ -135,8 +155,11 @@ func defaultHotCachePolicy() HotCachePolicy {
 			"state":    0.60,
 			"artifact": 0.50,
 		},
-		ProtectedRatio:  0.5,
-		MaxFlushRetries: 3,
+		ProtectedRatio:   0.5,
+		MaxFlushRetries:  3,
+		LRUKValue:        2,
+		DirtyJournalPath: ".andb_data/hot_dirty_journal.log",
+		LocatorBlockSize: 4096,
 		SemanticKeywordBoost: map[string]float64{
 			"core_fact":    0.20,
 			"evidence":     0.15,
@@ -149,9 +172,23 @@ func defaultHotCachePolicy() HotCachePolicy {
 		ForceClass1Keywords: []string{"core_fact", "critical", "must_keep"},
 		ForceClass2Keywords: []string{"thinking", "reasoning", "payload"},
 		ForceClass3Keywords: []string{"archived", "deleted", "obsolete"},
-		Class1Types:         []string{"memory", "state"},
-		Class2Types:         []string{"artifact"},
-		Class3Types:         []string{},
+		ForceClassByType: map[string]int{
+			"memory":   1,
+			"state":    1,
+			"artifact": 2,
+		},
+		MemoryLifecycleClass: map[string]int{
+			"active":      1,
+			"reinforced":  1,
+			"compressed":  2,
+			"stale":       2,
+			"archived":    3,
+			"deleted":     3,
+			"quarantined": 3,
+		},
+		Class1Types: []string{"memory", "state"},
+		Class2Types: []string{"artifact"},
+		Class3Types: []string{},
 	}
 }
 
@@ -264,6 +301,15 @@ func (c *HotObjectCache) ConfigurePolicy(p HotCachePolicy) {
 	if p.MaxFlushRetries <= 0 {
 		p.MaxFlushRetries = c.policy.MaxFlushRetries
 	}
+	if p.LRUKValue <= 1 {
+		p.LRUKValue = c.policy.LRUKValue
+	}
+	if p.LocatorBlockSize <= 0 {
+		p.LocatorBlockSize = c.policy.LocatorBlockSize
+	}
+	if strings.TrimSpace(p.DirtyJournalPath) == "" {
+		p.DirtyJournalPath = c.policy.DirtyJournalPath
+	}
 	if len(p.SemanticKeywordBoost) == 0 {
 		p.SemanticKeywordBoost = c.policy.SemanticKeywordBoost
 	}
@@ -275,6 +321,12 @@ func (c *HotObjectCache) ConfigurePolicy(p HotCachePolicy) {
 	}
 	if len(p.ForceClass3Keywords) == 0 {
 		p.ForceClass3Keywords = c.policy.ForceClass3Keywords
+	}
+	if len(p.ForceClassByType) == 0 {
+		p.ForceClassByType = c.policy.ForceClassByType
+	}
+	if len(p.MemoryLifecycleClass) == 0 {
+		p.MemoryLifecycleClass = c.policy.MemoryLifecycleClass
 	}
 	c.policy = p
 }
@@ -301,7 +353,14 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 	if class == 2 {
 		locator := opts.PointerLocator
 		if strings.TrimSpace(locator) == "" {
-			locator = "warm:" + objectType + ":" + objectID
+			locator = encodeLocator(physicalLocator{
+				Tier:   "warm",
+				Store:  "memstore",
+				ID:     objectID,
+				Offset: 0,
+				Length: int64(estimatePayloadSize(payload)),
+				Page:   0,
+			})
 		}
 		payload = HotPointerPayload{
 			ObjectID:    objectID,
@@ -322,6 +381,7 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 		existing.WriteBackCost = c.resolveWriteBackCost(objectType, existing.Dirty)
 		existing.ReloadEase = c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
 		existing.HitProb = c.updateEWMA(existing.HitProb, 1.0, c.policy.HitProbEWMAAlpha)
+		existing.AccessHistory = c.appendAccessHistory(existing.AccessHistory, now)
 		if opts.Dirty {
 			c.enqueueDirty(objectID)
 		}
@@ -347,6 +407,7 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 		Dirty:         opts.Dirty,
 		HitProb:       0.5,
 		Protected:     false,
+		AccessHistory: []time.Time{now},
 	}
 	c.order = append(c.order, objectID)
 	c.touchProbation(objectID)
@@ -362,9 +423,11 @@ func (c *HotObjectCache) Get(objectID string) (*HotEntry, bool) {
 	defer c.mu.Unlock()
 	e, ok := c.entries[objectID]
 	if ok {
+		now := time.Now()
 		e.AccessCount++
-		e.LastAccess = time.Now()
+		e.LastAccess = now
 		e.HitProb = c.updateEWMA(e.HitProb, 1.0, c.policy.HitProbEWMAAlpha)
+		e.AccessHistory = c.appendAccessHistory(e.AccessHistory, now)
 		if !e.Protected {
 			e.Protected = true
 			c.moveProbationToProtected(objectID)
@@ -444,7 +507,9 @@ func (c *HotObjectCache) evictOne() {
 	worstScore := c.entries[worstID].hotness(c.policy)
 	for _, id := range candidates[1:] {
 		score := c.entries[id].hotness(c.policy)
-		if score < worstScore || (score == worstScore && c.entries[id].EstimatedSize > c.entries[worstID].EstimatedSize) {
+		if score < worstScore ||
+			(score == worstScore && c.lruKAge(c.entries[id]) > c.lruKAge(c.entries[worstID])) ||
+			(score == worstScore && c.lruKAge(c.entries[id]) == c.lruKAge(c.entries[worstID]) && c.entries[id].EstimatedSize > c.entries[worstID].EstimatedSize) {
 			worstScore = score
 			worstID = id
 		}
@@ -490,6 +555,7 @@ func (c *HotObjectCache) evictOne() {
 func (c *HotObjectCache) enqueueDirty(id string) {
 	c.removeFromQueue(&c.dirtyQ, id)
 	c.dirtyQ = append(c.dirtyQ, id)
+	c.appendDirtyJournal("dirty_put id=" + id)
 }
 
 func (c *HotObjectCache) tryFlushDirtyLocked(id string, e *HotEntry) bool {
@@ -504,6 +570,7 @@ func (c *HotObjectCache) tryFlushDirtyLocked(id string, e *HotEntry) bool {
 	}
 	if err := c.flushFn(e); err != nil {
 		c.dirtyRetry[id] = c.dirtyRetry[id] + 1
+		c.appendDirtyJournal("dirty_flush_fail id=" + id)
 		if c.dirtyRetry[id] <= c.policy.MaxFlushRetries {
 			return false
 		}
@@ -514,6 +581,7 @@ func (c *HotObjectCache) tryFlushDirtyLocked(id string, e *HotEntry) bool {
 	e.WriteBackCost = 0
 	c.dirtyRetry[id] = 0
 	c.removeFromQueue(&c.dirtyQ, id)
+	c.appendDirtyJournal("dirty_flush_ok id=" + id)
 	return true
 }
 
@@ -539,6 +607,14 @@ func (c *HotObjectCache) resolveWriteBackCost(objectType string, dirty bool) flo
 }
 
 func (c *HotObjectCache) pointerClass(objectType string, payload any) int {
+	if cls, ok := c.policy.ForceClassByType[objectType]; ok && cls >= 1 && cls <= 3 {
+		if mem, okMem := payload.(schemas.Memory); okMem {
+			if byLife, okLife := c.policy.MemoryLifecycleClass[strings.ToLower(strings.TrimSpace(mem.LifecycleState))]; okLife && byLife >= 1 && byLife <= 3 {
+				return byLife
+			}
+		}
+		return cls
+	}
 	text := strings.ToLower(c.extractText(payload))
 	for _, kw := range c.policy.ForceClass3Keywords {
 		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
@@ -649,6 +725,27 @@ func (c *HotObjectCache) enforceProtectedRatioLocked() {
 	}
 }
 
+func (c *HotObjectCache) appendAccessHistory(hist []time.Time, ts time.Time) []time.Time {
+	k := c.policy.LRUKValue
+	if k <= 1 {
+		k = 2
+	}
+	hist = append(hist, ts)
+	if len(hist) > k {
+		hist = hist[len(hist)-k:]
+	}
+	return hist
+}
+
+func (c *HotObjectCache) lruKAge(e *HotEntry) float64 {
+	if e == nil || len(e.AccessHistory) == 0 {
+		return math.MaxFloat64
+	}
+	// K-th recent access age. Older means easier to evict.
+	ref := e.AccessHistory[0]
+	return time.Since(ref).Seconds()
+}
+
 func (c *HotObjectCache) ObserveReloadLatency(objectType string, d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -660,6 +757,20 @@ func (c *HotObjectCache) ObserveReloadLatency(objectType string, d time.Duration
 	sampleEase := 1.0 / (1.0 + sec)
 	prev := c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
 	c.policy.ReloadEaseByType[objectType] = c.updateEWMA(prev, sampleEase, c.policy.ReloadEaseEWMAAlpha)
+}
+
+func (c *HotObjectCache) appendDirtyJournal(line string) {
+	path := strings.TrimSpace(c.policy.DirtyJournalPath)
+	if path == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line + "\n")
 }
 
 func (c *HotObjectCache) enforceWatermarkLocked() {
@@ -901,8 +1012,15 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 	// warm path
 	if m, ok := t.warm.GetMemory(memoryID); ok {
 		t.hot.PutWithOptions(memoryID, "memory", m, salience, HotPutOptions{
-			Dirty:          false,
-			PointerLocator: "warm:memory:" + memoryID,
+			Dirty: false,
+			PointerLocator: encodeLocator(physicalLocator{
+				Tier:   "warm",
+				Store:  "memstore",
+				ID:     memoryID,
+				Offset: 0,
+				Length: int64(estimatePayloadSize(m)),
+				Page:   0,
+			}),
 		})
 		return m, true
 	}
@@ -914,7 +1032,7 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 		t.warm.PutMemory(m)
 		t.hot.PutWithOptions(memoryID, "memory", m, salience*0.5, HotPutOptions{
 			Dirty:          false,
-			PointerLocator: "cold:memory:" + memoryID,
+			PointerLocator: t.buildColdMemoryLocator(memoryID),
 		})
 		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		return m, true
@@ -935,8 +1053,15 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 	}
 	if salience >= t.hotThreshold {
 		t.hot.PutWithOptions(m.MemoryID, "memory", m, salience, HotPutOptions{
-			Dirty:          true,
-			PointerLocator: "warm:memory:" + m.MemoryID,
+			Dirty: true,
+			PointerLocator: encodeLocator(physicalLocator{
+				Tier:   "warm",
+				Store:  "memstore",
+				ID:     m.MemoryID,
+				Offset: 0,
+				Length: int64(estimatePayloadSize(m)),
+				Page:   0,
+			}),
 		})
 	}
 }
@@ -946,15 +1071,12 @@ func (t *TieredObjectStore) resolveMemoryByLocator(p HotPointerPayload, salience
 	if locator == "" {
 		return schemas.Memory{}, false
 	}
-	parts := strings.SplitN(locator, ":", 3)
-	if len(parts) < 3 {
+	loc, ok := decodeLocator(locator)
+	if !ok {
 		return schemas.Memory{}, false
 	}
-	tier, objType, objectID := parts[0], parts[1], parts[2]
-	if objType != "memory" {
-		return schemas.Memory{}, false
-	}
-	switch tier {
+	objectID := loc.ID
+	switch loc.Tier {
 	case "warm":
 		if m, ok := t.warm.GetMemory(objectID); ok {
 			return m, true
@@ -967,13 +1089,120 @@ func (t *TieredObjectStore) resolveMemoryByLocator(p HotPointerPayload, salience
 				t.warm.PutMemory(m)
 			}
 			t.hot.PutWithOptions(objectID, "memory", m, salience, HotPutOptions{
-				Dirty:          false,
-				PointerLocator: "warm:memory:" + objectID,
+				Dirty: false,
+				PointerLocator: encodeLocator(physicalLocator{
+					Tier:   "warm",
+					Store:  "memstore",
+					ID:     objectID,
+					Offset: 0,
+					Length: int64(estimatePayloadSize(m)),
+					Page:   0,
+				}),
 			})
 			return m, true
 		}
 	}
 	return schemas.Memory{}, false
+}
+
+func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string) string {
+	page := int64(0)
+	if t == nil || t.cold == nil {
+		return encodeLocator(physicalLocator{Tier: "cold", Store: "unknown", ID: memoryID, Page: page})
+	}
+	switch c := t.cold.(type) {
+	case *S3ColdStore:
+		key := c.memoryKey(memoryID)
+		return encodeLocator(physicalLocator{
+			Tier:   "cold",
+			Store:  "s3",
+			Bucket: c.cfg.Bucket,
+			Key:    key,
+			ID:     memoryID,
+			Offset: 0,
+			Length: 0,
+			Page:   page,
+		})
+	case *InMemoryColdStore:
+		return encodeLocator(physicalLocator{
+			Tier:   "cold",
+			Store:  "inmem",
+			Key:    "cold.memory.map",
+			ID:     memoryID,
+			Offset: 0,
+			Length: 0,
+			Page:   page,
+		})
+	default:
+		return encodeLocator(physicalLocator{
+			Tier:   "cold",
+			Store:  "generic",
+			ID:     memoryID,
+			Offset: 0,
+			Length: 0,
+			Page:   page,
+		})
+	}
+}
+
+func encodeLocator(l physicalLocator) string {
+	// v1|tier=<tier>|store=<store>|bucket=<bucket>|key=<key>|id=<id>|offset=<n>|length=<n>|page=<n>
+	return "v1|tier=" + l.Tier +
+		"|store=" + l.Store +
+		"|bucket=" + l.Bucket +
+		"|key=" + l.Key +
+		"|id=" + l.ID +
+		"|offset=" + itoa64(l.Offset) +
+		"|length=" + itoa64(l.Length) +
+		"|page=" + itoa64(l.Page)
+}
+
+func decodeLocator(raw string) (physicalLocator, bool) {
+	parts := strings.Split(raw, "|")
+	if len(parts) < 2 || parts[0] != "v1" {
+		return physicalLocator{}, false
+	}
+	out := physicalLocator{}
+	for _, p := range parts[1:] {
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "tier":
+			out.Tier = kv[1]
+		case "store":
+			out.Store = kv[1]
+		case "bucket":
+			out.Bucket = kv[1]
+		case "key":
+			out.Key = kv[1]
+		case "id":
+			out.ID = kv[1]
+		case "offset":
+			out.Offset = atoi64(kv[1])
+		case "length":
+			out.Length = atoi64(kv[1])
+		case "page":
+			out.Page = atoi64(kv[1])
+		}
+	}
+	if strings.TrimSpace(out.ID) == "" || strings.TrimSpace(out.Tier) == "" {
+		return physicalLocator{}, false
+	}
+	return out, true
+}
+
+func itoa64(v int64) string {
+	return strconv.FormatInt(v, 10)
+}
+
+func atoi64(s string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ArchiveMemory moves a memory from warm to cold (e.g. on TTL expiry).
