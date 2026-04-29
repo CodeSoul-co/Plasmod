@@ -103,6 +103,36 @@ func BuildServer() (*http.Server, func() error, error) {
 		log.Printf("[bootstrap] shared algorithm config load failed, using defaults: %v", err)
 		algoCfg = schemas.DefaultAlgorithmConfig()
 	}
+	memTierCfg, mtErr := config.LoadMemoryTieringConfig()
+	if mtErr != nil {
+		log.Printf("[bootstrap] memory tiering config load failed, using defaults: %v", mtErr)
+	}
+	if hot := store.HotCache(); hot != nil {
+		h := memTierCfg.MemoryTiering.HotCache
+		hot.ConfigurePolicy(storage.HotCachePolicy{
+			HighWatermarkPercent: h.HighWatermarkPercent,
+			LowWatermarkPercent:  h.LowWatermarkPercent,
+			EvictionBatchSize:    h.EvictionBatchSize,
+			Wr:                   h.Score.Wr,
+			Wf:                   h.Score.Wf,
+			Ws:                   h.Score.Ws,
+			Lambda:               h.Score.Lambda,
+			AlphaSize:            h.Penalty.AlphaSize,
+			BetaWriteBack:        h.Penalty.BetaWriteBack,
+			GammaHitProb:         h.Penalty.GammaHitProb,
+			DeltaReload:          h.Penalty.DeltaReload,
+			FrequencyNormWindow:  h.FrequencyNormWindow,
+			RecencyTauSeconds:    h.RecencyTauSeconds,
+			RecencyTauByType:     h.RecencyTauByType,
+			EstimatedPoolBytes:   h.EstimatedPoolBytes,
+			ObjectTypeWeight:     h.ObjectTypeWeight,
+			ReloadEaseByType:     h.ReloadEaseByType,
+			WriteBackByType:      h.WriteBackByType,
+			Class1Types:          h.PointerPolicy.Class1Types,
+			Class2Types:          h.PointerPolicy.Class2Types,
+			Class3Types:          h.PointerPolicy.Class3Types,
+		})
+	}
 
 	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
 	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.

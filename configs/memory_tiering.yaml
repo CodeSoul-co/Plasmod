@@ -1,0 +1,45 @@
+memory_tiering:
+  hot_cache:
+    high_watermark_percent: 0.80
+    low_watermark_percent: 0.60
+    eviction_batch_size: 16
+
+    score:
+      wr: 0.25
+      wf: 0.20
+      ws: 0.55
+      lambda: 0.80
+
+    penalty:
+      alpha_size: 0.45
+      beta_write_back: 0.20
+      gamma_hit_prob: 0.25
+      delta_reload: 0.10
+
+    frequency_norm_window: 16
+    recency_tau_seconds: 120
+    recency_tau_by_type:
+      memory: 180
+      state: 120
+      artifact: 90
+    estimated_pool_bytes: 268435456
+
+    object_type_weight:
+      memory: 0.95
+      state: 0.85
+      artifact: 0.70
+
+    reload_ease_by_type:
+      memory: 0.30
+      state: 0.50
+      artifact: 0.70
+
+    write_back_by_type:
+      memory: 0.40
+      state: 0.60
+      artifact: 0.50
+
+    pointer_policy:
+      class1_types: [memory, state]
+      class2_types: [artifact]
+      class3_types: []
