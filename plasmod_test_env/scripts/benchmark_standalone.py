@@ -49,11 +49,13 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 def run_group(mode: str, indexed_dataset: str, query_dataset: str,
               indexed_count: int, nq: int, topk: int, segment: str,
               server_url: str = PLASMOD_URL,
-              groundtruth: str = "") -> dict | None:
+              groundtruth: str = "",
+              plugin: int = 0) -> dict | None:
     """Run a benchmark group as a Go subprocess and return parsed JSON result."""
     args = [
         str(BENCH_BIN),
         f"--mode={mode}",
+        f"--plugin={plugin}",
         f"--indexed-dataset={indexed_dataset}",
         f"--query-dataset={query_dataset}",
         f"--indexed-count={indexed_count}",
@@ -141,19 +143,28 @@ def main():
             results.append(r)
 
     if not args.skip_knowhere and not args.old_only:
-        print(f"\n[G2-new] Knowhere HNSW — OpenMP batch + plugin (indexed={indexed_count})…")
+        print(f"\n[G2-L2NormSort] Knowhere HNSW — OpenMP batch + L2NormSort plugin (indexed={indexed_count})…")
         r = run_group("knowhere-build", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g2_knowhere_new",
-                      groundtruth=groundtruth)
+                      indexed_count, nq, topk, "bench.g2_l2norm",
+                      groundtruth=groundtruth, plugin=1)
         if r:
-            r["label"] = "G2-new"
+            r["label"] = "G2-L2NormSort"
+            results.append(r)
+
+    if not args.skip_knowhere and not args.old_only:
+        print(f"\n[G2-VisitedSharing] Knowhere HNSW — VisitedSharing plugin (indexed={indexed_count})…")
+        r = run_group("knowhere-build", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g2_visited",
+                      groundtruth=groundtruth, plugin=2)
+        if r:
+            r["label"] = "G2-VisitedSharing"
             results.append(r)
 
     if not args.skip_knowhere and not args.old_only:
         print(f"\n[G2-raw] Knowhere HNSW — standard batch (no plugin) (indexed={indexed_count})…")
         r = run_group("knowhere-raw", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g2_knowhere_raw",
-                      groundtruth=groundtruth)
+                      indexed_count, nq, topk, "bench.g2_raw",
+                      groundtruth=groundtruth, plugin=0)
         if r:
             r["label"] = "G2-raw"
             results.append(r)
@@ -169,20 +180,28 @@ def main():
             results.append(r)
 
     if not args.skip_cgo and not args.old_only:
-        print(f"\n[G3-new] Plasmod Bridge — OpenMP batch + plugin (indexed={indexed_count})…")
-        # Reuse same segment for G2/G3 since it's the same library
+        print(f"\n[G3-L2NormSort] Plasmod Bridge — L2NormSort plugin (indexed={indexed_count})…")
         r = run_group("vector-only", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g3_plasmod_new",
-                      groundtruth=groundtruth)
+                      indexed_count, nq, topk, "bench.g3_l2norm",
+                      groundtruth=groundtruth, plugin=1)
         if r:
-            r["label"] = "G3-new"
+            r["label"] = "G3-L2NormSort"
+            results.append(r)
+
+    if not args.skip_cgo and not args.old_only:
+        print(f"\n[G3-VisitedSharing] Plasmod Bridge — VisitedSharing plugin (indexed={indexed_count})…")
+        r = run_group("vector-only", indexed_ds, query_ds,
+                      indexed_count, nq, topk, "bench.g3_visited",
+                      groundtruth=groundtruth, plugin=2)
+        if r:
+            r["label"] = "G3-VisitedSharing"
             results.append(r)
 
     if not args.skip_cgo and not args.old_only:
         print(f"\n[G3-raw] Plasmod Bridge — standard batch (no plugin) (indexed={indexed_count})…")
         r = run_group("vector-only-raw", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g3_plasmod_raw",
-                      groundtruth=groundtruth)
+                      indexed_count, nq, topk, "bench.g3_raw",
+                      groundtruth=groundtruth, plugin=0)
         if r:
             r["label"] = "G3-raw"
             results.append(r)
@@ -198,19 +217,28 @@ def main():
             results.append(r)
 
     if not args.skip_http and not args.old_only:
-        print(f"\n[G4-new] Plasmod HTTP E2E — OpenMP batch + plugin (indexed={indexed_count})…")
+        print(f"\n[G4-L2NormSort] Plasmod HTTP E2E — L2NormSort plugin (indexed={indexed_count})…")
         r = run_group("http-query", indexed_ds, query_ds,
                       indexed_count, nq, topk, WARM_SEGMENT_ID,
-                      server_url=PLASMOD_URL, groundtruth=groundtruth)
+                      server_url=PLASMOD_URL, groundtruth=groundtruth, plugin=1)
         if r:
-            r["label"] = "G4-new"
+            r["label"] = "G4-L2NormSort"
+            results.append(r)
+
+    if not args.skip_http and not args.old_only:
+        print(f"\n[G4-VisitedSharing] Plasmod HTTP E2E — VisitedSharing plugin (indexed={indexed_count})…")
+        r = run_group("http-query", indexed_ds, query_ds,
+                      indexed_count, nq, topk, WARM_SEGMENT_ID,
+                      server_url=PLASMOD_URL, groundtruth=groundtruth, plugin=2)
+        if r:
+            r["label"] = "G4-VisitedSharing"
             results.append(r)
 
     if not args.skip_http and not args.old_only:
         print(f"\n[G4-raw] Plasmod HTTP E2E — standard batch (no plugin) (indexed={indexed_count})…")
         r = run_group("http-query-raw", indexed_ds, query_ds,
                       indexed_count, nq, topk, WARM_SEGMENT_ID,
-                      server_url=PLASMOD_URL, groundtruth=groundtruth)
+                      server_url=PLASMOD_URL, groundtruth=groundtruth, plugin=0)
         if r:
             r["label"] = "G4-raw"
             results.append(r)
