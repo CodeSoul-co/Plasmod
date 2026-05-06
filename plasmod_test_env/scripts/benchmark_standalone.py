@@ -50,7 +50,8 @@ def run_group(mode: str, indexed_dataset: str, query_dataset: str,
               indexed_count: int, nq: int, topk: int, segment: str,
               server_url: str = PLASMOD_URL,
               groundtruth: str = "",
-              plugin: int = 0) -> dict | None:
+              plugin: int = 0,
+              timeout: int = 3600) -> dict | None:
     """Run a benchmark group as a Go subprocess and return parsed JSON result."""
     args = [
         str(BENCH_BIN),
@@ -68,7 +69,11 @@ def run_group(mode: str, indexed_dataset: str, query_dataset: str,
     if mode in ("http-query", "http-query-raw"):
         args.append(f"--server-url={server_url}")
     env = dict(os.environ, KMP_DUPLICATE_LIB_OK="TRUE")
-    r = subprocess.run(args, capture_output=True, text=True, timeout=3600, env=env)
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        print(f"  [{mode}] timed out after {timeout}s — skipping")
+        return None
     if r.returncode != 0:
         print(f"  [{mode}] failed: {r.stderr[:300].strip()}")
         return None
@@ -102,6 +107,11 @@ def main():
                     help="Run only the 'old' repeated single-query modes")
     ap.add_argument("--new-raw-only", action="store_true",
                     help="Run only the 'new' OpenMP batch and 'raw' standard modes")
+    ap.add_argument("--old-queries", type=int, default=0,
+                    help="Number of queries for 'old' single-query modes (0=same as --num-queries). "
+                         "Use a smaller value (e.g. 100) to avoid timeouts on large datasets.")
+    ap.add_argument("--old-timeout", type=int, default=600,
+                    help="Timeout in seconds for 'old' single-query modes (default 600).")
     args = ap.parse_args()
 
     indexed_ds = str(args.indexed_dataset) if args.indexed_dataset else ""
@@ -110,15 +120,17 @@ def main():
     indexed_count = args.indexed_count
     nq = args.num_queries
     topk = args.topk
+    old_nq = args.old_queries if args.old_queries > 0 else nq
+    old_timeout = args.old_timeout
 
     results = []
 
     # --- G1: FAISS HNSW ---
     if not args.skip_faiss and not args.new_raw_only:
-        print(f"\n[G1-old] FAISS HNSW — repeated single-query batch (indexed={indexed_count})…")
+        print(f"\n[G1-old] FAISS HNSW — repeated single-query batch (indexed={indexed_count}, nq={old_nq})…")
         r = run_group("faiss-single", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g1_faiss_old",
-                      groundtruth=groundtruth)
+                      indexed_count, old_nq, topk, "bench.g1_faiss_old",
+                      groundtruth=groundtruth, timeout=old_timeout)
         if r:
             r["label"] = "G1-old"
             results.append(r)
@@ -134,10 +146,10 @@ def main():
 
     # --- G2: Knowhere HNSW via CGO ---
     if not args.skip_knowhere and not args.new_raw_only:
-        print(f"\n[G2-old] Knowhere HNSW — repeated single-query batch (indexed={indexed_count})…")
+        print(f"\n[G2-old] Knowhere HNSW — repeated single-query batch (indexed={indexed_count}, nq={old_nq})…")
         r = run_group("knowhere-single", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g2_knowhere_old",
-                      groundtruth=groundtruth)
+                      indexed_count, old_nq, topk, "bench.g2_knowhere_old",
+                      groundtruth=groundtruth, timeout=old_timeout)
         if r:
             r["label"] = "G2-old"
             results.append(r)
@@ -171,10 +183,10 @@ def main():
 
     # --- G3: Plasmod Bridge ---
     if not args.skip_cgo and not args.new_raw_only:
-        print(f"\n[G3-old] Plasmod Bridge — repeated single-query batch (indexed={indexed_count})…")
+        print(f"\n[G3-old] Plasmod Bridge — repeated single-query batch (indexed={indexed_count}, nq={old_nq})…")
         r = run_group("vector-only", indexed_ds, query_ds,
-                      indexed_count, nq, topk, "bench.g3_plasmod_old",
-                      groundtruth=groundtruth)
+                      indexed_count, old_nq, topk, "bench.g3_plasmod_old",
+                      groundtruth=groundtruth, timeout=old_timeout)
         if r:
             r["label"] = "G3-old"
             results.append(r)
@@ -208,10 +220,10 @@ def main():
 
     # --- G4: HTTP E2E ---
     if not args.skip_http and not args.new_raw_only:
-        print(f"\n[G4-old] Plasmod HTTP E2E — repeated single-query batch (indexed={indexed_count})…")
+        print(f"\n[G4-old] Plasmod HTTP E2E — repeated single-query batch (indexed={indexed_count}, nq={old_nq})…")
         r = run_group("http-query", indexed_ds, query_ds,
-                      indexed_count, nq, topk, WARM_SEGMENT_ID,
-                      server_url=PLASMOD_URL, groundtruth=groundtruth)
+                      indexed_count, old_nq, topk, WARM_SEGMENT_ID,
+                      server_url=PLASMOD_URL, groundtruth=groundtruth, timeout=old_timeout)
         if r:
             r["label"] = "G4-old"
             results.append(r)
