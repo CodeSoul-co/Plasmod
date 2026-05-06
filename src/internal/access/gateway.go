@@ -51,6 +51,9 @@ type Gateway struct {
 	// Semaphore limits concurrent writes to prevent resource exhaustion.
 	writeSem       chan struct{}
 	writeSemActive int32
+
+	// Multi-request document body assembly (see /v1/ingest/document segment fields).
+	docAssembler *documentSegmentAssembler
 }
 
 func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
@@ -185,6 +188,7 @@ func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.R
 		consistencyMode: "strict_visible",
 		stopCh:          make(chan struct{}),
 		writeSem:        make(chan struct{}, maxWrites),
+		docAssembler:    newDocumentSegmentAssembler(),
 	}
 	g.hardDeleteMgr = newHardDeleteManagerFromEnv()
 	go g.hardDeleteMgr.run(g.stopCh, context.Background(), g.processHardDeleteTaskBatch)
@@ -2828,10 +2832,13 @@ func (g *Gateway) handlePlanRepair(w http.ResponseWriter, r *http.Request) {
 //   "session_id":   "...",
 //   "workspace_id": "...",
 //   "title":        "...",
-//   "text":         "<full document text>",
+//   "text":         "<full document text or one segment>",
 //   "chunk_size":   512,    // chars per chunk, default 1000
 //   "overlap":      50,     // overlap chars between chunks, default 0
 //   "importance":   0.6
+//   "upload_batch_id": "uuid",  // required when segment_total > 1
+//   "segment_index": 0,         // 0-based, each request must stay under proxy body limits
+//   "segment_total": 1          // >1 enables multi-request assembly before chunking
 // }
 //
 // Splits the document into chunks and ingests each as an episodic memory
@@ -2845,14 +2852,17 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		AgentID     string  `json:"agent_id"`
-		SessionID   string  `json:"session_id"`
-		WorkspaceID string  `json:"workspace_id"`
-		Title       string  `json:"title"`
-		Text        string  `json:"text"`
-		ChunkSize   int     `json:"chunk_size"`
-		Overlap     int     `json:"overlap"`
-		Importance  float64 `json:"importance"`
+		AgentID       string  `json:"agent_id"`
+		SessionID     string  `json:"session_id"`
+		WorkspaceID   string  `json:"workspace_id"`
+		Title         string  `json:"title"`
+		Text          string  `json:"text"`
+		ChunkSize     int     `json:"chunk_size"`
+		Overlap       int     `json:"overlap"`
+		Importance    float64 `json:"importance"`
+		UploadBatchID string  `json:"upload_batch_id"`
+		SegmentIndex  int     `json:"segment_index"`
+		SegmentTotal  int     `json:"segment_total"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2860,6 +2870,20 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Text) == "" {
 		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	segTotal := req.SegmentTotal
+	if segTotal <= 0 {
+		segTotal = 1
+	}
+	fullText, accumulating, aerr := g.docAssembler.tryAssembleDocument(req.UploadBatchID, req.SegmentIndex, segTotal, req.Text)
+	if aerr != nil {
+		http.Error(w, aerr.Error(), http.StatusBadRequest)
+		return
+	}
+	if accumulating != nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(accumulating)
 		return
 	}
 	if req.ChunkSize <= 0 {
@@ -2872,7 +2896,7 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 		req.Importance = 0.5
 	}
 
-	chunks := splitTextIntoChunks(req.Text, req.ChunkSize, req.Overlap)
+	chunks := splitTextIntoChunks(fullText, req.ChunkSize, req.Overlap)
 	batchID := generateObjectID("batch")
 	now := time.Now().UTC().Format(time.RFC3339)
 	memoryIDs := make([]string, 0, len(chunks))

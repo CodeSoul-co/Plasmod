@@ -46,6 +46,25 @@ import (
 //	if err != nil { ... }
 //	defer cleanup()
 //	if err := srv.ListenAndServe(); err != nil { ... }
+
+// parseHTTPDuration reads a time.ParseDuration value from env.
+// Empty env yields defaultVal. "0", "none", or "off" mean no timeout (0).
+func parseHTTPDuration(envKey string, defaultVal time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(envKey))
+	if raw == "" {
+		return defaultVal
+	}
+	if raw == "0" || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "off") {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("[bootstrap] invalid %s=%q, using default %v", envKey, raw, defaultVal)
+		return defaultVal
+	}
+	return d
+}
+
 func BuildServer() (*http.Server, func() error, error) {
 	addr := os.Getenv("PLASMOD_HTTP_ADDR")
 	if addr == "" {
@@ -574,13 +593,23 @@ func BuildServer() (*http.Server, func() error, error) {
 		return bundle.Close()
 	}
 
+	// Large ingest bodies (JSON documents, embeddings) often exceed defaults
+	// used by net/http (ReadTimeout applies to the entire request body).
+	// PLASMOD_HTTP_READ_TIMEOUT / PLASMOD_HTTP_WRITE_TIMEOUT default to 0 (no limit).
+	readTO := parseHTTPDuration("PLASMOD_HTTP_READ_TIMEOUT", 0)
+	writeTO := parseHTTPDuration("PLASMOD_HTTP_WRITE_TIMEOUT", 0)
+	idleTO := parseHTTPDuration("PLASMOD_HTTP_IDLE_TIMEOUT", 120*time.Second)
+	readHdrTO := parseHTTPDuration("PLASMOD_HTTP_READ_HEADER_TIMEOUT", 10*time.Second)
+	log.Printf("[bootstrap] http.Server timeouts read=%v write=%v idle=%v read_header=%v",
+		readTO, writeTO, idleTO, readHdrTO)
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
-		ReadTimeout:       30 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		ReadTimeout:       readTO,
+		ReadHeaderTimeout: readHdrTO,
+		WriteTimeout:      writeTO,
+		IdleTimeout:       idleTO,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 	return srv, shutdown, nil

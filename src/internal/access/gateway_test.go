@@ -1318,6 +1318,52 @@ func TestGateway_IngestDocument(t *testing.T) {
 	}
 }
 
+func TestGateway_IngestDocument_SegmentedUpload(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	uploadID := "upload_test_seg_001"
+	parts := []string{"hello ", "world", "!"}
+
+	for i, p := range parts {
+		b, _ := json.Marshal(map[string]any{
+			"agent_id":        "agent-doc",
+			"session_id":      "sess-doc-seg",
+			"text":            p,
+			"chunk_size":      100,
+			"title":           "seg_doc",
+			"upload_batch_id": uploadID,
+			"segment_index":   i,
+			"segment_total":   len(parts),
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/ingest/document", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("segment %d: want 200, got %d: %s", i, w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("segment %d decode: %v", i, err)
+		}
+		if i < len(parts)-1 {
+			if resp["status"] != "accumulating" {
+				t.Fatalf("segment %d: want accumulating, got %#v", i, resp["status"])
+			}
+			continue
+		}
+		if resp["batch_id"] == "" {
+			t.Fatal("expected batch_id on final segment")
+		}
+		chunks := resp["chunks"].(float64)
+		if chunks < 1 {
+			t.Fatalf("expected at least 1 chunk, got %v", chunks)
+		}
+	}
+}
+
 func TestGateway_TaskStage(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()

@@ -63,6 +63,13 @@ def _slug_token(value: str, fallback: str) -> str:
     return token or fallback
 
 
+def _effective_http_timeout(timeout: float) -> float | None:
+    """urllib treats timeout=None as unlimited (no per-request deadline)."""
+    if timeout <= 0:
+        return None
+    return timeout
+
+
 def _http_post_json(
     base_url: str, path: str, body: dict, timeout: float = 30.0
 ) -> tuple[int, dict]:
@@ -70,7 +77,7 @@ def _http_post_json(
     req = Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
     req.add_header("Content-Type", "application/json")
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=_effective_http_timeout(timeout)) as resp:
             raw = resp.read()
             return resp.status, json.loads(raw.decode("utf-8")) if raw else {}
     except HTTPError as e:
@@ -89,7 +96,7 @@ def _http_post_status_only(base_url: str, path: str, body: dict, timeout: float 
     req = Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
     req.add_header("Content-Type", "application/json")
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=_effective_http_timeout(timeout)) as resp:
             # Drain response body to allow connection reuse by urllib internals.
             _ = resp.read()
             return resp.status
@@ -517,7 +524,8 @@ def main() -> None:
         type=float,
         default=30.0,
         metavar="SEC",
-        help="Per-request timeout for ingest and admin delete/purge POSTs (default 30; purge large+S3 may need 300–600+)",
+        help="Per-request timeout for ingest and admin delete/purge POSTs in seconds; "
+        "<=0 means no client-side limit (default 30; large ops may need 300–600+)",
     )
     ap.add_argument(
         "--checkpoint",
