@@ -466,6 +466,41 @@ func (s *SegmentRetriever) RegisterWarmSegment(segmentID string, objectIDs []str
 	return nil
 }
 
+// ── Batch optimizer plugin selection ──────────────────────────────────────────
+
+// BatchPluginMode selects the DoSearch code path for batch queries (nq > 1).
+type BatchPluginMode int
+
+const (
+	// BatchPluginNone: full-batch Knowhere call; FAISS handles OMP internally.
+	// Equivalent to the G-raw baseline in benchmarks.
+	BatchPluginNone BatchPluginMode = 0
+
+	// BatchPluginL2NormSort: reorder queries by L2 norm, then dispatch
+	// one-per-thread via OpenMP using HnswFastSearchFloat.
+	BatchPluginL2NormSort BatchPluginMode = 1
+
+	// BatchPluginVisitedSharing: sequential warm-start loop; each query uses
+	// the top-1 result of the previous query as HNSW entry hint.
+	BatchPluginVisitedSharing BatchPluginMode = 2
+)
+
+// SetBatchPlugin selects the batch search plugin for all subsequent
+// plasmod_segment_search calls. Safe to call at any time; takes effect
+// on the next DoSearch invocation.
+func SetBatchPlugin(mode BatchPluginMode) error {
+	rc := C.plasmod_set_batch_plugin(C.int(mode))
+	if rc != 0 {
+		return fmt.Errorf("SetBatchPlugin(%d): unknown mode", mode)
+	}
+	return nil
+}
+
+// GetBatchPlugin returns the currently active plugin mode.
+func GetBatchPlugin() BatchPluginMode {
+	return BatchPluginMode(C.plasmod_get_batch_plugin())
+}
+
 // ── FAISS HNSW baseline (plasmod_faiss_*) ──────────────────────────────────────
 
 // FaissHNSW is a thin wrapper around the FAISS HNSWFlat C API.

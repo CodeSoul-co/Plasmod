@@ -92,3 +92,20 @@ func (s *SegmentRetriever) HasSegment(_ string) bool { return false }
 
 // SegmentSize always returns -1.
 func (s *SegmentRetriever) SegmentSize(_ string) int64 { return -1 }
+
+// ── Batch optimizer plugin stubs ──────────────────────────────────────────────
+
+// BatchPluginMode mirrors the CGO build for API parity.
+type BatchPluginMode int
+
+const (
+	BatchPluginNone           BatchPluginMode = 0
+	BatchPluginL2NormSort     BatchPluginMode = 1
+	BatchPluginVisitedSharing BatchPluginMode = 2
+)
+
+// SetBatchPlugin is a no-op stub.
+func SetBatchPlugin(_ BatchPluginMode) error { return nil }
+
+// GetBatchPlugin always returns BatchPluginNone in the stub build.
+func GetBatchPlugin() BatchPluginMode { return BatchPluginNone }

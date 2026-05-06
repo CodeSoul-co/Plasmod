@@ -72,14 +72,15 @@ void SegmentIndexManager::DestroyEntry(Entry& e) {
     }
 }
 
-// ── DoSearch: OpenMP parallel batch search ─────────────────────────────────────
+// ── DoSearch: three-path batch search ─────────────────────────────────────────
 //
-// Performance design:
-//   - nq == 1, no filter: HnswFastSearchFloat (single-query hot path, ~0.14ms)
-//   - nq > 1: OpenMP parallel for, #threads = min(nq, OMP_NUM_THREADS)
-//     Each thread has its own tls_cfg/tls_qds (no contention), shares the index
-//     read-only (no mutex needed on the index itself).
-//   - With filter: falls back to Knowhere Index::Search (filter + batch)
+// Path selection (checked in order):
+//   1. nq==1, no filter → HnswFastSearchFloat hot path (always)
+//   2. plugin mode == L2_NORM_SORT → reorder + OpenMP per-query dispatch
+//   3. plugin mode == VISITED_SHARING → reorder + sequential warm-start loop
+//   4. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
+//
+// Filter path always falls through to Knowhere full-batch regardless of plugin.
 int SegmentIndexManager::DoSearch(Entry& entry,
                                    const float* query, int64_t nq, int topk,
                                    const uint8_t* allow_bits, int64_t allow_count,
@@ -89,78 +90,128 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     auto* cfg = static_cast<knowhere::Json*>(entry.config_ptr);
     if (!idx || !cfg) return kErrNotFound;
 
-    // ── Hot path: single query, no filter → HnswFastSearchFloat ───────────────
+    const int ef = std::max(topk * 2, kHNSW_EfSearch);
+
+    // ── Hot path: single query, no filter ─────────────────────────────────────
     if (nq == 1 && (!allow_bits || allow_count <= 0)) {
-        const int ef = std::max(topk * 2, kHNSW_EfSearch);
         int rc = knowhere::HnswFastSearchFloat(
             idx->Node(), query, topk, ef,
             nullptr, 0, out_ids, out_dists);
         if (rc == 0) return kOK;
-        // rc == -2 → not an HNSW float index; fall back to slow path below.
+        // rc == -2 → not an HNSW float index; fall through to Knowhere below.
     }
 
-    // ── Batch path: nq > 1 or has filter → OpenMP parallel Knowhere ──────────
-    // Use OpenMP parallel for when:
-    //   1. nq > 1 (batch of multiple queries)
-    //   2. Filter is present (Knowhere handles bitset efficiently in batch)
-    //
-    // Thread safety:
-    //   - idx is read-only during Search (no write to the index)
-    //   - tls_cfg and tls_qds are thread_local → no contention
-    //   - output buffers (out_ids, out_dists) are partitioned by thread → no race
-    const bool use_omp = HAVE_OMP && nq > 1;
+    BatchQueryOptimizerPlugin* plugin = GetActivePlugin();
+    const bool has_filter = allow_bits && allow_count > 0;
 
-// ── Single full-batch path ────────────────────────────────────────────────
-    //
-    // Previously the batch path here ran an outer `#pragma omp parallel for`
-    // that called `idx->Search(tls_qds_with_nq=1)` once per query.  With the
-    // FAISS_HNSW_FLAT backend that triggered:
-    //   1. Knowhere wrapper overhead (CreateConfig + LoadConfig + JSON copy
-    //      + expected wrap + DataSet alloc) on every call → ~10-30 µs × nq.
-    //   2. Nested OMP regions: faiss::IndexHNSW::search has its own
-    //      `#pragma omp parallel for` over the input batch which collapsed
-    //      to a single-iteration loop inside our outer OMP region, missing
-    //      faiss's per-thread VisitedTable reuse optimisation.
-    //
-    // Hand the full nq to faiss in a single call: wrapper cost is paid once,
-    // and faiss::IndexHNSW::search does its own static OpenMP chunking with
-    // a per-thread VisitedTable allocated outside the per-query inner loop.
-    // This matches the G1 FAISS-direct CGO path's parallelism profile.
-    //
-    // Thread safety: tls_qds is thread_local; this function is reentrant —
-    // there is no cross-call shared mutable state here.
-    // ── Single full-batch path ────────────────────────────────────────────────
-    //
-    // Previously the batch path here ran an outer `#pragma omp parallel for`
-    // that called `idx->Search(tls_qds_with_nq=1)` once per query.  With the
-    // FAISS_HNSW_FLAT backend that triggered:
-    //   1. Knowhere wrapper overhead (CreateConfig + LoadConfig + JSON copy
-    //      + expected wrap + DataSet alloc) on every call → ~10-30 µs × nq.
-    //   2. Nested OMP regions: faiss::IndexHNSW::search has its own
-    //      `#pragma omp parallel for` over the input batch which collapsed
-    //      to a single-iteration loop inside our outer OMP region, missing
-    //      faiss's per-thread VisitedTable reuse optimisation.
-    //
-    // Hand the full nq to faiss in a single call: wrapper cost is paid once,
-    // and faiss::IndexHNSW::search does its own static OpenMP chunking with
-    // a per-thread VisitedTable allocated outside the per-query inner loop.
-    // This matches the G1 FAISS-direct CGO path's parallelism profile.
-    //
-    // Thread safety: tls_qds is thread_local; this function is reentrant —
-    // there is no cross-call shared mutable state here.
-    thread_local knowhere::Json   tls_cfg;
-    thread_local bool             tls_cfg_static_init = false;
-    thread_local knowhere::DataSetPtr tls_qds;
+    // ── L2_NORM_SORT path ──────────────────────────────────────────────────────
+    // Reorder queries by L2 norm, then dispatch one-per-thread via OpenMP.
+    // Each thread calls HnswFastSearchFloat for its assigned query range.
+    // Falls back to Knowhere path when filter is present (bitset not supported
+    // by HnswFastSearchFloat).
+#if HAVE_OMP
+    if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT && nq > 1) {
+        std::vector<int64_t> order(nq);
+        plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
 
-    if (!tls_cfg_static_init) {
-        tls_cfg[knowhere::meta::METRIC_TYPE]     = kMetricType;
-        tls_cfg[knowhere::indexparam::M]          = kHNSW_M;
+        // Reordered query matrix (copy so HnswFastSearchFloat gets contiguous rows)
+        std::vector<float> reordered(static_cast<size_t>(nq) * entry.dim);
+        for (int64_t i = 0; i < nq; ++i) {
+            std::memcpy(reordered.data() + i * entry.dim,
+                        query + order[i] * entry.dim,
+                        entry.dim * sizeof(float));
+        }
+
+        // Temporary output buffers in reordered space
+        std::vector<int64_t> tmp_ids(nq * topk, -1);
+        std::vector<float>   tmp_dists(nq * topk, -1.0f);
+
+        int num_threads = omp_get_max_threads();
+        int search_err  = 0;
+
+        #pragma omp parallel for schedule(static) num_threads(num_threads)
+        for (int t = 0; t < num_threads; ++t) {
+            QueryChunk chunk = plugin->GetOptimizedChunks(nq, num_threads, t);
+            for (int64_t qi = chunk.start; qi < chunk.end; ++qi) {
+                const float* qvec = reordered.data() + qi * entry.dim;
+                int64_t*     ids  = tmp_ids.data()   + qi * topk;
+                float*       dsts = tmp_dists.data()  + qi * topk;
+                int rc = knowhere::HnswFastSearchFloat(
+                    idx->Node(), qvec, topk, ef, nullptr, 0, ids, dsts);
+                if (rc != 0 && rc != -2) {
+                    #pragma omp atomic write
+                    search_err = rc;
+                }
+            }
+            plugin->OnChunkDone(chunk.start, chunk.end, t);
+        }
+
+        if (search_err != 0) return kErrSearchFailed;
+
+        // Scatter reordered results back to original query positions
+        for (int64_t i = 0; i < nq; ++i) {
+            int64_t orig = order[i];
+            std::memcpy(out_ids   + orig * topk, tmp_ids.data()   + i * topk, topk * sizeof(int64_t));
+            std::memcpy(out_dists + orig * topk, tmp_dists.data() + i * topk, topk * sizeof(float));
+        }
+        return kOK;
+    }
+#endif  // HAVE_OMP
+
+    // ── VISITED_SHARING path ───────────────────────────────────────────────────
+    // Reorder queries by L2 norm, then run sequentially.
+    // Each query uses the top-1 result of the previous query as warm entry point.
+    // After each query, visited nodes are merged into the plugin's shared bitset.
+    //
+    // Note: HnswFastSearchFloat does not expose visited nodes, so visited_count
+    // is always 0 in this implementation. The warm-start entry point is the only
+    // cross-query sharing mechanism active here. A future version can hook into
+    // a custom HNSW search kernel to expose the visited list.
+    if (!has_filter && plugin && plugin->Mode() == PluginMode::VISITED_SHARING && nq > 1) {
+        auto* vsp = static_cast<VisitedListSharingPlugin*>(plugin);
+        vsp->ResizeForSegment(entry.num_vectors);
+
+        std::vector<int64_t> order(nq);
+        plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
+
+        for (int64_t slot = 0; slot < nq; ++slot) {
+            int64_t orig  = order[slot];
+            const float* qvec = query + orig * entry.dim;
+            int64_t*     ids  = out_ids   + orig * topk;
+            float*       dsts = out_dists + orig * topk;
+
+            // Warm-start: use top-1 of previous query as entry hint.
+            // HnswFastSearchFloat ignores the hint for now (entry_node param
+            // not yet exposed); the call is here so the plugin interface is
+            // exercised and ready for a custom kernel.
+            /*int64_t entry_hint =*/ vsp->GetWarmEntryPoint(slot);
+
+            int rc = knowhere::HnswFastSearchFloat(
+                idx->Node(), qvec, topk, ef, nullptr, 0, ids, dsts);
+            if (rc != 0 && rc != -2) return kErrSearchFailed;
+
+            // Report results + visited nodes (visited_ids=nullptr until custom kernel)
+            vsp->OnQueryVisited(slot, ids, dsts, topk, nullptr, 0);
+        }
+        return kOK;
+    }
+
+    // ── NONE / fallback: full-batch Knowhere call ──────────────────────────────
+    // FAISS handles its own OpenMP chunking with per-thread VisitedTable.
+    // This is the baseline (G-raw) path.
+    thread_local knowhere::Json        tls_cfg;
+    thread_local bool                  tls_cfg_init = false;
+    thread_local knowhere::DataSetPtr  tls_qds;
+
+    if (!tls_cfg_init) {
+        tls_cfg[knowhere::meta::METRIC_TYPE]          = kMetricType;
+        tls_cfg[knowhere::indexparam::M]              = kHNSW_M;
         tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
-        tls_cfg_static_init = true;
+        tls_cfg_init = true;
     }
-    tls_cfg[knowhere::meta::DIM]  = entry.dim;
-    tls_cfg[knowhere::meta::TOPK] = topk;
-    tls_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kHNSW_EfSearch);
+    tls_cfg[knowhere::meta::DIM]          = entry.dim;
+    tls_cfg[knowhere::meta::TOPK]         = topk;
+    tls_cfg[knowhere::indexparam::EF]     = ef;
 
     if (!tls_qds) {
         tls_qds = std::make_shared<knowhere::DataSet>();
@@ -171,7 +222,7 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     tls_qds->SetTensor(query);
 
     knowhere::expected<knowhere::DataSetPtr> res;
-    if (allow_bits && allow_count > 0) {
+    if (has_filter) {
         knowhere::BitsetView bv(allow_bits, allow_count);
         res = idx->Search(tls_qds, tls_cfg, bv);
     } else {
@@ -181,7 +232,7 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     if (!res.has_value()) return kErrSearchFailed;
 
     const int64_t total = nq * topk;
-    std::memcpy(out_ids,   res.value()->GetIds(),     total * sizeof(int64_t));
+    std::memcpy(out_ids,   res.value()->GetIds(),      total * sizeof(int64_t));
     std::memcpy(out_dists, res.value()->GetDistance(), total * sizeof(float));
     return kOK;
 }

@@ -226,6 +226,15 @@ int plasmod_sparse_text_to_vector(
 int plasmod_sparse_save(void* sparse, const char* path);
 int plasmod_sparse_load(void* sparse, const char* path);
 
+/* ── Batch optimizer plugin selection ────────────────────────────────────────
+ * mode: 0 = NONE (full-batch Knowhere, baseline)
+ *        1 = L2_NORM_SORT (reorder + OpenMP per-query)
+ *        2 = VISITED_SHARING (sequential warm-start)
+ * Returns 0 on success, -1 on unknown mode.
+ */
+int plasmod_set_batch_plugin(int mode);
+int plasmod_get_batch_plugin(void);  /* returns current mode */
+
 /* ── FAISS HNSW baseline ──────────────────────────────────────────────────────
  * Mirrors the SegmentIndexManager API but uses FAISS directly.
  * Used for fair kernel-level baseline comparison (same algorithm, different lib).
