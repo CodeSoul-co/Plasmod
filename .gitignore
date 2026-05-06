@@ -1,110 +1,69 @@
+# =============================================================================
+# Plasmod — strict local dev ignore
+# Intentionally minimal. Only machine-generated / secret / OS files.
+# =============================================================================
 
-# Python virtual environment
+# Go
+bin/
+*.so
+*.dylib
+.gocache/
+
+# C++ build
+cpp/build/
+cpp/build_trt/
+
+# Downloaded / generated models
+models/*.onnx
+models/*.trt
+models/*.engine
+models/*.bin
+
+# Python
 .venv/
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
 
-# Go build output
-bin/
-*.so
-*.dylib
-
-# C++ build output
-cpp/build/
-cpp/build_trt/
-
-# Downloaded models (large binary files — download locally via make or scripts)
-# See models/README.md for download instructions
-models/*.onnx
-models/*.trt
-models/*.engine
-models/*.bin
-
-# go-llama.cpp build artifacts
+# LLama.cpp
 libs/go-llama.cpp/
 
-# Local env file
+# Local env / secrets
 .env
+.env.local
+.env.*.local
 
-# Integration test artifacts (local dev, not for push)
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store
+
+# Local runtime data (AnDB / storage)
+.andb_data/
+
+# Build / test artifacts
+out/
+*.log
+go.sum.bak*
+
+# Local experiment environment
+plasmod_test_env/
+
+# Integration test
 integration_tests/
 
-# Claude Code local config
-.claude/
-.vscode/
-.cache/
-# Member private docs
-devdocs/
-
-# Local issue tracker (not for version control)
-KNOWN_ISSUES.md
-
-# Rule file
-rule
-代码阅读顺序.md
-方案.md
-分工情况.md
-系统分层架构图.md
-docs/member-b/
-多维度数据集入库与检索规范（参考Milvus-Manu）.md
-
-TESTING.md
-# Local runtime data
-.andb_data/00001.mem
-.andb_data/000001.vlog
-.andb_data/KEYREGISTRY
-.andb_data/LOCK
-.andb_data/MANIFEST
-.andb_data/DISCARD
-
-# build / test artifacts
-go.sum.bak*
-out/
-go.mod
-.andb_data/00006.mem
-.gitignore
-.andb_data/wal.log
-.gitignore
-.andb_data/derivation.log
-.andb_data/00008.mem
-docs/plasmod-fix/experiments/out-exp2.txt
-Plasmod.md
-new.md
-
-# dev docs
-reviewlist.md
-
-# Local experiment environment (temporary test data, models, and runtime)
-# NOTE: On exp branch, this directory is tracked (see ! negation below)
-
-# Member A: local files
-.gocache/
-MemoryBank.docx
-HARD_DELETE_ZEP_EXECUTION_PLAN.md
-/home/yangyongsheng/Plasmod/scripts/e2e/import_dataset.py
-.gocache_local/
-Zep_in_Plasmod.md
-.out/
-.gitignore
-.andb_data/
+# Local-only scripts / tools
 import_dataset.py
-MEMORYBANK_IMPLEMENTATION_CHECK.md
-models/minilm-l6-v2/
-
-# Top-level build artifacts from local experiments
-/benchmark
-/server
-Zep.docx
-
-# Local benchmark workspace (knowhere-vs-faiss comparison)
+benchmark
+server
 TEST/
-cpp/build-docker/
-
-# Local-only: bench binaries + exp-branch test harness
-/bin/
-/plasmod_test_env/
-
-# Local env
-CLAUDE.md
