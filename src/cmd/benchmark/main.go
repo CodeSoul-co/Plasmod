@@ -161,7 +161,7 @@ func finishResult(r BenchResult, intIDs []int64, nq int) BenchResult {
 }
 
 // loadGroundtruth reads an integer binary file (.ibin) with header [nq(uint32)][topk(uint32)]
-// and returns a [nq][topk] array of int64 IDs.
+// followed by nq*topk int32 IDs (deep1B standard format).
 func loadGroundtruth(path string, nq int, topk int) ([]int64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -175,16 +175,16 @@ func loadGroundtruth(path string, nq int, topk int) ([]int64, error) {
 	if gtNQ < nq {
 		return nil, fmt.Errorf("ground truth has fewer queries (%d) than requested (%d)", gtNQ, nq)
 	}
-	expected := gtNQ * gtK * 8
+	// deep1B .ibin stores int32 per ID (4 bytes), not int64
+	expected := gtNQ * gtK * 4
 	if len(data)-8 < expected {
 		return nil, fmt.Errorf("ground truth file truncated: have %d bytes, need %d", len(data)-8, expected)
 	}
-	// Slice for first nq*topk int64s
 	ids := make([]int64, nq*topk)
 	offset := 8
 	for i := 0; i < nq*topk; i++ {
-		ids[i] = int64(binary.LittleEndian.Uint64(data[offset:]))
-		offset += 8
+		ids[i] = int64(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
 	}
 	return ids, nil
 }
@@ -879,43 +879,63 @@ func runHTTPQuery() {
 		unloadResp.Body.Close()
 	} // ignore errors (segment may not exist yet)
 
-	fmt.Fprintf(os.Stderr, "[G4 http] ingesting %d indexed vectors into segment=%s\n", nIndexed, segID)
+	// Split large ingest into batches to avoid timeout
+	// Each batch: ~500K vectors = ~190 MB payload
+	ingestBatch := 500000
+	if nIndexed < ingestBatch {
+		ingestBatch = nIndexed
+	}
+	numBatches := (nIndexed + ingestBatch - 1) / ingestBatch
 
-	var buf bytes.Buffer
-	buf.Write([]byte("PLIB"))
-	buf.WriteByte(2) // wire version 2
-	binary.Write(&buf, binary.LittleEndian, uint16(len(segID)))
-	buf.WriteString(segID)
-	binary.Write(&buf, binary.LittleEndian, uint32(nIndexed))
-	binary.Write(&buf, binary.LittleEndian, uint32(dim))
-	for i := 0; i < nIndexed; i++ {
-		for j := 0; j < dim; j++ {
-			binary.Write(&buf, binary.LittleEndian, idxVecs[i*dim+j])
-		}
-	}
-	for i := 0; i < nIndexed; i++ {
-		id := fmt.Sprintf("bench-g4-%06d", i)
-		binary.Write(&buf, binary.LittleEndian, uint16(len(id)))
-		buf.WriteString(id)
-	}
+	fmt.Fprintf(os.Stderr, "[G4 http] ingesting %d indexed vectors into segment=%s (%d batches)\n", nIndexed, segID, numBatches)
 
 	t0 := time.Now()
-	req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(buf.Bytes()))
-	req.Header.Set("Content-Type", "application/octet-stream")
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ingest request: %v\n", err)
-		os.Exit(1)
+	client := &http.Client{Timeout: 600 * time.Second}
+
+	for batchIdx := 0; batchIdx < numBatches; batchIdx++ {
+		start := batchIdx * ingestBatch
+		end := start + ingestBatch
+		if end > nIndexed {
+			end = nIndexed
+		}
+		batchN := end - start
+
+		var buf bytes.Buffer
+		buf.Write([]byte("PLIB"))
+		buf.WriteByte(2) // wire version 2
+		binary.Write(&buf, binary.LittleEndian, uint16(len(segID)))
+		buf.WriteString(segID)
+		binary.Write(&buf, binary.LittleEndian, uint32(batchN))
+		binary.Write(&buf, binary.LittleEndian, uint32(dim))
+		for i := start; i < end; i++ {
+			for j := 0; j < dim; j++ {
+				binary.Write(&buf, binary.LittleEndian, idxVecs[i*dim+j])
+			}
+		}
+		for i := start; i < end; i++ {
+			id := fmt.Sprintf("bench-g4-%06d", i)
+			binary.Write(&buf, binary.LittleEndian, uint16(len(id)))
+			buf.WriteString(id)
+		}
+
+		req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(buf.Bytes()))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ingest batch %d/%d request: %v\n", batchIdx+1, numBatches, err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			fmt.Fprintf(os.Stderr, "ingest batch %d/%d HTTP %d: %s\n", batchIdx+1, numBatches, resp.StatusCode, string(body))
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[G4 http] batch %d/%d done (%d vectors)\n", batchIdx+1, numBatches, batchN)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		fmt.Fprintf(os.Stderr, "ingest HTTP %d: %s\n", resp.StatusCode, string(body))
-		os.Exit(1)
-	}
+
 	ingestMs := time.Since(t0).Seconds() * 1000
-	fmt.Fprintf(os.Stderr, "[G4 http] ingest done (%.1f ms)\n", ingestMs)
+	fmt.Fprintf(os.Stderr, "[G4 http] ingest done (%.1f ms total)\n", ingestMs)
 
 	batchSz := *batchSize
 	if batchSz <= 0 {
@@ -1057,43 +1077,62 @@ func runHTTPQueryRaw() {
 		unloadResp.Body.Close()
 	}
 
-	fmt.Fprintf(os.Stderr, "[G4-raw http] ingesting %d indexed vectors into segment=%s\n", nIndexed, segID)
+	// Split large ingest into batches to avoid timeout
+	ingestBatch := 500000
+	if nIndexed < ingestBatch {
+		ingestBatch = nIndexed
+	}
+	numBatches := (nIndexed + ingestBatch - 1) / ingestBatch
 
-	var buf bytes.Buffer
-	buf.Write([]byte("PLIB"))
-	buf.WriteByte(2)
-	binary.Write(&buf, binary.LittleEndian, uint16(len(segID)))
-	buf.WriteString(segID)
-	binary.Write(&buf, binary.LittleEndian, uint32(nIndexed))
-	binary.Write(&buf, binary.LittleEndian, uint32(dim))
-	for i := 0; i < nIndexed; i++ {
-		for j := 0; j < dim; j++ {
-			binary.Write(&buf, binary.LittleEndian, idxVecs[i*dim+j])
-		}
-	}
-	for i := 0; i < nIndexed; i++ {
-		id := fmt.Sprintf("bench-g4r-%06d", i)
-		binary.Write(&buf, binary.LittleEndian, uint16(len(id)))
-		buf.WriteString(id)
-	}
+	fmt.Fprintf(os.Stderr, "[G4-raw http] ingesting %d indexed vectors into segment=%s (%d batches)\n", nIndexed, segID, numBatches)
 
 	t0 := time.Now()
-	req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(buf.Bytes()))
-	req.Header.Set("Content-Type", "application/octet-stream")
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ingest request: %v\n", err)
-		os.Exit(1)
+	client := &http.Client{Timeout: 600 * time.Second}
+
+	for batchIdx := 0; batchIdx < numBatches; batchIdx++ {
+		start := batchIdx * ingestBatch
+		end := start + ingestBatch
+		if end > nIndexed {
+			end = nIndexed
+		}
+		batchN := end - start
+
+		var buf bytes.Buffer
+		buf.Write([]byte("PLIB"))
+		buf.WriteByte(2)
+		binary.Write(&buf, binary.LittleEndian, uint16(len(segID)))
+		buf.WriteString(segID)
+		binary.Write(&buf, binary.LittleEndian, uint32(batchN))
+		binary.Write(&buf, binary.LittleEndian, uint32(dim))
+		for i := start; i < end; i++ {
+			for j := 0; j < dim; j++ {
+				binary.Write(&buf, binary.LittleEndian, idxVecs[i*dim+j])
+			}
+		}
+		for i := start; i < end; i++ {
+			id := fmt.Sprintf("bench-g4r-%06d", i)
+			binary.Write(&buf, binary.LittleEndian, uint16(len(id)))
+			buf.WriteString(id)
+		}
+
+		req, _ := http.NewRequest("POST", ingestURL, bytes.NewReader(buf.Bytes()))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ingest batch %d/%d request: %v\n", batchIdx+1, numBatches, err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			fmt.Fprintf(os.Stderr, "ingest batch %d/%d HTTP %d: %s\n", batchIdx+1, numBatches, resp.StatusCode, string(body))
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[G4-raw http] batch %d/%d done (%d vectors)\n", batchIdx+1, numBatches, batchN)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		fmt.Fprintf(os.Stderr, "ingest HTTP %d: %s\n", resp.StatusCode, string(body))
-		os.Exit(1)
-	}
+
 	ingestMs := time.Since(t0).Seconds() * 1000
-	fmt.Fprintf(os.Stderr, "[G4-raw http] ingest done (%.1f ms)\n", ingestMs)
+	fmt.Fprintf(os.Stderr, "[G4-raw http] ingest done (%.1f ms total)\n", ingestMs)
 
 	// Register the warm segment with object IDs
 	registerURL := *serverURL + "/v1/internal/rpc/register_warm"

@@ -105,3 +105,6 @@ cpp/build-docker/
 # Local-only: bench binaries + exp-branch test harness
 /bin/
 /plasmod_test_env/
+
+# Local env
+CLAUDE.md
