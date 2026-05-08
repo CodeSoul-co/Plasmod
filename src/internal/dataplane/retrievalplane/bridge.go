@@ -479,10 +479,6 @@ const (
 	// BatchPluginL2NormSort: reorder queries by L2 norm, then dispatch
 	// one-per-thread via OpenMP using HnswFastSearchFloat.
 	BatchPluginL2NormSort BatchPluginMode = 1
-
-	// BatchPluginVisitedSharing: sequential warm-start loop; each query uses
-	// the top-1 result of the previous query as HNSW entry hint.
-	BatchPluginVisitedSharing BatchPluginMode = 2
 )
 
 // SetBatchPlugin selects the batch search plugin for all subsequent
