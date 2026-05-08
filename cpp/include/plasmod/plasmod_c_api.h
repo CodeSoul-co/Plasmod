@@ -229,7 +229,6 @@ int plasmod_sparse_load(void* sparse, const char* path);
 /* ── Batch optimizer plugin selection ────────────────────────────────────────
  * mode: 0 = NONE (full-batch Knowhere, baseline)
  *        1 = L2_NORM_SORT (reorder + OpenMP per-query)
- *        2 = VISITED_SHARING (sequential warm-start)
  * Returns 0 on success, -1 on unknown mode.
  */
 int plasmod_set_batch_plugin(int mode);

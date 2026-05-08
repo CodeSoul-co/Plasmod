@@ -72,13 +72,12 @@ void SegmentIndexManager::DestroyEntry(Entry& e) {
     }
 }
 
-// ── DoSearch: three-path batch search ─────────────────────────────────────────
+// ── DoSearch: two-path batch search ─────────────────────────────────────────
 //
 // Path selection (checked in order):
 //   1. nq==1, no filter → HnswFastSearchFloat hot path (always)
 //   2. plugin mode == L2_NORM_SORT → reorder + OpenMP per-query dispatch
-//   3. plugin mode == VISITED_SHARING → reorder + sequential warm-start loop
-//   4. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
+//   3. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
 //
 // Filter path always falls through to Knowhere full-batch regardless of plugin.
 int SegmentIndexManager::DoSearch(Entry& entry,
@@ -157,44 +156,6 @@ int SegmentIndexManager::DoSearch(Entry& entry,
         return kOK;
     }
 #endif  // HAVE_OMP
-
-    // ── VISITED_SHARING path ───────────────────────────────────────────────────
-    // Reorder queries by L2 norm, then run sequentially.
-    // Each query uses the top-1 result of the previous query as warm entry point.
-    // After each query, visited nodes are merged into the plugin's shared bitset.
-    //
-    // Note: HnswFastSearchFloat does not expose visited nodes, so visited_count
-    // is always 0 in this implementation. The warm-start entry point is the only
-    // cross-query sharing mechanism active here. A future version can hook into
-    // a custom HNSW search kernel to expose the visited list.
-    if (!has_filter && plugin && plugin->Mode() == PluginMode::VISITED_SHARING && nq > 1) {
-        auto* vsp = static_cast<VisitedListSharingPlugin*>(plugin);
-        vsp->ResizeForSegment(entry.num_vectors);
-
-        std::vector<int64_t> order(nq);
-        plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
-
-        for (int64_t slot = 0; slot < nq; ++slot) {
-            int64_t orig  = order[slot];
-            const float* qvec = query + orig * entry.dim;
-            int64_t*     ids  = out_ids   + orig * topk;
-            float*       dsts = out_dists + orig * topk;
-
-            // Warm-start: use top-1 of previous query as entry hint.
-            // HnswFastSearchFloat ignores the hint for now (entry_node param
-            // not yet exposed); the call is here so the plugin interface is
-            // exercised and ready for a custom kernel.
-            /*int64_t entry_hint =*/ vsp->GetWarmEntryPoint(slot);
-
-            int rc = knowhere::HnswFastSearchFloat(
-                idx->Node(), qvec, topk, ef, nullptr, 0, ids, dsts);
-            if (rc != 0 && rc != -2) return kErrSearchFailed;
-
-            // Report results + visited nodes (visited_ids=nullptr until custom kernel)
-            vsp->OnQueryVisited(slot, ids, dsts, topk, nullptr, 0);
-        }
-        return kOK;
-    }
 
     // ── NONE / fallback: full-batch Knowhere call ──────────────────────────────
     // FAISS handles its own OpenMP chunking with per-thread VisitedTable.

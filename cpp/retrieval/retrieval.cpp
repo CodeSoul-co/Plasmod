@@ -163,8 +163,7 @@ int plasmod_retriever_search(void*          handle,
 // ── Batch optimizer plugin C API ──────────────────────────────────────────────
 
 namespace {
-plasmod::L2NormSortPlugin       g_l2_plugin;
-plasmod::VisitedListSharingPlugin g_vs_plugin;
+plasmod::L2NormSortPlugin g_l2_plugin;
 }  // anonymous namespace
 
 int plasmod_set_batch_plugin(int mode) {
@@ -174,9 +173,6 @@ int plasmod_set_batch_plugin(int mode) {
             return 0;
         case 1:
             plasmod::SetGlobalPlugin(&g_l2_plugin);
-            return 0;
-        case 2:
-            plasmod::SetGlobalPlugin(&g_vs_plugin);
             return 0;
         default:
             return -1;

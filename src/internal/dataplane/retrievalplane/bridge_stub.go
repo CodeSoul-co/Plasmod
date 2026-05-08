@@ -101,7 +101,6 @@ type BatchPluginMode int
 const (
 	BatchPluginNone           BatchPluginMode = 0
 	BatchPluginL2NormSort     BatchPluginMode = 1
-	BatchPluginVisitedSharing BatchPluginMode = 2
 )
 
 // SetBatchPlugin is a no-op stub.
