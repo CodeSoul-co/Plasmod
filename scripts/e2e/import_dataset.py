@@ -71,7 +71,7 @@ def _effective_http_timeout(timeout: float) -> float | None:
 
 
 def _http_post_json(
-    base_url: str, path: str, body: dict, timeout: float = 30.0
+    base_url: str, path: str, body: dict, timeout: float = 0.0
 ) -> tuple[int, dict]:
     url = base_url.rstrip("/") + path
     req = Request(url, data=json.dumps(body).encode("utf-8"), method="POST")
@@ -87,7 +87,7 @@ def _http_post_json(
         raise RuntimeError(f"POST {url} failed: {e}") from e
 
 
-def _http_post_status_only(base_url: str, path: str, body: dict, timeout: float = 30.0) -> int:
+def _http_post_status_only(base_url: str, path: str, body: dict, timeout: float = 0.0) -> int:
     """POST JSON and only validate HTTP status.
 
     Used by high-throughput ingest path to avoid per-row JSON response decoding overhead.
@@ -522,10 +522,18 @@ def main() -> None:
     ap.add_argument(
         "--http-timeout",
         type=float,
-        default=30.0,
+        default=0.0,
         metavar="SEC",
         help="Per-request timeout for ingest and admin delete/purge POSTs in seconds; "
-        "<=0 means no client-side limit (default 30; large ops may need 300–600+)",
+        "<=0 means no client-side limit (default 0; use e.g. 30 or 300 for a finite cap)",
+    )
+    ap.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=30.0,
+        metavar="SEC",
+        help="Ingest only: print a status line every SEC seconds while waiting (default 30; "
+        "<=0 disables). Use when the server is slow and --progress-every lines are rare.",
     )
     ap.add_argument(
         "--checkpoint",
@@ -590,6 +598,8 @@ def main() -> None:
         ap.error("--retry-backoff must be >= 0")
     if args.progress_every < 0:
         ap.error("--progress-every must be >= 0")
+    if args.heartbeat_seconds < 0:
+        ap.error("--heartbeat-seconds must be >= 0")
 
     if args.delete and args.purge:
         ap.error("cannot use --delete and --purge together")
@@ -806,6 +816,7 @@ def main() -> None:
         f"[import] files={len(files)} dataset={args.dataset} base={args.base_url} "
         f"limit={lim_disp} concurrency={args.concurrency} http_timeout={args.http_timeout}s "
         f"checkpoint={ck_disp} ingest_retries={args.ingest_retries} progress_every={args.progress_every} "
+        f"heartbeat_sec={args.heartbeat_seconds} "
         f"source={args.source} ingest_mode={args.ingest_mode} import_batch_id={import_batch_id} "
         f"event_id_scope={event_scope}"
     )
@@ -853,6 +864,33 @@ def main() -> None:
             print(f"[file] {path} ({ext})")
             file_started_at = time.time()
 
+            hb_rows = [0]
+            hb_lock = threading.Lock()
+            hb_stop = threading.Event()
+
+            def _heartbeat_worker() -> None:
+                while not hb_stop.wait(timeout=args.heartbeat_seconds):
+                    with hb_lock:
+                        n = hb_rows[0]
+                    elapsed = time.time() - file_started_at
+                    pe = args.progress_every
+                    hint = (
+                        f"; next progress log at {((n // pe) + 1) * pe} rows"
+                        if pe > 0
+                        else "; enable --progress-every N for throughput logs"
+                    )
+                    print(
+                        f"  [heartbeat] elapsed={elapsed:.0f}s rows_completed={n}{hint}",
+                        flush=True,
+                    )
+
+            hb_thread: threading.Thread | None = None
+            if args.heartbeat_seconds > 0:
+                hb_thread = threading.Thread(
+                    target=_heartbeat_worker, name="import-heartbeat", daemon=True
+                )
+                hb_thread.start()
+
             def _build_ingest_body(
                 row_i: int,
                 dim: int,
@@ -899,71 +937,88 @@ def main() -> None:
                     "version": args.version,
                 }
 
-            if args.concurrency <= 1:
-                for i, dim, vals, dtype, extra in row_iter:
-                    body = _build_ingest_body(i, dim, vals, dtype, extra, seq)
-                    _ingest_event_post_retry(
-                        args.base_url,
-                        body,
-                        args.http_timeout,
-                        args.ingest_retries,
-                        args.retry_backoff,
-                    )
-                    seq += 1
-                    resume_next_seq = seq
-                    count += 1
-                    total += 1
-                    if checkpoint_path:
-                        ckpt_per_file[ck_key] = file_skip + count
-                        _save_ingest_checkpoint(checkpoint_path, ckpt_per_file, seq)
-                    if args.progress_every > 0 and count % args.progress_every == 0:
-                        elapsed = time.time() - file_started_at
-                        print(f"  ingested {count} rows... ({_safe_rate(count, elapsed):.1f} rows/s)")
-            else:
-                seq_lock = threading.Lock()
-
-                def _next_seq() -> int:
-                    nonlocal seq
-                    with seq_lock:
-                        s = seq
+            try:
+                if args.concurrency <= 1:
+                    for i, dim, vals, dtype, extra in row_iter:
+                        body = _build_ingest_body(i, dim, vals, dtype, extra, seq)
+                        _ingest_event_post_retry(
+                            args.base_url,
+                            body,
+                            args.http_timeout,
+                            args.ingest_retries,
+                            args.retry_backoff,
+                        )
                         seq += 1
-                        return s
-
-                prog_lock = threading.Lock()
-
-                def _on_done() -> None:
-                    nonlocal count, total
-                    with prog_lock:
+                        resume_next_seq = seq
                         count += 1
                         total += 1
+                        with hb_lock:
+                            hb_rows[0] = count
+                        if checkpoint_path:
+                            ckpt_per_file[ck_key] = file_skip + count
+                            _save_ingest_checkpoint(checkpoint_path, ckpt_per_file, seq)
                         if args.progress_every > 0 and count % args.progress_every == 0:
                             elapsed = time.time() - file_started_at
-                            print(f"  ingested {count} rows... ({_safe_rate(count, elapsed):.1f} rows/s)")
-
-                pending = set()
-                with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-                    for i, dim, vals, dtype, extra in row_iter:
-                        body = _build_ingest_body(i, dim, vals, dtype, extra, _next_seq())
-                        pending.add(
-                            ex.submit(
-                                _ingest_event_post_retry,
-                                args.base_url,
-                                body,
-                                args.http_timeout,
-                                args.ingest_retries,
-                                args.retry_backoff,
+                            print(
+                                f"  ingested {count} rows... ({_safe_rate(count, elapsed):.1f} rows/s)",
+                                flush=True,
                             )
-                        )
-                        if len(pending) >= args.concurrency:
+                else:
+                    print(
+                        f"  [import] concurrency={args.concurrency}: logs every "
+                        f"{args.progress_every} completed rows (server may process slowly before first log)",
+                        flush=True,
+                    )
+                    seq_lock = threading.Lock()
+                    prog_lock = threading.Lock()
+
+                    def _next_seq() -> int:
+                        nonlocal seq
+                        with seq_lock:
+                            s = seq
+                            seq += 1
+                            return s
+
+                    def _on_done() -> None:
+                        nonlocal count, total
+                        with prog_lock:
+                            count += 1
+                            total += 1
+                            with hb_lock:
+                                hb_rows[0] = count
+                            if args.progress_every > 0 and count % args.progress_every == 0:
+                                elapsed = time.time() - file_started_at
+                                print(
+                                    f"  ingested {count} rows... ({_safe_rate(count, elapsed):.1f} rows/s)",
+                                    flush=True,
+                                )
+
+                    pending = set()
+                    with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                        for i, dim, vals, dtype, extra in row_iter:
+                            body = _build_ingest_body(i, dim, vals, dtype, extra, _next_seq())
+                            pending.add(
+                                ex.submit(
+                                    _ingest_event_post_retry,
+                                    args.base_url,
+                                    body,
+                                    args.http_timeout,
+                                    args.ingest_retries,
+                                    args.retry_backoff,
+                                )
+                            )
+                            if len(pending) >= args.concurrency:
+                                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                                for fut in done:
+                                    fut.result()
+                                    _on_done()
+                        while pending:
                             done, pending = wait(pending, return_when=FIRST_COMPLETED)
                             for fut in done:
                                 fut.result()
                                 _on_done()
-                    while pending:
-                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                        for fut in done:
-                            fut.result()
-                            _on_done()
+            finally:
+                hb_stop.set()
 
             file_elapsed = time.time() - file_started_at
             print(
