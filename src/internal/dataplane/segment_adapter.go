@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 
@@ -116,6 +117,24 @@ func (p *SegmentDataPlane) prebuildDefaultWarmSegment() error {
 	p.segMu.Lock()
 	p.segments["warm.default"] = append([]string(nil), ids...)
 	p.segMu.Unlock()
+	// Warm segment: run 10 dummy queries to pre-fault HNSW graph pages into memory.
+	// SearchRaw bypasses plugin reorder for pure page-fault elimination.
+	if err := warmupSegment("warm.default", dim, 10); err != nil {
+		log.Printf("[dataplane] warmup warning: %v", err)
+	}
+	return nil
+}
+
+// warmupSegment runs dummy queries to pre-fault the HNSW graph into memory.
+// nQueries must be >= 2 to trigger the L2NormSort plugin (min_nq_ = 8 in C++).
+func warmupSegment(segmentID string, dim, nQueries int) error {
+	dummy := make([]float32, dim*nQueries)
+	for i := 0; i < nQueries; i++ {
+		if _, _, err := retrievalplane.GlobalSegmentRetriever.SearchRaw(segmentID, dummy, nQueries, 1); err != nil {
+			return fmt.Errorf("warmupSegment %s: %w", segmentID, err)
+		}
+		break // one call with nQueries batch is enough
+	}
 	return nil
 }
 
@@ -423,6 +442,10 @@ func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectID
 	p.segMu.Lock()
 	p.segments[segmentID] = append([]string(nil), objectIDs...)
 	p.segMu.Unlock()
+	// Warm segment: run dummy queries to pre-fault HNSW graph into memory.
+	if err := warmupSegment(segmentID, dim, 10); err != nil {
+		log.Printf("[dataplane] warmup warning: %v", err)
+	}
 	return len(vectors), nil
 }
 

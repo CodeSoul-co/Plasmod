@@ -45,7 +45,7 @@ var (
 	concurrency     = flag.Int("concurrency", 16, "Concurrency for http-query mode")
 	batchSize       = flag.Int("batch-size", 100, "Batch size for http-query mode (queries per HTTP request)")
 	indexedCount    = flag.Int("indexed-count", 0, "Number of vectors to index (0=all loaded). Keeps indexed/query sets disjoint for correct recall.")
-	pluginMode      = flag.Int("plugin", 0, "Batch optimizer plugin: 0=NONE (baseline), 1=L2_NORM_SORT, 2=VISITED_SHARING")
+	pluginMode      = flag.Int("plugin", 0, "Batch optimizer plugin: 0=NONE (baseline), 1=L2_NORM_SORT")
 )
 
 type BenchResult struct {
@@ -78,15 +78,15 @@ func main() {
 	flag.Parse()
 
 	// Set batch optimizer plugin mode (applies to all modes except *-raw)
-	if *pluginMode < 0 || *pluginMode > 2 {
-		fmt.Fprintf(os.Stderr, "invalid --plugin value: %d (must be 0, 1, or 2)\n", *pluginMode)
+	if *pluginMode < 0 || *pluginMode > 1 {
+		fmt.Fprintf(os.Stderr, "invalid --plugin value: %d (must be 0 or 1)\n", *pluginMode)
 		os.Exit(1)
 	}
 	if err := retrievalplane.SetBatchPlugin(retrievalplane.BatchPluginMode(*pluginMode)); err != nil {
 		fmt.Fprintf(os.Stderr, "SetBatchPlugin(%d): %v\n", *pluginMode, err)
 		os.Exit(1)
 	}
-	pluginName := []string{"NONE", "L2_NORM_SORT", "VISITED_SHARING"}[*pluginMode]
+	pluginName := []string{"NONE", "L2_NORM_SORT"}[*pluginMode]
 	fmt.Fprintf(os.Stderr, "[plugin] mode=%d (%s)\n", *pluginMode, pluginName)
 
 	switch *mode {
