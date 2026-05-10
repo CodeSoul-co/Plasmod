@@ -16,6 +16,7 @@ import (
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
 	"plasmod/src/internal/dataplane/embedding"
+	"plasmod/retrievalplane"
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
@@ -396,6 +397,30 @@ func BuildServer() (*http.Server, func() error, error) {
 		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
 		embedderDim = dataplane.DefaultEmbeddingDim
 		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
+	}
+	// ── OpenMP thread pool warm-up ───────────────────────────────────────────
+	// OpenMP lazily initializes threads on first parallel region.
+	// Trigger it here so first real query doesn't pay 10-50ms cold-start penalty.
+	// Use SearchRaw to avoid plugin reorder and ensure direct Knowhere path.
+	if retrievalplane.GlobalSegmentRetriever != nil && embedderDim > 0 {
+		dummy := make([]float32, embedderDim)
+		if _, _, err := retrievalplane.GlobalSegmentRetriever.SearchRaw("warm.default", dummy, 1, 1); err == nil {
+			log.Printf("[bootstrap] OpenMP thread pool: warmed")
+		}
+	}
+	// ── Batch optimizer plugin ─────────────────────────────────────────────────
+	// PLASMOD_BATCH_PLUGIN=1 enables L2NormSort (reorder + OpenMP per-query).
+	if pluginMode := os.Getenv("PLASMOD_BATCH_PLUGIN"); pluginMode != "" {
+		var mode retrievalplane.BatchPluginMode
+		if m, parseErr := strconv.Atoi(pluginMode); parseErr == nil && m >= 0 && m <= 1 {
+			mode = retrievalplane.BatchPluginMode(m)
+		} else {
+			return nil, nil, fmt.Errorf("PLASMOD_BATCH_PLUGIN must be 0 or 1, got: %s", pluginMode)
+		}
+		if err := retrievalplane.SetBatchPlugin(mode); err != nil {
+			return nil, nil, fmt.Errorf("SetBatchPlugin(%d): %w", mode, err)
+		}
+		log.Printf("[bootstrap] batch plugin: mode=%d", mode)
 	}
 	// Wire embedder into tieredObjects so ArchiveMemory writes cold-tier embeddings.
 	// tieredObjects was constructed before the embedder was known; SetEmbedder patches it in.

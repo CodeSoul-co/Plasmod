@@ -15,6 +15,7 @@
 #include "plasmod/retrieval.h"
 #include "plasmod/plasmod_c_api.h"
 #include "plasmod/segment_index.h"
+#include "plasmod/batch_optimizer.h"
 #include "plasmod/sparse.h"
 #include "faiss/IndexHNSW.h"
 #include "faiss/MetricType.h"
@@ -157,6 +158,31 @@ int plasmod_retriever_search(void*          handle,
         ++count;
     }
     return count;
+}
+
+// ── Batch optimizer plugin C API ──────────────────────────────────────────────
+
+namespace {
+plasmod::L2NormSortPlugin g_l2_plugin;
+}  // anonymous namespace
+
+int plasmod_set_batch_plugin(int mode) {
+    switch (mode) {
+        case 0:
+            plasmod::SetGlobalPlugin(nullptr);
+            return 0;
+        case 1:
+            plasmod::SetGlobalPlugin(&g_l2_plugin);
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+int plasmod_get_batch_plugin(void) {
+    plasmod::BatchQueryOptimizerPlugin* p = plasmod::GetActivePlugin();
+    if (!p) return 0;
+    return static_cast<int>(p->Mode());
 }
 
 // ── SegmentIndexManager C API ─────────────────────────────────────────────────

@@ -3,19 +3,21 @@
 //
 // Batch query optimizer plugin — C++ layer.
 //
-// This file defines the BatchQueryOptimizerPlugin interface. All plugins
-// operate entirely inside the C++ layer; the Go CGO interface is unchanged.
+// Supported plugin modes:
 //
-// Usage:
-//   - Default plugin (DefaultQueryClusteringPlugin) is always enabled.
-//   - Third-party plugins call SetGlobalPlugin(&my_plugin) at process startup.
-//   - Plugin is invoked ONLY on the nq > 1 batch path; nq==1 hot path is
-//     untouched.
+//   L2_NORM_SORT (PluginMode::L2_NORM_SORT):
+//     Sort queries by L2 norm, then dispatch one-query-per-thread via OpenMP.
+//     DoSearch calls ReorderQueryBatch + GetOptimizedChunks + OnChunkDone.
+//     Each thread calls HnswFastSearchFloat for its assigned query range.
+//
+// The Go CGO interface is unchanged; plugin selection is via SetGlobalPlugin.
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace plasmod {
@@ -26,28 +28,24 @@ struct QueryChunk {
     int64_t end;    // exclusive
 };
 
-// BatchQueryOptimizerPlugin — abstract base for batch query optimizers.
-//
-// Call sequence inside SegmentIndexManager::DoSearch (batch path):
-//   1. ReorderQueryBatch  — once, SERIAL, before #pragma omp parallel
-//   2. #pragma omp parallel + GetOptimizedChunks — per thread, parallel
-//   3. OnChunkDone        — per thread, after its chunk finishes
-//
-// Thread safety:
-//   - GetOptimizedChunks is read-only on plugin state (thread-safe).
-//   - OnChunkDone must be thread-safe if the plugin accumulates per-call stats.
+// Plugin execution mode — determines which DoSearch code path is taken.
+enum class PluginMode {
+    NONE           = 0,  // No plugin: direct full-batch Knowhere call
+    L2_NORM_SORT    = 1   // L2-norm sort + OpenMP per-query dispatch
+};
+
+// ── Base interface ─────────────────────────────────────────────────────────────
+
 class BatchQueryOptimizerPlugin {
 public:
     virtual ~BatchQueryOptimizerPlugin() = default;
 
-    // ReorderQueryBatch — called once, serial, BEFORE the parallel region.
-    //
-    //   query     : row-major query matrix [nq × dim] (NOT modified)
-    //   nq        : number of queries
-    //   dim       : embedding dimension
-    //   order_out : caller-allocated [nq] output array.
-    //               order_out[i] = original query index for output slot i.
-    //               Default (identity permutation): order_out[i] = i.
+    virtual PluginMode Mode() const = 0;
+    virtual const char* Name() const = 0;
+
+    // ReorderQueryBatch — called once, serial, before any parallel/sequential
+    // dispatch. Fills order_out[i] = original query index for slot i.
+    // Identity permutation is always a valid implementation.
     virtual void ReorderQueryBatch(
         const float* query,
         int64_t      nq,
@@ -55,88 +53,60 @@ public:
         int64_t*     order_out
     ) = 0;
 
+    // ── L2_NORM_SORT path ──────────────────────────────────────────────────────
+
     // GetOptimizedChunks — called from each OpenMP thread to claim its range.
-    //
-    //   nq          : total number of queries (after reordering)
-    //   num_threads : omp_get_max_threads()
-    //   thread_idx  : 0-based OpenMP thread index (omp_get_thread_num())
-    //
-    // Returns the [start, end) range for this thread.
-    // Default: static strided partition (ceil(nq/num_threads) per thread).
+    // Only used when Mode() == L2_NORM_SORT.
     virtual QueryChunk GetOptimizedChunks(
         int64_t nq,
         int     num_threads,
         int     thread_idx
     ) = 0;
 
-    // OnChunkDone — called after each thread finishes processing its chunk.
-    //
-    // Allows the plugin to accumulate per-chunk statistics (visited-node
-    // sets, cache hints, etc.) for future batches.
-    // Default: no-op.
+    // OnChunkDone — called after each OpenMP thread finishes its chunk.
+    // Only used when Mode() == L2_NORM_SORT.
     virtual void OnChunkDone(
         int64_t chunk_start,
         int64_t chunk_end,
         int64_t chunk_idx
     ) = 0;
-
-    // Name — human-readable plugin name for logging/debugging.
-    virtual const char* Name() const = 0;
 };
 
 // Global plugin accessors.
-//
-// Default plugin is a static-duration DefaultQueryClusteringPlugin instance
-// constructed at program startup (zero cost). Third-party plugins replace
-// it by calling SetGlobalPlugin before any DoSearch call.
-BatchQueryOptimizerPlugin& GetDefaultPlugin();
-void SetGlobalPlugin(BatchQueryOptimizerPlugin* plugin);
+BatchQueryOptimizerPlugin* GetActivePlugin();   // nullptr = NONE mode
+void SetGlobalPlugin(BatchQueryOptimizerPlugin* plugin);  // nullptr = disable
 
-// ── Default Plugin ─────────────────────────────────────────────────────────────
+// ── L2_NORM_SORT plugin ────────────────────────────────────────────────────────
 
-// DefaultBatchOptimizerPlugin — always-enabled default plugin.
+// L2NormSortPlugin — sort queries by L2 norm, dispatch one-per-thread via OMP.
 //
-// Implements L2-norm sorting + static chunking for batch HNSW search.
+// Hypothesis: HNSW entry-point traversal correlates with query L2 norm, so
+// norm-adjacent queries share visited nodes in L2/L3 cache.
 //
-// Motivation: HNSW entry-point selection is proportional to the L2 norm of the
-// query vector. Queries with similar norms traverse overlapping entry paths,
-// so the visited-list and layer-0 neighbor table stay hot in L2/L3 cache.
-//
-// Complexity: O(nq * dim) + O(nq log nq) — negligible vs. search time.
-//
-// Graceful degradation:
-//   - nq < 8: identity permutation (overhead exceeds benefit)
-//   - HAVE_OMP == 0: plugin skipped, serial fallback path used
-class DefaultBatchOptimizerPlugin final : public BatchQueryOptimizerPlugin {
+// Complexity: O(nq*dim) norm + O(nq log nq) sort — negligible vs. search.
+// Minimum batch: 8 queries (below this, identity permutation is used).
+class L2NormSortPlugin final : public BatchQueryOptimizerPlugin {
 public:
-    explicit DefaultBatchOptimizerPlugin();
-    ~DefaultBatchOptimizerPlugin() override = default;
+    explicit L2NormSortPlugin();
+    ~L2NormSortPlugin() override = default;
+
+    PluginMode  Mode() const override { return PluginMode::L2_NORM_SORT; }
+    const char* Name() const override { return "L2NormSortPlugin"; }
 
     void ReorderQueryBatch(
-        const float* query,
-        int64_t      nq,
-        int          dim,
-        int64_t*     order_out
+        const float* query, int64_t nq, int dim, int64_t* order_out
     ) override;
 
     QueryChunk GetOptimizedChunks(
-        int64_t nq,
-        int     num_threads,
-        int     thread_idx
+        int64_t nq, int num_threads, int thread_idx
     ) override;
 
-    void OnChunkDone(
-        int64_t chunk_start,
-        int64_t chunk_end,
-        int64_t chunk_idx
-    ) override;
-
-    const char* Name() const override { return "DefaultBatchOptimizerPlugin"; }
+    void OnChunkDone(int64_t, int64_t, int64_t) override {}
 
 private:
-    int64_t                  min_nq_for_optimize_;
-    std::vector<float>       norms_;    // [nq] L2 norms of each query
-    std::vector<int64_t>     indices_;  // [nq] sorted query indices
+    int64_t              min_nq_;
+    std::vector<float>   norms_;
+    std::vector<int64_t> indices_;
 };
 
 }  // namespace plasmod

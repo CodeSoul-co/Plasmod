@@ -2,7 +2,10 @@ package dataplane
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"sort"
+	"strconv"
 	"sync"
 
 	"plasmod/retrievalplane"
@@ -116,6 +119,24 @@ func (p *SegmentDataPlane) prebuildDefaultWarmSegment() error {
 	p.segMu.Lock()
 	p.segments["warm.default"] = append([]string(nil), ids...)
 	p.segMu.Unlock()
+	// Warm segment: run 10 dummy queries to pre-fault HNSW graph pages into memory.
+	// SearchRaw bypasses plugin reorder for pure page-fault elimination.
+	if err := warmupSegment("warm.default", dim, 10); err != nil {
+		log.Printf("[dataplane] warmup warning: %v", err)
+	}
+	return nil
+}
+
+// warmupSegment runs dummy queries to pre-fault the HNSW graph into memory.
+// nQueries must be >= 2 to trigger the L2NormSort plugin (min_nq_ = 8 in C++).
+func warmupSegment(segmentID string, dim, nQueries int) error {
+	dummy := make([]float32, dim*nQueries)
+	for i := 0; i < nQueries; i++ {
+		if _, _, err := retrievalplane.GlobalSegmentRetriever.SearchRaw(segmentID, dummy, nQueries, 1); err != nil {
+			return fmt.Errorf("warmupSegment %s: %w", segmentID, err)
+		}
+		break // one call with nQueries batch is enough
+	}
 	return nil
 }
 
@@ -423,6 +444,10 @@ func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectID
 	p.segMu.Lock()
 	p.segments[segmentID] = append([]string(nil), objectIDs...)
 	p.segMu.Unlock()
+	// Warm segment: run dummy queries to pre-fault HNSW graph into memory.
+	if err := warmupSegment(segmentID, dim, 10); err != nil {
+		log.Printf("[dataplane] warmup warning: %v", err)
+	}
 	return len(vectors), nil
 }
 
@@ -494,6 +519,9 @@ func (p *SegmentDataPlane) RegisterWarmSegment(segmentID string, objectIDs []str
 // Returns raw integer indices (not string IDs) for use by benchmark tools.
 // This is the internal fast path used by the HTTP batch endpoint to avoid
 // string conversion overhead.
+//
+// When nq > pluginChunkSize (default 500), automatically chunks the batch
+// so each DoSearch call stays near the L2NormSort plugin's performance sweet spot.
 func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
 	if segmentID == "" {
 		return nil, nil, fmt.Errorf("segment_id is required")
@@ -501,7 +529,42 @@ func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK
 	if nq <= 0 || topK <= 0 || len(queries) == 0 {
 		return nil, nil, fmt.Errorf("invalid args: nq=%d topK=%d len(queries)=%d", nq, topK, len(queries))
 	}
-	return retrievalplane.GlobalSegmentRetriever.Search(segmentID, queries, nq, topK)
+	chunkSize := pluginChunkSize()
+	if nq <= chunkSize {
+		return retrievalplane.GlobalSegmentRetriever.Search(segmentID, queries, nq, topK)
+	}
+	// Chunked: split into multiple DoSearch calls, concat results.
+	allIDs   := make([]int64,   0, nq*topK)
+	allDists := make([]float32, 0, nq*topK)
+	dim := len(queries) / nq
+	for start := 0; start < nq; start += chunkSize {
+		end := start + chunkSize
+		if end > nq {
+			end = nq
+		}
+		cq := end - start
+		chunk := queries[start*dim : start*dim+cq*dim]
+		ids, dists, err := retrievalplane.GlobalSegmentRetriever.Search(segmentID, chunk, cq, topK)
+		if err != nil {
+			return nil, nil, fmt.Errorf("chunk [%d:%d]: %w", start, end, err)
+		}
+		allIDs   = append(allIDs,   ids...)
+		allDists = append(allDists, dists...)
+	}
+	return allIDs, allDists, nil
+}
+
+// pluginChunkSize returns the sweet-spot batch size for the L2NormSort plugin.
+// At this size the OpenMP parallel per-query path is most efficient.
+// Tuned empirically; raise if the HNSW graph is small enough that more
+// threads per query reduces time.
+func pluginChunkSize() int {
+	if s := os.Getenv("PLASMOD_PLUGIN_CHUNK_SIZE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 500  // default sweet spot
 }
 
 // SearchWarmSegmentBatchRaw performs batch ANN search via SearchRaw (no plugin reorder).
