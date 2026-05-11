@@ -19,7 +19,7 @@
 
 package rootcoord
 
-import "andb/platformpkg/pkg/common"
+import "plasmod/platformpkg/pkg/common"
 
 // system field id:
 // 0: unique row id

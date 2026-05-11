@@ -3,7 +3,7 @@
 
 package walimpls
 
-import "andb/platformpkg/pkg/streaming/util/message"
+import "plasmod/platformpkg/pkg/streaming/util/message"
 
 // OpenerBuilderImpls is the interface for building wal opener impls.
 type OpenerBuilderImpls interface {

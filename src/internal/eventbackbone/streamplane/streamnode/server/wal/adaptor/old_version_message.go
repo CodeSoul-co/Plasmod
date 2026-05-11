@@ -8,10 +8,10 @@ import (
 	"fmt"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/resource"
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/message/adaptor"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/message/adaptor"
 )
 
 // newOldVersionImmutableMessage creates a new immutable message from the old version message.

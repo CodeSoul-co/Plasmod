@@ -6,8 +6,8 @@ package inspector
 import (
 	"sync"
 
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // newSyncNotifier creates a new sync notifier.

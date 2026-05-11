@@ -6,9 +6,9 @@ package adaptor
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/recovery"
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/utility"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/walimpls"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 var (

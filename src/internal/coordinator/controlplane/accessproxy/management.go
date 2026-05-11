@@ -32,11 +32,11 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	management "github.com/milvus-io/milvus/internal/http"
 	"github.com/milvus-io/milvus/internal/json"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/internalpb"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/commonpbutil"
-	"andb/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/commonpbutil"
+	"plasmod/platformpkg/pkg/util/merr"
 )
 
 // this file contains proxy management restful API handler

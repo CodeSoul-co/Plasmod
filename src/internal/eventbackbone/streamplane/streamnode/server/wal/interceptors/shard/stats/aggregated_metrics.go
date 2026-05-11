@@ -6,7 +6,7 @@ package stats
 import (
 	"fmt"
 
-	"andb/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/datapb"
 )
 
 // aggregatedMetrics is the metrics of a channel.

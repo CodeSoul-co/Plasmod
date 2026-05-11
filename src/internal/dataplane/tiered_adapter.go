@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"fmt"
 	"sort"
 
 	"plasmod/src/internal/dataplane/segmentstore"
@@ -32,7 +33,6 @@ type TieredDataPlane struct {
 	coldSearch       func(query string, topK int) []string
 	coldVectorSearch func(queryVec []float32, topK int) []string
 	coldHNSWSearch   func(queryVec []float32, topK int) []string
-	coldWrite        func(memoryID, text string, attrs map[string]string, ns string, ts int64)
 	rrfK             int
 }
 
@@ -67,9 +67,6 @@ func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg sch
 		},
 		coldHNSWSearch: func(queryVec []float32, topK int) []string {
 			return objs.ColdHNSWSearch(queryVec, topK)
-		},
-		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
-			objs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
 		rrfK: normalizeTieredRRFK(cfg),
 	}
@@ -106,9 +103,6 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 		},
 		coldHNSWSearch: func(queryVec []float32, topK int) []string {
 			return tieredObjs.ColdHNSWSearch(queryVec, topK)
-		},
-		coldWrite: func(memoryID, text string, attrs map[string]string, ns string, ts int64) {
-			tieredObjs.ArchiveColdRecord(memoryID, text, attrs, ns, ts)
 		},
 		rrfK: normalizeTieredRRFK(cfg),
 	}, nil
@@ -148,9 +142,9 @@ func (t *TieredDataPlane) Flush() error {
 }
 
 // Ingest writes to the hot tier and warm tier immediately.
-// Cold-tier persistence is deferred to ArchiveColdRecord, which the caller
-// (typically Runtime.SubmitIngest via TieredObjectStore) should invoke when
-// an object transitions from hot or warm to cold (e.g. on TTL expiry).
+// Cold-tier persistence is deferred to explicit archive (TTL expiry or manual
+// tier migration) via TieredObjectStore.ArchiveMemory; it is NOT written on
+// every ingest to avoid write amplification.
 func (t *TieredDataPlane) Ingest(record IngestRecord) error {
 	_ = t.warm.Ingest(record)
 	t.hot.InsertObject(
@@ -180,7 +174,71 @@ func (t *TieredDataPlane) BatchIngest(records []IngestRecord) error {
 	return t.warm.BatchIngest(records)
 }
 
+func (t *TieredDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
+	if t == nil || t.warm == nil {
+		return 0, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
+}
+
+func (t *TieredDataPlane) UnloadWarmSegment(segmentID string) error {
+	if t == nil || t.warm == nil {
+		return fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.UnloadWarmSegment(segmentID)
+}
+
+func (t *TieredDataPlane) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
+	if t == nil || t.warm == nil {
+		return nil, fmt.Errorf("warm plane unavailable")
+	}
+	// Forward the caller-provided embedding when present so the warm plane
+	// can bypass the embedder; only fall back to text-driven embedding when
+	// no precomputed vector was supplied.
+	return t.warm.SearchWarmSegment(segmentID, queryText, topK, queryVec)
+}
+
+// RegisterWarmSegment stores a segment's object-ID list in the warm plane.
+func (t *TieredDataPlane) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	if t == nil || t.warm == nil {
+		return fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.RegisterWarmSegment(segmentID, objectIDs)
+}
+
+// SearchWarmSegmentBatch forwards batch search to the warm segment.
+func (t *TieredDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if t == nil || t.warm == nil {
+		return nil, nil, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
+// SearchWarmSegmentBatchRaw forwards batch search to the warm segment via SearchRaw (no plugin).
+func (t *TieredDataPlane) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if t == nil || t.warm == nil {
+		return nil, nil, fmt.Errorf("warm plane unavailable")
+	}
+	return t.warm.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
+}
+
 func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, bool) {
+	// Use precomputed query embedding when provided (bypasses embedder).
+	if len(input.QueryEmbedding) > 0 {
+		if t.coldHNSWSearch != nil {
+			ids := t.coldHNSWSearch(input.QueryEmbedding, input.TopK)
+			if len(ids) > 0 {
+				return ids, "hnsw", false
+			}
+		}
+		if t.coldVectorSearch != nil {
+			ids := t.coldVectorSearch(input.QueryEmbedding, input.TopK)
+			if len(ids) > 0 {
+				return ids, "vector", t.coldHNSWSearch != nil
+			}
+		}
+	}
+
 	if t.embedder != nil {
 		queryVec, err := t.embedder.Generate(input.QueryText)
 		if err == nil && len(queryVec) > 0 {

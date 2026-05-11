@@ -28,10 +28,10 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/datacoord/session"
 	globalTask "github.com/milvus-io/milvus/internal/datacoord/task"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/indexpb"
-	"andb/platformpkg/pkg/proto/workerpb"
-	"andb/platformpkg/pkg/taskcommon"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/indexpb"
+	"plasmod/platformpkg/pkg/proto/workerpb"
+	"plasmod/platformpkg/pkg/taskcommon"
 )
 
 type analyzeTask struct {

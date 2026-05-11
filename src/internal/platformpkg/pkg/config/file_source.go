@@ -30,7 +30,7 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 type FileSource struct {

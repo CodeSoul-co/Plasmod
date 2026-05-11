@@ -31,10 +31,10 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/tsoutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type calUpperLimitPolicy func(schema *schemapb.CollectionSchema) (int, error)

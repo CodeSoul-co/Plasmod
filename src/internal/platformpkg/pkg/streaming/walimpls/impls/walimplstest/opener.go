@@ -6,8 +6,8 @@ package walimplstest
 import (
 	"context"
 
-	"andb/platformpkg/pkg/streaming/walimpls"
-	"andb/platformpkg/pkg/streaming/walimpls/helper"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/streaming/walimpls/helper"
 )
 
 var _ walimpls.OpenerImpls = &opener{}

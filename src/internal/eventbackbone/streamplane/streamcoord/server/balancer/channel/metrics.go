@@ -8,8 +8,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 func newPChannelMetrics() *channelMetrics {

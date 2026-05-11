@@ -8,8 +8,8 @@ import (
 
 	"github.com/cockroachdb/errors"
 
-	"andb/platformpkg/pkg/util/hardware"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // newStatsConfig creates a new config for the stats manager.

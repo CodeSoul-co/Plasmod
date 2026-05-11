@@ -13,14 +13,14 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v2/msgpb"
 	"github.com/milvus-io/milvus/internal/flushcommon/metacache"
 	"github.com/milvus-io/milvus/internal/flushcommon/syncmgr"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/mq/msgstream"
-	"andb/platformpkg/pkg/util/hardware"
-	"andb/platformpkg/pkg/util/lifetime"
-	"andb/platformpkg/pkg/util/logutil"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/mq/msgstream"
+	"plasmod/platformpkg/pkg/util/hardware"
+	"plasmod/platformpkg/pkg/util/lifetime"
+	"plasmod/platformpkg/pkg/util/logutil"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 // BufferManager is the interface for WriteBuffer management.

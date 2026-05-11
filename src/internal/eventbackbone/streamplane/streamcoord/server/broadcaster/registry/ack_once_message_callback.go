@@ -11,8 +11,8 @@ import (
 	"github.com/cockroachdb/errors"
 	"google.golang.org/protobuf/proto"
 
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/syncutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/syncutil"
 )
 
 // MessageAckOnceCallback is the callback function for the message type.

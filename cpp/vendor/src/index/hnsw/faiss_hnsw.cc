@@ -73,8 +73,10 @@ class BaseFaissIndexNode : public IndexNode {
 
         // use build_pool_ to make sure the OMP threads spawned by index_->train etc
         // can inherit the low nice value of threads in build_pool_.
-        auto tryObj =
-            build_pool
+        // CogDB shim: ThreadPool::push returns std::future<T>, not folly::Future.
+        // Replace .getTry()/.hasValue() with try/catch around .get().
+        try {
+            return build_pool
                 ->push([&] {
                     std::unique_ptr<ThreadPool::ScopedBuildOmpSetter> setter;
                     if (base_cfg.num_build_thread.has_value()) {
@@ -84,14 +86,11 @@ class BaseFaissIndexNode : public IndexNode {
                     }
                     return TrainInternal(dataset, *cfg);
                 })
-                .getTry();
-
-        if (!tryObj.hasValue()) {
-            LOG_KNOWHERE_WARNING_ << "faiss internal error: " << tryObj.exception().what();
+                .get();
+        } catch (const std::exception& e) {
+            LOG_KNOWHERE_WARNING_ << "faiss internal error: " << e.what();
             return Status::faiss_inner_error;
         }
-
-        return tryObj.value();
     }
 
     Status
@@ -100,8 +99,9 @@ class BaseFaissIndexNode : public IndexNode {
 
         // use build_pool_ to make sure the OMP threads spawned by index_->train etc
         // can inherit the low nice value of threads in build_pool_.
-        auto tryObj =
-            build_pool
+        // CogDB shim: same try/catch pattern as Train above.
+        try {
+            return build_pool
                 ->push([&] {
                     std::unique_ptr<ThreadPool::ScopedBuildOmpSetter> setter;
                     if (base_cfg.num_build_thread.has_value()) {
@@ -111,14 +111,11 @@ class BaseFaissIndexNode : public IndexNode {
                     }
                     return AddInternal(dataset, *cfg);
                 })
-                .getTry();
-
-        if (!tryObj.hasValue()) {
-            LOG_KNOWHERE_WARNING_ << "faiss internal error: " << tryObj.exception().what();
+                .get();
+        } catch (const std::exception& e) {
+            LOG_KNOWHERE_WARNING_ << "faiss internal error: " << e.what();
             return Status::faiss_inner_error;
         }
-
-        return tryObj.value();
     }
 
     expected<DataSetPtr>

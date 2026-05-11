@@ -21,8 +21,8 @@ package datacoord
 
 import (
 	"github.com/milvus-io/milvus/internal/datacoord/task"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 type TaskType int

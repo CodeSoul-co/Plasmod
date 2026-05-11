@@ -1,11 +1,13 @@
 package dataplane
 
 import (
+	"context"
 	"hash/fnv"
 	"math"
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // DefaultEmbeddingDim is the default vector dimensionality used by TfidfEmbedder.
@@ -110,6 +112,45 @@ func (e *TfidfEmbedder) Generate(text string) ([]float32, error) {
 	return vec, nil
 }
 
+// BatchGenerate returns TF-IDF vectors for multiple texts in one call.
+// ObserveTokens is called for each text so document-frequency counters
+// stay in sync. Thread-safe.
+func (e *TfidfEmbedder) BatchGenerate(_ context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	results := make([][]float32, len(texts))
+	for i, text := range texts {
+		results[i] = make([]float32, e.dim)
+		if text == "" {
+			continue
+		}
+		tokens := e.tokenize(text)
+		if len(tokens) == 0 {
+			continue
+		}
+		bucketCounts := make(map[int]int, len(tokens))
+		for _, tok := range tokens {
+			bucket := e.hashBucket(tok)
+			bucketCounts[bucket]++
+		}
+		docLen := float64(len(tokens))
+
+		e.mu.Lock()
+		n := e.totalDocs
+		df := e.docFreq
+		e.mu.Unlock()
+
+		for bucket, count := range bucketCounts {
+			tf := float64(count) / docLen
+			idf := math.Log((float64(n)+1)/(float64(df[bucket])+1)) + 1
+			results[i][bucket] = float32(tf * idf)
+		}
+		e.l2Normalize(results[i])
+	}
+	return results, nil
+}
+
 // ObserveTokens updates the document-frequency counters for the given text.
 // It must be called once per ingested document (before Build/RRF search).
 // Safe for concurrent calls.
@@ -136,19 +177,37 @@ func (e *TfidfEmbedder) ObserveTokens(text string) {
 	e.mu.Unlock()
 }
 
-// tokenize splits text into lowercase alphanumeric tokens.
+// tokenize splits text into mixed-language tokens.
+// - ASCII letters/digits: grouped into word tokens (len > 1)
+// - CJK Han runes: kept as single-rune tokens
+// This keeps TF-IDF usable for Chinese text without external segmenters.
 func (e *TfidfEmbedder) tokenize(text string) []string {
 	lower := strings.ToLower(text)
-	fields := strings.FieldsFunc(lower, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	})
-	// discard very short tokens
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if len(f) > 1 {
-			out = append(out, f)
+
+	isASCIIAlphaNum := func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	}
+
+	out := make([]string, 0, len(lower))
+	buf := make([]rune, 0, 16)
+	flushASCII := func() {
+		if len(buf) > 1 {
+			out = append(out, string(buf))
+		}
+		buf = buf[:0]
+	}
+
+	for _, r := range lower {
+		if isASCIIAlphaNum(r) {
+			buf = append(buf, r)
+			continue
+		}
+		flushASCII()
+		if unicode.Is(unicode.Han, r) {
+			out = append(out, string(r))
 		}
 	}
+	flushASCII()
 	return out
 }
 

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
@@ -59,6 +61,15 @@ type Runtime struct {
 	// GovernanceDisabled suppresses TTL / quarantine / ACL enforcement when
 	// true.  Used by 4-B4 to run Plasmod without the governance layer.
 	GovernanceDisabled bool
+	memoryBackend      *memoryBackendRouter
+
+	// flushTicker drives the background index-rebuild goroutine.  By decoupling
+	// flush from write, we eliminate the O(n²) rebuild storm that occurred when N
+	// concurrent writes each triggered their own synchronous full-index rebuild.
+	flushTicker   *time.Ticker
+	flushStopCh   chan struct{}
+	flushInterval time.Duration
+	flushLoopOnce sync.Once
 }
 
 func CreateRuntime(
@@ -96,6 +107,7 @@ func CreateRuntime(
 		tieredObjects:     tieredObjs,
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
+		memoryBackend:     newMemoryBackendRouterFromEnv(),
 	}
 }
 
@@ -111,6 +123,61 @@ func (r *Runtime) TieredObjects() *storage.TieredObjectStore {
 	return r.tieredObjects
 }
 
+func (r *Runtime) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
+}
+
+func (r *Runtime) UnloadWarmSegment(segmentID string) error {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.UnloadWarmSegment(segmentID)
+}
+
+func (r *Runtime) SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegment(segmentID, queryText, topK, queryVec)
+}
+
+func (r *Runtime) RegisterWarmSegment(segmentID string, objectIDs []string) error {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.RegisterWarmSegment(segmentID, objectIDs)
+}
+
+func (r *Runtime) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
+func (r *Runtime) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
+}
+
+func (r *Runtime) AdminWarmPrebuild() error {
+	if r.plane == nil {
+		return fmt.Errorf("data plane unavailable")
+	}
+	return r.plane.Flush()
+}
+
 // QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
 // It is nil if the Runtime was constructed without a nodeManager.
 func (r *Runtime) QueryChain() *chain.QueryChain {
@@ -121,6 +188,58 @@ func (r *Runtime) QueryChain() *chain.QueryChain {
 // goroutine tied to ctx.  The goroutine exits cleanly when ctx is cancelled.
 func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 	go sub.Run(ctx)
+}
+
+// StartMemoryDeleteOutbox is a no-op (deleteOutbox removed)
+func (r *Runtime) StartMemoryDeleteOutbox(ctx context.Context) {}
+
+// resolveFlushInterval reads PLASMOD_FLUSH_INTERVAL from the environment.
+// Default: 5 seconds.  A value of 0 disables the background flush loop.
+func resolveFlushInterval() time.Duration {
+	const defaultInterval = 5 * time.Second
+	raw := strings.TrimSpace(os.Getenv("PLASMOD_FLUSH_INTERVAL"))
+	if raw == "" {
+		return defaultInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultInterval
+	}
+	return d
+}
+
+// StartFlushLoop launches a background goroutine that rebuilds the retrieval index
+// at a fixed interval, completely decoupled from the write path.  This prevents
+// the O(n²) rebuild storm that occurred when N concurrent writes each triggered
+// their own synchronous full-index rebuild.  The goroutine exits when ctx is
+// cancelled.
+func (r *Runtime) StartFlushLoop(ctx context.Context) {
+	if r == nil || r.plane == nil {
+		return
+	}
+	r.flushInterval = resolveFlushInterval()
+	if r.flushInterval == 0 {
+		return // disabled via PLASMOD_FLUSH_INTERVAL=0
+	}
+	r.flushLoopOnce.Do(func() {
+		r.flushStopCh = make(chan struct{})
+		r.flushTicker = time.NewTicker(r.flushInterval)
+		go func() {
+			defer r.flushTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-r.flushTicker.C:
+					if err := r.plane.Flush(); err != nil {
+						log.Printf("[flush-loop] periodic flush failed: %v", err)
+					}
+				case <-r.flushStopCh:
+					return
+				}
+			}
+		}()
+	})
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
@@ -188,7 +307,9 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 	// ── Persist canonical objects ─────────────────────────────────────────
 	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
-	// are kept in sync and cold queries (IncludeCold=true) can find results.
+	// are kept in sync. Cold-tier persistence is deferred to explicit archive
+	// (TTL expiry or manual tier migration) via TieredObjectStore.ArchiveMemory;
+	// it is NOT written on every ingest to avoid write amplification.
 	if r.tieredObjects != nil {
 		// Compute salience from the event importance if available, default 0.5.
 		salience := mat.Memory.Importance
@@ -196,19 +317,17 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 			salience = 0.5
 		}
 		r.tieredObjects.PutMemory(mat.Memory, salience)
-		r.tieredObjects.ArchiveColdRecord(
-			mat.Memory.MemoryID,
-			record.Text,
-			record.Attributes,
-			record.Namespace,
-			record.EventUnixTS,
-		)
 	} else {
 		// Fallback for tests or code paths that don't initialise TieredObjectStore.
 		r.storage.PutMemoryWithBaseEdges(mat.Memory)
 	}
 	if !r.MinimalMode {
 		r.storage.Versions().PutVersion(mat.Version)
+	}
+	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
+		if err := r.memoryBackend.WriteShadow(context.Background(), mat.Memory, ev); err != nil {
+			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
+		}
 	}
 	for _, edge := range mat.Edges {
 		r.storage.Edges().PutEdge(edge)
@@ -286,8 +405,18 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		IncludeCold:    plan.IncludeCold,
 		ObjectTypes:    plan.ObjectTypes,
 		MemoryTypes:    plan.MemoryTypes,
+		QueryEmbedding: req.EmbeddingVector,
 	}
 	result := r.nodeManager.DispatchQuery(searchInput, r.plane)
+	if len(result.ObjectIDs) == 0 {
+		if altQuery, ok := cjkSpacedFallbackQuery(req.QueryText); ok && altQuery != searchInput.QueryText {
+			searchInput.QueryText = altQuery
+			retry := r.nodeManager.DispatchQuery(searchInput, r.plane)
+			if len(retry.ObjectIDs) > 0 {
+				result = retry
+			}
+		}
+	}
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	if queryUsesStructuredMemorySelectors(req) {
 		selectorIDs := r.fetchMemoryIDsByStructuredSelectors(req)
@@ -400,7 +529,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
-	
+
 	// In VECTOR-ONLY MODE or MINIMAL MODE: skip provenance attachment
 	if !r.VectorOnlyMode && !r.MinimalMode {
 		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
@@ -798,6 +927,12 @@ func (r *Runtime) DispatchRecall(
 	}
 
 	resp := r.ExecuteQuery(req)
+	if len(resp.Objects) == 0 {
+		if altQuery, ok := cjkSpacedFallbackQuery(query); ok {
+			req.QueryText = altQuery
+			resp = r.ExecuteQuery(req)
+		}
+	}
 	visibleRefs := resp.Objects
 	if len(visibleRefs) == 0 {
 		return schemas.MemoryView{
@@ -805,6 +940,7 @@ func (r *Runtime) DispatchRecall(
 			RequesterID:   agentID,
 			AgentID:       agentID,
 			ResolvedScope: scope,
+			BackendMode:   r.MemoryBackendMode(),
 		}
 	}
 
@@ -822,26 +958,28 @@ func (r *Runtime) DispatchRecall(
 	if len(algoOut.ScoredRefs) > 0 {
 		orderedRefs = algoOut.ScoredRefs
 	}
-
-	// Collect full Memory payloads for the ordered refs.
-	payloads := make([]schemas.Memory, 0, len(orderedRefs))
-	for _, id := range orderedRefs {
-		if mem, ok := r.storage.Objects().GetMemory(id); ok {
-			payloads = append(payloads, mem)
-		}
-	}
-
 	var algoNotes []string
 	if len(algoOut.ScoredRefs) > 0 {
 		algoNotes = []string{fmt.Sprintf("algorithm_scored:%d", len(algoOut.ScoredRefs))}
 	} else {
 		algoNotes = []string{"search_fallback:no_algo_worker"}
 	}
-
+	activeAlgo := strings.TrimSpace(os.Getenv("PLASMOD_ACTIVE_ALGORITHM"))
+	if activeAlgo == "" {
+		activeAlgo = "memorybank"
+	}
+	algoNotes = append(algoNotes, "algorithm_profile="+activeAlgo)
 	// Convert ProofStep slice to string slice for MemoryView.ConstructionTrace
 	proofStrs := make([]string, len(resp.ProofTrace))
 	for i, step := range resp.ProofTrace {
 		proofStrs[i] = fmt.Sprintf("%s:%s", step.StepType, step.SourceID)
+	}
+	// Collect full Memory payloads for the final ordered refs.
+	payloads := make([]schemas.Memory, 0, len(orderedRefs))
+	for _, id := range orderedRefs {
+		if mem, ok := r.storage.Objects().GetMemory(id); ok {
+			payloads = append(payloads, mem)
+		}
 	}
 
 	return schemas.MemoryView{
@@ -851,10 +989,74 @@ func (r *Runtime) DispatchRecall(
 		ResolvedScope:     scope,
 		VisibleMemoryRefs: orderedRefs,
 		Payloads:          payloads,
+		BackendMode:       r.MemoryBackendMode(),
+		RecallSources:     []string{"local"},
 		ProvenanceNotes:   []string{fmt.Sprintf("search_rank:%d_algo_rank:%d", len(visibleRefs), len(orderedRefs))},
 		AlgorithmNotes:    algoNotes,
 		ConstructionTrace: proofStrs,
 	}
+}
+
+func cjkSpacedFallbackQuery(query string) (string, bool) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "", false
+	}
+	hasCJK := false
+	for _, r := range q {
+		if unicode.Is(unicode.Han, r) {
+			hasCJK = true
+			break
+		}
+	}
+	if !hasCJK {
+		return "", false
+	}
+	parts := make([]string, 0, len([]rune(q)))
+	for _, r := range q {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		parts = append(parts, string(r))
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	alt := strings.Join(parts, " ")
+	if alt == q {
+		return "", false
+	}
+	return alt, true
+}
+
+func (r *Runtime) MemoryBackendMode() string {
+	if r == nil || r.memoryBackend == nil {
+		return MemoryBackendLocalOnly
+	}
+	return r.memoryBackend.Mode()
+}
+
+func (r *Runtime) MemoryBackendHealth(ctx context.Context) map[string]any {
+	if r == nil || r.memoryBackend == nil {
+		return map[string]any{"mode": MemoryBackendLocalOnly, "status": "ok"}
+	}
+	out := r.memoryBackend.Health(ctx)
+	return out
+}
+
+func (r *Runtime) SetMemoryBackendMode(mode string) bool {
+	if r == nil || r.memoryBackend == nil {
+		return mode == MemoryBackendLocalOnly
+	}
+	return r.memoryBackend.SetMode(mode)
+}
+
+func (r *Runtime) EnqueueMemoryDelete(memoryID string, hard bool, reason string) bool {
+	return false
+}
+
+func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
+	return map[string]any{"enabled": false}
 }
 
 // DispatchShare copies a memory to a target agent's namespace and fires

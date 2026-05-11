@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"plasmod/src/internal/access"
@@ -15,16 +16,19 @@ import (
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
 	"plasmod/src/internal/dataplane/embedding"
+	"plasmod/retrievalplane"
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
+	"plasmod/src/internal/transport"
 	"plasmod/src/internal/worker"
 	cognitive "plasmod/src/internal/worker/cognitive"
 	baseline "plasmod/src/internal/worker/cognitive/baseline"
 	"plasmod/src/internal/worker/cognitive/memorybank"
+	"plasmod/src/internal/worker/cognitive/zep"
 	"plasmod/src/internal/worker/coordination"
 	"plasmod/src/internal/worker/indexing"
 	"plasmod/src/internal/worker/ingestion"
@@ -104,13 +108,13 @@ func BuildServer() (*http.Server, func() error, error) {
 	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
 	// Set S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET to enable S3.
 	var coldStore storage.ColdObjectStore
-	if s3Cfg, err := storage.LoadFromEnv(); err == nil {
+	if s3Cfg, loadErr := storage.LoadFromEnv(); loadErr == nil {
 		coldStore = storage.NewS3ColdStoreWithAlgorithmConfig(s3Cfg, algoCfg)
 		log.Printf("[bootstrap] cold store: S3 endpoint=%s bucket=%s prefix=%s",
 			s3Cfg.Endpoint, s3Cfg.Bucket, s3Cfg.Prefix)
 	} else {
 		coldStore = storage.NewInMemoryColdStore()
-		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", err)
+		log.Printf("[bootstrap] cold store: in-memory simulation (S3 not configured: %v)", loadErr)
 	}
 	tieredObjects := storage.NewTieredObjectStoreWithThreshold(
 		store.HotCache(),
@@ -126,17 +130,17 @@ func BuildServer() (*http.Server, func() error, error) {
 	planner := semantic.NewDefaultQueryPlanner()
 
 	if sz := os.Getenv("PLASMOD_EVIDENCE_CACHE_SIZE"); sz != "" {
-		if n, err := strconv.Atoi(sz); err == nil && n > 0 {
+		if n, parseErr := strconv.Atoi(sz); parseErr == nil && n > 0 {
 			algoCfg.EvidenceCacheSize = n
 		}
 	}
 	if d := os.Getenv("PLASMOD_MAX_PROOF_DEPTH"); d != "" {
-		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+		if n, parseErr := strconv.Atoi(d); parseErr == nil && n > 0 {
 			algoCfg.MaxProofDepth = n
 		}
 	}
 	if t := os.Getenv("PLASMOD_HOT_TIER_THRESHOLD"); t != "" {
-		if f, err := strconv.ParseFloat(t, 64); err == nil && f > 0 {
+		if f, parseErr := strconv.ParseFloat(t, 64); parseErr == nil && f > 0 {
 			algoCfg.HotTierSalienceThreshold = f
 		}
 	}
@@ -173,6 +177,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	//   PLASMOD_EMBEDDING_FAMILY    (override family label used in segment metadata)
 	var embedder embedding.Generator
 	var embedderDim int
+	var embedderErr error
 	embedderType := os.Getenv("PLASMOD_EMBEDDER")
 	if embedderType == "" {
 		embedderType = "tfidf"
@@ -183,19 +188,19 @@ func BuildServer() (*http.Server, func() error, error) {
 		model := os.Getenv("PLASMOD_EMBEDDER_MODEL")
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
 		timeoutSec := 30
 		if ts := os.Getenv("PLASMOD_EMBEDDER_TIMEOUT"); ts != "" {
-			if n, err := strconv.Atoi(ts); err == nil {
+			if n, parseErr := strconv.Atoi(ts); parseErr == nil {
 				timeoutSec = n
 			}
 		}
 		batchSize := 100
 		if bs := os.Getenv("PLASMOD_EMBEDDER_BATCH_SIZE"); bs != "" {
-			if n, err := strconv.Atoi(bs); err == nil {
+			if n, parseErr := strconv.Atoi(bs); parseErr == nil {
 				batchSize = n
 			}
 		}
@@ -207,10 +212,9 @@ func BuildServer() (*http.Server, func() error, error) {
 			BatchSize: batchSize,
 		}
 		ctx := context.Background()
-		var err error
-		embedder, err = embedding.NewOpenAI(ctx, cfg, embedderDim)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, err)
+		embedder, embedderErr = embedding.NewOpenAI(ctx, cfg, embedderDim)
+		if embedderErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: %s model=%s dim=%d", embedderType, model, embedderDim)
 	case "cohere":
@@ -219,7 +223,7 @@ func BuildServer() (*http.Server, func() error, error) {
 			model = "embed-english-v3.0"
 		}
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
@@ -227,9 +231,9 @@ func BuildServer() (*http.Server, func() error, error) {
 			return nil, nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
 		}
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
-		embedder, err = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", err)
+		embedder, embedderErr = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
+		if embedderErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
 	case "huggingface":
@@ -238,14 +242,14 @@ func BuildServer() (*http.Server, func() error, error) {
 			model = "sentence-transformers/all-MiniLM-L6-v2"
 		}
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		timeoutSec := 60
 		if ts := os.Getenv("PLASMOD_EMBEDDER_TIMEOUT"); ts != "" {
-			if n, err := strconv.Atoi(ts); err == nil {
+			if n, parseErr := strconv.Atoi(ts); parseErr == nil {
 				timeoutSec = n
 			}
 		}
@@ -265,7 +269,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		log.Printf("[bootstrap] embedder: huggingface model=%s dim=%d", model, embedderDim)
 	case "vertexai":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
@@ -281,23 +285,23 @@ func BuildServer() (*http.Server, func() error, error) {
 			os.Getenv("GOOGLE_CLOUD_PROJECT"), embedderDim)
 	case "onnx":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil && n > 0 {
 				embedderDim = n
 			}
+		}
+		if embedderDim <= 0 {
+			embedderDim = 384 // all-MiniLM-L6-v2
 		}
 		onnxEmbedder, onnxErr := embedding.NewOnnxFromEnv(context.Background(), embedderDim)
 		if onnxErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
 		}
 		embedder = onnxEmbedder
-		if embedderDim <= 0 {
-			embedderDim = onnxEmbedder.Dim()
-		}
 		log.Printf("[bootstrap] embedder: onnx model=%s dim=%d",
 			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
 	case "tensorrt":
 		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
-			if n, err := strconv.Atoi(dimStr); err == nil {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil {
 				embedderDim = n
 			}
 		}
@@ -315,6 +319,30 @@ func BuildServer() (*http.Server, func() error, error) {
 		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
 		embedderDim = dataplane.DefaultEmbeddingDim
 		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
+	}
+	// ── OpenMP thread pool warm-up ───────────────────────────────────────────
+	// OpenMP lazily initializes threads on first parallel region.
+	// Trigger it here so first real query doesn't pay 10-50ms cold-start penalty.
+	// Use SearchRaw to avoid plugin reorder and ensure direct Knowhere path.
+	if retrievalplane.GlobalSegmentRetriever != nil && embedderDim > 0 {
+		dummy := make([]float32, embedderDim)
+		if _, _, err := retrievalplane.GlobalSegmentRetriever.SearchRaw("warm.default", dummy, 1, 1); err == nil {
+			log.Printf("[bootstrap] OpenMP thread pool: warmed")
+		}
+	}
+	// ── Batch optimizer plugin ─────────────────────────────────────────────────
+	// PLASMOD_BATCH_PLUGIN=1 enables L2NormSort (reorder + OpenMP per-query).
+	if pluginMode := os.Getenv("PLASMOD_BATCH_PLUGIN"); pluginMode != "" {
+		var mode retrievalplane.BatchPluginMode
+		if m, parseErr := strconv.Atoi(pluginMode); parseErr == nil && m >= 0 && m <= 1 {
+			mode = retrievalplane.BatchPluginMode(m)
+		} else {
+			return nil, nil, fmt.Errorf("PLASMOD_BATCH_PLUGIN must be 0 or 1, got: %s", pluginMode)
+		}
+		if err := retrievalplane.SetBatchPlugin(mode); err != nil {
+			return nil, nil, fmt.Errorf("SetBatchPlugin(%d): %w", mode, err)
+		}
+		log.Printf("[bootstrap] batch plugin: mode=%d", mode)
 	}
 	// Wire embedder into tieredObjects so ArchiveMemory writes cold-tier embeddings.
 	// tieredObjects was constructed before the embedder was known; SetEmbedder patches it in.
@@ -412,11 +440,31 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── Algorithm Dispatch worker ─────────────────────────────────────────────
 	// Bridges MemoryManagementAlgorithm plugins into the cognitive pipeline.
-	// MemoryBank is the default active algorithm (loaded from configs/algorithm_memorybank.yaml).
-	// Baseline is available as a fallback registered with a different worker ID.
+	// Active algorithm is selected by PLASMOD_ACTIVE_ALGORITHM (memorybank|zep|baseline).
+	// Note: zep profile currently reuses the MemoryBank engine with zep config root.
+	activeAlgo := strings.ToLower(strings.TrimSpace(os.Getenv("PLASMOD_ACTIVE_ALGORITHM")))
+	if activeAlgo == "" {
+		activeAlgo = "memorybank"
+	}
+	activeAlgoID := "memorybank_v1"
+	var activeAlgoImpl schemas.MemoryManagementAlgorithm
+	switch activeAlgo {
+	case "baseline":
+		activeAlgoID = "baseline_v1"
+		activeAlgoImpl = baseline.NewDefault()
+	case "zep":
+		activeAlgoID = "zep_v1"
+		activeAlgoImpl = zep.NewDefault(activeAlgoID)
+	default:
+		activeAlgo = "memorybank"
+		activeAlgoID = "memorybank_v1"
+		activeAlgoImpl = memorybank.NewDefault(activeAlgoID)
+	}
+	log.Printf("[bootstrap] active algorithm profile: %s (%s)", activeAlgo, activeAlgoID)
+
 	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
 		"algo-dispatch-1",
-		memorybank.NewDefault("memorybank_v1"),
+		activeAlgoImpl,
 		store.Objects(),
 		store.AlgorithmStates(),
 		store.Audits(),
@@ -440,6 +488,11 @@ func BuildServer() (*http.Server, func() error, error) {
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
 	runtime.VectorOnlyMode = vectorOnlyMode
 	runtime.RegisterDefaults()
+	if err := runtime.AdminWarmPrebuild(); err != nil {
+		log.Printf("[bootstrap] warm prebuild skipped: %v", err)
+	} else {
+		log.Printf("[bootstrap] warm prebuild: segment=warm.default")
+	}
 
 	// ── QueryChain (post-retrieval reasoning: ProofTrace + SubgraphExpand) ───
 	// Created internally by Runtime; exposed here for discoverability.
@@ -455,6 +508,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	subscriber := worker.CreateEventSubscriber(wal, nodeManager)
 	runtime.StartSubscriber(ctx, subscriber)
+	runtime.StartFlushLoop(ctx)
 	coord.Registry.Register("event_subscriber", subscriber)
 
 	// ── Execution Orchestrator ─────────────────────────────────────────────────
@@ -466,9 +520,18 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
 	gateway := access.NewGateway(coord, runtime, store, storageCfg, bundle)
+	gatewayMux := http.NewServeMux()
+	gateway.RegisterRoutes(gatewayMux)
+	wrapped := access.WrapVisibility(access.WrapAdminAuth(gatewayMux))
+
+	// Internal high-throughput transport: binary batch ingest/query and
+	// SSE WAL streaming.  Mounted on the root mux so the visibility wrapper
+	// (which buffers full responses) does not interfere with streaming or
+	// binary payloads.
 	mux := http.NewServeMux()
-	gateway.RegisterRoutes(mux)
-	handler := access.WrapVisibility(access.WrapAdminAuth(mux))
+	transport.NewServer(runtime, wal, bus).RegisterRoutes(mux)
+	mux.Handle("/", wrapped)
+	handler := mux
 
 	// shutdown bundles context cancellation (subscriber/orchestrator) and
 	// Badger close (storage cleanup) into one cleanup function.
@@ -476,5 +539,15 @@ func BuildServer() (*http.Server, func() error, error) {
 		cancel()
 		return bundle.Close()
 	}
-	return &http.Server{Addr: addr, Handler: handler}, shutdown, nil
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
+	}
+	return srv, shutdown, nil
 }

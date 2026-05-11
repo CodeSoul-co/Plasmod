@@ -32,9 +32,9 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/retry"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/retry"
 )
 
 type config struct {

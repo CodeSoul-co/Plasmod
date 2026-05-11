@@ -6,9 +6,9 @@ package discover
 import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/resource"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // discoverGrpcServerHelper is a wrapped discover server of log messages.

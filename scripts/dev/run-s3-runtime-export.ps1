@@ -3,10 +3,10 @@ param(
   [string]$S3Endpoint = "127.0.0.1:9000",
   [string]$S3AccessKey = "minioadmin",
   [string]$S3SecretKey = "minioadmin",
-  [string]$S3Bucket = "andb-integration",
+  [string]$S3Bucket = "plasmod-integration",
   [string]$S3Secure = "false",
   [string]$S3Region = "us-east-1",
-  [string]$S3Prefix = "andb/integration_tests"
+  [string]$S3Prefix = "plasmod/integration_tests"
 )
 
 $ErrorActionPreference = "Stop"

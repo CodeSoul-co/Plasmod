@@ -13,11 +13,11 @@ import (
 
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/broadcaster/registry"
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/resource"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/util/funcutil"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/util/funcutil"
 )
 
 // newBroadcastTaskFromProto creates a new broadcast task from the proto.

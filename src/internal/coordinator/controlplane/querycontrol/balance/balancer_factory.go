@@ -28,8 +28,8 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // BalancerFactory is responsible for creating and caching balancer instances.

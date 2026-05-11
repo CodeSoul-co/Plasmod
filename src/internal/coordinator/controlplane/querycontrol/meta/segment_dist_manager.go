@@ -26,11 +26,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus/internal/util/metrics"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/metricsinfo"
-	"andb/platformpkg/pkg/util/tsoutil"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/metricsinfo"
+	"plasmod/platformpkg/pkg/util/tsoutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type segDistCriterion struct {

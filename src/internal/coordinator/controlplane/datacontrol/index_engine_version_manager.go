@@ -11,8 +11,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/util/lock"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/util/lock"
 )
 
 // IndexEngineVersionManager manages the index engine versions reported by all QueryNodes in the cluster.

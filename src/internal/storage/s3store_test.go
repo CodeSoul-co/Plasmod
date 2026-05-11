@@ -251,13 +251,13 @@ func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
 
 	// 2) Put/Get embedding
 	wantVec := []float32{0.1, 0.2, 0.3}
-	if err := store.PutMemoryEmbedding(memoryID, wantVec); err != nil {
-		t.Fatalf("PutMemoryEmbedding failed: %v", err)
+	if putErr := store.PutMemoryEmbedding(memoryID, wantVec); putErr != nil {
+		t.Fatalf("PutMemoryEmbedding failed: %v", putErr)
 	}
 
-	gotVec, ok, err := store.GetMemoryEmbedding(memoryID)
-	if err != nil {
-		t.Fatalf("GetMemoryEmbedding returned error: %v", err)
+	gotVec, ok, getErr := store.GetMemoryEmbedding(memoryID)
+	if getErr != nil {
+		t.Fatalf("GetMemoryEmbedding returned error: %v", getErr)
 	}
 	if !ok {
 		t.Fatal("expected embedding to exist in S3 cold store")
@@ -272,8 +272,8 @@ func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
 	}
 
 	// 3) Delete embedding, memory should still remain
-	if err := store.DeleteMemoryEmbedding(memoryID); err != nil {
-		t.Fatalf("DeleteMemoryEmbedding failed: %v", err)
+	if delErr := store.DeleteMemoryEmbedding(memoryID); delErr != nil {
+		t.Fatalf("DeleteMemoryEmbedding failed: %v", delErr)
 	}
 
 	_, ok, err = store.GetMemoryEmbedding(memoryID)
@@ -380,13 +380,13 @@ func TestS3ColdStore_ColdVectorSearch_TopKOrdering(t *testing.T) {
 			Version:  it.version,
 			IsActive: false,
 		})
-		if err := store.PutMemoryEmbedding(it.id, it.vec); err != nil {
-			t.Fatalf("PutMemoryEmbedding(%s) failed: %v", it.id, err)
+		if putErr := store.PutMemoryEmbedding(it.id, it.vec); putErr != nil {
+			t.Fatalf("PutMemoryEmbedding(%s) failed: %v", it.id, putErr)
 		}
 
-		gotVec, ok, err := store.GetMemoryEmbedding(it.id)
-		if err != nil {
-			t.Fatalf("GetMemoryEmbedding(%s) failed: %v", it.id, err)
+		gotVec, ok, getErr := store.GetMemoryEmbedding(it.id)
+		if getErr != nil {
+			t.Fatalf("GetMemoryEmbedding(%s) failed: %v", it.id, getErr)
 		}
 		if !ok {
 			t.Fatalf("expected embedding %s to be readable immediately after write", it.id)

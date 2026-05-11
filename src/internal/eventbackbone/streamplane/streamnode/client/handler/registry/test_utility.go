@@ -3,7 +3,7 @@
 
 package registry
 
-import "andb/platformpkg/pkg/util/syncutil"
+import "plasmod/platformpkg/pkg/util/syncutil"
 
 func ResetRegisterLocalWALManager() {
 	registry = syncutil.NewFuture[WALManager]()

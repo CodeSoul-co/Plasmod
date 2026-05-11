@@ -26,9 +26,9 @@ import (
 	"github.com/milvus-io/milvus/internal/datacoord/allocator"
 	"github.com/milvus-io/milvus/internal/util/hookutil"
 	"github.com/milvus-io/milvus/internal/util/importutilv2"
-	"andb/platformpkg/pkg/proto/datapb"
-	"andb/platformpkg/pkg/proto/workerpb"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/proto/datapb"
+	"plasmod/platformpkg/pkg/proto/workerpb"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // PreAllocateBinlogIDs pre-allocates binlog IDs based on the total number of binlogs from

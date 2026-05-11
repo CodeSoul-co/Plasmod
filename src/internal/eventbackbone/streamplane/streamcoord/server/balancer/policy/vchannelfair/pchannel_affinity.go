@@ -5,7 +5,7 @@ package vchannelfair
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingcoord/server/balancer/channel"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 // newPChannelAffinity creates a new pchannel affinity from the given channels.

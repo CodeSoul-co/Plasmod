@@ -5,8 +5,8 @@ package ack
 
 import (
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal/interceptors/txn"
-	"andb/platformpkg/pkg/streaming/util/message"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/streaming/util/message"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type uncommittedTxnInfo struct {

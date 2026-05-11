@@ -7,7 +7,7 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus/internal/streamingnode/server/wal"
-	"andb/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/util/types"
 )
 
 var _ Manager = (*managerImpl)(nil)

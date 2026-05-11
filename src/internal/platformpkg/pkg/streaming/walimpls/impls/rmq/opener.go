@@ -6,10 +6,10 @@ package rmq
 import (
 	"context"
 
-	"andb/platformpkg/pkg/mq/mqimpl/rocksmq/client"
-	"andb/platformpkg/pkg/streaming/util/types"
-	"andb/platformpkg/pkg/streaming/walimpls"
-	"andb/platformpkg/pkg/streaming/walimpls/helper"
+	"plasmod/platformpkg/pkg/mq/mqimpl/rocksmq/client"
+	"plasmod/platformpkg/pkg/streaming/util/types"
+	"plasmod/platformpkg/pkg/streaming/walimpls"
+	"plasmod/platformpkg/pkg/streaming/walimpls/helper"
 )
 
 var _ walimpls.OpenerImpls = (*openerImpl)(nil)

@@ -121,6 +121,83 @@ int     plasmod_segment_unload(const char* segment_id);
 int     plasmod_segment_exists(const char* segment_id);
 int64_t plasmod_segment_size(const char* segment_id);
 
+// ── Sparse retriever (SPARSE_INVERTED_INDEX / SPARSE_WAND) ───────────────
+// See plasmod_c_api.h for full documentation. Signatures must stay in sync
+// with that pure-C header (CGO consumers include only plasmod_c_api.h).
+
+void* plasmod_sparse_create();
+void  plasmod_sparse_destroy(void* sparse);
+
+int plasmod_sparse_init(void* sparse, const char* index_type);
+
+int plasmod_sparse_build(
+    void*           sparse,
+    int64_t         num_vectors,
+    const int32_t*  doc_lengths,
+    const uint32_t* indices_flat,
+    const float*    values_flat
+);
+
+int plasmod_sparse_add(
+    void*           sparse,
+    int64_t         num_vectors,
+    const int32_t*  doc_lengths,
+    const uint32_t* indices_flat,
+    const float*    values_flat
+);
+
+int plasmod_sparse_search(
+    void*           sparse,
+    int32_t         q_len,
+    const uint32_t* q_indices,
+    const float*    q_values,
+    int             top_k,
+    const uint8_t*  filter_bitset,
+    size_t          filter_size,
+    int64_t*        out_ids,
+    float*          out_scores
+);
+
+int64_t plasmod_sparse_count(void* sparse);
+int     plasmod_sparse_is_ready(void* sparse);
+
+int plasmod_sparse_text_to_vector(
+    const char*  text,
+    int32_t      out_len_max,
+    uint32_t*    out_indices,
+    float*       out_values,
+    int32_t*     out_len
+);
+
+int plasmod_sparse_save(void* sparse, const char* path);
+int plasmod_sparse_load(void* sparse, const char* path);
+
+// ── FAISS HNSW (baseline) ─────────────────────────────────────────────────────
+// plasmod_faiss_* mirrors the SegmentIndexManager API but uses FAISS directly.
+// Used for fair kernel-level baseline comparison (same algorithm, different lib).
+// All functions return 0 on success, negative on error.
+
+void* plasmod_faiss_create();
+void  plasmod_faiss_destroy(void* handle);
+
+int plasmod_faiss_build(
+    void*        handle,
+    const float* vectors,
+    int64_t      n,
+    int          dim,
+    int          m,              // HNSW M (0 = default 16)
+    int          ef_construction  // HNSW efConstruction (0 = default 256)
+);
+
+int plasmod_faiss_search(
+    void*        handle,
+    const float* queries,
+    int64_t      nq,
+    int          topk,
+    int64_t*     out_ids,
+    float*       out_dists
+);
+
 #ifdef __cplusplus
 }
 #endif

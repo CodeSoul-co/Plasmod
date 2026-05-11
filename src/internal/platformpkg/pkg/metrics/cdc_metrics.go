@@ -22,7 +22,7 @@ package metrics
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 const (

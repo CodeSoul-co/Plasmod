@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 // SetupSpan add span into ctx values.

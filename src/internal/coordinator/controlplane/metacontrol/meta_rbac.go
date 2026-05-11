@@ -9,7 +9,7 @@ import (
 	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/milvuspb"
-	"andb/platformpkg/pkg/proto/internalpb"
+	"plasmod/platformpkg/pkg/proto/internalpb"
 )
 
 var (

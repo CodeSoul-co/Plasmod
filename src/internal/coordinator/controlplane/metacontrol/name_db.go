@@ -24,8 +24,8 @@ import (
 
 	"golang.org/x/exp/maps"
 
-	"andb/platformpkg/pkg/util"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/util"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type nameDb struct {

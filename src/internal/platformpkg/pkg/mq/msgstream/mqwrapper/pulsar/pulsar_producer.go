@@ -24,10 +24,10 @@ import (
 
 	"github.com/apache/pulsar-client-go/pulsar"
 
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/mq/common"
-	"andb/platformpkg/pkg/mq/msgstream/mqwrapper"
-	"andb/platformpkg/pkg/util/timerecord"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/mq/common"
+	"plasmod/platformpkg/pkg/mq/msgstream/mqwrapper"
+	"plasmod/platformpkg/pkg/util/timerecord"
 )
 
 // implementation assertion

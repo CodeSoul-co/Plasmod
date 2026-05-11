@@ -16,12 +16,12 @@ import (
 	"github.com/milvus-io/milvus/internal/util/fileresource"
 	"github.com/milvus-io/milvus/internal/util/initcore"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/proto/streamingpb"
-	_ "andb/platformpkg/pkg/streaming/walimpls/impls/kafka"
-	_ "andb/platformpkg/pkg/streaming/walimpls/impls/pulsar"
-	_ "andb/platformpkg/pkg/streaming/walimpls/impls/rmq"
-	"andb/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/proto/streamingpb"
+	_ "plasmod/platformpkg/pkg/streaming/walimpls/impls/kafka"
+	_ "plasmod/platformpkg/pkg/streaming/walimpls/impls/pulsar"
+	_ "plasmod/platformpkg/pkg/streaming/walimpls/impls/rmq"
+	"plasmod/platformpkg/pkg/util/paramtable"
 )
 
 // Server is the streamingnode server.

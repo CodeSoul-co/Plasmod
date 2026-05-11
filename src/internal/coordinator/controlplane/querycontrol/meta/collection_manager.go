@@ -34,14 +34,14 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v2/schemapb"
 	"github.com/milvus-io/milvus/internal/metastore"
-	"andb/platformpkg/pkg/common"
-	"andb/platformpkg/pkg/eventlog"
-	"andb/platformpkg/pkg/log"
-	"andb/platformpkg/pkg/metrics"
-	"andb/platformpkg/pkg/proto/querypb"
-	"andb/platformpkg/pkg/util/merr"
-	"andb/platformpkg/pkg/util/paramtable"
-	"andb/platformpkg/pkg/util/typeutil"
+	"plasmod/platformpkg/pkg/common"
+	"plasmod/platformpkg/pkg/eventlog"
+	"plasmod/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/metrics"
+	"plasmod/platformpkg/pkg/proto/querypb"
+	"plasmod/platformpkg/pkg/util/merr"
+	"plasmod/platformpkg/pkg/util/paramtable"
+	"plasmod/platformpkg/pkg/util/typeutil"
 )
 
 type Collection struct {

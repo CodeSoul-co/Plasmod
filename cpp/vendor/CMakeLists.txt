@@ -268,6 +268,18 @@ if(HAVE_OPENMP)
     endif()
 endif()
 
+# SIMD flags so hnswlib's space_ip.h / space_l2.h can call the
+# faiss::fvec_inner_product_avx512 / _avx variants directly (compile-time
+# dispatch) instead of going through the runtime-hooked function pointer
+# `faiss::fvec_inner_product`.  Indirect call is ~10 cycles per dispatch
+# and we make ~4000 distance calls per HNSW search at d=100, accounting
+# for ~40 µs/query of the gap vs the official knowhere build (which
+# already uses faiss's newer template dispatch).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(knowhere_hnsw PRIVATE
+        -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx2 -mfma -mf16c)
+endif()
+
 # ── Main shared library: knowhere ────────────────────────────────────────────
 set(KNOWHERE_ALL_OBJECTS
     $<TARGET_OBJECTS:knowhere_common>
@@ -366,15 +378,80 @@ endif()
 list(APPEND KNOWHERE_ALL_OBJECTS $<TARGET_OBJECTS:faiss_slim>)
 
 if(KNOWHERE_WITH_FAISS)
-    # Full IVF/faiss-HNSW support (needs BLAS)
+    # Full IVF + faiss-HNSW support (needs BLAS).
+    #
+    # faiss_hnsw.cc has been shimmed for our std::future-only ThreadPool
+    # (folly::Future::getTry()/.hasValue() replaced with try/catch around
+    # .get()).  Compiling it registers FAISS_HNSW_FLAT/SQ/PQ/PRQ with the
+    # IndexFactory.  FAISS_HNSW_FLAT is materially faster than the default
+    # hnswlib-based "HNSW" backend (~2× kernel speedup on amd64) because it
+    # uses faiss's heavily SIMD-optimised distance kernels and a per-thread
+    # VisitedTable instead of hnswlib's pool-acquire model.
     set(KNOWHERE_FAISS_SRCS
-        ${KW_ROOT}/src/index/hnsw/faiss_hnsw.cc
         ${KW_ROOT}/src/index/ivf/ivf.cc
+        ${KW_ROOT}/src/index/hnsw/faiss_hnsw.cc
     )
     add_library(knowhere_faiss_idx OBJECT ${KNOWHERE_FAISS_SRCS})
     target_include_directories(knowhere_faiss_idx PUBLIC
         ${KW_ROOT}/compat ${KW_ROOT}/include ${KW_ROOT}/engines/faiss_engine)
+    if(HAVE_OPENMP)
+        if(APPLE)
+            target_compile_options(knowhere_faiss_idx PRIVATE -Xpreprocessor -fopenmp)
+        endif()
+    endif()
     list(APPEND KNOWHERE_ALL_OBJECTS $<TARGET_OBJECTS:knowhere_faiss_idx>)
+endif()
+
+# ── DiskANN engine + Knowhere wrapper ─────────────────────────────────────
+# Requires:
+#   * libopenblas-dev (or equivalent BLAS provider)
+#   * libaio-dev      (Linux async I/O — DiskANN reads PQ shards asynchronously)
+#
+# Source layout:
+#   engines/diskann_engine/src/*.cpp  ← Microsoft DiskANN core (header-light)
+#   src/index/diskann/diskann.cc      ← Knowhere index registration wrapper
+#
+# The DiskANN command-line tools (under engines/diskann_engine/tests etc.) are
+# NOT compiled — only the library sources required for the index implementation.
+if(KNOWHERE_WITH_DISKANN)
+    set(DISKANN_ROOT ${KW_ROOT}/engines/diskann_engine)
+
+    file(GLOB DISKANN_ENGINE_SRCS CONFIGURE_DEPENDS
+        ${DISKANN_ROOT}/src/*.cpp)
+    # Drop any source that accidentally defines main() (safety net).
+    list(FILTER DISKANN_ENGINE_SRCS EXCLUDE REGEX "_main\\.cpp$")
+
+    add_library(diskann_engine_obj OBJECT ${DISKANN_ENGINE_SRCS})
+    target_include_directories(diskann_engine_obj PUBLIC
+        ${DISKANN_ROOT}/include
+        ${DISKANN_ROOT}/include/diskann
+        ${KW_ROOT}/compat
+        ${KW_ROOT}/include
+    )
+    # OpenBLAS headers are in /usr/include/openblas on Debian/Ubuntu.
+    find_path(OPENBLAS_INCLUDE_DIR cblas.h
+        HINTS /usr/include/openblas /usr/local/include/openblas
+              /usr/include /usr/local/include)
+    if(OPENBLAS_INCLUDE_DIR)
+        target_include_directories(diskann_engine_obj PUBLIC ${OPENBLAS_INCLUDE_DIR})
+    endif()
+
+    # Knowhere wrapper that registers the "DISKANN" index in IndexFactory.
+    add_library(knowhere_diskann_idx OBJECT
+        ${KW_ROOT}/src/index/diskann/diskann.cc)
+    target_include_directories(knowhere_diskann_idx PUBLIC
+        ${KW_ROOT}/compat
+        ${KW_ROOT}/include
+        ${DISKANN_ROOT}/include
+    )
+
+    list(APPEND KNOWHERE_ALL_OBJECTS
+        $<TARGET_OBJECTS:diskann_engine_obj>
+        $<TARGET_OBJECTS:knowhere_diskann_idx>)
+
+    # Track the runtime library deps; the final knowhere shared library will
+    # link them below (after add_library(knowhere SHARED ...)).
+    set(KNOWHERE_DISKANN_LIBS openblas aio)
 endif()
 
 add_library(knowhere SHARED ${KNOWHERE_ALL_OBJECTS})
@@ -418,6 +495,13 @@ endif()
 
 if(KNOWHERE_WITH_FAISS)
     # additional BLAS for full IVF path already covered above
+endif()
+
+if(KNOWHERE_WITH_DISKANN AND KNOWHERE_DISKANN_LIBS)
+    # openblas + libaio. We link unconditionally — find_package(BLAS) above
+    # may have already pulled in BLAS via faiss's deps; openblas adds the
+    # cblas symbols DiskANN's distance kernels rely on. libaio is Linux-only.
+    target_link_libraries(knowhere PUBLIC ${KNOWHERE_DISKANN_LIBS})
 endif()
 
 message(STATUS "Knowhere: HNSW=ON  FAISS=${KNOWHERE_WITH_FAISS}  DiskANN=${KNOWHERE_WITH_DISKANN}  GPU=${KNOWHERE_WITH_GPU}")

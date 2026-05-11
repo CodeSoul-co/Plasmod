@@ -55,6 +55,7 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		Namespace:   namespace,
 		Attributes:  buildAttributes(ev),
 		EventUnixTS: parseEventUnixTS(ev),
+		Embedding:   ev.EmbeddingVector,
 	}
 
 	mem := schemas.Memory{
@@ -273,6 +274,10 @@ func buildAttributes(ev schemas.Event) map[string]string {
 		"agent_id":     ev.AgentID,
 		"session_id":   ev.SessionID,
 		"event_type":   ev.EventType,
+		// Retrieval path constrains by object/memory type for /v1/internal/memory/recall.
+		// Persist these attributes at ingest time so type filtering can match.
+		"object_type":  string(schemas.ObjectTypeMemory),
+		"memory_type":  resolveMemoryType(ev),
 		"visibility":   ev.Visibility,
 	}
 }

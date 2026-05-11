@@ -33,6 +33,10 @@ Plasmod is an agent-native database for multi-agent systems. Inspired by the ada
   - Example bodies: `{"file_name":"deep1B.ibin","workspace_id":"w_member_a_dataset","dry_run":true}` · `{"file_name":"base.10M.fbin","dataset_name":"deep1B","workspace_id":"w_demo","dry_run":false}`
   - Response fields include `matched`, `deleted`, and `memory_ids` (all memory IDs that matched the selectors; in `dry_run`, `deleted` stays `0` while `memory_ids` still lists matches).
 - Admin dataset **purge** (hard remove): `POST /v1/admin/dataset/purge` uses the same selectors and **`workspace_id` (required)**. When a tiered object store is wired, it physically removes matching memories from hot/warm/cold tiers, warm graph edges, cold embeddings, and cold memory blobs. If the runtime has **no** `TieredObjectStore`, purge falls back to **warm-only** removal (`purge_backend` in the JSON response is `warm_only`; cold embeddings may remain orphaned until a later cold GC or a deployment that wires tiered storage). By default `only_if_inactive` is **true** (only memories already soft-deleted / inactive are purged); set `only_if_inactive` to `false` to also purge active matches. `dry_run` reports `matched`, `skipped_active`, `purgeable`, and `purged` without deleting. Each successful purge appends an immutable `AuditRecord` with `reason_code=dataset_purge`.
+- Optional request flags: `include_memory_ids` (default `true`, set `false` to omit `memory_ids`/`purged_memory_ids`), `async` (default `false`, enqueue background hard-delete task), `idempotency_key` (dedupe queued/running async tasks).
+  - Async task API: `GET /v1/admin/dataset/purge/task?task_id=...` returns task state (`queued`/`running`/`completed`/`failed`/`cancelled`), processed/failed counters, and `progress_percent`.
+  - Response includes operational diagnostics such as `scanned`, `workspace_scanned`, `cancelled`, `cancel_reason`, `purge_workers`, `purge_batch_size`, `purge_queue_size`, `purge_elapsed_ms`, `purge_scan_elapsed_ms`, `purge_delete_elapsed_ms`, and per-phase delete timings.
+  - Runtime tuning env vars: `PLASMOD_DATASET_PURGE_WORKERS`, `PLASMOD_DATASET_PURGE_BATCH_SIZE`, `PLASMOD_DATASET_PURGE_QUEUE_SIZE`, `PLASMOD_HARD_DELETE_BATCH_WORKERS`, `PLASMOD_HARD_DELETE_QUEUE_FILE`.
 - Append-only WAL with `Scan` and `LatestLSN` for replay and watermark tracking
 - `MaterializeEvent` → `MaterializationResult` producing canonical `Memory`, `ObjectVersion`, and typed `Edge` records at ingest time
 - Synchronous object materialization: `ObjectMaterializationWorker`, `ToolTraceWorker`, and `StateCheckpoint` called in `SubmitIngest` so State/Artifact/Version objects are immediately queryable
@@ -47,6 +51,7 @@ Plasmod is an agent-native database for multi-agent systems. Inspired by the ada
 - `QueryChain` (post-retrieval reasoning): multi-hop BFS proof trace + 1-hop subgraph expansion, merged deduplicated into response
 - `include_cold` query flag wired through planner and TieredDataPlane to force cold-tier merge even when hot satisfies TopK
 - Algorithm dispatch: `DispatchAlgorithm`, `DispatchRecall`, `DispatchShare`, `DispatchConflictResolve` on Runtime; pluggable `MemoryManagementAlgorithm` interface with `BaselineMemoryAlgorithm` (default) and `MemoryBankAlgorithm` (8-dimension governance model)
+- Zep-integrated memory backend router with runtime-switchable modes (`local_only`, `shadow_write`, `hybrid_recall`, `zep_only`), provider health endpoints (`/v1/admin/memory/providers/mode`, `/v1/admin/memory/providers/health`), and delete outbox telemetry/retry controls
 - **MemoryBank governance**: 8 lifecycle states (candidate→active→reinforced→compressed→stale→quarantined→archived→deleted), conflict detection (value contradiction, preference reversal, factual disagreement, entity conflict), profile management
 - All algorithm parameters externalized to `configs/algorithm_memorybank.yaml` and `configs/algorithm_baseline.yaml`
 - Safe DLQ: panic recovery with overflow buffer (capacity 256) + structured `OverflowBuffer()` + `OverflowCount` metrics — panics are never silently lost
@@ -62,13 +67,29 @@ Authoritative registry: [`Gateway.RegisterRoutes`](src/internal/access/gateway.g
 | Group | Endpoints |
 |-------|-----------|
 | **Health** | `GET /healthz` |
-| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` |
+| **Admin** | `GET /v1/admin/topology` · `GET /v1/admin/storage` · `GET /v1/admin/config/effective` · `POST /v1/admin/s3/export` · `POST /v1/admin/s3/snapshot-export` · `POST /v1/admin/s3/cold-purge` · `POST /v1/admin/warm/prebuild` · `POST /v1/admin/dataset/delete` · `POST /v1/admin/dataset/purge` · `GET /v1/admin/dataset/purge/task` · `POST /v1/admin/data/wipe` · `POST /v1/admin/rollback` · `GET`/`POST /v1/admin/consistency-mode` · `POST /v1/admin/replay` |
 | **Core** | `POST /v1/ingest/events` · `POST /v1/query` |
 | **Canonical CRUD** | `GET` / `POST` — `/v1/agents`, `/v1/sessions`, `/v1/memory`, `/v1/states`, `/v1/artifacts`, `/v1/edges`, `/v1/policies`, `/v1/share-contracts` (list/filter via query params; POST creates or replaces per handler) |
 | **Traces** | `GET /v1/traces/{object_id}` |
 | **Internal (Agent SDK bridge)** | `POST` — `/v1/internal/memory/recall`, `/v1/internal/memory/ingest`, `/v1/internal/memory/compress`, `/v1/internal/memory/summarize`, `/v1/internal/memory/decay`, `/v1/internal/memory/share`, `/v1/internal/memory/conflict/resolve` |
 
-**Operational notes:** `/v1/admin/*` is protected when `PLASMOD_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response).
+**Operational notes:** `/v1/admin/*` is protected when `PLASMOD_ADMIN_API_KEY` is set (clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`). If the env var is not set, the default dev server does **not** authenticate admin routes — bind to localhost or put a reverse proxy in front for production. `POST /v1/admin/dataset/delete` and `POST /v1/admin/dataset/purge` require `workspace_id` and at least one selector (`file_name`, `dataset_name`, or `prefix`). Purge uses `HardDeleteMemory` when a tiered store is configured; otherwise it falls back to warm-only removal (`purge_backend: "warm_only"` in the JSON response). `POST /v1/admin/dataset/purge` can run in async mode (`async=true`) and be polled via `GET /v1/admin/dataset/purge/task`.
+
+### Zep integration notes
+
+- Zep is treated as a memory-governance algorithm profile (plugin-style), not
+  a separate storage backend.
+- Storage remains in Plasmod; algorithm effects are applied through the
+  AlgorithmDispatch pipeline (same architectural direction as MemoryBank).
+- Current compatibility admin endpoints are:
+  - `POST /v1/admin/memory/providers/mode`
+  - `GET /v1/admin/memory/providers/mode`
+  - `GET /v1/admin/memory/providers/health`
+- At this stage, compatibility mode remains `local_only`.
+- Zep governance parameters are configured in `configs/algorithm_memorybank.yaml`
+  under the `zep` section (soft-coded, no separate storage wiring).
+- Algorithm-level verification should target `POST /v1/internal/memory/recall`
+  (Agent SDK bridge). `POST /v1/query` remains the core retrieval pipeline.
 
 ## Dataset bulk import and CLI delete / purge (E2E)
 
@@ -336,9 +357,16 @@ ProofTrace stages observed:
 
 Run benchmarks:
 ```bash
-# HNSW direct retrieval (requires CGO + libandb_retrieval.dylib)
-CGO_LDFLAGS="-L$PWD/build -landb_retrieval -Wl,-rpath,$PWD/build -framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders" \
-go test -tags retrieval -v -run TestVectorStore_Deep1B_Recall ./src/internal/dataplane
+# Build the C++ library first (requires cmake + Knowhere deps)
+make cpp
+
+# Build and run the retrieval benchmark
+make build-benchmark
+./plasmod_test_env/bin/benchmark --help
+
+# HNSW direct retrieval tests
+CGO_LDFLAGS="-L$(pwd)/cpp/build -lplasmod_retrieval -Wl,-rpath,$(pwd)/cpp/build" \
+  go test -tags retrieval -v -run TestVectorStore_Deep1B_Recall ./src/internal/dataplane
 
 # QueryChain E2E
 go test -v -run TestQueryChain_E2E_Latency ./src/internal/worker/

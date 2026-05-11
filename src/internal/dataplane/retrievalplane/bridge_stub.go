@@ -10,7 +10,7 @@ import "fmt"
 
 // ErrRetrievalNotAvailable is returned by all stub methods when the CGO bridge
 // is not compiled in (build tag `retrieval` absent).
-var ErrRetrievalNotAvailable = fmt.Errorf("andb_retrieval: CGO_ENABLED=0, C++ bridge unavailable")
+var ErrRetrievalNotAvailable = fmt.Errorf("plasmod_retrieval: CGO_ENABLED=0, C++ bridge unavailable")
 
 // Version returns a placeholder when CGO is disabled.
 func Version() string { return "stub (CGO_ENABLED=0)" }
@@ -27,6 +27,18 @@ func NewRetriever(dim, _, _, _, _ int) (*Retriever, error) {
 
 // NewRetrieverWithMetric returns a stub retriever (metric ignored).
 func NewRetrieverWithMetric(dim, _, _, _ int, _ string) (*Retriever, error) {
+	return &Retriever{dim: dim}, nil
+}
+
+// Supported dense index types (mirrored from the CGO build for API parity).
+const (
+	IndexHNSW    = "HNSW"
+	IndexIVFFlat = "IVF_FLAT"
+	IndexDISKANN = "DISKANN"
+)
+
+// NewRetrieverWithIndexType is a stub that records dim and ignores indexType/metric.
+func NewRetrieverWithIndexType(dim int, _ string, _ string) (*Retriever, error) {
 	return &Retriever{dim: dim}, nil
 }
 
@@ -65,6 +77,11 @@ func (s *SegmentRetriever) SearchWithFilter(_ string, _ []float32, _, _ int, _ [
 	return nil, nil, ErrRetrievalNotAvailable
 }
 
+// SearchRaw returns ErrRetrievalNotAvailable.
+func (s *SegmentRetriever) SearchRaw(_ string, _ []float32, _, _ int) ([]int64, []float32, error) {
+	return nil, nil, ErrRetrievalNotAvailable
+}
+
 // UnloadSegment returns ErrRetrievalNotAvailable.
 func (s *SegmentRetriever) UnloadSegment(_ string) error {
 	return ErrRetrievalNotAvailable
@@ -75,3 +92,19 @@ func (s *SegmentRetriever) HasSegment(_ string) bool { return false }
 
 // SegmentSize always returns -1.
 func (s *SegmentRetriever) SegmentSize(_ string) int64 { return -1 }
+
+// ── Batch optimizer plugin stubs ──────────────────────────────────────────────
+
+// BatchPluginMode mirrors the CGO build for API parity.
+type BatchPluginMode int
+
+const (
+	BatchPluginNone           BatchPluginMode = 0
+	BatchPluginL2NormSort     BatchPluginMode = 1
+)
+
+// SetBatchPlugin is a no-op stub.
+func SetBatchPlugin(_ BatchPluginMode) error { return nil }
+
+// GetBatchPlugin always returns BatchPluginNone in the stub build.
+func GetBatchPlugin() BatchPluginMode { return BatchPluginNone }

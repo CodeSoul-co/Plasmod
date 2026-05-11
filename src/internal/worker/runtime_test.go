@@ -140,6 +140,58 @@ func TestRuntime_IngestAndQuery(t *testing.T) {
 	}
 }
 
+func TestRuntime_ExecuteQuery_MultilingualRetrievalConsistency(t *testing.T) {
+	r := buildTestRuntime(t)
+
+	// Chinese sample
+	if _, err := r.SubmitIngest(schemas.Event{
+		EventID:     "evt_multi_cn_1",
+		TenantID:    "t_multi",
+		WorkspaceID: "w_multi",
+		AgentID:     "a_multi",
+		SessionID:   "s_multi",
+		Payload:     map[string]any{"text": "我喜欢电影和菜系，也喜欢公园散步"},
+	}); err != nil {
+		t.Fatalf("submit chinese ingest failed: %v", err)
+	}
+
+	// English sample
+	if _, err := r.SubmitIngest(schemas.Event{
+		EventID:     "evt_multi_en_1",
+		TenantID:    "t_multi",
+		WorkspaceID: "w_multi",
+		AgentID:     "a_multi",
+		SessionID:   "s_multi",
+		Payload:     map[string]any{"text": "I like movies and cuisine, and enjoy park walks"},
+	}); err != nil {
+		t.Fatalf("submit english ingest failed: %v", err)
+	}
+
+	cnResp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "我喜欢哪些菜系？",
+		QueryScope:  "workspace",
+		WorkspaceID: "w_multi",
+		TopK:        5,
+		SessionID:   "s_multi",
+		AgentID:     "a_multi",
+	})
+	if len(cnResp.Objects) == 0 {
+		t.Fatalf("expected chinese query hits, got none (status=%s hint=%s)", cnResp.QueryStatus, cnResp.QueryHint)
+	}
+
+	enResp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "what cuisine do I like",
+		QueryScope:  "workspace",
+		WorkspaceID: "w_multi",
+		TopK:        5,
+		SessionID:   "s_multi",
+		AgentID:     "a_multi",
+	})
+	if len(enResp.Objects) == 0 {
+		t.Fatalf("expected english query hits, got none (status=%s hint=%s)", enResp.QueryStatus, enResp.QueryHint)
+	}
+}
+
 func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
@@ -844,8 +896,8 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 		Payload:    map[string]any{"text": "archived cold retrieval target"},
 	}
 
-	if _, err := r.SubmitIngest(ev); err != nil {
-		t.Fatalf("SubmitIngest failed: %v", err)
+	if _, ingestErr := r.SubmitIngest(ev); ingestErr != nil {
+		t.Fatalf("SubmitIngest failed: %v", ingestErr)
 	}
 
 	memID := "mem_evt_cold_runtime_1"
@@ -860,10 +912,10 @@ func TestRuntime_ExecuteQuery_IncludeColdReturnsArchivedMemory(t *testing.T) {
 	tieredObjs.ArchiveMemory(memID)
 
 	// 验证 cold 中已经有对象
-	if _, ok := cold.GetMemory(memID); !ok {
+	if _, coldOk := cold.GetMemory(memID); !coldOk {
 		t.Fatalf("expected archived memory %s in cold store", memID)
 	}
-	if _, ok := store.Objects().GetMemory(memID); ok {
+	if _, warmOk := store.Objects().GetMemory(memID); warmOk {
 		t.Fatalf("expected archived memory %s to be removed from warm store", memID)
 	}
 

@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
-	"andb/platformpkg/pkg/log"
+	"plasmod/platformpkg/pkg/log"
 )
 
 // TimeRecorder provides methods to record time duration
