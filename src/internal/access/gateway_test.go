@@ -354,6 +354,70 @@ func TestGateway_DatasetDelete_DryRunAndDelete(t *testing.T) {
 	}
 }
 
+func TestGateway_DatasetDelete_ByMemoryIDs(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_delete_ds_memids",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_memids_workspace",
+		AgentID:     "agent_member_a",
+		SessionID:   "sess_member_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=other.ibin row=1 dim=10 vec[:8]=[...]",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_delete_ds_memids"
+
+	body, _ := json.Marshal(map[string]any{
+		"workspace_id": "w_memids_workspace",
+		"memory_ids":   []string{memID, "mem_nonexistent", memID},
+		"dry_run":      true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry-run by memory_ids: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var dry map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &dry); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if int(dry["matched"].(float64)) != 1 || int(dry["deleted"].(float64)) != 0 {
+		t.Fatalf("dry-run mismatch: %+v", dry)
+	}
+	reqIDs, _ := dry["requested_memory_ids"].([]any)
+	if len(reqIDs) != 2 {
+		t.Fatalf("expected 2 deduped requested_memory_ids, got %v", reqIDs)
+	}
+
+	body2, _ := json.Marshal(map[string]any{
+		"workspace_id": "w_memids_workspace",
+		"memory_ids":   []string{memID},
+		"dry_run":      false,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("delete: want 200, got %d", w2.Code)
+	}
+	if mem, ok := deps.store.Objects().GetMemory(memID); !ok || mem.IsActive {
+		t.Fatalf("memory should be inactive after delete by memory_ids")
+	}
+}
+
 func TestGateway_DatasetDelete_DeletedMemoryNotReturnedInQuery(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
@@ -766,6 +830,131 @@ func TestGateway_DatasetPurge_DryRun(t *testing.T) {
 	}
 }
 
+func TestGateway_DatasetPurge_ByMemoryIDs(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	ev := schemas.Event{
+		EventID:     "evt_purge_ds_memids",
+		TenantID:    "t_member_a",
+		WorkspaceID: "w_purge_memids",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload: map[string]any{
+			"text": "dataset=purge_memids.bin row=1 dataset_name:purgeMemIDsDS",
+		},
+		Source:  "test",
+		Version: 1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest failed: %v", err)
+	}
+	memID := "mem_evt_purge_ds_memids"
+
+	delBody, _ := json.Marshal(map[string]any{
+		"workspace_id": "w_purge_memids",
+		"memory_ids":   []string{memID},
+		"dry_run":      false,
+	})
+	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/delete", bytes.NewReader(delBody))
+	delReq.Header.Set("Content-Type", "application/json")
+	delW := httptest.NewRecorder()
+	mux.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("soft delete by memory_ids: want 200, got %d", delW.Code)
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"workspace_id": "w_purge_memids",
+		"memory_ids":   []string{memID},
+		"dry_run":      false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge by memory_ids: want 200, got %d body=%s", purgeW.Code, purgeW.Body.String())
+	}
+	var pr map[string]any
+	if err := json.Unmarshal(purgeW.Body.Bytes(), &pr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := pr["requested_memory_ids"]; !ok {
+		t.Fatalf("expected requested_memory_ids in response: %+v", pr)
+	}
+	if int(pr["purged"].(float64)) != 1 {
+		t.Fatalf("expected purged=1, got %+v", pr)
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); ok {
+		t.Fatalf("memory should be removed after purge by memory_ids")
+	}
+}
+
+func TestGateway_MemoryDeleteAndPurgeBySource(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	evID := "evt_src_by_ref_1"
+	ev := schemas.Event{
+		EventID:     evID,
+		TenantID:    "t_a",
+		WorkspaceID: "w_src_by_ref",
+		AgentID:     "agent_a",
+		SessionID:   "sess_a",
+		EventType:   "user_message",
+		Payload:     map[string]any{"text": "hello by source"},
+		Source:      "test",
+		Version:     1,
+	}
+	if _, err := deps.runtime.SubmitIngest(ev); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	memID := "mem_" + evID
+	m0, ok := deps.store.Objects().GetMemory(memID)
+	if !ok {
+		t.Fatalf("expected memory %s", memID)
+	}
+	if len(m0.SourceEventIDs) != 1 || m0.SourceEventIDs[0] != evID {
+		t.Fatalf("unexpected SourceEventIDs: %#v", m0.SourceEventIDs)
+	}
+
+	delBody, _ := json.Marshal(map[string]any{
+		"workspace_id": "w_src_by_ref",
+		"event_id":     evID,
+		"dry_run":      false,
+	})
+	delReq := httptest.NewRequest(http.MethodPost, "/v1/admin/memory/delete-by-source", bytes.NewReader(delBody))
+	delReq.Header.Set("Content-Type", "application/json")
+	delW := httptest.NewRecorder()
+	mux.ServeHTTP(delW, delReq)
+	if delW.Code != http.StatusOK {
+		t.Fatalf("delete-by-source: want 200, got %d body=%s", delW.Code, delW.Body.String())
+	}
+	if m1, ok := deps.store.Objects().GetMemory(memID); !ok || m1.IsActive {
+		t.Fatalf("memory should be inactive after delete-by-source")
+	}
+
+	purgeBody, _ := json.Marshal(map[string]any{
+		"workspace_id": "w_src_by_ref",
+		"reference_id": evID,
+		"dry_run":      false,
+	})
+	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/memory/purge-by-source", bytes.NewReader(purgeBody))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeW := httptest.NewRecorder()
+	mux.ServeHTTP(purgeW, purgeReq)
+	if purgeW.Code != http.StatusOK {
+		t.Fatalf("purge-by-source: want 200, got %d body=%s", purgeW.Code, purgeW.Body.String())
+	}
+	if _, ok := deps.store.Objects().GetMemory(memID); ok {
+		t.Fatalf("memory should be purged")
+	}
+}
+
 func TestGateway_DatasetPurge_WithoutMemoryIDs(t *testing.T) {
 	deps := buildTestGatewayWithDeps()
 	mux := http.NewServeMux()
@@ -993,12 +1182,12 @@ func TestGateway_DatasetPurge_AsyncIdempotencyReturnsExistingTask(t *testing.T) 
 	deps.gw.hardDeleteMgr.mu.Unlock()
 
 	purgeBody, _ := json.Marshal(map[string]any{
-		"dataset_name":    "purgeAsync",
-		"workspace_id":    "w_purge_async_dedupe",
+		"dataset_name":     "purgeAsync",
+		"workspace_id":     "w_purge_async_dedupe",
 		"only_if_inactive": false,
-		"dry_run":         false,
-		"async":           true,
-		"idempotency_key": "idem-dup",
+		"dry_run":          false,
+		"async":            true,
+		"idempotency_key":  "idem-dup",
 	})
 	purgeReq := httptest.NewRequest(http.MethodPost, "/v1/admin/dataset/purge", bytes.NewReader(purgeBody))
 	purgeReq.Header.Set("Content-Type", "application/json")
