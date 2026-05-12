@@ -1,4 +1,4 @@
-.PHONY: dev build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
+.PHONY: dev demo-warm-batch build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -31,6 +31,13 @@ setup:
 
 dev:
 	CGO_LDFLAGS="$(CGO_LDFLAGS)" RETRIEVAL_TAG="$(RETRIEVAL_TAG)" bash scripts/dev_up.sh
+
+# Second terminal only: assumes `make dev` is already running (default http://127.0.0.1:8080).
+# Uses existing HTTP APIs: POST /v1/ingest/vectors then POST /v1/query/batch (single + multi agent).
+# Override base URL: make demo-warm-batch PLASMOD_BASE_URL=http://127.0.0.1:9090
+PLASMOD_BASE_URL ?= http://127.0.0.1:8080
+demo-warm-batch:
+	PLASMOD_BASE_URL="$(PLASMOD_BASE_URL)" bash scripts/demo/run_demo_warm_batch.sh
 
 build:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/plasmod ./src/cmd/server'

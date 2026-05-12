@@ -400,6 +400,7 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
 	mux.HandleFunc("/v1/ingest/vectors", g.handleIngestVectors)
 	mux.HandleFunc("/v1/query", g.handleQuery)
+	mux.HandleFunc("/v1/query/batch", g.handleQueryBatch)
 
 	// Warm segment registration — exposes cgo-built segments to the HTTP SearchWarmSegment path.
 	mux.HandleFunc("/v1/internal/warm-segment/register", g.handleWarmSegmentRegister)
@@ -572,6 +573,84 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 	resp := g.runtime.ExecuteQuery(req)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleQueryBatch runs warm-segment batch ANN on a query-vector matrix and fans out hits using row_lineage.
+func (g *Gateway) handleQueryBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req schemas.VectorWarmBatchQueryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	segID := strings.TrimSpace(req.WarmSegmentID)
+	if segID == "" {
+		http.Error(w, "warm_segment_id is required", http.StatusBadRequest)
+		return
+	}
+	topK := req.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+	nq := len(req.Vectors)
+	if nq == 0 {
+		http.Error(w, "vectors must contain at least one row", http.StatusBadRequest)
+		return
+	}
+	dim := len(req.Vectors[0])
+	if dim <= 0 {
+		http.Error(w, "each vector row must be non-empty", http.StatusBadRequest)
+		return
+	}
+	for i, row := range req.Vectors {
+		if len(row) != dim {
+			http.Error(w, fmt.Sprintf("vectors[%d] length %d must match dim %d", i, len(row), dim), http.StatusBadRequest)
+			return
+		}
+	}
+	sources, lineage, err := schemas.ResolveWarmVectorBatchLineage(req.AgentMode, nq, req.SourceIDs, req.RowLineage)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	flat := make([]float32, 0, nq*dim)
+	for _, row := range req.Vectors {
+		flat = append(flat, row...)
+	}
+	rowObjIDs, rowDists, err := g.runtime.SearchWarmSegmentBatchObjectIDs(segID, nq, topK, flat, req.SearchRaw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	byIdx := schemas.MergeWarmBatchLineage(rowObjIDs, lineage, len(sources))
+	bySource := make(map[string][]string, len(sources))
+	for i, sid := range sources {
+		bySource[sid] = byIdx[i]
+	}
+	rows := make([]schemas.VectorWarmBatchRowResult, nq)
+	for i := 0; i < nq; i++ {
+		d := rowDists[i]
+		if len(d) == 0 {
+			d = nil
+		}
+		rows[i] = schemas.VectorWarmBatchRowResult{
+			RowIndex:   i,
+			ObjectIDs:  rowObjIDs[i],
+			Distances:  d,
+			SourceRefs: append([]int(nil), lineage[i]...),
+		}
+	}
+	writeJSON(w, schemas.VectorWarmBatchQueryResponse{
+		Status:        "ok",
+		AgentMode:     strings.TrimSpace(strings.ToLower(req.AgentMode)),
+		WarmSegmentID: segID,
+		SourceIDs:     sources,
+		Rows:          rows,
+		BySource:      bySource,
+	})
 }
 
 func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
