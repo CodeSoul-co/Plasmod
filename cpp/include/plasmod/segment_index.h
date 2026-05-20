@@ -36,6 +36,25 @@ public:
                      int64_t            n,
                      int                dim);
 
+    // BuildSegmentWithIndexType: configurable index type.
+    // index_type: "HNSW"|"IVF_FLAT"|"IVF_PQ"|"IVF_SQ8"|"DISKANN"
+    // nlist/nprobe/pq_m/pq_nbits: 0 = use defaults.
+    // DISKANN: call SetDiskANNPrefix(segment_id, prefix) first.
+    int BuildSegmentWithIndexType(const std::string& segment_id,
+                               const float*       vectors,
+                               int64_t            n,
+                               int                dim,
+                               const char*         index_type,
+                               int                nlist,
+                               int                nprobe,
+                               int                pq_m,
+                               int                pq_nbits,
+                               const char*         sq_type);
+
+    // SetDiskANNPrefix: must precede BuildSegmentWithIndexType for DISKANN.
+    int SetDiskANNPrefix(const std::string& segment_id,
+                       const std::string& index_prefix);
+
     // ANN search within a segment — no filter.
     // query    : row-major float32 matrix  [nq × dim]
     // nq       : number of query vectors
@@ -101,17 +120,26 @@ private:
     SegmentIndexManager& operator=(const SegmentIndexManager&) = delete;
 
     struct Entry {
-        // Opaque pointers to internal index types — concrete types are in
-        // segment_index.cpp only and are never exposed through this header.
-        void*   index_ptr   = nullptr;  // internal: andb index instance
-        void*   config_ptr  = nullptr;  // internal: andb index config
-        int     dim         = 0;
-        int64_t num_vectors = 0;
-        std::vector<std::string> object_ids; // Go-visible IDs for SearchWarmSegment
-    };
+	// Opaque pointers to internal index types
+	void*   index_ptr   = nullptr;	// knowhere index instance
+	void*   config_ptr  = nullptr;	// knowhere Json config
+	int     dim         = 0;
+	int64_t num_vectors = 0;
+	std::vector<std::string> object_ids;	// Go-visible IDs for SearchWarmSegment
+	// Index type and build params — set at build, read at search.
+	std::string index_type = "HNSW";	// "HNSW"|"IVF_FLAT"|"IVF_PQ"|"IVF_SQ8"|"DISKANN"
+	int     ivf_nlist   = 128;	// IVF coarse-centroid count
+	int     ivf_nprobe  = 32;	// IVF centroids probed per query
+	int     ivf_pq_m     = 16;	// IVF_PQ: number of sub-vectors
+	int     ivf_pq_nbits = 8;	// IVF_PQ: bits per sub-vector
+	std::string ivf_sq_type = "INT8";	// IVF_SQ8: "INT8" or "FP32"
+	std::string diskann_prefix;	// DISKANN index file prefix
+};
 
     mutable std::shared_mutex                                   mu_;
     std::unordered_map<std::string, std::shared_ptr<Entry>>     segments_;
+    // DiskANN index_prefixes keyed by segment_id (cleared after BuildSegmentWithIndexType).
+    std::unordered_map<std::string, std::string> diskann_prefixes_;
 
     // Internal helpers (defined in segment_index.cpp).
     int  DoSearch(Entry& entry, const float* query, int64_t nq, int topk,

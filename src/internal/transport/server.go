@@ -16,6 +16,7 @@ import (
 // layer.  Defining it as an interface here avoids an import cycle.
 type RuntimeAPI interface {
 	IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error)
+	IngestVectorsToWarmSegmentWithType(segmentID string, objectIDs []string, vectors [][]float32, indexType string, nlist, nprobe, m, nbits int, sqType string) (int, error)
 	UnloadWarmSegment(segmentID string) error
 	SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error)
 	RegisterWarmSegment(segmentID string, objectIDs []string) error
@@ -83,7 +84,14 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	t0 := time.Now()
-	n, err := s.runtime.IngestVectorsToWarmSegment(segID, req.ObjectIDs, req.Vectors)
+	var n int
+	if req.IndexType != "" {
+		n, err = s.runtime.IngestVectorsToWarmSegmentWithType(
+			segID, req.ObjectIDs, req.Vectors,
+			req.IndexType, req.IVFNlist, req.IVFNprobe, req.IVFM, req.IVFNbits, req.IVFSqType)
+	} else {
+		n, err = s.runtime.IngestVectorsToWarmSegment(segID, req.ObjectIDs, req.Vectors)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -94,6 +102,7 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		"segment_id": segID,
 		"ingested":   n,
 		"vector_dim": req.Dim,
+		"index_type": req.IndexType,
 		"elapsed_ms": float64(time.Since(t0).Microseconds()) / 1000.0,
 	})
 }

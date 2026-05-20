@@ -414,7 +414,35 @@ func (p *SegmentDataPlane) SetEmbedder(embedder EmbeddingGenerator) error {
 }
 
 // IngestVectorsToWarmSegment writes vectors directly into a named warm segment.
+// Defaults to HNSW index type.
 func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
+	return p.ingestWithIndexType(segmentID, objectIDs, vectors, "HNSW", 0, 0, 0, 0, "")
+}
+
+// IngestVectorsToWarmSegmentWithType writes vectors into a named warm segment
+// with the specified ANN index type.
+// Valid indexType: "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN".
+// For IVF types, pass nlist/nprobe/m/nbits/sqType; 0/empty = use defaults.
+func (p *SegmentDataPlane) IngestVectorsToWarmSegmentWithType(
+	segmentID string,
+	objectIDs []string,
+	vectors [][]float32,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) (int, error) {
+	return p.ingestWithIndexType(segmentID, objectIDs, vectors, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
+// ingestWithIndexType is the shared helper that both ingest methods call.
+func (p *SegmentDataPlane) ingestWithIndexType(
+	segmentID string,
+	objectIDs []string,
+	vectors [][]float32,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) (int, error) {
 	if segmentID == "" {
 		return 0, fmt.Errorf("segment_id is required")
 	}
@@ -438,16 +466,23 @@ func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectID
 		}
 		flat = append(flat, vec...)
 	}
-	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flat, len(vectors), dim); err != nil {
+
+	var err error
+	switch indexType {
+	case "HNSW", "":
+		err = retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flat, len(vectors), dim)
+	default:
+		err = retrievalplane.GlobalSegmentRetriever.BuildSegmentWithType(
+			segmentID, flat, len(vectors), dim,
+			indexType, nlist, nprobe, m, nbits, sqType,
+		)
+	}
+	if err != nil {
 		return 0, err
 	}
 	p.segMu.Lock()
 	p.segments[segmentID] = append([]string(nil), objectIDs...)
 	p.segMu.Unlock()
-	// Warm segment: run dummy queries to pre-fault HNSW graph into memory.
-	if err := warmupSegment(segmentID, dim, 10); err != nil {
-		log.Printf("[dataplane] warmup warning: %v", err)
-	}
 	return len(vectors), nil
 }
 

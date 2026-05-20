@@ -1,4 +1,4 @@
-.PHONY: dev build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
+.PHONY: dev dev-with-s3 minio-start minio-stop build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -23,6 +23,44 @@ else ifeq ($(shell [ -f $(CPP_LIB_SO) ] && echo yes),yes)
   RETRIEVAL_TAG := -tags retrieval
   CGO_LDFLAGS := -L$(shell pwd)/cpp/build -lplasmod_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
 endif
+
+# ── MinIO (local S3) ──────────────────────────────────────────────────────────
+# Starts a local MinIO instance in the background.
+# Requires: brew install minio minio-mc
+# Bucket plasmod-experiments is auto-created on first run.
+MINIO_DATA_DIR ?= /tmp/minio-data
+MINIO_PID_FILE ?= /tmp/minio.pid
+
+minio-start:
+	@mkdir -p $(MINIO_DATA_DIR)
+	@if curl -s http://127.0.0.1:9000/minio/health/live > /dev/null 2>&1; then \
+		echo "MinIO already running at http://127.0.0.1:9000 (API) / http://127.0.0.1:9001 (Console)"; \
+	else \
+		echo "Starting MinIO..."; \
+		minio server $(MINIO_DATA_DIR) --address ":9000" --console-address ":9001" >> /tmp/minio.log 2>&1 & \
+		echo $$! > $(MINIO_PID_FILE); \
+		for i in 1 2 3 4 5 6 7 8 9 10; do \
+			sleep 1; \
+			curl -s http://127.0.0.1:9000/minio/health/live > /dev/null 2>&1 && break; \
+		done; \
+		mc alias set myminio http://127.0.0.1:9000 minioadmin minioadmin 2>/dev/null || true; \
+		mc mb myminio/plasmod-experiments 2>/dev/null || true; \
+		echo "MinIO started. API: http://127.0.0.1:9000  Console: http://127.0.0.1:9001"; \
+		echo "Log: /tmp/minio.log"; \
+	fi
+
+minio-stop:
+	@if [ -f $(MINIO_PID_FILE) ]; then \
+		kill $$(cat $(MINIO_PID_FILE)) 2>/dev/null && echo "MinIO stopped." || echo "MinIO not running."; \
+		rm -f $(MINIO_PID_FILE); \
+	else \
+		pkill -f "minio server" 2>/dev/null && echo "MinIO stopped." || echo "MinIO not running."; \
+	fi
+
+# ── Dev ───────────────────────────────────────────────────────────────────────
+dev-with-s3:
+	$(MAKE) minio-start
+	$(MAKE) dev
 
 setup:
 	go mod download

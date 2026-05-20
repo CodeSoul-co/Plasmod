@@ -131,6 +131,17 @@ func (r *Runtime) IngestVectorsToWarmSegment(segmentID string, objectIDs []strin
 	return tp.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
 }
 
+func (r *Runtime) IngestVectorsToWarmSegmentWithType(
+	segmentID string, objectIDs []string, vectors [][]float32,
+	indexType string, nlist, nprobe, m, nbits int, sqType string,
+) (int, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.IngestVectorsToWarmSegmentWithType(segmentID, objectIDs, vectors, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
 func (r *Runtime) UnloadWarmSegment(segmentID string) error {
 	tp, ok := r.plane.(*dataplane.TieredDataPlane)
 	if !ok {
