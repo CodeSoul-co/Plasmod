@@ -158,6 +158,30 @@ class HNSWIndexWrapper {
             // NPROBE = #lists probed at query time (set in Search()).
             int nlist = cfg_.ivf_nlist > 0 ? cfg_.ivf_nlist : 128;
             build_cfg_[knowhere::indexparam::NLIST] = nlist;
+        } else if (index_type_ == "IVF_PQ") {
+            // IVF + Product Quantization: vectors are compressed with PQ.
+            // Build params: nlist (IVF centroids), m (sub-vectors), nbits (bits per subvec).
+            // Search param: nprobe (IVF centroids to probe).
+            // Metric: L2 is recommended for PQ (cosine requires normalized vectors).
+            int nlist = cfg_.ivf_nlist > 0 ? cfg_.ivf_nlist : 128;
+            int m     = cfg_.ivf_pq_m     > 0 ? cfg_.ivf_pq_m     : 16;
+            int nbits = cfg_.ivf_pq_nbits > 0 ? cfg_.ivf_pq_nbits : 8;
+            build_cfg_[knowhere::indexparam::NLIST] = nlist;
+            build_cfg_[knowhere::indexparam::M]     = m;
+            build_cfg_[knowhere::indexparam::NBITS] = nbits;
+            // PQ is lossy: prefer L2 metric unless vectors are pre-normalized.
+            if (metric == "IP" || metric == "COSINE") {
+                build_cfg_[knowhere::meta::METRIC_TYPE] = std::string("L2");
+            }
+        } else if (index_type_ == "IVF_SQ8") {
+            // IVF + Scalar Quantization (8-bit): vectors stored as INT8.
+            // Build params: nlist (IVF centroids), sq_type (INT8 or FP32).
+            // Search param: nprobe.
+            // sq_type "INT8" = lossy 8-bit compression; "FP32" = no compression (like IVF_FLAT).
+            int nlist = cfg_.ivf_nlist > 0 ? cfg_.ivf_nlist : 128;
+            build_cfg_[knowhere::indexparam::NLIST] = nlist;
+            std::string sq_type = cfg_.ivf_sq_type.empty() ? "INT8" : cfg_.ivf_sq_type;
+            build_cfg_[knowhere::indexparam::SQ_TYPE] = sq_type;
         } else if (index_type_ == "DISKANN") {
             // DiskANN is on-disk: it owns a graph file + PQ shards + metadata
             // at `index_prefix` and reads the raw vectors from `data_path`
@@ -214,7 +238,8 @@ class HNSWIndexWrapper {
         } else {
             // Unknown index type — reject early with a clear log line.
             std::fprintf(stderr,
-                "plasmod: unsupported dense index_type=%s (HNSW|IVF_FLAT|DISKANN)\n",
+                "plasmod: unsupported dense index_type=%s "
+                "(HNSW|IVF_FLAT|IVF_PQ|IVF_SQ8|DISKANN)\n",
                 index_type_.c_str());
             return false;
         }
@@ -333,6 +358,8 @@ class HNSWIndexWrapper {
             if (index_type_ == "HNSW") {
                 tls_cfg[knowhere::indexparam::M]             = build_cfg_[knowhere::indexparam::M];
                 tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = build_cfg_[knowhere::indexparam::EFCONSTRUCTION];
+            } else if (index_type_ == "IVF_SQ8") {
+                tls_cfg[knowhere::indexparam::SQ_TYPE] = build_cfg_[knowhere::indexparam::SQ_TYPE];
             }
             tls_cfg_static_init = true;
         }
@@ -340,8 +367,11 @@ class HNSWIndexWrapper {
         tls_cfg[knowhere::meta::TOPK]         = topk;
         if (index_type_ == "HNSW") {
             tls_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kDefaultEfSearch);
-        } else if (index_type_ == "IVF_FLAT") {
-            int nprobe = cfg_.ivf_nprobe > 0 ? cfg_.ivf_nprobe : 8;
+        } else if (index_type_ == "IVF_FLAT" ||
+                   index_type_ == "IVF_PQ"    ||
+                   index_type_ == "IVF_SQ8") {
+            // NPROBE applies to all IVF-based index types.
+            int nprobe = cfg_.ivf_nprobe > 0 ? cfg_.ivf_nprobe : 32;
             tls_cfg[knowhere::indexparam::NPROBE] = nprobe;
         } else if (index_type_ == "DISKANN") {
             // search_list_size must be >= topk per DiskANN's own check.
@@ -383,7 +413,7 @@ class HNSWIndexWrapper {
 
   private:
     IndexConfig cfg_;
-    std::string index_type_; // "HNSW" | "IVF_FLAT" | "DISKANN"
+    std::string index_type_; // "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN"
     int         dim_         = 0;
     int64_t     num_vectors_ = 0;
     knowhere::Json  build_cfg_;

@@ -39,6 +39,7 @@ const (
 	magicQueryWarmBatch = "PLQB"
 	wireVersion         = byte(1)
 	wireVersion2        = byte(2)
+	wireVersion3        = byte(3)  // adds index_type field to ingest
 
 	maxBatchVectors = 1 << 22 // 4M vectors / request
 	maxDim          = 1 << 14 // 16384
@@ -52,6 +53,13 @@ type IngestBatch struct {
 	Dim       int
 	ObjectIDs []string
 	Vectors   [][]float32
+	IndexType string  // ANN index type: "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN"
+	// IVF build parameters (used when IndexType is an IVF variant)
+	IVFNlist   int    // IVF nlist (0 = use default 128)
+	IVFNprobe  int    // IVF nprobe (0 = use default 32)
+	IVFM       int    // IVF_PQ sub-vectors (0 = use default 16)
+	IVFNbits   int    // IVF_PQ bits/subvec (0 = use default 8)
+	IVFSqType  string // IVF_SQ8 sq type ("INT8" or "FP32")
 }
 
 // QueryWarm is the decoded payload of a query_warm binary request.
@@ -105,7 +113,10 @@ func readString(r io.Reader, n int) (string, error) {
 }
 
 // DecodeIngestBatch reads a binary IngestBatch request from r.
-// Supports wire version 1 (all vectors = indexed) and version 2 (indexed_count field).
+// Supports wire versions:
+//   1: legacy (indexed_count field in header)
+//   2: benchmark format
+//   3: + index_type field for configurable ANN index type
 func DecodeIngestBatch(r io.Reader) (*IngestBatch, error) {
 	var hdr [5]byte
 	if err := readExact(r, hdr[:]); err != nil {
@@ -115,7 +126,7 @@ func DecodeIngestBatch(r io.Reader) (*IngestBatch, error) {
 		return nil, errors.New("invalid magic for ingest_batch")
 	}
 	ver := hdr[4]
-	if ver != wireVersion && ver != wireVersion2 {
+	if ver != wireVersion && ver != wireVersion2 && ver != wireVersion3 {
 		return nil, fmt.Errorf("unsupported wire version %d", ver)
 	}
 
@@ -180,12 +191,81 @@ func DecodeIngestBatch(r io.Reader) (*IngestBatch, error) {
 		ids[i] = s
 	}
 
+	// Wire version 3 adds index_type + IVF build params:
+	//   [index_type_len(u32)][index_type_bytes]
+	//   [nlist(i32)][nprobe(i32)][m(i32)][nbits(i32)]
+	//   [sq_type_len(u32)][sq_type_bytes]
+	var indexType string
+	var nlist, nprobe, m, nbits int
+	var sqType string
+	if ver >= wireVersion3 {
+		itLenBuf, err := readU32Bytes(r)
+		if err != nil {
+			return nil, fmt.Errorf("read index_type_len: %w", err)
+		}
+		if itLen := binary.LittleEndian.Uint32(itLenBuf[:]); itLen > 0 {
+			itBuf, err := readExactN(r, int(itLen))
+			if err != nil {
+				return nil, fmt.Errorf("read index_type: %w", err)
+			}
+			indexType = string(itBuf)
+		}
+		// IVF build params (all int32)
+		for _, dst := range []*int{&nlist, &nprobe, &m, &nbits} {
+			var b [4]byte
+			if err := readExact(r, b[:]); err != nil {
+				return nil, fmt.Errorf("read ivf param: %w", err)
+			}
+			*dst = int(binary.LittleEndian.Uint32(b[:]))
+		}
+		// sq_type string (len+bytes)
+		sqLenBuf, err := readU32Bytes(r)
+		if err != nil {
+			return nil, fmt.Errorf("read sq_type_len: %w", err)
+		}
+		if sqLen := binary.LittleEndian.Uint32(sqLenBuf[:]); sqLen > 0 {
+			sqBuf, err := readExactN(r, int(sqLen))
+			if err != nil {
+				return nil, fmt.Errorf("read sq_type: %w", err)
+			}
+			sqType = string(sqBuf)
+		}
+	}
+
+
 	return &IngestBatch{
 		SegmentID: segID,
 		Dim:       dim,
 		ObjectIDs: ids,
 		Vectors:   vectors,
+		IndexType: indexType,
+		IVFNlist:  nlist,
+		IVFNprobe: nprobe,
+		IVFM:      m,
+		IVFNbits:  nbits,
+		IVFSqType: sqType,
 	}, nil
+}
+
+// readU32Bytes reads 4 bytes into a [4]byte and returns it.
+func readU32Bytes(r io.Reader) ([4]byte, error) {
+	var b [4]byte
+	if err := readExact(r, b[:]); err != nil {
+		return b, err
+	}
+	return b, nil
+}
+
+// readExactN reads exactly n bytes from r.
+func readExactN(r io.Reader, n int) ([]byte, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	b := make([]byte, n)
+	if err := readExact(r, b); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // DecodeQueryWarm reads a binary QueryWarm request from r.
@@ -197,7 +277,7 @@ func DecodeQueryWarm(r io.Reader) (*QueryWarm, error) {
 	if string(hdr[:4]) != magicQueryWarm {
 		return nil, errors.New("invalid magic for query_warm")
 	}
-	if hdr[4] != wireVersion {
+	if hdr[4] != wireVersion && hdr[4] != wireVersion2 && hdr[4] != wireVersion3 {
 		return nil, fmt.Errorf("unsupported wire version %d", hdr[4])
 	}
 
@@ -279,7 +359,7 @@ func DecodeQueryWarmBatch(r io.Reader) (*QueryWarmBatch, error) {
 	if string(hdr[:4]) != magicQueryWarmBatch {
 		return nil, errors.New("invalid magic for batch query_warm")
 	}
-	if hdr[4] != wireVersion {
+	if hdr[4] != wireVersion && hdr[4] != wireVersion2 && hdr[4] != wireVersion3 {
 		return nil, fmt.Errorf("unsupported wire version %d", hdr[4])
 	}
 

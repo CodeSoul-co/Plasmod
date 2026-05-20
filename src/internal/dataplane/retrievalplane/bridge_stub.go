@@ -67,6 +67,14 @@ func (s *SegmentRetriever) BuildSegment(_ string, _ []float32, _, _ int) error {
 	return ErrRetrievalNotAvailable
 }
 
+// BuildSegmentWithType is a no-op stub.
+func (s *SegmentRetriever) BuildSegmentWithType(
+	_ string, _ []float32, _, _ int,
+	_ string, _, _, _, _ int, _ string,
+) error {
+	return ErrRetrievalNotAvailable
+}
+
 // Search returns ErrRetrievalNotAvailable.
 func (s *SegmentRetriever) Search(_ string, _ []float32, _, _ int) ([]int64, []float32, error) {
 	return nil, nil, ErrRetrievalNotAvailable

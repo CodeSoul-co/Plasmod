@@ -67,3 +67,6 @@ import_dataset.py
 benchmark
 server
 TEST/
+
+# process
+plasmod_test_env/
