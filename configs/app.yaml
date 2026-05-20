@@ -1,4 +1,10 @@
 app:
   name: andb
   env: dev
+  # dev unified listen (PLASMOD_LISTEN_MODE=unified)
   http_addr: 127.0.0.1:8080
+  # split (PLASMOD_LISTEN_MODE=split)
+  mgmt_addr: 0.0.0.0:9101
+  api_addr: 0.0.0.0:19540
+  s3_host_port: 127.0.0.1:9010
+  s3_console_port: 127.0.0.1:9011

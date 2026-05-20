@@ -369,8 +369,14 @@ func (g *Gateway) Shutdown() {
 	close(g.stopCh)
 }
 
+// RegisterRoutes mounts management and API routes (dev unified listener).
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
-	// System
+	g.RegisterMgmtRoutes(mux)
+	g.RegisterAPIRoutes(mux)
+}
+
+// RegisterMgmtRoutes mounts health and admin/observability endpoints (split mode → PortMgmt).
+func (g *Gateway) RegisterMgmtRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -392,10 +398,18 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/rollback", g.handleAdminRollback)
 	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
 	mux.HandleFunc("/v1/admin/replay", g.handleAdminReplay)
+	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
+	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
+	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
+	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminAlgorithmProfileMode)
+	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminAlgorithmProfileHealth)
 	if isTestMode() {
 		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
 	}
+}
 
+// RegisterAPIRoutes mounts SDK/data-plane HTTP endpoints (split mode → PortAPI).
+func (g *Gateway) RegisterAPIRoutes(mux *http.ServeMux) {
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
 	mux.HandleFunc("/v1/ingest/vectors", g.handleIngestVectors)
@@ -428,13 +442,6 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
 	mux.HandleFunc("/v1/internal/memory/stale", g.handleMemoryMarkStale)
 	mux.HandleFunc("/v1/internal/memory/conflict/inject", g.handleMemoryConflictInject)
-
-	// Observability
-	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
-	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
-	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
-	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminAlgorithmProfileMode)
-	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminAlgorithmProfileHealth)
 
 	// Task lifecycle (3-MT1~MT7, 4-M6)
 	mux.HandleFunc("/v1/internal/task/start", g.handleTaskStart)

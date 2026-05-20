@@ -10,13 +10,19 @@ Detailed endpoint behavior is documented in:
 - `docs/api/ingest.md`
 - `docs/api/query.md`
 
-## Current Base Address
+## Plasmod ports (gRPC deferred)
 
-By default the server listens on:
+Constants: `src/internal/app/ports.go` (`PortDevUnified`, `PortMgmt`, `PortAPI`, `PortObjectStore`, …).
 
-`http://127.0.0.1:8080`
+| Role | Port | Env / notes |
+|------|------|-------------|
+| Dev unified (SDK + admin) | **8080** | `PLASMOD_LISTEN_MODE=unified`, `PLASMOD_HTTP_ADDR` (default `127.0.0.1:8080`) |
+| Mgmt / health / metrics | **9101** | `PLASMOD_LISTEN_MODE=split`, `PLASMOD_MGMT_ADDR` |
+| SDK REST API | **19540** | `PLASMOD_LISTEN_MODE=split`, `PLASMOD_API_ADDR`; pyplasmod `PLASMOD_URI` |
+| Object store S3 API (host) | **9010** | `docker compose` maps `9010:9000`; in-cluster `S3_ENDPOINT=minio:9000` |
+| Object store console (host) | **9011** | maps `9011:9001` |
 
-This can be overridden with the `ANDB_HTTP_ADDR` environment variable.
+`make dev` uses **unified :8080**. `docker compose` uses **split** (:9101 + :19540) and object storage on host **:9010/:9011**.
 
 ## Endpoint groups
 

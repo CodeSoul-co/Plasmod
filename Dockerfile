@@ -107,7 +107,9 @@ RUN ldconfig
 
 COPY --from=builder /src/bin/plasmod-server /usr/local/bin/plasmod-server
 
-ENV ANDB_HTTP_ADDR=0.0.0.0:8080
-EXPOSE 8080
+ENV PLASMOD_LISTEN_MODE=split
+ENV PLASMOD_MGMT_ADDR=0.0.0.0:9101
+ENV PLASMOD_API_ADDR=0.0.0.0:19540
+EXPOSE 9101 19540
 
 ENTRYPOINT ["/usr/local/bin/plasmod-server"]

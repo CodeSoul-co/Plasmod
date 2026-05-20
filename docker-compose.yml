@@ -1,19 +1,16 @@
-# Full stack for Member A E2E: ANDB + MinIO (S3 cold tier).
+# Full stack for Member A E2E: Plasmod + MinIO (S3 cold tier).
+# Plasmod split ports (see src/internal/app/ports.go):
+#   mgmt/health/metrics  9101
+#   SDK REST API         19540
+#   object store S3      9010  (host → container 9000)
+#   object store console 9011  (host → container 9001)
+# Dev unified (make dev): http://127.0.0.1:8080 only — not started by this compose file.
+#
 # From repo root:
 #   docker compose up -d
-# Server: http://127.0.0.1:8080  MinIO API: http://127.0.0.1:9000  Console: http://127.0.0.1:9001
 #
-# Intranet mirror support:
-# - Put build args in repo-root `.env` to avoid public internet pulls, e.g.
-#     BASE_REGISTRY=registry.company.local/library/
-#     APT_MIRROR=http://apt-mirror.company.local/debian
-#     GO_LLAMACPP_REPO=https://git.company.local/mirror/go-llama.cpp.git
-#     GOPROXY=https://goproxy.company.local,direct
-#     GOSUMDB=off
-# - Keep these empty to use upstream defaults.
-#
-# Run capture script against the composed server (after `pip install -r requirements.txt`):
-#   PLASMOD_BASE_URL=http://127.0.0.1:8080 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
+# Run capture script against the composed API port:
+#   PLASMOD_BASE_URL=http://127.0.0.1:19540 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
 
 services:
   minio:
@@ -23,8 +20,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9010:9000"
+      - "9011:9001"
     volumes:
       - minio_data:/data
 
@@ -61,15 +58,16 @@ services:
     volumes:
       - plasmod_data:/data
     ports:
-      - "8080:8080"
+      - "9101:9101"
+      - "19540:19540"
     environment:
-      PLASMOD_HTTP_ADDR: 0.0.0.0:8080
+      PLASMOD_LISTEN_MODE: split
+      PLASMOD_MGMT_ADDR: 0.0.0.0:9101
+      PLASMOD_API_ADDR: 0.0.0.0:19540
       APP_MODE: ${APP_MODE:-prod}
       ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER: "true"
       PLASMOD_STORAGE: disk
       PLASMOD_DATA_DIR: /data
-      # CPU-safe defaults for Member A baseline stack.
-      # Override via env when validating GPU paths (e.g. PLASMOD_EMBEDDER=onnx, PLASMOD_EMBEDDER_DEVICE=cuda).
       PLASMOD_EMBEDDER: ${PLASMOD_EMBEDDER:-tfidf}
       PLASMOD_EMBEDDER_DEVICE: ${PLASMOD_EMBEDDER_DEVICE:-cpu}
       S3_ENDPOINT: minio:9000
@@ -80,7 +78,7 @@ services:
       S3_REGION: us-east-1
       S3_PREFIX: plasmod/docker
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9101/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10

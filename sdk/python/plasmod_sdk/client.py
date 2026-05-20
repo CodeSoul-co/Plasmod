@@ -14,11 +14,19 @@ class PlasmodClient:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:8080",
+        base_url: Optional[str] = None,
         timeout: Optional[float] = None,
     ):
+        # Dev unified :8080; split/deploy SDK API :19540 (PLASMOD PortAPI).
+        if base_url is None:
+            base_url = os.environ.get(
+                "PLASMOD_URI",
+                os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080"),
+            )
         self.base_url = base_url.rstrip("/")
-        self._timeout = timeout or float(os.environ.get("ANDB_HTTP_TIMEOUT", "10"))
+        self._timeout = timeout or float(
+            os.environ.get("PLASMOD_HTTP_TIMEOUT", os.environ.get("ANDB_HTTP_TIMEOUT", "10"))
+        )
 
     # ── Ingest ────────────────────────────────────────────────────────────────
 

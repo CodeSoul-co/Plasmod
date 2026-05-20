@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	srv, shutdown, err := app.BuildServer()
+	servers, shutdown, err := app.BuildServer()
 	if err != nil {
 		log.Fatalf("build server failed: %v", err)
 	}
@@ -16,8 +16,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("Plasmod server listen on %s", srv.Addr)
-	if err := srv.ListenAndServe(); err != nil {
+	if err := app.RunServers(servers); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
 }

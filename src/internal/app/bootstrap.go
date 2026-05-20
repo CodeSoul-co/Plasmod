@@ -37,16 +37,19 @@ import (
 )
 
 // BuildServer constructs and wires all Plasmod server components.
-// Returns the HTTP server, a cleanup function, and any build error.
-// The cleanup function must be called when the server is shutting down;
-// it cancels the background worker contexts (EventSubscriber, Orchestrator).
+// Returns one or more HTTP servers (unified dev :8080, or split mgmt :9101 + api :19540),
+// a cleanup function, and any build error.
+//
+// Listen modes (see ports.go):
+//   - PLASMOD_LISTEN_MODE=unified (default): PLASMOD_HTTP_ADDR → 127.0.0.1:8080
+//   - PLASMOD_LISTEN_MODE=split: PLASMOD_MGMT_ADDR → :9101, PLASMOD_API_ADDR → :19540
 //
 // Usage:
 //
-//	srv, cleanup, err := app.BuildServer()
+//	servers, cleanup, err := app.BuildServer()
 //	if err != nil { ... }
 //	defer cleanup()
-//	if err := srv.ListenAndServe(); err != nil { ... }
+//	app.RunServers(servers)
 
 // parseHTTPDuration reads a time.ParseDuration value from env.
 // Empty env yields defaultVal. "0", "none", or "off" mean no timeout (0).
@@ -66,11 +69,8 @@ func parseHTTPDuration(envKey string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
-func BuildServer() (*http.Server, func() error, error) {
-	addr := os.Getenv("PLASMOD_HTTP_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:8080"
-	}
+func BuildServer() ([]*http.Server, func() error, error) {
+	listenCfg := ResolveListenConfig()
 
 	// ── Vector-only mode (Baseline 1) ────────────────────────────────────────
 	// When PLASMOD_VECTOR_ONLY_MODE=true, disable graph expansion, policy
@@ -598,44 +598,78 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
 	gateway := access.NewGateway(coord, runtime, store, storageCfg, bundle)
-	gatewayMux := http.NewServeMux()
-	gateway.RegisterRoutes(gatewayMux)
-	wrapped := access.WrapVisibility(access.WrapAdminAuth(gatewayMux))
-
-	// Internal high-throughput transport: binary batch ingest/query and
-	// SSE WAL streaming.  Mounted on the root mux so the visibility wrapper
-	// (which buffers full responses) does not interfere with streaming or
-	// binary payloads.
-	mux := http.NewServeMux()
-	transport.NewServer(runtime, wal, bus).RegisterRoutes(mux)
-	mux.Handle("/", wrapped)
-	handler := mux
-
-	// shutdown bundles context cancellation (subscriber/orchestrator) and
-	// Badger close (storage cleanup) into one cleanup function.
-	shutdown := func() error {
-		cancel()
-		return bundle.Close()
-	}
-
-	// Large ingest bodies (JSON documents, embeddings) often exceed defaults
-	// used by net/http (ReadTimeout applies to the entire request body).
-	// PLASMOD_HTTP_READ_TIMEOUT / PLASMOD_HTTP_WRITE_TIMEOUT default to 0 (no limit).
 	readTO := parseHTTPDuration("PLASMOD_HTTP_READ_TIMEOUT", 0)
 	writeTO := parseHTTPDuration("PLASMOD_HTTP_WRITE_TIMEOUT", 0)
 	idleTO := parseHTTPDuration("PLASMOD_HTTP_IDLE_TIMEOUT", 120*time.Second)
 	readHdrTO := parseHTTPDuration("PLASMOD_HTTP_READ_HEADER_TIMEOUT", 10*time.Second)
+	log.Printf("[bootstrap] listen mode=%s addrs=%s", listenCfg.Mode, listenCfg.FormatListenAddrs())
 	log.Printf("[bootstrap] http.Server timeouts read=%v write=%v idle=%v read_header=%v",
 		readTO, writeTO, idleTO, readHdrTO)
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadTimeout:       readTO,
-		ReadHeaderTimeout: readHdrTO,
-		WriteTimeout:      writeTO,
-		IdleTimeout:       idleTO,
-		MaxHeaderBytes:    1 << 20, // 1 MB
+	newHTTPServer := func(addr string, handler http.Handler) *http.Server {
+		return &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadTimeout:       readTO,
+			ReadHeaderTimeout: readHdrTO,
+			WriteTimeout:      writeTO,
+			IdleTimeout:       idleTO,
+			MaxHeaderBytes:    1 << 20,
+		}
 	}
-	return srv, shutdown, nil
+
+	buildAPIHandler := func() http.Handler {
+		apiMux := http.NewServeMux()
+		gateway.RegisterAPIRoutes(apiMux)
+		wrappedAPI := access.WrapVisibility(apiMux)
+		root := http.NewServeMux()
+		transport.NewServer(runtime, wal, bus).RegisterRoutes(root)
+		root.Handle("/", wrappedAPI)
+		return root
+	}
+
+	var servers []*http.Server
+	switch listenCfg.Mode {
+	case ListenModeSplit:
+		mgmtMux := http.NewServeMux()
+		gateway.RegisterMgmtRoutes(mgmtMux)
+		servers = append(servers,
+			newHTTPServer(listenCfg.MgmtAddr, access.WrapAdminAuth(mgmtMux)),
+			newHTTPServer(listenCfg.APIAddr, buildAPIHandler()),
+		)
+	default:
+		gatewayMux := http.NewServeMux()
+		gateway.RegisterRoutes(gatewayMux)
+		wrapped := access.WrapVisibility(access.WrapAdminAuth(gatewayMux))
+		root := http.NewServeMux()
+		transport.NewServer(runtime, wal, bus).RegisterRoutes(root)
+		root.Handle("/", wrapped)
+		servers = append(servers, newHTTPServer(listenCfg.UnifiedAddr, root))
+	}
+
+	shutdown := func() error {
+		cancel()
+		return bundle.Close()
+	}
+	return servers, shutdown, nil
+}
+
+// RunServers starts all HTTP listeners; blocks until one returns a non-ErrServerClosed error.
+func RunServers(servers []*http.Server) error {
+	if len(servers) == 0 {
+		return fmt.Errorf("no http servers to run")
+	}
+	errCh := make(chan error, len(servers))
+	for _, srv := range servers {
+		s := srv
+		go func() {
+			log.Printf("Plasmod server listen on %s", s.Addr)
+			errCh <- s.ListenAndServe()
+		}()
+	}
+	err := <-errCh
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }
