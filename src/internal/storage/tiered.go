@@ -1,12 +1,7 @@
 package storage
 
 import (
-	"hash/fnv"
-	"math"
-	"os"
-	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,215 +47,13 @@ type HotEntry struct {
 	AccessCount   int
 	LastAccess    time.Time
 	InsertedAt    time.Time
-	EstimatedSize float64
-	WriteBackCost float64
-	ReloadEase    float64
-	Dirty         bool
-	Pinned        bool
-	HitProb       float64
-	Protected     bool
-	Tier          string
-	CoolingSince  time.Time
-	AccessHistory []time.Time
 }
 
-type HotPointerPayload struct {
-	ObjectID    string
-	ObjectType  string
-	PointerType string
-	Locator     string
-}
-
-type physicalLocator struct {
-	Tier   string
-	Store  string
-	Bucket string
-	Key    string
-	ID     string
-	Offset int64
-	Length int64
-	Page   int64
-}
-
-type HotCachePolicy struct {
-	HighWatermarkPercent float64
-	LowWatermarkPercent  float64
-	EvictionBatchSize    int
-
-	Wr, Wf, Ws float64
-	Lambda     float64
-
-	AlphaSize     float64
-	BetaWriteBack float64
-	GammaHitProb  float64
-	DeltaReload   float64
-
-	FrequencyNormWindow int
-	RecencyTauSeconds   float64
-	RecencyTauByType    map[string]float64
-	HitProbEWMAAlpha    float64
-	EstimatedPoolBytes  float64
-
-	ObjectTypeWeight     map[string]float64
-	ReloadEaseByType     map[string]float64
-	ReloadEaseEWMAAlpha  float64
-	WriteBackByType      map[string]float64
-	ProtectedRatio       float64
-	CoolingTTLSeconds    float64
-	FixedPoolRatio       float64
-	FixedStrict          bool
-	HotPoolRatio         float64
-	CoolingPoolRatio     float64
-	FreePoolRatio        float64
-	MaxFlushRetries      int
-	LRUKValue            int
-	DirtyJournalPath     string
-	LocatorBlockSize     int64
-	SemanticKeywordBoost map[string]float64
-	GraphSemanticEnabled bool
-	WSourceEvents        float64
-	WPolicyTags          float64
-	WImportance          float64
-	WConfidence          float64
-	WOutDegree           float64
-	WInDegree            float64
-	NormalizeByMaxEdges  float64
-	ForceClass1Keywords  []string
-	ForceClass2Keywords  []string
-	ForceClass3Keywords  []string
-	FixedTypes           []string
-	FixedKeywords        []string
-	ForceClassByType     map[string]int
-	MemoryLifecycleClass map[string]int
-	Class1Types          []string
-	Class2Types          []string
-	Class3Types          []string
-}
-
-func defaultHotCachePolicy() HotCachePolicy {
-	return HotCachePolicy{
-		HighWatermarkPercent: 0.80,
-		LowWatermarkPercent:  0.60,
-		EvictionBatchSize:    16,
-		Wr:                   0.25,
-		Wf:                   0.20,
-		Ws:                   0.55,
-		Lambda:               0.80,
-		AlphaSize:            0.45,
-		BetaWriteBack:        0.20,
-		GammaHitProb:         0.25,
-		DeltaReload:          0.10,
-		FrequencyNormWindow:  16,
-		RecencyTauSeconds:    120.0,
-		RecencyTauByType: map[string]float64{
-			"memory":   180.0,
-			"state":    120.0,
-			"artifact": 90.0,
-		},
-		HitProbEWMAAlpha:   0.35,
-		EstimatedPoolBytes: 256 * 1024 * 1024,
-		ObjectTypeWeight: map[string]float64{
-			"memory":   0.95,
-			"state":    0.85,
-			"artifact": 0.70,
-		},
-		ReloadEaseByType: map[string]float64{
-			"memory":   0.30,
-			"state":    0.50,
-			"artifact": 0.70,
-		},
-		ReloadEaseEWMAAlpha: 0.20,
-		WriteBackByType: map[string]float64{
-			"memory":   0.40,
-			"state":    0.60,
-			"artifact": 0.50,
-		},
-		ProtectedRatio:    0.5,
-		CoolingTTLSeconds: 60,
-		FixedPoolRatio:    0.20,
-		FixedStrict:       false,
-		HotPoolRatio:      0.45,
-		CoolingPoolRatio:  0.20,
-		FreePoolRatio:     0.15,
-		MaxFlushRetries:   3,
-		LRUKValue:         2,
-		DirtyJournalPath:  ".andb_data/hot_dirty_journal.log",
-		LocatorBlockSize:  4096,
-		SemanticKeywordBoost: map[string]float64{
-			"core_fact":    0.20,
-			"evidence":     0.15,
-			"summary":      0.10,
-			"final":        0.10,
-			"temporary":    -0.10,
-			"retry":        -0.10,
-			"intermediate": -0.08,
-		},
-		GraphSemanticEnabled: true,
-		WSourceEvents:        0.45,
-		WPolicyTags:          0.25,
-		WImportance:          0.15,
-		WConfidence:          0.15,
-		WOutDegree:           0.10,
-		WInDegree:            0.10,
-		NormalizeByMaxEdges:  8.0,
-		ForceClass1Keywords:  []string{"core_fact", "critical", "must_keep"},
-		ForceClass2Keywords:  []string{"thinking", "reasoning", "payload"},
-		ForceClass3Keywords:  []string{"archived", "deleted", "obsolete"},
-		FixedTypes:           []string{"index_node", "operator", "metadata_index"},
-		FixedKeywords:        []string{"fixed", "always_on", "index"},
-		ForceClassByType: map[string]int{
-			"memory":   1,
-			"state":    1,
-			"artifact": 2,
-		},
-		MemoryLifecycleClass: map[string]int{
-			"active":      1,
-			"reinforced":  1,
-			"compressed":  2,
-			"stale":       2,
-			"archived":    3,
-			"deleted":     3,
-			"quarantined": 3,
-		},
-		Class1Types: []string{"memory", "state"},
-		Class2Types: []string{"artifact"},
-		Class3Types: []string{},
-	}
-}
-
-// hotness returns a configurable score used for eviction.
-// Higher score = keep in hot tier longer.
-func (e *HotEntry) hotness(policy HotCachePolicy) float64 {
-	tau := policy.RecencyTauSeconds
-	if byType, ok := policy.RecencyTauByType[e.ObjectType]; ok && byType > 0 {
-		tau = byType
-	}
-	if tau <= 0 {
-		tau = 120
-	}
-	if policy.FrequencyNormWindow <= 0 {
-		policy.FrequencyNormWindow = 16
-	}
-	if policy.EstimatedPoolBytes <= 0 {
-		policy.EstimatedPoolBytes = 256 * 1024 * 1024
-	}
-
-	ageSec := math.Max(0, time.Since(e.LastAccess).Seconds())
-	recency := math.Exp(-ageSec / tau)
-	freq := 1.0 - math.Exp(-float64(e.AccessCount)/float64(policy.FrequencyNormWindow))
-	semantic := clamp01(e.SalienceScore)
-
-	sizeNorm := clamp01(e.EstimatedSize / policy.EstimatedPoolBytes)
-	writeBack := clamp01(e.WriteBackCost)
-	hitProb := clamp01(0.6*freq + 0.4*clamp01(e.HitProb))
-	reload := clamp01(e.ReloadEase)
-	penalty := policy.AlphaSize*sizeNorm +
-		policy.BetaWriteBack*writeBack +
-		policy.GammaHitProb*(1.0-hitProb) +
-		policy.DeltaReload*reload
-
-	benefit := policy.Wr*recency + policy.Wf*freq + policy.Ws*semantic
-	return benefit - policy.Lambda*penalty
+// hotness returns a composite score used for LRU/salience eviction.
+// Higher = keep in hot tier longer.
+func (e *HotEntry) hotness() float64 {
+	recency := 1.0 / (float64(time.Since(e.LastAccess).Seconds()) + 1)
+	return e.SalienceScore*0.6 + recency*0.3 + float64(e.AccessCount)*0.001
 }
 
 // HotObjectCache is a bounded in-memory cache for the most activation-critical
@@ -271,23 +64,7 @@ type HotObjectCache struct {
 	entries map[string]*HotEntry
 	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
-	order        []string
-	policy       HotCachePolicy
-	probation    []string
-	protected    []string
-	cooling      []string
-	fixed        []string
-	dirtyQ       []string
-	dirtyRetry   map[string]int
-	flushFn      func(*HotEntry) error
-	currentBytes float64
-	graphEdges   GraphEdgeStore
-}
-
-type HotPutOptions struct {
-	Dirty          bool
-	Pinned         bool
-	PointerLocator string
+	order []string
 }
 
 func NewHotObjectCache(maxSize int) *HotObjectCache {
@@ -295,182 +72,23 @@ func NewHotObjectCache(maxSize int) *HotObjectCache {
 		maxSize = 2000
 	}
 	return &HotObjectCache{
-		entries:    make(map[string]*HotEntry, maxSize),
-		maxSize:    maxSize,
-		order:      make([]string, 0, maxSize),
-		policy:     defaultHotCachePolicy(),
-		probation:  make([]string, 0, maxSize),
-		protected:  make([]string, 0, maxSize),
-		cooling:    make([]string, 0, maxSize),
-		fixed:      make([]string, 0, maxSize),
-		dirtyQ:     make([]string, 0, maxSize),
-		dirtyRetry: map[string]int{},
+		entries: make(map[string]*HotEntry, maxSize),
+		maxSize: maxSize,
+		order:   make([]string, 0, maxSize),
 	}
-}
-
-func (c *HotObjectCache) ConfigurePolicy(p HotCachePolicy) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if p.HighWatermarkPercent <= 0 || p.HighWatermarkPercent > 1 {
-		p.HighWatermarkPercent = c.policy.HighWatermarkPercent
-	}
-	if p.LowWatermarkPercent <= 0 || p.LowWatermarkPercent > p.HighWatermarkPercent {
-		p.LowWatermarkPercent = c.policy.LowWatermarkPercent
-	}
-	if p.EvictionBatchSize <= 0 {
-		p.EvictionBatchSize = c.policy.EvictionBatchSize
-	}
-	if len(p.RecencyTauByType) == 0 {
-		p.RecencyTauByType = c.policy.RecencyTauByType
-	}
-	if len(p.Class1Types) == 0 && len(c.policy.Class1Types) > 0 {
-		p.Class1Types = c.policy.Class1Types
-	}
-	if len(p.Class2Types) == 0 && len(c.policy.Class2Types) > 0 {
-		p.Class2Types = c.policy.Class2Types
-	}
-	if len(p.Class3Types) == 0 && len(c.policy.Class3Types) > 0 {
-		p.Class3Types = c.policy.Class3Types
-	}
-	if p.HitProbEWMAAlpha <= 0 || p.HitProbEWMAAlpha > 1 {
-		p.HitProbEWMAAlpha = c.policy.HitProbEWMAAlpha
-	}
-	if p.ReloadEaseEWMAAlpha <= 0 || p.ReloadEaseEWMAAlpha > 1 {
-		p.ReloadEaseEWMAAlpha = c.policy.ReloadEaseEWMAAlpha
-	}
-	if p.ProtectedRatio <= 0 || p.ProtectedRatio >= 1 {
-		p.ProtectedRatio = c.policy.ProtectedRatio
-	}
-	if p.CoolingTTLSeconds <= 0 {
-		p.CoolingTTLSeconds = c.policy.CoolingTTLSeconds
-	}
-	if p.FixedPoolRatio < 0 || p.FixedPoolRatio >= 1 {
-		p.FixedPoolRatio = c.policy.FixedPoolRatio
-	}
-	if p.HotPoolRatio <= 0 || p.HotPoolRatio >= 1 {
-		p.HotPoolRatio = c.policy.HotPoolRatio
-	}
-	if p.CoolingPoolRatio < 0 || p.CoolingPoolRatio >= 1 {
-		p.CoolingPoolRatio = c.policy.CoolingPoolRatio
-	}
-	if p.FreePoolRatio < 0 || p.FreePoolRatio >= 1 {
-		p.FreePoolRatio = c.policy.FreePoolRatio
-	}
-	if p.MaxFlushRetries <= 0 {
-		p.MaxFlushRetries = c.policy.MaxFlushRetries
-	}
-	if p.LRUKValue <= 1 {
-		p.LRUKValue = c.policy.LRUKValue
-	}
-	if p.LocatorBlockSize <= 0 {
-		p.LocatorBlockSize = c.policy.LocatorBlockSize
-	}
-	if strings.TrimSpace(p.DirtyJournalPath) == "" {
-		p.DirtyJournalPath = c.policy.DirtyJournalPath
-	}
-	if len(p.SemanticKeywordBoost) == 0 {
-		p.SemanticKeywordBoost = c.policy.SemanticKeywordBoost
-	}
-	if len(p.ForceClass1Keywords) == 0 {
-		p.ForceClass1Keywords = c.policy.ForceClass1Keywords
-	}
-	if len(p.ForceClass2Keywords) == 0 {
-		p.ForceClass2Keywords = c.policy.ForceClass2Keywords
-	}
-	if len(p.ForceClass3Keywords) == 0 {
-		p.ForceClass3Keywords = c.policy.ForceClass3Keywords
-	}
-	if len(p.FixedTypes) == 0 {
-		p.FixedTypes = c.policy.FixedTypes
-	}
-	if len(p.FixedKeywords) == 0 {
-		p.FixedKeywords = c.policy.FixedKeywords
-	}
-	if len(p.ForceClassByType) == 0 {
-		p.ForceClassByType = c.policy.ForceClassByType
-	}
-	if len(p.MemoryLifecycleClass) == 0 {
-		p.MemoryLifecycleClass = c.policy.MemoryLifecycleClass
-	}
-	c.policy = p
-}
-
-func (c *HotObjectCache) SetFlushHandler(fn func(*HotEntry) error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.flushFn = fn
-}
-
-func (c *HotObjectCache) SetGraphEdgeStore(store GraphEdgeStore) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.graphEdges = store
 }
 
 // Put inserts or refreshes an object in the hot cache with the given salience.
 func (c *HotObjectCache) Put(objectID, objectType string, payload any, salience float64) {
-	c.PutWithOptions(objectID, objectType, payload, salience, HotPutOptions{})
-}
-
-func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any, salience float64, opts HotPutOptions) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	isFixed := c.isFixedObject(objectType, payload)
-	class := c.pointerClass(objectType, payload)
-	if isFixed {
-		class = 1
-	}
-	if class == 3 {
-		return
-	}
-	if class == 2 {
-		locator := opts.PointerLocator
-		if strings.TrimSpace(locator) == "" {
-			locator = encodeLocator(physicalLocator{
-				Tier:   "warm",
-				Store:  "memstore",
-				ID:     objectID,
-				Offset: 0,
-				Length: int64(estimatePayloadSize(payload)),
-				Page:   0,
-			})
-		}
-		payload = HotPointerPayload{
-			ObjectID:    objectID,
-			ObjectType:  objectType,
-			PointerType: "disk_offset",
-			Locator:     locator,
-		}
-	}
-
 	now := time.Now()
 	if existing, ok := c.entries[objectID]; ok {
-		prevSize := existing.EstimatedSize
 		existing.Payload = payload
-		existing.SalienceScore = c.semanticScore(salience, objectID, objectType, payload)
+		existing.SalienceScore = salience
 		existing.LastAccess = now
 		existing.AccessCount++
-		existing.EstimatedSize = estimatePayloadSize(payload)
-		c.currentBytes += existing.EstimatedSize - prevSize
-		existing.Dirty = existing.Dirty || opts.Dirty
-		existing.Pinned = opts.Pinned
-		existing.WriteBackCost = c.resolveWriteBackCost(objectType, existing.Dirty)
-		existing.ReloadEase = c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
-		existing.HitProb = c.updateEWMA(existing.HitProb, 1.0, c.policy.HitProbEWMAAlpha)
-		existing.AccessHistory = c.appendAccessHistory(existing.AccessHistory, now)
-		if isFixed {
-			existing.Tier = "fixed"
-			existing.CoolingSince = time.Time{}
-			c.removeFromQueue(&c.probation, objectID)
-			c.removeFromQueue(&c.protected, objectID)
-			c.removeFromQueue(&c.cooling, objectID)
-			c.touchFixed(objectID)
-		}
-		if opts.Dirty {
-			c.enqueueDirty(objectID)
-		}
-		c.enforceWatermarkLocked()
 		return
 	}
 
@@ -479,40 +97,16 @@ func (c *HotObjectCache) PutWithOptions(objectID, objectType string, payload any
 		c.evictOne()
 	}
 
-	entryTier := "hot"
-	if isFixed {
-		entryTier = "fixed"
-	}
-	size := estimatePayloadSize(payload)
 	c.entries[objectID] = &HotEntry{
 		ObjectID:      objectID,
 		ObjectType:    objectType,
 		Payload:       payload,
-		SalienceScore: c.semanticScore(salience, objectID, objectType, payload),
+		SalienceScore: salience,
 		AccessCount:   1,
 		LastAccess:    now,
 		InsertedAt:    now,
-		EstimatedSize: size,
-		WriteBackCost: c.resolveWriteBackCost(objectType, opts.Dirty),
-		ReloadEase:    c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5),
-		Dirty:         opts.Dirty,
-		Pinned:        opts.Pinned,
-		HitProb:       0.5,
-		Protected:     false,
-		Tier:          entryTier,
-		AccessHistory: []time.Time{now},
 	}
-	c.currentBytes += size
 	c.order = append(c.order, objectID)
-	if isFixed {
-		c.touchFixed(objectID)
-	} else {
-		c.touchProbation(objectID)
-	}
-	if opts.Dirty {
-		c.enqueueDirty(objectID)
-	}
-	c.enforceWatermarkLocked()
 }
 
 // Get retrieves an entry, bumping its access count.
@@ -521,26 +115,8 @@ func (c *HotObjectCache) Get(objectID string) (*HotEntry, bool) {
 	defer c.mu.Unlock()
 	e, ok := c.entries[objectID]
 	if ok {
-		now := time.Now()
 		e.AccessCount++
-		e.LastAccess = now
-		e.HitProb = c.updateEWMA(e.HitProb, 1.0, c.policy.HitProbEWMAAlpha)
-		e.AccessHistory = c.appendAccessHistory(e.AccessHistory, now)
-		if e.Tier == "cooling" {
-			e.Tier = "hot"
-			e.CoolingSince = time.Time{}
-			e.Protected = true
-			c.removeFromQueue(&c.cooling, objectID)
-			c.moveProbationToProtected(objectID)
-		} else if e.Tier != "fixed" {
-			if !e.Protected {
-				e.Protected = true
-				c.moveProbationToProtected(objectID)
-			} else {
-				c.refreshProtected(objectID)
-			}
-		}
-		c.enforceProtectedRatioLocked()
+		e.LastAccess = time.Now()
 	}
 	return e, ok
 }
@@ -553,16 +129,6 @@ func (c *HotObjectCache) Contains(objectID string) bool {
 	return ok
 }
 
-// SetPinned marks whether an entry is currently write-pinned.
-// Pinned entries are excluded from hot->cooling and cooling->cold eviction paths.
-func (c *HotObjectCache) SetPinned(objectID string, pinned bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if e, ok := c.entries[objectID]; ok && e != nil {
-		e.Pinned = pinned
-	}
-}
-
 // Evict explicitly removes an object from the hot cache.
 func (c *HotObjectCache) Evict(objectID string) {
 	c.mu.Lock()
@@ -570,17 +136,7 @@ func (c *HotObjectCache) Evict(objectID string) {
 	if _, ok := c.entries[objectID]; !ok {
 		return
 	}
-	c.currentBytes -= c.entries[objectID].EstimatedSize
-	if c.currentBytes < 0 {
-		c.currentBytes = 0
-	}
 	delete(c.entries, objectID)
-	c.removeFromQueue(&c.probation, objectID)
-	c.removeFromQueue(&c.protected, objectID)
-	c.removeFromQueue(&c.cooling, objectID)
-	c.removeFromQueue(&c.fixed, objectID)
-	c.removeFromQueue(&c.dirtyQ, objectID)
-	delete(c.dirtyRetry, objectID)
 	for i, id := range c.order {
 		if id == objectID {
 			c.order = append(c.order[:i], c.order[i+1:]...)
@@ -605,13 +161,6 @@ func (c *HotObjectCache) Clear() {
 	defer c.mu.Unlock()
 	c.entries = make(map[string]*HotEntry)
 	c.order = c.order[:0]
-	c.probation = c.probation[:0]
-	c.protected = c.protected[:0]
-	c.cooling = c.cooling[:0]
-	c.fixed = c.fixed[:0]
-	c.dirtyQ = c.dirtyQ[:0]
-	c.dirtyRetry = map[string]int{}
-	c.currentBytes = 0
 }
 
 // evictOne removes the entry with the lowest hotness score.
@@ -621,506 +170,21 @@ func (c *HotObjectCache) evictOne() {
 		return
 	}
 	// scan for lowest hotness
-	candidates := c.probation
-	if len(candidates) == 0 {
-		candidates = c.protected
-	}
-	if len(candidates) == 0 {
-		for _, id := range c.order {
-			if e, ok := c.entries[id]; ok && e != nil && e.Tier == "hot" && !e.Pinned {
-				candidates = append(candidates, id)
-			}
-		}
-	}
-	filtered := candidates[:0]
-	for _, id := range candidates {
-		e := c.entries[id]
-		if e != nil && !e.Pinned {
-			filtered = append(filtered, id)
-		}
-	}
-	candidates = filtered
-	if len(candidates) == 0 {
-		return
-	}
-	worstID := candidates[0]
-	worstScore := c.entries[worstID].hotness(c.policy)
-	for _, id := range candidates[1:] {
-		score := c.entries[id].hotness(c.policy)
-		if score < worstScore ||
-			(score == worstScore && c.lruKAge(c.entries[id]) > c.lruKAge(c.entries[worstID])) ||
-			(score == worstScore && c.lruKAge(c.entries[id]) == c.lruKAge(c.entries[worstID]) && c.entries[id].EstimatedSize > c.entries[worstID].EstimatedSize) {
+	worstID := c.order[0]
+	worstScore := c.entries[worstID].hotness()
+	for _, id := range c.order[1:] {
+		if score := c.entries[id].hotness(); score < worstScore {
 			worstScore = score
 			worstID = id
 		}
 	}
-	blockedByDirty := false
-	if e := c.entries[worstID]; e != nil && e.Dirty {
-		if ok := c.tryFlushDirtyLocked(worstID, e); !ok {
-			blockedByDirty = true
-			// keep dirty entry for retry, try another candidate in this round.
-			for _, id := range candidates {
-				if id == worstID {
-					continue
-				}
-				alt := c.entries[id]
-				if alt == nil {
-					continue
-				}
-				if alt.Dirty && !c.tryFlushDirtyLocked(id, alt) {
-					continue
-				}
-				worstID = id
-				blockedByDirty = false
-				break
-			}
-		}
-	}
-	if blockedByDirty {
-		return
-	}
-	e := c.entries[worstID]
-	if e != nil {
-		e.Tier = "cooling"
-		e.Protected = false
-		e.CoolingSince = time.Now()
-		c.touchCooling(worstID)
-	}
-	c.removeFromQueue(&c.probation, worstID)
-	c.removeFromQueue(&c.protected, worstID)
-}
-
-func (c *HotObjectCache) enqueueDirty(id string) {
-	c.removeFromQueue(&c.dirtyQ, id)
-	c.dirtyQ = append(c.dirtyQ, id)
-	c.appendDirtyJournal("dirty_put id=" + id)
-}
-
-func (c *HotObjectCache) tryFlushDirtyLocked(id string, e *HotEntry) bool {
-	if e == nil || !e.Dirty {
-		return true
-	}
-	if c.flushFn == nil {
-		// no flush handler => degrade to best-effort immediate clean.
-		e.Dirty = false
-		e.WriteBackCost = 0
-		return true
-	}
-	e.Pinned = true
-	defer func() {
-		e.Pinned = false
-	}()
-	if err := c.flushFn(e); err != nil {
-		c.dirtyRetry[id] = c.dirtyRetry[id] + 1
-		c.appendDirtyJournal("dirty_flush_fail id=" + id)
-		if c.dirtyRetry[id] <= c.policy.MaxFlushRetries {
-			return false
-		}
-		// after retry budget, allow eviction to avoid deadlock.
-		return true
-	}
-	e.Dirty = false
-	e.WriteBackCost = 0
-	c.dirtyRetry[id] = 0
-	c.removeFromQueue(&c.dirtyQ, id)
-	c.appendDirtyJournal("dirty_flush_ok id=" + id)
-	return true
-}
-
-func (c *HotObjectCache) lookupByType(m map[string]float64, objectType string, fallback float64) float64 {
-	if len(m) == 0 {
-		return fallback
-	}
-	if v, ok := m[objectType]; ok {
-		return v
-	}
-	return fallback
-}
-
-func (c *HotObjectCache) resolveWriteBackCost(objectType string, dirty bool) float64 {
-	if !dirty {
-		return 0
-	}
-	base := c.lookupByType(c.policy.WriteBackByType, objectType, 0.5)
-	if base < 0.7 {
-		return 0.7
-	}
-	return clamp01(base)
-}
-
-func (c *HotObjectCache) pointerClass(objectType string, payload any) int {
-	if cls, ok := c.policy.ForceClassByType[objectType]; ok && cls >= 1 && cls <= 3 {
-		if mem, okMem := payload.(schemas.Memory); okMem {
-			if byLife, okLife := c.policy.MemoryLifecycleClass[strings.ToLower(strings.TrimSpace(mem.LifecycleState))]; okLife && byLife >= 1 && byLife <= 3 {
-				return byLife
-			}
-		}
-		return cls
-	}
-	text := strings.ToLower(c.extractText(payload))
-	for _, kw := range c.policy.ForceClass3Keywords {
-		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
-			return 3
-		}
-	}
-	for _, kw := range c.policy.ForceClass1Keywords {
-		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
-			return 1
-		}
-	}
-	for _, kw := range c.policy.ForceClass2Keywords {
-		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
-			return 2
-		}
-	}
-	in := func(list []string, typ string) bool {
-		for _, v := range list {
-			if v == typ {
-				return true
-			}
-		}
-		return false
-	}
-	if in(c.policy.Class3Types, objectType) {
-		return 3
-	}
-	if in(c.policy.Class2Types, objectType) {
-		return 2
-	}
-	return 1
-}
-
-func (c *HotObjectCache) semanticScore(base float64, objectID, objectType string, payload any) float64 {
-	score := base * c.lookupByType(c.policy.ObjectTypeWeight, objectType, 1.0)
-	text := strings.ToLower(c.extractText(payload))
-	for kw, boost := range c.policy.SemanticKeywordBoost {
-		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
-			score += boost
-		}
-	}
-	if c.policy.GraphSemanticEnabled {
-		score += c.graphSemanticScore(objectID, payload)
-	}
-	return clamp01(score)
-}
-
-func (c *HotObjectCache) graphSemanticScore(objectID string, payload any) float64 {
-	maxEdges := c.policy.NormalizeByMaxEdges
-	if maxEdges <= 0 {
-		maxEdges = 8
-	}
-	var outDeg, inDeg float64
-	if c.graphEdges != nil && strings.TrimSpace(objectID) != "" {
-		outDeg = float64(len(c.graphEdges.EdgesFrom(objectID)))
-		inDeg = float64(len(c.graphEdges.EdgesTo(objectID)))
-	}
-	switch v := payload.(type) {
-	case schemas.Memory:
-		se := clamp01(float64(len(v.SourceEventIDs)) / maxEdges)
-		pt := clamp01(float64(len(v.PolicyTags)) / maxEdges)
-		imp := clamp01(v.Importance)
-		conf := clamp01(v.Confidence)
-		outNorm := clamp01(outDeg / maxEdges)
-		inNorm := clamp01(inDeg / maxEdges)
-		return c.policy.WSourceEvents*se +
-			c.policy.WPolicyTags*pt +
-			c.policy.WImportance*imp +
-			c.policy.WConfidence*conf +
-			c.policy.WOutDegree*outNorm +
-			c.policy.WInDegree*inNorm
-	default:
-		return 0
-	}
-}
-
-func (c *HotObjectCache) isFixedObject(objectType string, payload any) bool {
-	for _, t := range c.policy.FixedTypes {
-		if objectType == t {
-			return true
-		}
-	}
-	text := strings.ToLower(c.extractText(payload))
-	for _, kw := range c.policy.FixedKeywords {
-		if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *HotObjectCache) extractText(payload any) string {
-	switch v := payload.(type) {
-	case schemas.Memory:
-		return v.Content + " " + v.Summary + " " + v.LifecycleState
-	case schemas.State:
-		return v.StateKey + " " + v.StateValue
-	case schemas.Artifact:
-		return v.ContentRef + " " + v.URI + " " + v.MimeType
-	case HotPointerPayload:
-		return v.Locator + " " + v.PointerType
-	case string:
-		return v
-	default:
-		return ""
-	}
-}
-
-func (c *HotObjectCache) updateEWMA(prev, sample, alpha float64) float64 {
-	if alpha <= 0 || alpha >= 1 {
-		alpha = 0.35
-	}
-	return clamp01(alpha*sample + (1-alpha)*prev)
-}
-
-func (c *HotObjectCache) removeFromQueue(q *[]string, id string) {
-	for i, v := range *q {
-		if v == id {
-			*q = append((*q)[:i], (*q)[i+1:]...)
-			return
-		}
-	}
-}
-
-func (c *HotObjectCache) touchProbation(id string) {
-	c.removeFromQueue(&c.probation, id)
-	c.probation = append(c.probation, id)
-}
-
-func (c *HotObjectCache) touchCooling(id string) {
-	c.removeFromQueue(&c.cooling, id)
-	c.cooling = append(c.cooling, id)
-}
-
-func (c *HotObjectCache) touchFixed(id string) {
-	c.removeFromQueue(&c.fixed, id)
-	c.fixed = append(c.fixed, id)
-}
-
-func (c *HotObjectCache) refreshProtected(id string) {
-	c.removeFromQueue(&c.protected, id)
-	c.protected = append(c.protected, id)
-}
-
-func (c *HotObjectCache) moveProbationToProtected(id string) {
-	c.removeFromQueue(&c.probation, id)
-	c.removeFromQueue(&c.cooling, id)
-	c.refreshProtected(id)
-}
-
-func (c *HotObjectCache) enforceProtectedRatioLocked() {
-	if c.maxSize <= 0 {
-		return
-	}
-	maxProtected := int(float64(c.maxSize) * c.policy.ProtectedRatio)
-	if maxProtected < 1 {
-		maxProtected = 1
-	}
-	for len(c.protected) > maxProtected {
-		demote := c.protected[0]
-		c.protected = c.protected[1:]
-		if e, ok := c.entries[demote]; ok {
-			e.Protected = false
-		}
-		c.touchProbation(demote)
-	}
-}
-
-func (c *HotObjectCache) appendAccessHistory(hist []time.Time, ts time.Time) []time.Time {
-	k := c.policy.LRUKValue
-	if k <= 1 {
-		k = 2
-	}
-	hist = append(hist, ts)
-	if len(hist) > k {
-		hist = hist[len(hist)-k:]
-	}
-	return hist
-}
-
-func (c *HotObjectCache) lruKAge(e *HotEntry) float64 {
-	if e == nil || len(e.AccessHistory) == 0 {
-		return math.MaxFloat64
-	}
-	// K-th recent access age. Older means easier to evict.
-	ref := e.AccessHistory[0]
-	return time.Since(ref).Seconds()
-}
-
-func (c *HotObjectCache) ObserveReloadLatency(objectType string, d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.policy.ReloadEaseByType == nil {
-		c.policy.ReloadEaseByType = map[string]float64{}
-	}
-	sec := d.Seconds()
-	// Easier reload => closer to 1.0; slower reload => closer to 0.0.
-	sampleEase := 1.0 / (1.0 + sec)
-	prev := c.lookupByType(c.policy.ReloadEaseByType, objectType, 0.5)
-	c.policy.ReloadEaseByType[objectType] = c.updateEWMA(prev, sampleEase, c.policy.ReloadEaseEWMAAlpha)
-}
-
-func (c *HotObjectCache) appendDirtyJournal(line string) {
-	path := strings.TrimSpace(c.policy.DirtyJournalPath)
-	if path == "" {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString(line + "\n")
-}
-
-func (c *HotObjectCache) enforceWatermarkLocked() {
-	if c.policy.EstimatedPoolBytes <= 0 {
-		return
-	}
-	c.expireCoolingLocked()
-	totalBudget := c.policy.EstimatedPoolBytes
-	freeBudget := totalBudget * c.policy.FreePoolRatio
-	if freeBudget < 0 {
-		freeBudget = 0
-	}
-	if freeBudget > totalBudget {
-		freeBudget = totalBudget
-	}
-	usableBudget := totalBudget - freeBudget
-	if usableBudget <= 0 {
-		usableBudget = totalBudget
-	}
-	high := usableBudget * c.policy.HighWatermarkPercent
-	low := usableBudget * c.policy.LowWatermarkPercent
-	if high <= 0 {
-		high = usableBudget * 0.8
-	}
-	if low <= 0 || low > high {
-		low = high * 0.75
-	}
-	fixedBudget := usableBudget * c.policy.FixedPoolRatio
-	hotBudget := usableBudget * c.policy.HotPoolRatio
-	coolingBudget := usableBudget * c.policy.CoolingPoolRatio
-	if !c.policy.FixedStrict {
-		for c.bytesInTier("fixed") > fixedBudget && len(c.fixed) > 0 {
-			// fixed pool overflow: demote oldest fixed into hot.
-			id := c.fixed[0]
-			c.fixed = c.fixed[1:]
-			if e := c.entries[id]; e != nil {
-				e.Tier = "hot"
-				e.Protected = false
-				c.touchProbation(id)
-			}
-		}
-	}
-	if c.currentBytes <= high && c.currentBytes <= usableBudget && c.bytesInTier("hot") <= hotBudget && c.bytesInTier("cooling") <= coolingBudget {
-		return
-	}
-	maxEvict := c.policy.EvictionBatchSize
-	if maxEvict <= 0 {
-		maxEvict = len(c.order) + len(c.cooling)
-	}
-	for (c.currentBytes > low || c.currentBytes > usableBudget || c.bytesInTier("hot") > hotBudget || c.bytesInTier("cooling") > coolingBudget) && maxEvict > 0 {
-		c.evictOne()
-		for c.bytesInTier("cooling") > coolingBudget || c.currentBytes > low {
-			if !c.evictCoolingOneLocked() {
-				break
-			}
-		}
-		maxEvict--
-	}
-}
-
-func (c *HotObjectCache) bytesInTier(tier string) float64 {
-	var sum float64
-	for _, e := range c.entries {
-		if e != nil && e.Tier == tier {
-			sum += e.EstimatedSize
-		}
-	}
-	return sum
-}
-
-func (c *HotObjectCache) expireCoolingLocked() {
-	ttl := c.policy.CoolingTTLSeconds
-	if ttl <= 0 {
-		ttl = 60
-	}
-	deadline := time.Duration(ttl * float64(time.Second))
-	now := time.Now()
-	for _, id := range append([]string{}, c.cooling...) {
-		e := c.entries[id]
-		if e == nil || e.Tier != "cooling" {
-			continue
-		}
-		if !e.CoolingSince.IsZero() && now.Sub(e.CoolingSince) >= deadline {
-			if e.Pinned {
-				continue
-			}
-			c.deleteEntryLocked(id)
-		}
-	}
-}
-
-func (c *HotObjectCache) evictCoolingOneLocked() bool {
-	for _, id := range c.cooling {
-		e := c.entries[id]
-		if e == nil || e.Pinned {
-			continue
-		}
-		c.deleteEntryLocked(id)
-		return true
-	}
-	return false
-}
-
-func (c *HotObjectCache) deleteEntryLocked(id string) {
-	e := c.entries[id]
-	if e == nil {
-		return
-	}
-	c.currentBytes -= e.EstimatedSize
-	if c.currentBytes < 0 {
-		c.currentBytes = 0
-	}
-	delete(c.entries, id)
-	c.removeFromQueue(&c.probation, id)
-	c.removeFromQueue(&c.protected, id)
-	c.removeFromQueue(&c.cooling, id)
-	c.removeFromQueue(&c.fixed, id)
-	c.removeFromQueue(&c.dirtyQ, id)
-	delete(c.dirtyRetry, id)
-	for i, oid := range c.order {
-		if oid == id {
+	delete(c.entries, worstID)
+	for i, id := range c.order {
+		if id == worstID {
 			c.order = append(c.order[:i], c.order[i+1:]...)
 			break
 		}
 	}
-}
-
-func estimatePayloadSize(payload any) float64 {
-	switch v := payload.(type) {
-	case schemas.Memory:
-		return float64(len(v.Content)+len(v.Summary)+len(v.MemoryID)) + 128
-	case schemas.State:
-		return float64(len(v.StateID)+len(v.AgentID)+len(v.SessionID)+len(v.StateValue)+len(v.StateKey)) + 128
-	case schemas.Artifact:
-		return float64(len(v.ArtifactID)+len(v.OwnerAgentID)+len(v.ContentRef)+len(v.URI)+len(v.MimeType)+len(v.Hash)) + 128
-	case string:
-		return float64(len(v))
-	default:
-		return 512
-	}
-}
-
-func clamp01(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
 }
 
 // ─── TieredObjectStore ────────────────────────────────────────────────────────
@@ -1245,7 +309,7 @@ func NewTieredObjectStoreWithEmbedder(
 	if cold == nil {
 		cold = NewInMemoryColdStore()
 	}
-	tiered := &TieredObjectStore{
+	return &TieredObjectStore{
 		hot:          hot,
 		warm:         warm,
 		warmEdge:     warmEdge,
@@ -1253,25 +317,6 @@ func NewTieredObjectStoreWithEmbedder(
 		embedder:     embedder,
 		hotThreshold: hotThreshold,
 	}
-	hot.SetGraphEdgeStore(warmEdge)
-	hot.SetFlushHandler(func(e *HotEntry) error {
-		if e == nil || warm == nil {
-			return nil
-		}
-		switch v := e.Payload.(type) {
-		case schemas.Memory:
-			warm.PutMemory(v)
-		case schemas.State:
-			warm.PutState(v)
-		case schemas.Artifact:
-			warm.PutArtifact(v)
-		case HotPointerPayload:
-			// pointer payload has no mutable body to flush
-			return nil
-		}
-		return nil
-	})
-	return tiered
 }
 
 // NewTieredObjectStoreWithThreshold creates a TieredObjectStore with an explicit hot-tier
@@ -1299,38 +344,18 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 		if m, ok := entry.Payload.(schemas.Memory); ok {
 			return m, true
 		}
-		if p, ok := entry.Payload.(HotPointerPayload); ok {
-			if m, ok := t.resolveMemoryByLocator(p, salience); ok {
-				return m, true
-			}
-		}
 	}
 
 	// warm path
 	if m, ok := t.warm.GetMemory(memoryID); ok {
-		t.hot.PutWithOptions(memoryID, "memory", m, salience, HotPutOptions{
-			Dirty: false,
-			PointerLocator: encodeLocator(physicalLocator{
-				Tier:   "warm",
-				Store:  "memstore",
-				ID:     memoryID,
-				Offset: 0,
-				Length: int64(estimatePayloadSize(m)),
-				Page:   0,
-			}),
-		})
+		t.hot.Put(memoryID, "memory", m, salience)
 		return m, true
 	}
 
 	// cold path
-	coldStart := time.Now()
 	if m, ok := t.cold.GetMemory(memoryID); ok {
-		t.hot.ObserveReloadLatency("memory", time.Since(coldStart))
 		t.warm.PutMemory(m)
-		t.hot.PutWithOptions(memoryID, "memory", m, salience*0.5, HotPutOptions{
-			Dirty:          false,
-			PointerLocator: t.buildColdMemoryLocator(memoryID, int64(estimatePayloadSize(m))),
-		})
+		t.hot.Put(memoryID, "memory", m, salience*0.5)
 		_ = t.cold.DeleteMemoryEmbedding(memoryID)
 		return m, true
 	}
@@ -1340,10 +365,6 @@ func (t *TieredObjectStore) GetMemoryActivated(memoryID string, salience float64
 
 // PutMemory writes to warm store and promotes to hot if salience >= threshold.
 func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
-	if t.hot != nil {
-		t.hot.SetPinned(m.MemoryID, true)
-		defer t.hot.SetPinned(m.MemoryID, false)
-	}
 	if t.warm != nil {
 		t.warm.PutMemory(m)
 	}
@@ -1353,179 +374,8 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 		}
 	}
 	if salience >= t.hotThreshold {
-		t.hot.PutWithOptions(m.MemoryID, "memory", m, salience, HotPutOptions{
-			Dirty:  true,
-			Pinned: true,
-			PointerLocator: encodeLocator(physicalLocator{
-				Tier:   "warm",
-				Store:  "memstore",
-				ID:     m.MemoryID,
-				Offset: 0,
-				Length: int64(estimatePayloadSize(m)),
-				Page:   0,
-			}),
-		})
+		t.hot.Put(m.MemoryID, "memory", m, salience)
 	}
-}
-
-func (t *TieredObjectStore) resolveMemoryByLocator(p HotPointerPayload, salience float64) (schemas.Memory, bool) {
-	locator := strings.TrimSpace(p.Locator)
-	if locator == "" {
-		return schemas.Memory{}, false
-	}
-	loc, ok := decodeLocator(locator)
-	if !ok {
-		return schemas.Memory{}, false
-	}
-	objectID := loc.ID
-	switch loc.Tier {
-	case "warm":
-		if m, ok := t.warm.GetMemory(objectID); ok {
-			return m, true
-		}
-	case "cold":
-		start := time.Now()
-		if m, ok := t.cold.GetMemory(objectID); ok {
-			t.hot.ObserveReloadLatency("memory", time.Since(start))
-			if t.warm != nil {
-				t.warm.PutMemory(m)
-			}
-			t.hot.PutWithOptions(objectID, "memory", m, salience, HotPutOptions{
-				Dirty: false,
-				PointerLocator: encodeLocator(physicalLocator{
-					Tier:   "warm",
-					Store:  "memstore",
-					ID:     objectID,
-					Offset: 0,
-					Length: int64(estimatePayloadSize(m)),
-					Page:   0,
-				}),
-			})
-			return m, true
-		}
-	}
-	return schemas.Memory{}, false
-}
-
-func (t *TieredObjectStore) buildColdMemoryLocator(memoryID string, length int64) string {
-	if length < 0 {
-		length = 0
-	}
-	blockSize := int64(4096)
-	if t != nil && t.hot != nil && t.hot.policy.LocatorBlockSize > 0 {
-		blockSize = t.hot.policy.LocatorBlockSize
-	}
-	offset := stableLocatorOffset(memoryID, blockSize)
-	page := int64(0)
-	if blockSize > 0 {
-		page = offset / blockSize
-	}
-	if t == nil || t.cold == nil {
-		return encodeLocator(physicalLocator{Tier: "cold", Store: "unknown", ID: memoryID, Offset: offset, Length: length, Page: page})
-	}
-	switch c := t.cold.(type) {
-	case *S3ColdStore:
-		key := c.memoryKey(memoryID)
-		return encodeLocator(physicalLocator{
-			Tier:   "cold",
-			Store:  "s3",
-			Bucket: c.cfg.Bucket,
-			Key:    key,
-			ID:     memoryID,
-			Offset: offset,
-			Length: length,
-			Page:   page,
-		})
-	case *InMemoryColdStore:
-		return encodeLocator(physicalLocator{
-			Tier:   "cold",
-			Store:  "inmem",
-			Key:    "cold.memory.map",
-			ID:     memoryID,
-			Offset: offset,
-			Length: length,
-			Page:   page,
-		})
-	default:
-		return encodeLocator(physicalLocator{
-			Tier:   "cold",
-			Store:  "generic",
-			ID:     memoryID,
-			Offset: offset,
-			Length: length,
-			Page:   page,
-		})
-	}
-}
-
-func stableLocatorOffset(id string, blockSize int64) int64 {
-	if blockSize <= 0 {
-		blockSize = 4096
-	}
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(id))
-	const spanBlocks int64 = 1 << 20 // bounded pseudo-layout span
-	return int64(h.Sum64()%uint64(spanBlocks)) * blockSize
-}
-
-func encodeLocator(l physicalLocator) string {
-	// v1|tier=<tier>|store=<store>|bucket=<bucket>|key=<key>|id=<id>|offset=<n>|length=<n>|page=<n>
-	return "v1|tier=" + l.Tier +
-		"|store=" + l.Store +
-		"|bucket=" + l.Bucket +
-		"|key=" + l.Key +
-		"|id=" + l.ID +
-		"|offset=" + itoa64(l.Offset) +
-		"|length=" + itoa64(l.Length) +
-		"|page=" + itoa64(l.Page)
-}
-
-func decodeLocator(raw string) (physicalLocator, bool) {
-	parts := strings.Split(raw, "|")
-	if len(parts) < 2 || parts[0] != "v1" {
-		return physicalLocator{}, false
-	}
-	out := physicalLocator{}
-	for _, p := range parts[1:] {
-		kv := strings.SplitN(p, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		switch kv[0] {
-		case "tier":
-			out.Tier = kv[1]
-		case "store":
-			out.Store = kv[1]
-		case "bucket":
-			out.Bucket = kv[1]
-		case "key":
-			out.Key = kv[1]
-		case "id":
-			out.ID = kv[1]
-		case "offset":
-			out.Offset = atoi64(kv[1])
-		case "length":
-			out.Length = atoi64(kv[1])
-		case "page":
-			out.Page = atoi64(kv[1])
-		}
-	}
-	if strings.TrimSpace(out.ID) == "" || strings.TrimSpace(out.Tier) == "" {
-		return physicalLocator{}, false
-	}
-	return out, true
-}
-
-func itoa64(v int64) string {
-	return strconv.FormatInt(v, 10)
-}
-
-func atoi64(s string) int64 {
-	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return n
 }
 
 // ArchiveMemory moves a memory from warm to cold (e.g. on TTL expiry).

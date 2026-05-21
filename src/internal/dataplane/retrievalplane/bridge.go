@@ -92,6 +92,8 @@ func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriev
 const (
 	IndexHNSW    = "HNSW"
 	IndexIVFFlat = "IVF_FLAT"
+	IndexIVFPQ   = "IVF_PQ"
+	IndexIVFSQ8  = "IVF_SQ8"
 	IndexDISKANN = "DISKANN"
 )
 
@@ -180,6 +182,51 @@ func NewIVFRetriever(dim int, metric string, nlist, nprobe int) (*Retriever, err
 		C.plasmod_retriever_destroy(ptr)
 		return nil, fmt.Errorf("plasmod_retriever_init_ivf(metric=%s nlist=%d nprobe=%d): failed",
 			metric, nlist, nprobe)
+	}
+	return &Retriever{ptr: ptr, dim: dim}, nil
+}
+// NewIVFPQRetriever creates a Retriever backed by faiss IVF_PQ.
+// m<=0 uses C++ default (16). nbits<=0 defaults to 8.
+// metric defaults to "L2" (IP requires pre-normalized vectors).
+func NewIVFPQRetriever(dim int, metric string, nlist, nprobe, m, nbits int) (*Retriever, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("NewIVFPQRetriever: dim must be > 0")
+	}
+	if metric == "" {
+		metric = "L2"
+	}
+	ptr := C.plasmod_retriever_create()
+	cMetric := C.CString(metric)
+	defer C.free(unsafe.Pointer(cMetric))
+	rc := C.plasmod_retriever_init_ivf_pq(ptr, cMetric, C.int(dim),
+		C.int(nlist), C.int(nprobe), C.int(m), C.int(nbits))
+	if rc == 0 {
+		C.plasmod_retriever_destroy(ptr)
+		return nil, fmt.Errorf("plasmod_retriever_init_ivf_pq")
+	}
+	return &Retriever{ptr: ptr, dim: dim}, nil
+}
+
+// NewIVFSQ8Retriever creates a Retriever backed by faiss IVF_SQ8.
+// sqType may be "INT8" (lossy, fast) or "FP32".
+// metric defaults to "L2".
+func NewIVFSQ8Retriever(dim int, metric string, nlist, nprobe int, sqType string) (*Retriever, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("NewIVFSQ8Retriever: dim must be > 0")
+	}
+	if metric == "" {
+	metric = "L2"
+	}
+	ptr := C.plasmod_retriever_create()
+	cMetric := C.CString(metric)
+	defer C.free(unsafe.Pointer(cMetric))
+	cSqType := C.CString(sqType)
+	defer C.free(unsafe.Pointer(cSqType))
+	rc := C.plasmod_retriever_init_ivf_sq8(ptr, cMetric, C.int(dim),
+		C.int(nlist), C.int(nprobe), cSqType)
+	if rc == 0 {
+		C.plasmod_retriever_destroy(ptr)
+		return nil, fmt.Errorf("plasmod_retriever_init_ivf_sq8")
 	}
 	return &Retriever{ptr: ptr, dim: dim}, nil
 }
@@ -318,6 +365,47 @@ func (s *SegmentRetriever) BuildSegment(segmentID string, vectors []float32, n, 
 	)
 	if rc != 0 {
 		return fmt.Errorf("plasmod_segment_build(%q): rc=%d", segmentID, rc)
+	}
+	return nil
+}
+
+// BuildSegmentWithType builds (or rebuilds) an index with the specified type.
+// Valid indexType: "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN".
+// Pass 0 for IVF params to use defaults (nlist=128, nprobe=32, m=16, nbits=8).
+func (s *SegmentRetriever) BuildSegmentWithType(
+	segmentID string,
+	vectors []float32,
+	n, dim int,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) error {
+	if len(vectors) == 0 || n <= 0 || dim <= 0 {
+		return fmt.Errorf("BuildSegmentWithType: invalid arguments (n=%d, dim=%d)", n, dim)
+	}
+	cs := C.CString(segmentID)
+	defer C.free(unsafe.Pointer(cs))
+	csIdxType := C.CString(indexType)
+	defer C.free(unsafe.Pointer(csIdxType))
+	var csSqType *C.char
+	if sqType != "" {
+		csSqType = C.CString(sqType)
+		defer C.free(unsafe.Pointer(csSqType))
+	}
+	rc := C.plasmod_segment_build_with_type(
+		cs,
+		(*C.float)(unsafe.Pointer(&vectors[0])),
+		C.int64_t(n),
+		C.int(dim),
+		csIdxType,
+		C.int(nlist),
+		C.int(nprobe),
+		C.int(m),
+		C.int(nbits),
+		csSqType,
+	)
+	if rc != 0 {
+		return fmt.Errorf("plasmod_segment_build_with_type(%q, %q): rc=%d", segmentID, indexType, rc)
 	}
 	return nil
 }

@@ -414,7 +414,35 @@ func (p *SegmentDataPlane) SetEmbedder(embedder EmbeddingGenerator) error {
 }
 
 // IngestVectorsToWarmSegment writes vectors directly into a named warm segment.
+// Defaults to HNSW index type.
 func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error) {
+	return p.ingestWithIndexType(segmentID, objectIDs, vectors, "HNSW", 0, 0, 0, 0, "")
+}
+
+// IngestVectorsToWarmSegmentWithType writes vectors into a named warm segment
+// with the specified ANN index type.
+// Valid indexType: "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN".
+// For IVF types, pass nlist/nprobe/m/nbits/sqType; 0/empty = use defaults.
+func (p *SegmentDataPlane) IngestVectorsToWarmSegmentWithType(
+	segmentID string,
+	objectIDs []string,
+	vectors [][]float32,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) (int, error) {
+	return p.ingestWithIndexType(segmentID, objectIDs, vectors, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
+// ingestWithIndexType is the shared helper that both ingest methods call.
+func (p *SegmentDataPlane) ingestWithIndexType(
+	segmentID string,
+	objectIDs []string,
+	vectors [][]float32,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) (int, error) {
 	if segmentID == "" {
 		return 0, fmt.Errorf("segment_id is required")
 	}
@@ -438,16 +466,23 @@ func (p *SegmentDataPlane) IngestVectorsToWarmSegment(segmentID string, objectID
 		}
 		flat = append(flat, vec...)
 	}
-	if err := retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flat, len(vectors), dim); err != nil {
+
+	var err error
+	switch indexType {
+	case "HNSW", "":
+		err = retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flat, len(vectors), dim)
+	default:
+		err = retrievalplane.GlobalSegmentRetriever.BuildSegmentWithType(
+			segmentID, flat, len(vectors), dim,
+			indexType, nlist, nprobe, m, nbits, sqType,
+		)
+	}
+	if err != nil {
 		return 0, err
 	}
 	p.segMu.Lock()
 	p.segments[segmentID] = append([]string(nil), objectIDs...)
 	p.segMu.Unlock()
-	// Warm segment: run dummy queries to pre-fault HNSW graph into memory.
-	if err := warmupSegment(segmentID, dim, 10); err != nil {
-		log.Printf("[dataplane] warmup warning: %v", err)
-	}
 	return len(vectors), nil
 }
 
@@ -552,44 +587,6 @@ func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK
 		allDists = append(allDists, dists...)
 	}
 	return allIDs, allDists, nil
-}
-
-// SearchWarmSegmentBatchObjectIDs runs batch ANN search and maps internal vector indices to object id strings.
-func (p *SegmentDataPlane) SearchWarmSegmentBatchObjectIDs(segmentID string, nq int, topK int, queries []float32, raw bool) ([][]string, [][]float32, error) {
-	var intIDs []int64
-	var dists []float32
-	var err error
-	if raw {
-		intIDs, dists, err = p.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
-	} else {
-		intIDs, dists, err = p.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	p.segMu.RLock()
-	segObjs := p.segments[segmentID]
-	p.segMu.RUnlock()
-	out := make([][]string, nq)
-	outD := make([][]float32, nq)
-	for qi := 0; qi < nq; qi++ {
-		base := qi * topK
-		rowIDs := intIDs[base : base+topK]
-		rowD := dists[base : base+topK]
-		s := make([]string, 0, topK)
-		ds := make([]float32, 0, topK)
-		for j, idx := range rowIDs {
-			if idx >= 0 && int(idx) < len(segObjs) {
-				s = append(s, segObjs[idx])
-				if j < len(rowD) {
-					ds = append(ds, rowD[j])
-				}
-			}
-		}
-		out[qi] = s
-		outD[qi] = ds
-	}
-	return out, outD, nil
 }
 
 // pluginChunkSize returns the sweet-spot batch size for the L2NormSort plugin.

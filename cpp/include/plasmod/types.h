@@ -95,13 +95,26 @@ struct IndexConfig {
     int32_t hnsw_ef_construction = 200;
     int32_t hnsw_ef_search = 100;
     
-    // IVF specific.
+    // IVF specific (shared by IVF_FLAT, IVF_PQ, IVF_SQ8).
     // nprobe=32 is a Pareto-balanced default validated by the IVF sweep
     // bench: vs the old nprobe=8 it lifts recall@10 from 0.67 → 0.82 on the
     // testQuery10K.fbin self-query set, at the cost of QPS 487→331.  Use
     // plasmod_retriever_init_ivf() to override per-call.
     int32_t ivf_nlist = 128;
     int32_t ivf_nprobe = 32;
+
+    // IVF_PQ specific.
+    // m     : number of sub-vectors (sub-quantizers). dim must be divisible by m.
+    //         common values: 8, 12, 16, 24, 32, 48, 64, 96.
+    // nbits : bits per sub-vector. 8 is most common (1 byte per sub-vector).
+    //         total compression = dim/m * nbits bits vs dim * 32 bits for float32.
+    int32_t ivf_pq_m     = 16;   // sub-quantizers
+    int32_t ivf_pq_nbits = 8;    // bits per sub-vector
+
+    // IVF_SQ8 specific.
+    // sq_type : scalar quantization type. "FP32" = no compression (like IVF_FLAT),
+    //            "INT8" = 8-bit scalar quantization (lossy, faster).
+    std::string ivf_sq_type = "INT8";
 
     // DiskANN specific.
     //   diskann_index_prefix : on-disk path prefix where DiskANN will write

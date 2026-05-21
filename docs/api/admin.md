@@ -170,34 +170,15 @@ Body:
 
 ### `POST /v1/admin/dataset/delete`
 
-Soft-deletes **Memory** rows that match the request selectors (**AND** semantics), or an explicit **`memory_ids`** list. JSON body must include **`workspace_id`**, and either:
-
-- at least one of **`file_name`**, **`dataset_name`**, **`prefix`**, or  
-- a non-empty **`memory_ids`** array (trimmed, de-duplicated server-side).
-
-Optional **`dry_run`**: if true, returns `matched` / `memory_ids` without mutating.
-
-When **`memory_ids`** is non-empty, only those IDs are considered; each row must exist and **`Memory.Scope` must equal `workspace_id`** (other workspaces are ignored). **`file_name` / `dataset_name` / `prefix` are ignored** in that mode. The response may include **`requested_memory_ids`** (the normalized id list).
+Soft-deletes **Memory** rows that match the request selectors (**AND** semantics). JSON body must include **`workspace_id`** and at least one of **`file_name`**, **`dataset_name`**, **`prefix`**. Optional **`dry_run`**: if true, returns `matched` / `memory_ids` without mutating.
 
 Matching prefers structured fields on `Memory` (`dataset_name`, `source_file_name` from ingest payload) and otherwise uses token-safe parsing of `Content` — see `schemas.MemoryDatasetMatch` in code and the root **`README.md`** (admin dataset cleanup).
 
 ### `POST /v1/admin/dataset/purge`
 
-Hard-deletes memories that match the same selector keys as delete, or **`memory_ids`** as above. JSON body: **`workspace_id`**, and either at least one selector or non-empty **`memory_ids`**; optional **`dry_run`**, optional **`only_if_inactive`** (default **true** — skip active memories unless set to false). When using **`memory_ids`**, the response includes **`requested_memory_ids`** when applicable.
+Hard-deletes memories that match the same selector keys as delete. JSON body: **`workspace_id`**, at least one selector, optional **`dry_run`**, optional **`only_if_inactive`** (default **true** — skip active memories unless set to false).
 
 When a **`TieredObjectStore`** is wired, removal uses **`HardDeleteMemory`** (hot/warm/cold as applicable). If tiered storage is **not** configured, the handler falls back to **warm-only** purge (`PurgeMemoryWarmOnly`); the JSON response includes **`purge_backend`**: `"tiered"` or `"warm_only"`.
-
-### `POST /v1/admin/memory/delete-by-source`
-
-Soft-deletes every **Memory** in **`workspace_id`** whose **`source_event_ids`** array contains the reference string (trimmed **exact** equality to one list element).
-
-Body: **`workspace_id`** (required), and exactly one of **`reference_id`**, **`event_id`**, or **`memory_id`** — the first non-empty field wins. These three names are aliases for the same “needle” value (usually an **`evt_...`** id ingested into `source_event_ids`). Optional **`dry_run`**.
-
-Response: `matched`, `deleted`, `memory_ids`, `reference_id`.
-
-### `POST /v1/admin/memory/purge-by-source`
-
-Hard-deletes memories selected the same way as delete-by-source. Body: **`workspace_id`**, **`reference_id`** / **`event_id`** / **`memory_id`** (same precedence as above). Optional **`dry_run`**, **`only_if_inactive`** (default **true**), **`include_memory_ids`**, **`async`**, **`idempotency_key`** — behavior matches dataset purge (including async task queue and `purge_backend`).
 
 > **Security:** these admin routes are protected when `PLASMOD_ADMIN_API_KEY` is set (legacy alias `ANDB_ADMIN_API_KEY`). Clients must send `X-Admin-Key: <key>` or `Authorization: Bearer <key>`. If neither env var is set, the default dev server does **not** authenticate `/v1/admin/*`. Always restrict by network or put a reverse proxy in front in production.
 

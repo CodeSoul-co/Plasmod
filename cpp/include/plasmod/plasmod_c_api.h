@@ -66,6 +66,33 @@ int   plasmod_retriever_init_ivf(
     int         nprobe
 );
 
+/* IVF_PQ-specific init: nlist coarse centroids + PQ sub-quantizers.
+ * m     : number of sub-vectors.  dim % m == 0 is required.
+ * nbits : bits per sub-vector.  8 is most common.
+ * metric_type: "L2" recommended (IP requires pre-normalized vectors).
+ * Returns 1 on success, 0 on failure. */
+int plasmod_retriever_init_ivf_pq(
+    void*       retriever,
+    const char* metric_type,
+    int         dim,
+    int         nlist,
+    int         nprobe,
+    int         m,
+    int         nbits
+);
+
+/* IVF_SQ8-specific init: nlist coarse centroids + scalar 8-bit quantization.
+ * sq_type: "INT8" (lossy, fast) or "FP32" (no compression, same as IVF_FLAT).
+ * Returns 1 on success, 0 on failure. */
+int plasmod_retriever_init_ivf_sq8(
+    void*       retriever,
+    const char* metric_type,
+    int         dim,
+    int         nlist,
+    int         nprobe,
+    const char* sq_type
+);
+
 int   plasmod_retriever_build(
     void*        retriever,
     const float* dense_vectors,
@@ -97,6 +124,44 @@ int     plasmod_segment_build(
     const float* vectors,
     int64_t      n,
     int          dim
+);
+
+/* plasmod_segment_build_with_type — same as plasmod_segment_build but
+ * accepts an explicit index_type string.
+ * Supported index_type values:
+ *   "HNSW"     — Hierarchical Navigable Small World (default)
+ *   "IVF_FLAT" — IVF inverted file + flat vectors
+ *   "IVF_PQ"   — IVF + Product Quantization (lossy)
+ *   "IVF_SQ8"  — IVF + Scalar 8-bit Quantization
+ *   "DISKANN"   — DiskANN (on-disk, requires index_prefix param via
+ *                 a separate plasmod_segment_set_diskann_prefix call)
+ *
+ * For IVF types, pass nlist/nprobe >=0 (0 = use defaults).
+ * For IVF_PQ, pass m>=0 and nbits>=0 (0 = use defaults: m=16, nbits=8).
+ * For IVF_SQ8, sq_type may be "INT8" (default) or "FP32".
+ * For DISKANN, index_prefix must be set before this call via
+ *   plasmod_segment_set_diskann_prefix(segment_id, index_prefix).
+ *
+ * Returns 0 on success, negative on error. */
+int plasmod_segment_build_with_type(
+    const char*  segment_id,
+    const float* vectors,
+    int64_t      n,
+    int          dim,
+    const char*  index_type,      /* "HNSW"|"IVF_FLAT"|"IVF_PQ"|"IVF_SQ8"|"DISKANN" */
+    int          nlist,           /* IVF nlist (0=default 128) */
+    int          nprobe,          /* IVF nprobe (0=default 32) */
+    int          m,               /* IVF_PQ: sub-vectors (0=default 16) */
+    int          nbits,           /* IVF_PQ: bits/subvec (0=default 8) */
+    const char*  sq_type          /* IVF_SQ8: "INT8" or "FP32", NULL/empty=default */
+);
+
+/* Set DISKANN index_prefix before calling plasmod_segment_build_with_type.
+ * Must be called before Build for DISKANN type.
+ * Returns 0 on success. */
+int plasmod_segment_set_diskann_prefix(
+    const char*  segment_id,
+    const char*  index_prefix
 );
 
 int     plasmod_segment_search(

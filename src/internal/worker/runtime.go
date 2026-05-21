@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 	"unicode"
 
 	"plasmod/src/internal/coordinator"
@@ -25,6 +23,7 @@ import (
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker/chain"
 	"plasmod/src/internal/worker/nodes"
+	"time"
 )
 
 type Runtime struct {
@@ -71,9 +70,6 @@ type Runtime struct {
 	flushStopCh   chan struct{}
 	flushInterval time.Duration
 	flushLoopOnce sync.Once
-	// flushLoopRunning is set when StartFlushLoop actually starts the ticker (interval > 0).
-	// SubmitIngest skips synchronous plane.Flush when this is true; see ingestShouldSyncFlush.
-	flushLoopRunning atomic.Bool
 }
 
 func CreateRuntime(
@@ -135,6 +131,17 @@ func (r *Runtime) IngestVectorsToWarmSegment(segmentID string, objectIDs []strin
 	return tp.IngestVectorsToWarmSegment(segmentID, objectIDs, vectors)
 }
 
+func (r *Runtime) IngestVectorsToWarmSegmentWithType(
+	segmentID string, objectIDs []string, vectors [][]float32,
+	indexType string, nlist, nprobe, m, nbits int, sqType string,
+) (int, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.IngestVectorsToWarmSegmentWithType(segmentID, objectIDs, vectors, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
 func (r *Runtime) UnloadWarmSegment(segmentID string) error {
 	tp, ok := r.plane.(*dataplane.TieredDataPlane)
 	if !ok {
@@ -175,15 +182,6 @@ func (r *Runtime) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, 
 	return tp.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
 }
 
-// SearchWarmSegmentBatchObjectIDs runs warm batch ANN and maps hits to registered object id strings.
-func (r *Runtime) SearchWarmSegmentBatchObjectIDs(segmentID string, nq int, topK int, queries []float32, raw bool) ([][]string, [][]float32, error) {
-	tp, ok := r.plane.(*dataplane.TieredDataPlane)
-	if !ok {
-		return nil, nil, fmt.Errorf("tiered plane unavailable")
-	}
-	return tp.SearchWarmSegmentBatchObjectIDs(segmentID, nq, topK, queries, raw)
-}
-
 func (r *Runtime) AdminWarmPrebuild() error {
 	if r.plane == nil {
 		return fmt.Errorf("data plane unavailable")
@@ -207,7 +205,7 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 func (r *Runtime) StartMemoryDeleteOutbox(ctx context.Context) {}
 
 // resolveFlushInterval reads PLASMOD_FLUSH_INTERVAL from the environment.
-// Default: 5 seconds.  A non-positive duration disables the background flush loop.
+// Default: 5 seconds.  A value of 0 disables the background flush loop.
 func resolveFlushInterval() time.Duration {
 	const defaultInterval = 5 * time.Second
 	raw := strings.TrimSpace(os.Getenv("PLASMOD_FLUSH_INTERVAL"))
@@ -215,32 +213,10 @@ func resolveFlushInterval() time.Duration {
 		return defaultInterval
 	}
 	d, err := time.ParseDuration(raw)
-	if err != nil {
+	if err != nil || d <= 0 {
 		return defaultInterval
 	}
-	if d <= 0 {
-		return 0
-	}
 	return d
-}
-
-// ingestShouldSyncFlush controls whether SubmitIngest calls plane.Flush before returning.
-// Production enables StartFlushLoop → flushLoopRunning: skipping sync flush avoids a full
-// HNSW rebuild on every row while the ticker rebuilds periodically.
-// Override: PLASMOD_INGEST_SYNC_FLUSH=true (always flush) or false (never flush).
-func ingestShouldSyncFlush(r *Runtime) bool {
-	if r == nil {
-		return true
-	}
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_INGEST_SYNC_FLUSH"))
-	switch {
-	case raw == "1" || strings.EqualFold(raw, "true"):
-		return true
-	case raw == "0" || strings.EqualFold(raw, "false"):
-		return false
-	default:
-		return !r.flushLoopRunning.Load()
-	}
 }
 
 // StartFlushLoop launches a background goroutine that rebuilds the retrieval index
@@ -254,10 +230,9 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 	}
 	r.flushInterval = resolveFlushInterval()
 	if r.flushInterval == 0 {
-		return // disabled via PLASMOD_FLUSH_INTERVAL=0 or non-positive
+		return // disabled via PLASMOD_FLUSH_INTERVAL=0
 	}
 	r.flushLoopOnce.Do(func() {
-		r.flushLoopRunning.Store(true)
 		r.flushStopCh = make(chan struct{})
 		r.flushTicker = time.NewTicker(r.flushInterval)
 		go func() {
@@ -401,13 +376,10 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 	// ── Retrieval plane ───────────────────────────────────────────────────
 	r.nodeManager.DispatchIngest(record)
-	// Build vector index after ingest when no background flush loop is active
-	// (tests, embedded runtimes). With StartFlushLoop running, periodic Flush
-	// rebuilds the index; syncing here caused O(n²) rebuild cost per HTTP row.
-	if ingestShouldSyncFlush(r) {
-		if err := r.plane.Flush(); err != nil {
-			return nil, err
-		}
+	// Build vector index after ingest so VectorStore.Ready() returns true.
+	// This enables vector search on subsequent queries.
+	if err := r.plane.Flush(); err != nil {
+		return nil, err
 	}
 	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
 	if ev.SessionID != "" {

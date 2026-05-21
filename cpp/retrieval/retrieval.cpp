@@ -91,6 +91,44 @@ int plasmod_retriever_init_ivf(void*       handle,
     return h->dense.Init(cfg) ? 1 : 0;
 }
 
+int plasmod_retriever_init_ivf_pq(void*       handle,
+                                    const char* metric_type,
+                                    int         dim,
+                                    int         nlist,
+                                    int         nprobe,
+                                    int         m,
+                                    int         nbits) {
+    if (!handle || dim <= 0) return 0;
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
+    plasmod::IndexConfig cfg;
+    cfg.index_type  = "IVF_PQ";
+    cfg.metric_type = "L2";
+    cfg.dim         = dim;
+    if (nlist  > 0) cfg.ivf_nlist     = nlist;
+    if (nprobe > 0) cfg.ivf_nprobe    = nprobe;
+    if (m     > 0) cfg.ivf_pq_m      = m;
+    if (nbits > 0) cfg.ivf_pq_nbits  = nbits;
+    return h->dense.Init(cfg) ? 1 : 0;
+}
+
+int plasmod_retriever_init_ivf_sq8(void*       handle,
+                                   const char* metric_type,
+                                   int         dim,
+                                   int         nlist,
+                                   int         nprobe,
+                                   const char* sq_type) {
+    if (!handle || dim <= 0) return 0;
+    auto* h = static_cast<plasmod::FlatIndexHandle*>(handle);
+    plasmod::IndexConfig cfg;
+    cfg.index_type  = "IVF_SQ8";
+    cfg.metric_type = metric_type ? metric_type : "L2";
+    cfg.dim         = dim;
+    if (nlist  > 0) cfg.ivf_nlist    = nlist;
+    if (nprobe > 0) cfg.ivf_nprobe   = nprobe;
+    if (sq_type && sq_type[0] != 0) cfg.ivf_sq_type = std::string(sq_type);
+    return h->dense.Init(cfg) ? 1 : 0;
+}
+
 int plasmod_retriever_init_diskann(void*       handle,
                                    const char* metric_type,
                                    int         dim,
@@ -192,6 +230,29 @@ int plasmod_segment_build(const char* segment_id, const float* vectors,
     if (!segment_id || !vectors || n <= 0 || dim <= 0) return -2;
     return plasmod::SegmentIndexManager::Instance().BuildSegment(
         segment_id, vectors, n, dim);
+}
+
+int plasmod_segment_build_with_type(const char*  segment_id,
+                                     const float*  vectors,
+                                     int64_t       n,
+                                     int           dim,
+                                     const char*   index_type,
+                                     int           nlist,
+                                     int           nprobe,
+                                     int           pq_m,
+                                     int           pq_nbits,
+                                     const char*   sq_type) {
+    if (!segment_id || !vectors || n <= 0 || dim <= 0) return -2;
+    return plasmod::SegmentIndexManager::Instance().BuildSegmentWithIndexType(
+        segment_id, vectors, n, dim,
+        index_type, nlist, nprobe, pq_m, pq_nbits, sq_type);
+}
+
+int plasmod_segment_set_diskann_prefix(const char*  segment_id,
+                                      const char*  index_prefix) {
+    if (!segment_id || !index_prefix) return -2;
+    return plasmod::SegmentIndexManager::Instance().SetDiskANNPrefix(
+        std::string(segment_id), std::string(index_prefix));
 }
 
 int plasmod_segment_search(const char* segment_id, const float* query,
