@@ -18,6 +18,8 @@
 #     --build-arg GOSUMDB=off \
 #     -t plasmod:latest .
 ARG BASE_REGISTRY=
+# go.mod requires go >= 1.25.0. golang:1.25-bookworm is often missing on mirrors;
+# copy golang:1.25rc1-bookworm then install the stable SDK tarball (see builder stage).
 ARG GOLANG_IMAGE=golang:1.25rc1-bookworm
 ARG DEBIAN_IMAGE=debian:bookworm-slim
 
@@ -29,6 +31,9 @@ FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS builder
 
 ARG APT_MIRROR=
 ARG GO_LLAMACPP_REPO=https://github.com/go-skynet/go-llama.cpp.git
+ARG GO_VERSION=1.25.0
+# China mirror example: --build-arg GO_DOWNLOAD_BASE=https://mirrors.aliyun.com/golang
+ARG GO_DOWNLOAD_BASE=https://go.dev/dl
 ARG GOPROXY=
 ARG GOSUMDB=
 ARG ONNXRUNTIME_VERSION=1.17.3
@@ -54,9 +59,15 @@ RUN curl -fsSL \
        /usr/local/lib/libonnxruntime.so && \
     ldconfig
 
-# Copy Go runtime/toolchain from official Go image.
+# Seed /usr/local/go from the golang image, then replace with the stable SDK tarball
+# (go.mod needs >= 1.25.0; rc1 alone fails with GOTOOLCHAIN=local).
+# Do not rely on `go download` for the toolchain when GOSUMDB=off.
 COPY --from=go-toolchain /usr/local/go /usr/local/go
+RUN rm -rf /usr/local/go \
+    && curl -fsSL "${GO_DOWNLOAD_BASE}/go${GO_VERSION}.linux-amd64.tar.gz" \
+    | tar -C /usr/local -xzf -
 ENV PATH=/usr/local/go/bin:${PATH}
+ENV GOTOOLCHAIN=local
 
 # Satisfy go.mod local replace for go-llama.cpp.
 RUN git clone --depth 1 --recurse-submodules "${GO_LLAMACPP_REPO}" /tmp/go-llama-cpp \
@@ -74,8 +85,10 @@ RUN mkdir -p /src/libs \
 COPY go.mod go.sum ./
 COPY vendor ./vendor
 COPY src ./src
-# Use vendored dependencies — no network access required during build.
-ENV GOTOOLCHAIN=local
+
+# -mod=vendor: no module downloads during go build. GOPROXY/GOSUMDB optional.
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 
 COPY . .
 
@@ -84,6 +97,7 @@ ENV LIBRARY_PATH=/tmp/go-llama-cpp
 ENV C_INCLUDE_PATH=/tmp/go-llama-cpp
 
 RUN mkdir -p /src/bin \
+    && go version \
     && go build -buildvcs=false -mod=vendor -trimpath -ldflags="-s -w" -o /src/bin/plasmod-server ./src/cmd/server
 
 # Stage 2: minimal runtime (no shell wrapper)
