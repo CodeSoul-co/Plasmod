@@ -72,6 +72,50 @@ class PlasmodClient:
         resp.raise_for_status()
         return resp.json()
 
+    def ingest_vectors(
+        self,
+        vectors: List[List[float]],
+        *,
+        segment_id: str = "",
+        object_ids: Optional[List[str]] = None,
+        index_type: str = "",
+        ivf_nlist: int = 0,
+        ivf_nprobe: int = 0,
+        ivf_m: int = 0,
+        ivf_nbits: int = 0,
+        ivf_sq_type: str = "",
+    ) -> dict:
+        """
+        Ingest precomputed vectors into a warm segment (POST /v1/ingest/vectors).
+
+        index_type: HNSW (default), IVF_FLAT, IVF_PQ, IVF_SQ8, or DISKANN.
+        IVF_* fields map to ivf_nlist, ivf_nprobe, ivf_m, ivf_nbits, ivf_sq_type.
+        """
+        body: Dict[str, Any] = {"vectors": vectors}
+        if segment_id:
+            body["segment_id"] = segment_id
+        if object_ids:
+            body["object_ids"] = object_ids
+        if index_type:
+            body["index_type"] = index_type
+        if ivf_nlist:
+            body["ivf_nlist"] = ivf_nlist
+        if ivf_nprobe:
+            body["ivf_nprobe"] = ivf_nprobe
+        if ivf_m:
+            body["ivf_m"] = ivf_m
+        if ivf_nbits:
+            body["ivf_nbits"] = ivf_nbits
+        if ivf_sq_type:
+            body["ivf_sq_type"] = ivf_sq_type
+        resp = requests.post(
+            f"{self.base_url}/v1/ingest/vectors",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ── Query ─────────────────────────────────────────────────────────────────
 
     def query(

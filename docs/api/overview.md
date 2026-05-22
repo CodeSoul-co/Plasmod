@@ -33,6 +33,7 @@ Constants: `src/internal/app/ports.go` (`PortDevUnified`, `PortMgmt`, `PortAPI`,
 **Core (documented in ingest/query docs)**
 
 - `POST /v1/ingest/events`
+- `POST /v1/ingest/vectors` (warm segment; optional `index_type`: HNSW / IVF_FLAT / IVF_PQ / IVF_SQ8)
 - `POST /v1/query`
 
 **Admin (see `docs/api/admin.md`; unauthenticated in default dev — do not expose publicly)**

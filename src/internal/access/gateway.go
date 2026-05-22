@@ -665,12 +665,7 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	type reqBody struct {
-		SegmentID string      `json:"segment_id"`
-		ObjectIDs []string    `json:"object_ids"`
-		Vectors   [][]float32 `json:"vectors"`
-	}
-	var req reqBody
+	var req schemas.WarmVectorsIngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -683,6 +678,11 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "vectors is required", http.StatusBadRequest)
 		return
 	}
+	indexType, err := schemas.NormalizeWarmIndexType(req.IndexType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if len(req.ObjectIDs) == 0 {
 		req.ObjectIDs = make([]string, len(req.Vectors))
 		for i := range req.Vectors {
@@ -693,7 +693,16 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "object_ids/vectors length mismatch", http.StatusBadRequest)
 		return
 	}
-	n, err := g.runtime.IngestVectorsToWarmSegment(req.SegmentID, req.ObjectIDs, req.Vectors)
+	var n int
+	if indexType == schemas.WarmIndexHNSW && req.IVFNlist == 0 && req.IVFNprobe == 0 &&
+		req.IVFM == 0 && req.IVFNbits == 0 && strings.TrimSpace(req.IVFSqType) == "" {
+		n, err = g.runtime.IngestVectorsToWarmSegment(req.SegmentID, req.ObjectIDs, req.Vectors)
+	} else {
+		n, err = g.runtime.IngestVectorsToWarmSegmentWithType(
+			req.SegmentID, req.ObjectIDs, req.Vectors,
+			indexType, req.IVFNlist, req.IVFNprobe, req.IVFM, req.IVFNbits, req.IVFSqType,
+		)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -703,6 +712,7 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		"segment_id":  req.SegmentID,
 		"ingested":    n,
 		"vector_dim":  len(req.Vectors[0]),
+		"index_type":  indexType,
 		"direct_warm": true,
 	})
 }
