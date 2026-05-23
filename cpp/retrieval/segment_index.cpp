@@ -38,7 +38,7 @@ namespace {
 // Index tuning parameters
 constexpr int kHNSW_M              = 16;
 constexpr int kHNSW_EfConstruction = 256;
-constexpr int kHNSW_EfSearch       = 256;
+constexpr int kHNSW_EfSearch       = 64;
 constexpr const char* kMetricType  = "IP";
 constexpr const char* kIndexType   = "HNSW";
 
@@ -108,16 +108,16 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     // IVF types: NPROBE set inside the full-batch path (tls_cfg declared there).
 
 
-    // L2_NORM_SORT path: only for HNSW, IVF types must use full-batch path
-    // for correct NPROBE handling (L2_NORM_SORT uses HnswFastSearchFloat which
-    // doesn't support IVF parameters).
+    // L2_NORM_SORT path: query reordering + full-batch Knowhere search.
+    // Reorder queries by L2 norm for cache locality, then use Knowhere's
+    // batch search which handles OpenMP parallelization internally.
+    // Works for all index types (HNSW, IVF_FLAT, IVF_PQ, IVF_SQ8).
 #if HAVE_OMP
-    if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT
-            && nq > 1 && entry.index_type == "HNSW") {
+    if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT && nq > 1) {
         std::vector<int64_t> order(nq);
         plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
 
-        // Reordered query matrix (copy so HnswFastSearchFloat gets contiguous rows)
+        // Reordered query matrix
         std::vector<float> reordered(static_cast<size_t>(nq) * entry.dim);
         for (int64_t i = 0; i < nq; ++i) {
             std::memcpy(reordered.data() + i * entry.dim,
@@ -125,49 +125,48 @@ int SegmentIndexManager::DoSearch(Entry& entry,
                         entry.dim * sizeof(float));
         }
 
-        std::vector<int64_t> tmp_ids(nq * topk, -1);
-        std::vector<float>   tmp_dists(nq * topk, -1.0f);
+        // Build search config based on index type
+        knowhere::Json cfg;
+        cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
+        cfg[knowhere::meta::DIM]          = entry.dim;
+        cfg[knowhere::meta::TOPK]         = topk;
 
-        int num_threads = omp_get_max_threads();
-        int search_err  = 0;
-
-        #pragma omp parallel for schedule(static) num_threads(num_threads)
-        for (int t = 0; t < num_threads; ++t) {
-            QueryChunk chunk = plugin->GetOptimizedChunks(nq, num_threads, t);
-            for (int64_t qi = chunk.start; qi < chunk.end; ++qi) {
-                const float* qvec = reordered.data() + qi * entry.dim;
-                int64_t*     ids  = tmp_ids.data()   + qi * topk;
-                float*       dsts = tmp_dists.data()  + qi * topk;
-                int rc = knowhere::HnswFastSearchFloat(
-                    idx->Node(), qvec, topk, ef, nullptr, 0, ids, dsts);
-                if (rc != 0 && rc != -2) {
-                    #pragma omp atomic write
-                    search_err = rc;
-                }
-                // rc == -2: not HNSW float (e.g. IVF index in L2_NORM_SORT mode)
-                // We intentionally ignore this and leave -1 values so the full-batch
-                // fallback path will override them correctly.
-                // rc == 0: success, results already in ids/dsts.
-            }
-            plugin->OnChunkDone(chunk.start, chunk.end, t);
+        if (entry.index_type == "HNSW") {
+            cfg[knowhere::indexparam::M]              = kHNSW_M;
+            cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
+            cfg[knowhere::indexparam::EF]             = ef;
+        } else if (entry.index_type == "IVF_FLAT") {
+            cfg[knowhere::indexparam::NLIST]  = entry.ivf_nlist;
+            cfg[knowhere::indexparam::NPROBE] = entry.ivf_nprobe;
+        } else if (entry.index_type == "IVF_PQ") {
+            cfg[knowhere::indexparam::NLIST]  = entry.ivf_nlist;
+            cfg[knowhere::indexparam::M]      = entry.ivf_pq_m;
+            cfg[knowhere::indexparam::NBITS]  = entry.ivf_pq_nbits;
+            cfg[knowhere::indexparam::NPROBE] = entry.ivf_nprobe;
+        } else if (entry.index_type == "IVF_SQ8") {
+            cfg[knowhere::indexparam::NLIST]    = entry.ivf_nlist;
+            cfg[knowhere::indexparam::SQ_TYPE]  = entry.ivf_sq_type;
+            cfg[knowhere::indexparam::NPROBE]   = entry.ivf_nprobe;
         }
 
-        if (search_err != 0) return kErrSearchFailed;
+        // Full-batch Knowhere search with reordered queries
+        auto ds = knowhere::GenDataSet(nq, entry.dim, reordered.data());
+        auto res = idx->Search(ds, cfg, knowhere::BitsetView());
+        if (!res.has_value()) return kErrSearchFailed;
 
-        // If HnswFastSearchFloat succeeded for all threads (rc == 0),
-        // copy results. Otherwise fall through to full-batch path.
-        // Check if we got any valid results by looking at first ID:
-        bool has_valid_results = (tmp_ids[0] >= 0);
-        if (has_valid_results) {
-            // Scatter reordered results back to original query positions
-            for (int64_t i = 0; i < nq; ++i) {
-                int64_t orig = order[i];
-                std::memcpy(out_ids   + orig * topk, tmp_ids.data()   + i * topk, topk * sizeof(int64_t));
-                std::memcpy(out_dists + orig * topk, tmp_dists.data() + i * topk, topk * sizeof(float));
-            }
-            return kOK;
+        // Copy results to temp buffers in reordered order
+        std::vector<int64_t> tmp_ids(nq * topk);
+        std::vector<float>   tmp_dists(nq * topk);
+        std::memcpy(tmp_ids.data(),   res.value()->GetIds(),      nq * topk * sizeof(int64_t));
+        std::memcpy(tmp_dists.data(), res.value()->GetDistance(), nq * topk * sizeof(float));
+
+        // Scatter reordered results back to original query positions
+        for (int64_t i = 0; i < nq; ++i) {
+            int64_t orig = order[i];
+            std::memcpy(out_ids   + orig * topk, tmp_ids.data()   + i * topk, topk * sizeof(int64_t));
+            std::memcpy(out_dists + orig * topk, tmp_dists.data() + i * topk, topk * sizeof(float));
         }
-        // Fall through to full-batch path if HnswFastSearchFloat didn't work.
+        return kOK;
     }
 #endif  // HAVE_OMP
 
