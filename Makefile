@@ -68,7 +68,7 @@ setup:
 	cd sdk/nodejs && npm install
 
 dev:
-	CGO_LDFLAGS="$(CGO_LDFLAGS)" RETRIEVAL_TAG="$(RETRIEVAL_TAG)" bash scripts/dev_up.sh
+	PLASMOD_BATCH_PLUGIN=1 CGO_LDFLAGS="$(CGO_LDFLAGS)" RETRIEVAL_TAG="$(RETRIEVAL_TAG)" bash scripts/dev_up.sh
 
 build:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/plasmod ./src/cmd/server'

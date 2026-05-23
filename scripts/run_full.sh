@@ -41,6 +41,7 @@ export S3_SECURE=false
 export S3_REGION=us-east-1
 
 echo "Starting Plasmod..."
+export PLASMOD_BATCH_PLUGIN=1
 make dev &
 echo "Plasmod: started (PID: $!)"
 
