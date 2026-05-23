@@ -10,25 +10,31 @@ Detailed endpoint behavior is documented in:
 - `docs/api/ingest.md`
 - `docs/api/query.md`
 
-## Plasmod ports (gRPC deferred)
+## Plasmod ports
 
 Constants: `src/internal/app/ports.go` (`PortDevUnified`, `PortMgmt`, `PortAPI`, `PortObjectStore`, …).
 
 | Role | Port | Env / notes |
 |------|------|-------------|
-| Dev unified (SDK + admin) | **8080** | `PLASMOD_LISTEN_MODE=unified`, `PLASMOD_HTTP_ADDR` (default `127.0.0.1:8080`) |
-| Mgmt / health / metrics | **9101** | `PLASMOD_LISTEN_MODE=split`, `PLASMOD_MGMT_ADDR` |
-| SDK REST API | **19540** | `PLASMOD_LISTEN_MODE=split`, `PLASMOD_API_ADDR`; pyplasmod `PLASMOD_URI` |
-| Object store S3 API (host) | **9010** | `docker compose` maps `9010:9000`; in-cluster `S3_ENDPOINT=minio:9000` |
-| Object store console (host) | **9011** | maps `9011:9001` |
+| Dev unified (`go run`, `docker-compose.unified.yml`) | **8080** | `PLASMOD_LISTEN_MODE=unified`, `PLASMOD_HTTP_ADDR` (default `127.0.0.1:8080`) |
+| Mgmt / health / metrics (split) | **9091** | `PLASMOD_LISTEN_MODE=split`, `PLASMOD_MGMT_ADDR` |
+| SDK REST API + internal rpc (split) | **19530** | `PLASMOD_LISTEN_MODE=split`, `PLASMOD_API_ADDR` (HTTP JSON today) |
+| Object store S3 API (host) | **9000** | `docker compose` maps `9000:9000`; in-cluster `S3_ENDPOINT=minio:9000` |
+| Object store console (host) | **9001** | maps `9001:9001` |
 
-`make dev` uses **unified :8080**. `docker compose` uses **split** (:9101 + :19540) and object storage on host **:9010/:9011**.
+**Default entry points**
+
+| Deployment | Health | pyplasmod / `PLASMOD_BASE_URL` |
+|------------|--------|--------------------------------|
+| `docker compose up -d` (split) | `http://127.0.0.1:9091/healthz` | `http://127.0.0.1:19530` |
+| `docker compose -f docker-compose.unified.yml up -d` | `http://127.0.0.1:8080/healthz` | `http://127.0.0.1:8080` |
+| Local `go run ./src/cmd/server` (unified) | `http://127.0.0.1:8080/healthz` | `http://127.0.0.1:8080` |
 
 ## Endpoint groups
 
 **Health**
 
-- `GET /healthz`
+- `GET /healthz` (on mgmt port in split mode, or unified port)
 
 **Core (documented in ingest/query docs)**
 

@@ -17,11 +17,11 @@ class PlasmodClient:
         base_url: Optional[str] = None,
         timeout: Optional[float] = None,
     ):
-        # Dev unified :8080; split/deploy SDK API :19540 (PLASMOD PortAPI).
+        # Unified dev :8080; split compose / Milvus-aligned API :19530.
         if base_url is None:
             base_url = os.environ.get(
                 "PLASMOD_URI",
-                os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:8080"),
+                os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:19530"),
             )
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout or float(

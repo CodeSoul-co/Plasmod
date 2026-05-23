@@ -1,12 +1,12 @@
-# Milvus Migration Status (Integrated Layout)
+# Platform Integration Status (Integrated Layout)
 
-This file answers: "Has Milvus core code and capability been fully migrated into ANDB?"
+This file answers: "Has the integrated retrieval platform been fully wired into ANDB runtime?"
 
 ## Short Answer
-No. The migration is **in progress**.
+No. Integration is **in progress**.
 
 ## Integrated Source Layout (No Standalone Third-Party Folder)
-Milvus-derived source code is distributed into ANDB module areas:
+Upstream-derived source code is distributed into ANDB module areas:
 - `src/internal/dataplane/retrievalplane`
 - `src/internal/coordinator/controlplane`
 - `src/internal/eventbackbone/streamplane`
@@ -23,7 +23,7 @@ This layout keeps source close to ANDB runtime layers for direct iterative porti
 - Search execution baseline and query planner seam
 - Stable runtime contracts for WAL/Bus/DataPlane/Planner/Policy
 
-## Remaining Gaps Before "Core Migration Complete"
+## Remaining Gaps Before "Core Integration Complete"
 1. Segment and compaction parity
 2. Query execution plan and index-path parity
 3. Index lifecycle and metadata parity

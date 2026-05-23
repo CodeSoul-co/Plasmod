@@ -37,12 +37,12 @@ import (
 )
 
 // BuildServer constructs and wires all Plasmod server components.
-// Returns one or more HTTP servers (unified dev :8080, or split mgmt :9101 + api :19540),
+// Returns one or more HTTP servers (unified dev :8080, or split mgmt :9091 + api :19530),
 // a cleanup function, and any build error.
 //
 // Listen modes (see ports.go):
 //   - PLASMOD_LISTEN_MODE=unified (default): PLASMOD_HTTP_ADDR → 127.0.0.1:8080
-//   - PLASMOD_LISTEN_MODE=split: PLASMOD_MGMT_ADDR → :9101, PLASMOD_API_ADDR → :19540
+//   - PLASMOD_LISTEN_MODE=split: PLASMOD_MGMT_ADDR → :9091, PLASMOD_API_ADDR → :19530
 //
 // Usage:
 //

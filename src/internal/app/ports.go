@@ -11,19 +11,16 @@ import (
 //
 //   - Dev (unified): PortDevUnified — single HTTP listener for admin + SDK routes.
 //   - Split deploy: PortMgmt (health/metrics/admin), PortAPI (SDK REST + internal rpc).
-//   - Object store: PortObjectStore / PortObjectStoreConsole on the host map into MinIO.
+//   - Object store: PortObjectStore / PortObjectStoreConsole — host maps to MinIO :9000 / :9001.
 //
-// Split numeric values use a fixed PortBaselineOffset (+10) from common industry defaults
-// so operators can reuse familiar port planning; gRPC is not exposed yet.
+// Split mode serves HTTP JSON on PortAPI; additional wire protocols may be added later.
 const (
-	PortBaselineOffset = 10
-
 	PortDevUnified = 8080
 
-	PortMgmt              = 9101
-	PortAPI               = 19540
-	PortObjectStore       = 9010
-	PortObjectStoreConsole = 9011
+	PortMgmt               = 9091
+	PortAPI                = 19530
+	PortObjectStore        = 9000
+	PortObjectStoreConsole = 9001
 )
 
 const (
@@ -53,7 +50,7 @@ func defaultUnifiedAddr() string {
 
 // ResolveListenConfig reads PLASMOD_LISTEN_MODE and address overrides.
 //   - unified (default): single listener on PLASMOD_HTTP_ADDR or 127.0.0.1:8080
-//   - split: mgmt on PLASMOD_MGMT_ADDR (9101), API/SDK on PLASMOD_API_ADDR (19540)
+//   - split: mgmt on PLASMOD_MGMT_ADDR (9091), API/SDK on PLASMOD_API_ADDR (19530)
 func ResolveListenConfig() ListenConfig {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("PLASMOD_LISTEN_MODE")))
 	if mode == "" {

@@ -67,13 +67,29 @@ Plasmod 是一个为 AI 智能体设计的数据库，将 **记忆（Memory）**
 
 ### 1. 启动 Plasmod 服务端
 
+**Split 部署（管理 `9091`、API `19530`、MinIO `9000`/`9001`）：**
+
 ```bash
 git clone https://github.com/CodeSoul-co/Plasmod.git
 cd Plasmod
 docker compose up -d
 ```
 
+**单端口 unified（`8080`，与本地 `go run` 一致）：**
+
+```bash
+docker compose -f docker-compose.unified.yml up -d
+```
+
 ### 2. 验证服务端
+
+**`docker compose up -d`（split）之后：**
+
+```bash
+curl http://127.0.0.1:9091/healthz
+```
+
+**`docker-compose.unified.yml` 或 `go run ./src/cmd/server` 之后：**
 
 ```bash
 curl http://127.0.0.1:8080/healthz
@@ -107,11 +123,18 @@ python -c "import pyplasmod; print(pyplasmod.__version__)"
 
 ### 5. 使用 SDK 连接
 
+请与部署方式一致（split compose 可用 pyplasmod 默认 `http://127.0.0.1:19530`）：
+
 ```python
 from pyplasmod import EasyPlasmod
 
-with EasyPlasmod(base_url="http://127.0.0.1:8080") as p:
+# docker compose（split）
+with EasyPlasmod(base_url="http://127.0.0.1:19530") as p:
     print(p.health())
+
+# unified compose 或本地 go run
+# with EasyPlasmod(base_url="http://127.0.0.1:8080") as p:
+#     print(p.health())
 ```
 
 ### 数据写入与查询
@@ -121,7 +144,7 @@ with EasyPlasmod(base_url="http://127.0.0.1:8080") as p:
 **写入事件：**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/ingest/events \
+curl -X POST http://127.0.0.1:19530/v1/ingest/events \
   -H "Content-Type: application/json" \
   -d '{
     "event_type": "observation",
@@ -135,7 +158,7 @@ curl -X POST http://127.0.0.1:8080/v1/ingest/events \
 **查询：**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/query \
+curl -X POST http://127.0.0.1:19530/v1/query \
   -H "Content-Type: application/json" \
   -d '{
     "query_text": "agent database",

@@ -1,8 +1,8 @@
-# Milvus Source Map to ANDB Modules
+# Upstream Source Map to ANDB Modules
 
 ## Source Integration Map
 
-- Data plane related Milvus-derived sources:
+- Data plane related integrated sources:
   - `src/internal/dataplane/retrievalplane/core`
   - `src/internal/dataplane/retrievalplane/queryruntime`
   - `src/internal/dataplane/retrievalplane/storage*`
@@ -10,14 +10,14 @@
   - `src/internal/dataplane/retrievalplane/objectstore`
   - `src/internal/dataplane/retrievalplane/compaction`
 
-- Coordinator related Milvus-derived sources:
+- Coordinator related integrated sources:
   - `src/internal/coordinator/controlplane/coordinator`
   - `src/internal/coordinator/controlplane/metacontrol`
   - `src/internal/coordinator/controlplane/datacontrol`
   - `src/internal/coordinator/controlplane/querycontrol`
   - `src/internal/coordinator/controlplane/accessproxy`
 
-- Event backbone related Milvus-derived sources:
+- Event backbone related integrated sources:
   - `src/internal/eventbackbone/streamplane/clockservice`
   - `src/internal/eventbackbone/streamplane/streamcoord`
   - `src/internal/eventbackbone/streamplane/streamnode`

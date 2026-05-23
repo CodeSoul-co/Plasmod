@@ -103,5 +103,5 @@ For snapshot export:
 ## Important Scope Note
 
 This workflow is a practical local delivery path for S3 write/read validation.
-It is not yet the full Milvus-migration production path that depends on all
+It is not yet the full integrated-storage production path that depends on all
 `extended`-tag storage modules being available and fully wired.

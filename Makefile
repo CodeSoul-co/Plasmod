@@ -72,7 +72,7 @@ dev:
 
 # Second terminal only: assumes `make dev` is already running (default http://127.0.0.1:8080).
 # Uses existing HTTP APIs: POST /v1/ingest/vectors then POST /v1/query/batch (single + multi agent).
-# Override base URL: make demo-warm-batch PLASMOD_BASE_URL=http://127.0.0.1:19540
+# Override base URL: make demo-warm-batch PLASMOD_BASE_URL=http://127.0.0.1:19530
 PLASMOD_BASE_URL ?= http://127.0.0.1:8080
 demo-warm-batch:
 	PLASMOD_BASE_URL="$(PLASMOD_BASE_URL)" bash scripts/demo/run_demo_warm_batch.sh

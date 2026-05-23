@@ -67,13 +67,29 @@ Most agent memory solutions today are built on top of general-purpose infrastruc
 
 ### 1. Start Plasmod Server
 
+**Split deploy (mgmt `9091`, API `19530`, MinIO `9000`/`9001`):**
+
 ```bash
 git clone https://github.com/CodeSoul-co/Plasmod.git
 cd Plasmod
 docker compose up -d
 ```
 
+**Single HTTP port (unified `8080`, like local `go run`):**
+
+```bash
+docker compose -f docker-compose.unified.yml up -d
+```
+
 ### 2. Verify the Server
+
+**After `docker compose up -d` (split):**
+
+```bash
+curl http://127.0.0.1:9091/healthz
+```
+
+**After `docker-compose.unified.yml` or `go run ./src/cmd/server`:**
 
 ```bash
 curl http://127.0.0.1:8080/healthz
@@ -107,11 +123,18 @@ Expected output:
 
 ### 5. Connect with SDK
 
+Set the gateway URL to match your deployment (or rely on the pyplasmod default `http://127.0.0.1:19530` for split compose):
+
 ```python
 from pyplasmod import EasyPlasmod
 
-with EasyPlasmod(base_url="http://127.0.0.1:8080") as p:
+# docker compose (split)
+with EasyPlasmod(base_url="http://127.0.0.1:19530") as p:
     print(p.health())
+
+# unified compose or local go run
+# with EasyPlasmod(base_url="http://127.0.0.1:8080") as p:
+#     print(p.health())
 ```
 
 ### Ingest and Query
@@ -121,7 +144,7 @@ Use the Plasmod HTTP API as the source of truth for ingest and query schemas.
 **Ingest an event:**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/ingest/events \
+curl -X POST http://127.0.0.1:19530/v1/ingest/events \
   -H "Content-Type: application/json" \
   -d '{
     "event_type": "observation",
@@ -135,7 +158,7 @@ curl -X POST http://127.0.0.1:8080/v1/ingest/events \
 **Query:**
 
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/query \
+curl -X POST http://127.0.0.1:19530/v1/query \
   -H "Content-Type: application/json" \
   -d '{
     "query_text": "agent database",

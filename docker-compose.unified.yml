@@ -1,19 +1,17 @@
-# Full stack: Plasmod (split) + MinIO (S3 cold tier).
+# Plasmod + MinIO with a single HTTP listener (PLASMOD_LISTEN_MODE=unified).
 #
 # Host ports:
-#   mgmt / health / metrics     9091
-#   SDK REST API (+ internal rpc) 19530
-#   MinIO S3 API                9000
-#   MinIO console               9001
+#   Plasmod (admin + SDK + internal rpc)  8080
+#   MinIO S3 API                          9000
+#   MinIO console                         9001
 #
-# Dev unified (local go run / docker-compose.unified.yml): http://127.0.0.1:8080
+# Use when you want one URL for everything (similar to local `go run` / `make dev`):
 #
-# From repo root:
-#   docker compose up -d
+#   docker compose -f docker-compose.unified.yml up -d
+#   curl http://127.0.0.1:8080/healthz
+#   set PLASMOD_BASE_URL=http://127.0.0.1:8080
 #
-# pyplasmod / scripts:
-#   set PLASMOD_BASE_URL=http://127.0.0.1:19530
-#   curl http://127.0.0.1:9091/healthz
+# For split deploy (mgmt 9091 + API 19530), use docker-compose.yml instead.
 
 services:
   minio:
@@ -61,12 +59,10 @@ services:
     volumes:
       - plasmod_data:/data
     ports:
-      - "9091:9091"
-      - "19530:19530"
+      - "8080:8080"
     environment:
-      PLASMOD_LISTEN_MODE: split
-      PLASMOD_MGMT_ADDR: 0.0.0.0:9091
-      PLASMOD_API_ADDR: 0.0.0.0:19530
+      PLASMOD_LISTEN_MODE: unified
+      PLASMOD_HTTP_ADDR: 0.0.0.0:8080
       APP_MODE: ${APP_MODE:-prod}
       ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER: "true"
       PLASMOD_STORAGE: disk
@@ -81,7 +77,7 @@ services:
       S3_REGION: us-east-1
       S3_PREFIX: plasmod/docker
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9091/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
