@@ -4,9 +4,7 @@
 #
 # Notes:
 # - go.mod replaces github.com/go-skynet/go-llama.cpp with /tmp/go-llama-cpp.
-# - In this environment, executing /bin/sh inside golang:1.24-bookworm failed.
-#   We therefore copy the Go toolchain out of that image and run all build steps
-#   in a Debian builder stage where shell commands work.
+# - Go is installed from the official tarball in the Debian builder (no golang:* base image).
 
 # Build-time source switches for air-gapped/intranet environments.
 # Examples:
@@ -18,13 +16,7 @@
 #     --build-arg GOSUMDB=off \
 #     -t plasmod:latest .
 ARG BASE_REGISTRY=
-# go.mod requires go >= 1.25.0. golang:1.25-bookworm is often missing on mirrors;
-# copy golang:1.25rc1-bookworm then install the stable SDK tarball (see builder stage).
-ARG GOLANG_IMAGE=golang:1.25rc1-bookworm
 ARG DEBIAN_IMAGE=debian:bookworm-slim
-
-# Stage 0: provide Go toolchain files (do not execute commands here)
-FROM ${BASE_REGISTRY}${GOLANG_IMAGE} AS go-toolchain
 
 # Stage 1: build plasmod-server
 FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS builder
@@ -59,12 +51,8 @@ RUN curl -fsSL \
        /usr/local/lib/libonnxruntime.so && \
     ldconfig
 
-# Seed /usr/local/go from the golang image, then replace with the stable SDK tarball
-# (go.mod needs >= 1.25.0; rc1 alone fails with GOTOOLCHAIN=local).
-# Do not rely on `go download` for the toolchain when GOSUMDB=off.
-COPY --from=go-toolchain /usr/local/go /usr/local/go
-RUN rm -rf /usr/local/go \
-    && curl -fsSL "${GO_DOWNLOAD_BASE}/go${GO_VERSION}.linux-amd64.tar.gz" \
+# go.mod needs >= 1.25.0; install a fixed SDK tarball (GOTOOLCHAIN=local).
+RUN curl -fsSL "${GO_DOWNLOAD_BASE}/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -C /usr/local -xzf -
 ENV PATH=/usr/local/go/bin:${PATH}
 ENV GOTOOLCHAIN=local
