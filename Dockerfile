@@ -1,6 +1,6 @@
 #
-# Multi-stage build for CogDB / ANDB API server (README Member A task 1).
-#   docker build -t plasmod:latest .
+# Multi-stage build for Plasmod API server (split :9091 + :19530).
+#   docker build -t oneflybird/plasmod:1.21 .
 #
 # Notes:
 # - go.mod replaces github.com/go-skynet/go-llama.cpp with /tmp/go-llama-cpp.
@@ -40,6 +40,8 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     cmake \
     curl \
     git \
+    libgomp1 \
+    libopenblas-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -80,13 +82,23 @@ ENV GOSUMDB=${GOSUMDB}
 
 COPY . .
 
+# C++ warm-segment ANN (POST /v1/ingest/vectors, HNSW). Required for Milvus-style vector ingest.
+RUN cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build cpp/build --parallel "$(nproc)" \
+    && mkdir -p /src/out/lib \
+    && cp cpp/build/libplasmod_retrieval.so /src/out/lib/ \
+    && find cpp/build -name 'libknowhere*.so' -exec cp -t /src/out/lib {} +
+
 ENV CGO_ENABLED=1
 ENV LIBRARY_PATH=/tmp/go-llama-cpp
 ENV C_INCLUDE_PATH=/tmp/go-llama-cpp
+ENV CGO_CFLAGS="-I/src/cpp/include"
+ENV CGO_LDFLAGS="-L/src/cpp/build -lplasmod_retrieval -Wl,-rpath,/usr/local/lib"
 
 RUN mkdir -p /src/bin \
     && go version \
-    && go build -buildvcs=false -mod=vendor -trimpath -ldflags="-s -w" -o /src/bin/plasmod-server ./src/cmd/server
+    && go build -buildvcs=false -mod=vendor -trimpath -tags retrieval \
+        -ldflags="-s -w" -o /src/bin/plasmod-server ./src/cmd/server
 
 # Stage 2: minimal runtime (no shell wrapper)
 FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS runtime
@@ -101,10 +113,14 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     ca-certificates \
     curl \
     libc6-dev \
+    libgomp1 \
+    libopenblas0 \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy ONNX Runtime library from builder stage.
+# ONNX Runtime (embedding) + C++ retrieval bridge (warm HNSW / ingest_vectors).
 COPY --from=builder /usr/local/lib/libonnxruntime.so /usr/local/lib/libonnxruntime.so
+COPY --from=builder /src/out/lib/ /usr/local/lib/
 RUN ldconfig
 
 COPY --from=builder /src/bin/plasmod-server /usr/local/bin/plasmod-server
