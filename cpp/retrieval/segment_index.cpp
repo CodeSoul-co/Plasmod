@@ -38,7 +38,7 @@ namespace {
 // Index tuning parameters
 constexpr int kHNSW_M              = 16;
 constexpr int kHNSW_EfConstruction = 256;
-constexpr int kHNSW_EfSearch       = 64;
+constexpr int kHNSW_EfSearch       = 256;
 constexpr const char* kMetricType  = "IP";
 constexpr const char* kIndexType   = "HNSW";
 
@@ -48,6 +48,14 @@ constexpr int kErrNotFound      = -1;
 constexpr int kErrInvalidParam  = -2;
 constexpr int kErrBuildFailed   = -3;
 constexpr int kErrSearchFailed  = -4;
+
+int DefaultIVFPQM(int dim) {
+    const int target = std::min(dim, 96);
+    for (int m = target; m >= 1; --m) {
+        if (dim % m == 0) return m;
+    }
+    return 16;
+}
 
 }  // namespace
 
@@ -127,7 +135,7 @@ int SegmentIndexManager::DoSearch(Entry& entry,
 
         // Build search config based on index type
         knowhere::Json cfg;
-        cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
+        cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
         cfg[knowhere::meta::DIM]          = entry.dim;
         cfg[knowhere::meta::TOPK]         = topk;
 
@@ -178,9 +186,9 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     thread_local knowhere::DataSetPtr  tls_qds;
 
     if (!tls_cfg_init) {
-        tls_cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
         tls_cfg_init = true;
     }
+    tls_cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
     tls_cfg[knowhere::meta::DIM]     = entry.dim;
     tls_cfg[knowhere::meta::TOPK]    = topk;
 
@@ -271,6 +279,7 @@ int SegmentIndexManager::BuildSegment(const std::string& segment_id,
     entry->num_vectors = n;
     // Store index type and params from the config keys
     entry->index_type   = kIndexType;  // "HNSW" by default
+    entry->metric_type  = kMetricType;
     entry->ivf_nlist    = 128;         // default IVF centroid count
     entry->ivf_nprobe   = 32;          // default IVF probe count
     entry->ivf_pq_m     = 16;
@@ -313,9 +322,14 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     }
 
     auto* cfg = new knowhere::Json();
-    (*cfg)[knowhere::meta::METRIC_TYPE] = kMetricType;
+    std::string metric_type = kMetricType;
+    if (itype == "IVF_PQ") {
+        // Match DenseRetriever: Knowhere IVF_PQ behaves correctly with L2.
+        // For normalized vectors, L2 and cosine/IP produce equivalent ranking.
+        metric_type = "L2";
+    }
+    (*cfg)[knowhere::meta::METRIC_TYPE] = metric_type;
     (*cfg)[knowhere::meta::DIM]         = dim;
-    (*cfg)[knowhere::meta::TOPK]        = nprobe > 0 ? nprobe : kHNSW_EfSearch;
 
     if (itype == "HNSW") {
         (*cfg)[knowhere::indexparam::M] = kHNSW_M;
@@ -324,7 +338,7 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
         (*cfg)[knowhere::indexparam::NLIST] = nlist > 0 ? nlist : 128;
     } else if (itype == "IVF_PQ") {
         (*cfg)[knowhere::indexparam::NLIST] = nlist > 0 ? nlist : 128;
-        (*cfg)[knowhere::indexparam::M]     = pq_m     > 0 ? pq_m     : 16;
+        (*cfg)[knowhere::indexparam::M]     = pq_m     > 0 ? pq_m     : DefaultIVFPQM(dim);
         (*cfg)[knowhere::indexparam::NBITS] = pq_nbits > 0 ? pq_nbits : 8;
     } else if (itype == "IVF_SQ8") {
         (*cfg)[knowhere::indexparam::NLIST] = nlist > 0 ? nlist : 128;
@@ -367,9 +381,10 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     entry->dim          = dim;
     entry->num_vectors  = n;
     entry->index_type   = itype;
+    entry->metric_type  = metric_type;
     entry->ivf_nlist   = nlist > 0 ? nlist : 128;
     entry->ivf_nprobe  = nprobe > 0 ? nprobe : 32;
-    entry->ivf_pq_m     = pq_m > 0 ? pq_m : 16;
+    entry->ivf_pq_m     = pq_m > 0 ? pq_m : DefaultIVFPQM(dim);
     entry->ivf_pq_nbits = pq_nbits > 0 ? pq_nbits : 8;
     entry->ivf_sq_type = stype;
 
@@ -420,7 +435,7 @@ int SegmentIndexManager::SearchRaw(const std::string& segment_id,
     // Build standard config (no OpenMP, no hot-path).
     // Per-index-type search params: EF for HNSW, NPROBE for IVF variants.
     knowhere::Json cfg;
-    cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
+    cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
     cfg[knowhere::meta::DIM]        = entry.dim;
     cfg[knowhere::meta::TOPK]       = topk;
 

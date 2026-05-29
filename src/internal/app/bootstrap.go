@@ -52,6 +52,9 @@ func BuildServer() (*http.Server, func() error, error) {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
+	readTimeout := resolveHTTPTimeout("PLASMOD_HTTP_READ_TIMEOUT_SECONDS", 30*time.Second)
+	writeTimeout := resolveHTTPTimeout("PLASMOD_HTTP_WRITE_TIMEOUT_SECONDS", 60*time.Second)
+	idleTimeout := resolveHTTPTimeout("PLASMOD_HTTP_IDLE_TIMEOUT_SECONDS", 120*time.Second)
 
 	// ── Vector-only mode (Baseline 1) ────────────────────────────────────────
 	// When PLASMOD_VECTOR_ONLY_MODE=true, disable graph expansion, policy
@@ -543,11 +546,23 @@ func BuildServer() (*http.Server, func() error, error) {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
-		ReadTimeout:       30 * time.Second,
+		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 	return srv, shutdown, nil
+}
+
+func resolveHTTPTimeout(envName string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
 }
