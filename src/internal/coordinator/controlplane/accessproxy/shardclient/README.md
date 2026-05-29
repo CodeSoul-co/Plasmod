@@ -1,10 +1,10 @@
 # ShardClient Package
 
-The `shardclient` package provides client-side connection management and load balancing for communicating with QueryNode shards in the Milvus distributed architecture. It manages QueryNode client connections, caches shard leader information, and implements intelligent request routing strategies.
+The `shardclient` package provides client-side connection management and load balancing for communicating with QueryNode shards in the distributed query architecture. It manages QueryNode client connections, caches shard leader information, and implements intelligent request routing strategies.
 
 ## Overview
 
-In Milvus, collections are divided into shards (channels), and each shard has multiple replicas distributed across different QueryNodes for high availability and load balancing. The `shardclient` package is responsible for:
+Collections are divided into shards (channels), and each shard has multiple replicas distributed across different QueryNodes for high availability and load balancing. The `shardclient` package is responsible for:
 
 1. **Connection Management**: Maintaining a pool of gRPC connections to QueryNodes with automatic lifecycle management
 2. **Shard Leader Cache**: Caching the mapping of shards to their leader QueryNodes to reduce coordination overhead
