@@ -5,11 +5,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Default to Release build for performance (unless explicitly overridden)
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
+# Default to Release (-O3 -DNDEBUG). Without this, single-config generators
+# (Unix Makefiles / Ninja) compile with no -O flag, which makes HNSW/FAISS
+# tight loops 3-5x slower. Override with -DCMAKE_BUILD_TYPE=Debug if needed.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        Debug Release RelWithDebInfo MinSizeRel)
+    message(STATUS "CMAKE_BUILD_TYPE not set; defaulting to Release")
 endif()
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 # =============================================================================
 # Build Options
