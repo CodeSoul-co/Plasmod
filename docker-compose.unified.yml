@@ -63,6 +63,8 @@ services:
     environment:
       PLASMOD_LISTEN_MODE: unified
       PLASMOD_HTTP_ADDR: 0.0.0.0:8080
+      PLASMOD_SHOW_BANNER: "1"
+      PLASMOD_PUBLIC_HOST: 127.0.0.1
       APP_MODE: ${APP_MODE:-prod}
       ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER: "true"
       PLASMOD_STORAGE: disk

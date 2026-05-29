@@ -659,6 +659,7 @@ func RunServers(servers []*http.Server) error {
 	if len(servers) == 0 {
 		return fmt.Errorf("no http servers to run")
 	}
+	PrintStartupBanner(ResolveListenConfig())
 	errCh := make(chan error, len(servers))
 	for _, srv := range servers {
 		s := srv

@@ -112,6 +112,8 @@ COPY --from=builder /src/bin/plasmod-server /usr/local/bin/plasmod-server
 ENV PLASMOD_LISTEN_MODE=split
 ENV PLASMOD_MGMT_ADDR=0.0.0.0:9091
 ENV PLASMOD_API_ADDR=0.0.0.0:19530
+ENV PLASMOD_SHOW_BANNER=1
+ENV PLASMOD_PUBLIC_HOST=127.0.0.1
 EXPOSE 9091 19530
 
 ENTRYPOINT ["/usr/local/bin/plasmod-server"]
