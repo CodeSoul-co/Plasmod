@@ -20,6 +20,7 @@
 #include "knowhere/bitsetview.h"
 #include "knowhere/comp/hnsw_fast.h"
 
+#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -84,8 +85,9 @@ void SegmentIndexManager::DestroyEntry(Entry& e) {
 //
 // Path selection (checked in order):
 //   1. nq==1, no filter → HnswFastSearchFloat hot path (always)
-//   2. plugin mode == L2_NORM_SORT → reorder + OpenMP per-query dispatch
-//   3. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
+//   2. HNSW + L2_NORM_SORT → reorder + OpenMP per-query HnswFastSearchFloat
+//   3. IVF + L2_NORM_SORT → reorder + full-batch Knowhere call
+//   4. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
 //
 // Filter path always falls through to Knowhere full-batch regardless of plugin.
 int SegmentIndexManager::DoSearch(Entry& entry,
@@ -116,14 +118,47 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     // IVF types: NPROBE set inside the full-batch path (tls_cfg declared there).
 
 
-    // L2_NORM_SORT path: query reordering + full-batch Knowhere search.
-    // Reorder queries by L2 norm for cache locality, then use Knowhere's
-    // batch search which handles OpenMP parallelization internally.
-    // Works for all index types (HNSW, IVF_FLAT, IVF_PQ, IVF_SQ8).
+    // L2_NORM_SORT path.
+    //
+    // HNSW: reorder queries by L2 norm, then dispatch reordered ranges across
+    // OpenMP threads. Each query calls HnswFastSearchFloat directly and writes
+    // back to its original output slot. This avoids Knowhere wrapper overhead
+    // and restores the intended HNSW batch optimization path.
+    //
+    // IVF: reorder queries for locality, then use Knowhere full-batch search;
+    // FAISS/Knowhere handles index-specific OpenMP internally.
 #if HAVE_OMP
     if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT && nq > 1) {
         std::vector<int64_t> order(nq);
         plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
+
+        if (entry.index_type == "HNSW") {
+            std::atomic<int> first_rc{kOK};
+#pragma omp parallel
+            {
+                const int thread_idx = omp_get_thread_num();
+                const int num_threads = omp_get_num_threads();
+                QueryChunk chunk = plugin->GetOptimizedChunks(nq, num_threads, thread_idx);
+                for (int64_t pos = chunk.start; pos < chunk.end; ++pos) {
+                    const int64_t orig = order[pos];
+                    int rc = knowhere::HnswFastSearchFloat(
+                        idx->Node(),
+                        query + orig * entry.dim,
+                        topk,
+                        ef,
+                        nullptr,
+                        0,
+                        out_ids + orig * topk,
+                        out_dists + orig * topk);
+                    if (rc != 0) {
+                        int expected = kOK;
+                        first_rc.compare_exchange_strong(expected, rc);
+                    }
+                }
+                plugin->OnChunkDone(chunk.start, chunk.end, thread_idx);
+            }
+            return first_rc.load() == kOK ? kOK : kErrSearchFailed;
+        }
 
         // Reordered query matrix
         std::vector<float> reordered(static_cast<size_t>(nq) * entry.dim);
