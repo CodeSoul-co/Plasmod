@@ -555,8 +555,9 @@ func (p *SegmentDataPlane) RegisterWarmSegment(segmentID string, objectIDs []str
 // This is the internal fast path used by the HTTP batch endpoint to avoid
 // string conversion overhead.
 //
-// When nq > pluginChunkSize (default 500), automatically chunks the batch
-// so each DoSearch call stays near the L2NormSort plugin's performance sweet spot.
+// When nq > pluginChunkSize (default 10000), automatically chunks the batch
+// to cap request-local result buffers. Keep the default large enough that
+// benchmark-sized batches reach the C++ full-batch path in one call.
 func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
 	if segmentID == "" {
 		return nil, nil, fmt.Errorf("segment_id is required")
@@ -589,17 +590,15 @@ func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK
 	return allIDs, allDists, nil
 }
 
-// pluginChunkSize returns the sweet-spot batch size for the L2NormSort plugin.
-// At this size the OpenMP parallel per-query path is most efficient.
-// Tuned empirically; raise if the HNSW graph is small enough that more
-// threads per query reduces time.
+// pluginChunkSize returns the maximum number of queries per C++ search call.
+// Override with PLASMOD_PLUGIN_CHUNK_SIZE for memory-constrained runs.
 func pluginChunkSize() int {
 	if s := os.Getenv("PLASMOD_PLUGIN_CHUNK_SIZE"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			return n
 		}
 	}
-	return 500  // default sweet spot
+	return 10000
 }
 
 // SearchWarmSegmentBatchRaw performs batch ANN search via SearchRaw (no plugin reorder).
