@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -50,6 +51,30 @@ namespace plasmod {
 static constexpr int kDefaultM              = 16;
 static constexpr int kDefaultEfConstruction = 256;
 static constexpr int kDefaultEfSearch        = 64;
+
+static int envInt(const char* name, int fallback, int min_value) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    long value = std::strtol(raw, &end, 10);
+    if (!end || *end != '\0' || value < min_value) return fallback;
+    return static_cast<int>(value);
+}
+
+static int defaultHNSWM() {
+    static const int value = envInt("PLASMOD_HNSW_M", kDefaultM, 2);
+    return value;
+}
+
+static int defaultHNSWEfConstruction() {
+    static const int value = envInt("PLASMOD_HNSW_EF_CONSTRUCTION", kDefaultEfConstruction, 1);
+    return value;
+}
+
+static int defaultHNSWEfSearch() {
+    static const int value = envInt("PLASMOD_HNSW_EF_SEARCH", kDefaultEfSearch, 1);
+    return value;
+}
 
 // ── GPU detection (runtime) ──────────────────────────────────────────────────
 // Returns true if at least one CUDA GPU is visible to the driver.
@@ -149,9 +174,9 @@ class HNSWIndexWrapper {
         build_cfg_[knowhere::meta::TOPK]        = kDefaultEfSearch;
 
         if (index_type_ == "HNSW") {
-            int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : kDefaultM;
-            int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : kDefaultEfConstruction;
-            build_cfg_[knowhere::indexparam::M]             = M;
+            int M   = cfg_.hnsw_m > 0              ? cfg_.hnsw_m              : defaultHNSWM();
+            int efC = cfg_.hnsw_ef_construction > 0 ? cfg_.hnsw_ef_construction : defaultHNSWEfConstruction();
+            build_cfg_[knowhere::indexparam::HNSW_M]        = M;
             build_cfg_[knowhere::indexparam::EFCONSTRUCTION] = efC;
         } else if (index_type_ == "IVF_FLAT") {
             // IVF clustering: NLIST = #coarse centroids built at index time;
@@ -356,7 +381,7 @@ class HNSWIndexWrapper {
             // Build up the static portion of the search config.
             tls_cfg[knowhere::meta::METRIC_TYPE] = build_cfg_[knowhere::meta::METRIC_TYPE];
             if (index_type_ == "HNSW") {
-                tls_cfg[knowhere::indexparam::M]             = build_cfg_[knowhere::indexparam::M];
+                tls_cfg[knowhere::indexparam::HNSW_M]        = build_cfg_[knowhere::indexparam::HNSW_M];
                 tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = build_cfg_[knowhere::indexparam::EFCONSTRUCTION];
             } else if (index_type_ == "IVF_SQ8") {
                 tls_cfg[knowhere::indexparam::SQ_TYPE] = build_cfg_[knowhere::indexparam::SQ_TYPE];
@@ -366,7 +391,7 @@ class HNSWIndexWrapper {
         tls_cfg[knowhere::meta::DIM]          = dim_;
         tls_cfg[knowhere::meta::TOPK]         = topk;
         if (index_type_ == "HNSW") {
-            tls_cfg[knowhere::indexparam::EF] = std::max(topk * 2, kDefaultEfSearch);
+            tls_cfg[knowhere::indexparam::EF] = std::max(topk * 2, defaultHNSWEfSearch());
         } else if (index_type_ == "IVF_FLAT" ||
                    index_type_ == "IVF_PQ"    ||
                    index_type_ == "IVF_SQ8") {
