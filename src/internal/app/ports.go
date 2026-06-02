@@ -19,6 +19,7 @@ const (
 
 	PortMgmt               = 9091
 	PortAPI                = 19530
+	PortGRPC               = 19531 // PlasmodAPIService (parallel to HTTP JSON on PortAPI)
 	PortObjectStore        = 9000
 	PortObjectStoreConsole = 9001
 )

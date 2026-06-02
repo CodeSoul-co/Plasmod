@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"google.golang.org/grpc"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,9 +38,18 @@ import (
 	"plasmod/src/internal/worker/nodes"
 )
 
+// ServerBundle holds HTTP and optional gRPC listeners produced by BuildServer.
+type ServerBundle struct {
+	HTTPServers []*http.Server
+	GRPCServer  *grpc.Server
+	GRPCAddr    string
+	GRPCEnabled bool
+	Shutdown    func() error
+}
+
 // BuildServer constructs and wires all Plasmod server components.
-// Returns one or more HTTP servers (unified dev :8080, or split mgmt :9091 + api :19530),
-// a cleanup function, and any build error.
+// Returns HTTP servers (unified dev :8080, or split mgmt :9091 + api :19530),
+// an optional gRPC server (:19531 by default), a cleanup function, and any build error.
 //
 // Listen modes (see ports.go):
 //   - PLASMOD_LISTEN_MODE=unified (default): PLASMOD_HTTP_ADDR → 127.0.0.1:8080
@@ -46,10 +57,10 @@ import (
 //
 // Usage:
 //
-//	servers, cleanup, err := app.BuildServer()
+//	bundle, err := app.BuildServer()
 //	if err != nil { ... }
-//	defer cleanup()
-//	app.RunServers(servers)
+//	defer bundle.Shutdown()
+//	app.RunServers(bundle)
 
 // parseHTTPDuration reads a time.ParseDuration value from env.
 // Empty env yields defaultVal. "0", "none", or "off" mean no timeout (0).
@@ -69,7 +80,7 @@ func parseHTTPDuration(envKey string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
-func BuildServer() ([]*http.Server, func() error, error) {
+func BuildServer() (*ServerBundle, error) {
 	listenCfg := ResolveListenConfig()
 
 	// ── Vector-only mode (Baseline 1) ────────────────────────────────────────
@@ -91,7 +102,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 	// for Badger-backed persistent storage under PLASMOD_DATA_DIR.
 	bundle, err := storage.BuildRuntimeFromEnv()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
@@ -292,7 +303,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 		ctx := context.Background()
 		embedder, embedderErr = embedding.NewOpenAI(ctx, cfg, embedderDim)
 		if embedderErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, embedderErr)
+			return nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: %s model=%s dim=%d", embedderType, model, embedderDim)
 	case "cohere":
@@ -306,12 +317,12 @@ func BuildServer() ([]*http.Server, func() error, error) {
 			}
 		}
 		if embedderDim <= 0 {
-			return nil, nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
+			return nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
 		}
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		embedder, embedderErr = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
 		if embedderErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", embedderErr)
+			return nil, fmt.Errorf("failed to initialize Cohere embedder: %w", embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
 	case "huggingface":
@@ -338,7 +349,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 			WaitForModel: true,
 		}, embedderDim)
 		if hfErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize HuggingFace embedder: %w", hfErr)
+			return nil, fmt.Errorf("failed to initialize HuggingFace embedder: %w", hfErr)
 		}
 		embedder = hfEmbedder
 		if embedderDim <= 0 {
@@ -353,7 +364,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 		}
 		vaEmbedder, vaErr := embedding.NewVertexAIFromEnv(context.Background(), embedderDim)
 		if vaErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize VertexAI embedder: %w", vaErr)
+			return nil, fmt.Errorf("failed to initialize VertexAI embedder: %w", vaErr)
 		}
 		embedder = vaEmbedder
 		if embedderDim <= 0 {
@@ -372,7 +383,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 		}
 		onnxEmbedder, onnxErr := embedding.NewOnnxFromEnv(context.Background(), embedderDim)
 		if onnxErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
+			return nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
 		}
 		embedder = onnxEmbedder
 		log.Printf("[bootstrap] embedder: onnx model=%s dim=%d",
@@ -385,7 +396,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 		}
 		trtEmbedder, trtErr := embedding.NewTensorRTFromEnv(context.Background(), embedderDim)
 		if trtErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize TensorRT embedder: %w", trtErr)
+			return nil, fmt.Errorf("failed to initialize TensorRT embedder: %w", trtErr)
 		}
 		embedder = trtEmbedder
 		if embedderDim <= 0 {
@@ -415,10 +426,10 @@ func BuildServer() ([]*http.Server, func() error, error) {
 		if m, parseErr := strconv.Atoi(pluginMode); parseErr == nil && m >= 0 && m <= 1 {
 			mode = retrievalplane.BatchPluginMode(m)
 		} else {
-			return nil, nil, fmt.Errorf("PLASMOD_BATCH_PLUGIN must be 0 or 1, got: %s", pluginMode)
+			return nil, fmt.Errorf("PLASMOD_BATCH_PLUGIN must be 0 or 1, got: %s", pluginMode)
 		}
 		if err := retrievalplane.SetBatchPlugin(mode); err != nil {
-			return nil, nil, fmt.Errorf("SetBatchPlugin(%d): %w", mode, err)
+			return nil, fmt.Errorf("SetBatchPlugin(%d): %w", mode, err)
 		}
 		log.Printf("[bootstrap] batch plugin: mode=%d", mode)
 	}
@@ -428,7 +439,7 @@ func BuildServer() ([]*http.Server, func() error, error) {
 
 	plane, err := dataplane.NewTieredDataPlaneWithEmbedderAndConfig(tieredObjects, embedder, algoCfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	embeddingFamily := storage.ResolveEmbeddingFamily(nil)
 	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
@@ -651,23 +662,54 @@ func BuildServer() ([]*http.Server, func() error, error) {
 		cancel()
 		return bundle.Close()
 	}
-	return servers, shutdown, nil
+
+	grpcCfg := ResolveGRPCConfig()
+	var grpcSrv *grpc.Server
+	if grpcCfg.Enabled {
+		grpcSrv = NewGRPCServer(gateway)
+		log.Printf("[bootstrap] gRPC enabled on %s", grpcCfg.Addr)
+	} else {
+		log.Printf("[bootstrap] gRPC disabled (PLASMOD_GRPC_ENABLED=0)")
+	}
+
+	return &ServerBundle{
+		HTTPServers: servers,
+		GRPCServer:  grpcSrv,
+		GRPCAddr:    grpcCfg.Addr,
+		GRPCEnabled: grpcCfg.Enabled,
+		Shutdown:    shutdown,
+	}, nil
 }
 
-// RunServers starts all HTTP listeners; blocks until one returns a non-ErrServerClosed error.
-func RunServers(servers []*http.Server) error {
-	if len(servers) == 0 {
+// RunServers starts HTTP and optional gRPC listeners; blocks until one returns a non-ErrServerClosed error.
+func RunServers(bundle *ServerBundle) error {
+	if bundle == nil {
+		return fmt.Errorf("server bundle is nil")
+	}
+	if len(bundle.HTTPServers) == 0 {
 		return fmt.Errorf("no http servers to run")
 	}
-	PrintStartupBanner(ResolveListenConfig())
-	errCh := make(chan error, len(servers))
-	for _, srv := range servers {
+	PrintStartupBanner(ResolveListenConfig(), bundle)
+
+	nListeners := len(bundle.HTTPServers)
+	if bundle.GRPCEnabled && bundle.GRPCServer != nil {
+		nListeners++
+	}
+	errCh := make(chan error, nListeners)
+
+	for _, srv := range bundle.HTTPServers {
 		s := srv
 		go func() {
-			log.Printf("Plasmod server listen on %s", s.Addr)
+			log.Printf("Plasmod HTTP listen on %s", s.Addr)
 			errCh <- s.ListenAndServe()
 		}()
 	}
+	if bundle.GRPCEnabled && bundle.GRPCServer != nil {
+		go func() {
+			errCh <- RunGRPC(bundle.GRPCServer, bundle.GRPCAddr)
+		}()
+	}
+
 	err := <-errCh
 	if err == http.ErrServerClosed {
 		return nil

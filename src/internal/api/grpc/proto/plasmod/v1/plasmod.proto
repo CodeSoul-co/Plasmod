@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package plasmod.v1;
+
+option go_package = "plasmod/src/internal/api/grpc/pb/plasmod/v1;plasmodv1";
+
+// PlasmodAPIService exposes the same warm-segment ingest/query semantics as the HTTP JSON API.
+// Default listen: PLASMOD_GRPC_ADDR (see app/ports.go). HTTP remains on :8080 / :19530.
+service PlasmodAPIService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc IngestEvent(IngestEventRequest) returns (IngestEventResponse);
+  rpc IngestVectors(IngestVectorsRequest) returns (IngestVectorsResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc QueryBatch(QueryBatchRequest) returns (QueryBatchResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string transport = 2;
+}
+
+message IngestEventRequest {
+  string event_json = 1; // full schemas.Event JSON (same as POST /v1/ingest/events)
+}
+
+message IngestEventResponse {
+  string ack_json = 1;
+}
+
+message IngestVectorsRequest {
+  string segment_id = 1;
+  repeated string object_ids = 2;
+  repeated VectorRow vectors = 3;
+  string index_type = 4; // HNSW, IVF_FLAT, IVF_PQ, IVF_SQ8, DISKANN
+  int32 ivf_nlist = 5;
+  int32 ivf_nprobe = 6;
+  int32 ivf_m = 7;
+  int32 ivf_nbits = 8;
+  string ivf_sq_type = 9;
+}
+
+message VectorRow {
+  repeated float values = 1;
+}
+
+message IngestVectorsResponse {
+  string status = 1;
+  string segment_id = 2;
+  int32 ingested = 3;
+  int32 vector_dim = 4;
+  string index_type = 5;
+  bool direct_warm = 6;
+}
+
+message QueryRequest {
+  string query_json = 1; // full schemas.QueryRequest JSON (POST /v1/query)
+}
+
+message QueryResponse {
+  string result_json = 1;
+}
+
+message QueryBatchRequest {
+  string agent_mode = 1;
+  string warm_segment_id = 2;
+  int32 top_k = 3;
+  repeated VectorRow vectors = 4;
+  repeated string source_ids = 5;
+  repeated RowLineage row_lineage = 6;
+  bool search_raw = 7;
+}
+
+message RowLineage {
+  repeated int32 source_indices = 1;
+}
+
+message QueryBatchResponse {
+  string status = 1;
+  string agent_mode = 2;
+  string warm_segment_id = 3;
+  repeated string source_ids = 4;
+  repeated QueryBatchRow rows = 5;
+  map<string, StringList> by_source = 6;
+}
+
+message QueryBatchRow {
+  int32 row_index = 1;
+  repeated string object_ids = 2;
+  repeated float distances = 3;
+  repeated int32 source_refs = 4;
+}
+
+message StringList {
+  repeated string values = 1;
+}

@@ -2,6 +2,7 @@
 #
 # Host ports:
 #   Plasmod (admin + SDK + internal rpc)  8080
+#   Plasmod gRPC API                      19531
 #   MinIO S3 API                          9000
 #   MinIO console                         9001
 #
@@ -60,9 +61,11 @@ services:
       - plasmod_data:/data
     ports:
       - "8080:8080"
+      - "19531:19531"
     environment:
       PLASMOD_LISTEN_MODE: unified
       PLASMOD_HTTP_ADDR: 0.0.0.0:8080
+      PLASMOD_GRPC_ADDR: 0.0.0.0:19531
       PLASMOD_SHOW_BANNER: "1"
       PLASMOD_PUBLIC_HOST: 127.0.0.1
       APP_MODE: ${APP_MODE:-prod}

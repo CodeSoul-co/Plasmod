@@ -29,12 +29,17 @@ func TestBuildStartupBannerLines_splitMode(t *testing.T) {
 		MgmtAddr: "0.0.0.0:9091",
 		APIAddr:  "0.0.0.0:19530",
 	}
-	text := strings.Join(buildStartupBannerLines(cfg), "\n")
+	text := strings.Join(buildStartupBannerLines(cfg, &ServerBundle{
+		GRPCEnabled: true,
+		GRPCAddr:    "0.0.0.0:19531",
+	}), "\n")
 
 	for _, want := range []string{
 		"Listen mode  : split",
 		"http://127.0.0.1:9091/healthz",
 		"http://127.0.0.1:19530",
+		"gRPC API",
+		"19531",
 		"PLASMOD_ADMIN_API_KEY : supe",
 		"PLASMOD_STORAGE  : disk",
 		"minio:9000  bucket=plasmod-integration",

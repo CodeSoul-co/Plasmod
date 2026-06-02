@@ -550,39 +550,14 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.WarmSegmentID) != "" {
-		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK, req.EmbeddingVector)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, map[string]any{
-			"status":          "ok",
-			"objects":         ids,
-			"warm_segment_id": req.WarmSegmentID,
-			"tier":            "warm_segment",
-		})
+	resp, err := g.ServiceQuery(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.LatestBatchOnly {
-		workspaceID := strings.TrimSpace(req.WorkspaceID)
-		datasetName := strings.TrimSpace(req.DatasetName)
-		sourceFileName := strings.TrimSpace(req.SourceFileName)
-		if workspaceID == "" {
-			http.Error(w, "latest_batch_only requires workspace_id", http.StatusBadRequest)
-			return
-		}
-		if datasetName == "" && sourceFileName == "" {
-			http.Error(w, "latest_batch_only requires dataset_name or source_file_name", http.StatusBadRequest)
-			return
-		}
-	}
-	resp := g.runtime.ExecuteQuery(req)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	writeJSON(w, resp)
 }
 
-// handleQueryBatch runs warm-segment batch ANN on a query-vector matrix and fans out hits using row_lineage.
 func (g *Gateway) handleQueryBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -593,71 +568,12 @@ func (g *Gateway) handleQueryBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	segID := strings.TrimSpace(req.WarmSegmentID)
-	if segID == "" {
-		http.Error(w, "warm_segment_id is required", http.StatusBadRequest)
-		return
-	}
-	topK := req.TopK
-	if topK <= 0 {
-		topK = 10
-	}
-	nq := len(req.Vectors)
-	if nq == 0 {
-		http.Error(w, "vectors must contain at least one row", http.StatusBadRequest)
-		return
-	}
-	dim := len(req.Vectors[0])
-	if dim <= 0 {
-		http.Error(w, "each vector row must be non-empty", http.StatusBadRequest)
-		return
-	}
-	for i, row := range req.Vectors {
-		if len(row) != dim {
-			http.Error(w, fmt.Sprintf("vectors[%d] length %d must match dim %d", i, len(row), dim), http.StatusBadRequest)
-			return
-		}
-	}
-	sources, lineage, err := schemas.ResolveWarmVectorBatchLineage(req.AgentMode, nq, req.SourceIDs, req.RowLineage)
+	resp, err := g.ServiceQueryBatch(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	flat := make([]float32, 0, nq*dim)
-	for _, row := range req.Vectors {
-		flat = append(flat, row...)
-	}
-	rowObjIDs, rowDists, err := g.runtime.SearchWarmSegmentBatchObjectIDs(segID, nq, topK, flat, req.SearchRaw)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	byIdx := schemas.MergeWarmBatchLineage(rowObjIDs, lineage, len(sources))
-	bySource := make(map[string][]string, len(sources))
-	for i, sid := range sources {
-		bySource[sid] = byIdx[i]
-	}
-	rows := make([]schemas.VectorWarmBatchRowResult, nq)
-	for i := 0; i < nq; i++ {
-		d := rowDists[i]
-		if len(d) == 0 {
-			d = nil
-		}
-		rows[i] = schemas.VectorWarmBatchRowResult{
-			RowIndex:   i,
-			ObjectIDs:  rowObjIDs[i],
-			Distances:  d,
-			SourceRefs: append([]int(nil), lineage[i]...),
-		}
-	}
-	writeJSON(w, schemas.VectorWarmBatchQueryResponse{
-		Status:        "ok",
-		AgentMode:     strings.TrimSpace(strings.ToLower(req.AgentMode)),
-		WarmSegmentID: segID,
-		SourceIDs:     sources,
-		Rows:          rows,
-		BySource:      bySource,
-	})
+	writeJSON(w, resp)
 }
 
 func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
@@ -670,51 +586,12 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	req.SegmentID = strings.TrimSpace(req.SegmentID)
-	if req.SegmentID == "" {
-		req.SegmentID = "warm.default"
-	}
-	if len(req.Vectors) == 0 {
-		http.Error(w, "vectors is required", http.StatusBadRequest)
-		return
-	}
-	indexType, err := schemas.NormalizeWarmIndexType(req.IndexType)
+	out, err := g.ServiceIngestVectors(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if len(req.ObjectIDs) == 0 {
-		req.ObjectIDs = make([]string, len(req.Vectors))
-		for i := range req.Vectors {
-			req.ObjectIDs[i] = fmt.Sprintf("%s_%d", req.SegmentID, i)
-		}
-	}
-	if len(req.ObjectIDs) != len(req.Vectors) {
-		http.Error(w, "object_ids/vectors length mismatch", http.StatusBadRequest)
-		return
-	}
-	var n int
-	if indexType == schemas.WarmIndexHNSW && req.IVFNlist == 0 && req.IVFNprobe == 0 &&
-		req.IVFM == 0 && req.IVFNbits == 0 && strings.TrimSpace(req.IVFSqType) == "" {
-		n, err = g.runtime.IngestVectorsToWarmSegment(req.SegmentID, req.ObjectIDs, req.Vectors)
-	} else {
-		n, err = g.runtime.IngestVectorsToWarmSegmentWithType(
-			req.SegmentID, req.ObjectIDs, req.Vectors,
-			indexType, req.IVFNlist, req.IVFNprobe, req.IVFM, req.IVFNbits, req.IVFSqType,
-		)
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, map[string]any{
-		"status":      "ok",
-		"segment_id":  req.SegmentID,
-		"ingested":    n,
-		"vector_dim":  len(req.Vectors[0]),
-		"index_type":  indexType,
-		"direct_warm": true,
-	})
+	writeJSON(w, out)
 }
 
 // handleWarmSegmentRegister registers a warm segment's object-ID list so that

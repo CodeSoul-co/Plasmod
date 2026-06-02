@@ -13,12 +13,12 @@ const startupBannerWidth = 78
 
 // PrintStartupBanner prints a welcome panel with logo, ports, and runtime hints.
 // Shown by default inside Docker; override with PLASMOD_SHOW_BANNER=0/1.
-func PrintStartupBanner(cfg ListenConfig) {
+func PrintStartupBanner(cfg ListenConfig, bundle *ServerBundle) {
 	if !shouldShowStartupBanner() {
 		return
 	}
 
-	for _, line := range buildStartupBannerLines(cfg) {
+	for _, line := range buildStartupBannerLines(cfg, bundle) {
 		log.Print(line)
 	}
 }
@@ -49,7 +49,7 @@ func isRunningInDocker() bool {
 		strings.Contains(s, "containerd")
 }
 
-func buildStartupBannerLines(cfg ListenConfig) []string {
+func buildStartupBannerLines(cfg ListenConfig, bundle *ServerBundle) []string {
 	host := strings.TrimSpace(os.Getenv("PLASMOD_PUBLIC_HOST"))
 	if host == "" {
 		host = "127.0.0.1"
@@ -128,6 +128,17 @@ func buildStartupBannerLines(cfg ListenConfig) []string {
 			fmt.Sprintf(
 				"    curl %s/v1/query -H \"Content-Type: application/json\" -d '{\"query_text\":\"hello\"}'",
 				baseURL,
+			),
+		)
+	}
+
+	if bundle != nil && bundle.GRPCEnabled {
+		grpcPort, _ := ParsePort(bundle.GRPCAddr)
+		lines = append(lines,
+			fmt.Sprintf(
+				"  gRPC API       : %s  (port %d, plasmod.v1.PlasmodAPIService)",
+				HostPortPair(host, grpcPort),
+				grpcPort,
 			),
 		)
 	}

@@ -6,5 +6,6 @@ app:
   # split (PLASMOD_LISTEN_MODE=split)
   mgmt_addr: 0.0.0.0:9091
   api_addr: 0.0.0.0:19530
+  grpc_addr: 0.0.0.0:19531
   s3_host_port: 127.0.0.1:9000
   s3_console_port: 127.0.0.1:9001
