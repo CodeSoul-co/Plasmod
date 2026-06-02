@@ -128,9 +128,10 @@ private:
 	std::vector<std::string> object_ids;	// Go-visible IDs for SearchWarmSegment
 	// Index type and build params — set at build, read at search.
 	std::string index_type = "HNSW";	// "HNSW"|"IVF_FLAT"|"IVF_PQ"|"IVF_SQ8"|"DISKANN"
+	std::string metric_type = "IP";	// IVF_PQ uses L2 for quantized search on normalized vectors.
 	int     ivf_nlist   = 128;	// IVF coarse-centroid count
 	int     ivf_nprobe  = 32;	// IVF centroids probed per query
-	int     ivf_pq_m     = 16;	// IVF_PQ: number of sub-vectors
+	int     ivf_pq_m     = 96;	// IVF_PQ: number of sub-vectors
 	int     ivf_pq_nbits = 8;	// IVF_PQ: bits per sub-vector
 	std::string ivf_sq_type = "INT8";	// IVF_SQ8: "INT8" or "FP32"
 	std::string diskann_prefix;	// DISKANN index file prefix

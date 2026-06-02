@@ -16,6 +16,9 @@ S3_PREFIX ?= plasmod/integration_tests
 RETRIEVAL_TAG :=
 CPP_LIB := cpp/build/libplasmod_retrieval.dylib
 CPP_LIB_SO := cpp/build/libplasmod_retrieval.so
+
+# Cross-platform CPU count: nproc on Linux, sysctl on macOS.
+NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 ifeq ($(shell [ -f $(CPP_LIB) ] && echo yes),yes)
   RETRIEVAL_TAG := -tags retrieval
   CGO_LDFLAGS := -L$(shell pwd)/cpp/build -lplasmod_retrieval -Wl,-rpath,$(shell pwd)/cpp/build
@@ -68,7 +71,7 @@ setup:
 	cd sdk/nodejs && npm install
 
 dev:
-	CGO_LDFLAGS="$(CGO_LDFLAGS)" RETRIEVAL_TAG="$(RETRIEVAL_TAG)" bash scripts/dev_up.sh
+	PLASMOD_BATCH_PLUGIN=1 CGO_LDFLAGS="$(CGO_LDFLAGS)" RETRIEVAL_TAG="$(RETRIEVAL_TAG)" bash scripts/dev_up.sh
 
 # Second terminal only: assumes `make dev` is already running (default http://127.0.0.1:8080).
 # Uses existing HTTP APIs: POST /v1/ingest/vectors then POST /v1/query/batch (single + multi agent).
@@ -84,14 +87,14 @@ build-benchmark:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o plasmod_test_env/bin/benchmark ./src/cmd/benchmark'
 
 cpp:
-	cmake -S cpp -B cpp/build && cmake --build cpp/build --parallel $(shell nproc)
+	cmake -S cpp -B cpp/build -DANDB_KNOWHERE_FAISS=ON && cmake --build cpp/build --parallel $(NPROC)
 
 cpp-gpu:
-	cmake -S cpp -B cpp/build -DANDB_WITH_GPU=ON && cmake --build cpp/build --parallel $(shell nproc)
+	cmake -S cpp -B cpp/build -DANDB_WITH_GPU=ON && cmake --build cpp/build --parallel $(NPROC)
 
 tensorrt:
 	cmake -S cpp -B cpp/build_trt -DANDB_WITH_TENSORRT=ON -DANDB_WITH_GPU=OFF
-	cmake --build cpp/build_trt --target plasmod_tensorrt --parallel $(shell nproc)
+	cmake --build cpp/build_trt --target plasmod_tensorrt --parallel $(NPROC)
 	CGO_CFLAGS="-I/usr/local/cuda-12.9/include -I/usr/include/x86_64-linux-gnu" \
 	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -lplasmod_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
 	go build -tags cuda,tensorrt,linux ./src/...
@@ -103,7 +106,7 @@ tensorrt-dev:
 	go run -tags cuda,tensorrt,linux ./src/cmd/server'
 
 gguf:
-	$(MAKE) -C libs/go-llama.cpp -j$(shell nproc)
+	$(MAKE) -C libs/go-llama.cpp -j$(NPROC)
 	go build -tags gguf ./src/...
 
 gguf-dev:

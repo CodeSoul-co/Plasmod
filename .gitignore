@@ -100,3 +100,6 @@ Zep.docx
 vendor
 release-pack
 scripts
+
+# Local-only generated docs tree (dev policy)
+docs/

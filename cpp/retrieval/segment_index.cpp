@@ -20,7 +20,9 @@
 #include "knowhere/bitsetview.h"
 #include "knowhere/comp/hnsw_fast.h"
 
+#include <atomic>
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -38,7 +40,7 @@ namespace {
 // Index tuning parameters
 constexpr int kHNSW_M              = 16;
 constexpr int kHNSW_EfConstruction = 256;
-constexpr int kHNSW_EfSearch       = 64;
+constexpr int kHNSW_EfSearch       = 128;
 constexpr const char* kMetricType  = "IP";
 constexpr const char* kIndexType   = "HNSW";
 
@@ -48,6 +50,38 @@ constexpr int kErrNotFound      = -1;
 constexpr int kErrInvalidParam  = -2;
 constexpr int kErrBuildFailed   = -3;
 constexpr int kErrSearchFailed  = -4;
+
+int DefaultIVFPQM(int dim) {
+    const int target = std::min(dim, 96);
+    for (int m = target; m >= 1; --m) {
+        if (dim % m == 0) return m;
+    }
+    return 16;
+}
+
+int EnvInt(const char* name, int fallback, int min_value) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    long value = std::strtol(raw, &end, 10);
+    if (!end || *end != '\0' || value < min_value) return fallback;
+    return static_cast<int>(value);
+}
+
+int HNSWM() {
+    static const int value = EnvInt("PLASMOD_HNSW_M", kHNSW_M, 2);
+    return value;
+}
+
+int HNSWEfConstruction() {
+    static const int value = EnvInt("PLASMOD_HNSW_EF_CONSTRUCTION", kHNSW_EfConstruction, 1);
+    return value;
+}
+
+int HNSWEfSearch() {
+    static const int value = EnvInt("PLASMOD_HNSW_EF_SEARCH", kHNSW_EfSearch, 1);
+    return value;
+}
 
 }  // namespace
 
@@ -76,8 +110,9 @@ void SegmentIndexManager::DestroyEntry(Entry& e) {
 //
 // Path selection (checked in order):
 //   1. nq==1, no filter → HnswFastSearchFloat hot path (always)
-//   2. plugin mode == L2_NORM_SORT → reorder + OpenMP per-query dispatch
-//   3. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
+//   2. HNSW + L2_NORM_SORT → reorder + OpenMP per-query HnswFastSearchFloat
+//   3. IVF + L2_NORM_SORT → reorder + full-batch Knowhere call
+//   4. NONE / no plugin → full-batch Knowhere call (FAISS handles OMP internally)
 //
 // Filter path always falls through to Knowhere full-batch regardless of plugin.
 int SegmentIndexManager::DoSearch(Entry& entry,
@@ -89,7 +124,7 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     auto* cfg = static_cast<knowhere::Json*>(entry.config_ptr);
     if (!idx || !cfg) return kErrNotFound;
 
-    const int ef = std::max(topk * 2, kHNSW_EfSearch);
+    const int ef = std::max(topk * 2, HNSWEfSearch());
 
     // ── Hot path: single query, no filter ─────────────────────────────────────
     // HnswFastSearchFloat only works for HNSW.
@@ -108,14 +143,47 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     // IVF types: NPROBE set inside the full-batch path (tls_cfg declared there).
 
 
-    // L2_NORM_SORT path: query reordering + full-batch Knowhere search.
-    // Reorder queries by L2 norm for cache locality, then use Knowhere's
-    // batch search which handles OpenMP parallelization internally.
-    // Works for all index types (HNSW, IVF_FLAT, IVF_PQ, IVF_SQ8).
+    // L2_NORM_SORT path.
+    //
+    // HNSW: reorder queries by L2 norm, then dispatch reordered ranges across
+    // OpenMP threads. Each query calls HnswFastSearchFloat directly and writes
+    // back to its original output slot. This avoids Knowhere wrapper overhead
+    // and restores the intended HNSW batch optimization path.
+    //
+    // IVF: reorder queries for locality, then use Knowhere full-batch search;
+    // FAISS/Knowhere handles index-specific OpenMP internally.
 #if HAVE_OMP
     if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT && nq > 1) {
         std::vector<int64_t> order(nq);
         plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
+
+        if (entry.index_type == "HNSW") {
+            std::atomic<int> first_rc{kOK};
+#pragma omp parallel
+            {
+                const int thread_idx = omp_get_thread_num();
+                const int num_threads = omp_get_num_threads();
+                QueryChunk chunk = plugin->GetOptimizedChunks(nq, num_threads, thread_idx);
+                for (int64_t pos = chunk.start; pos < chunk.end; ++pos) {
+                    const int64_t orig = order[pos];
+                    int rc = knowhere::HnswFastSearchFloat(
+                        idx->Node(),
+                        query + orig * entry.dim,
+                        topk,
+                        ef,
+                        nullptr,
+                        0,
+                        out_ids + orig * topk,
+                        out_dists + orig * topk);
+                    if (rc != 0) {
+                        int expected = kOK;
+                        first_rc.compare_exchange_strong(expected, rc);
+                    }
+                }
+                plugin->OnChunkDone(chunk.start, chunk.end, thread_idx);
+            }
+            return first_rc.load() == kOK ? kOK : kErrSearchFailed;
+        }
 
         // Reordered query matrix
         std::vector<float> reordered(static_cast<size_t>(nq) * entry.dim);
@@ -127,13 +195,13 @@ int SegmentIndexManager::DoSearch(Entry& entry,
 
         // Build search config based on index type
         knowhere::Json cfg;
-        cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
+        cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
         cfg[knowhere::meta::DIM]          = entry.dim;
         cfg[knowhere::meta::TOPK]         = topk;
 
         if (entry.index_type == "HNSW") {
-            cfg[knowhere::indexparam::M]              = kHNSW_M;
-            cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
+            cfg[knowhere::indexparam::HNSW_M]         = HNSWM();
+            cfg[knowhere::indexparam::EFCONSTRUCTION] = HNSWEfConstruction();
             cfg[knowhere::indexparam::EF]             = ef;
         } else if (entry.index_type == "IVF_FLAT") {
             cfg[knowhere::indexparam::NLIST]  = entry.ivf_nlist;
@@ -178,16 +246,16 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     thread_local knowhere::DataSetPtr  tls_qds;
 
     if (!tls_cfg_init) {
-        tls_cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
         tls_cfg_init = true;
     }
+    tls_cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
     tls_cfg[knowhere::meta::DIM]     = entry.dim;
     tls_cfg[knowhere::meta::TOPK]    = topk;
 
     // Index-type-specific parameters
     if (entry.index_type == "HNSW") {
-        tls_cfg[knowhere::indexparam::M]              = kHNSW_M;
-        tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
+        tls_cfg[knowhere::indexparam::HNSW_M]         = HNSWM();
+        tls_cfg[knowhere::indexparam::EFCONSTRUCTION] = HNSWEfConstruction();
         tls_cfg[knowhere::indexparam::EF]             = ef;
     } else if (entry.index_type == "IVF_FLAT") {
         tls_cfg[knowhere::indexparam::NLIST]  = entry.ivf_nlist;
@@ -237,10 +305,10 @@ int SegmentIndexManager::BuildSegment(const std::string& segment_id,
     // Build config
     auto* cfg = new knowhere::Json();
     (*cfg)[knowhere::meta::METRIC_TYPE]          = kMetricType;
-    (*cfg)[knowhere::indexparam::M]              = kHNSW_M;
-    (*cfg)[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
+    (*cfg)[knowhere::indexparam::HNSW_M]         = HNSWM();
+    (*cfg)[knowhere::indexparam::EFCONSTRUCTION] = HNSWEfConstruction();
     (*cfg)[knowhere::meta::DIM]                  = dim;
-    (*cfg)[knowhere::meta::TOPK]                 = kHNSW_EfSearch;
+    (*cfg)[knowhere::meta::TOPK]                 = HNSWEfSearch();
 
     // Create Knowhere index
     auto result = knowhere::IndexFactory::Instance().Create<float>(
@@ -271,6 +339,7 @@ int SegmentIndexManager::BuildSegment(const std::string& segment_id,
     entry->num_vectors = n;
     // Store index type and params from the config keys
     entry->index_type   = kIndexType;  // "HNSW" by default
+    entry->metric_type  = kMetricType;
     entry->ivf_nlist    = 128;         // default IVF centroid count
     entry->ivf_nprobe   = 32;          // default IVF probe count
     entry->ivf_pq_m     = 16;
@@ -313,18 +382,23 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     }
 
     auto* cfg = new knowhere::Json();
-    (*cfg)[knowhere::meta::METRIC_TYPE] = kMetricType;
+    std::string metric_type = kMetricType;
+    if (itype == "IVF_PQ") {
+        // Match DenseRetriever: Knowhere IVF_PQ behaves correctly with L2.
+        // For normalized vectors, L2 and cosine/IP produce equivalent ranking.
+        metric_type = "L2";
+    }
+    (*cfg)[knowhere::meta::METRIC_TYPE] = metric_type;
     (*cfg)[knowhere::meta::DIM]         = dim;
-    (*cfg)[knowhere::meta::TOPK]        = nprobe > 0 ? nprobe : kHNSW_EfSearch;
 
     if (itype == "HNSW") {
-        (*cfg)[knowhere::indexparam::M] = kHNSW_M;
-        (*cfg)[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
+        (*cfg)[knowhere::indexparam::HNSW_M] = HNSWM();
+        (*cfg)[knowhere::indexparam::EFCONSTRUCTION] = HNSWEfConstruction();
     } else if (itype == "IVF_FLAT") {
         (*cfg)[knowhere::indexparam::NLIST] = nlist > 0 ? nlist : 128;
     } else if (itype == "IVF_PQ") {
         (*cfg)[knowhere::indexparam::NLIST] = nlist > 0 ? nlist : 128;
-        (*cfg)[knowhere::indexparam::M]     = pq_m     > 0 ? pq_m     : 16;
+        (*cfg)[knowhere::indexparam::M]     = pq_m     > 0 ? pq_m     : DefaultIVFPQM(dim);
         (*cfg)[knowhere::indexparam::NBITS] = pq_nbits > 0 ? pq_nbits : 8;
     } else if (itype == "IVF_SQ8") {
         (*cfg)[knowhere::indexparam::NLIST] = nlist > 0 ? nlist : 128;
@@ -332,8 +406,8 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     } else if (itype == "DISKANN") {
         (*cfg)["index_prefix"] = diskann_prefixes_[segment_id];
         (*cfg)["data_path"]    = diskann_prefixes_[segment_id] + ".raw_data.bin";
-        (*cfg)["max_degree"]       = kHNSW_M;
-        (*cfg)["search_list_size"]  = kHNSW_EfSearch;
+        (*cfg)["max_degree"]       = HNSWM();
+        (*cfg)["search_list_size"]  = HNSWEfSearch();
         (*cfg)["pq_code_budget_gb"]  = 0.0f;
         (*cfg)["build_dram_budget_gb"] = 0.0f;
         (*cfg)["disk_pq_dims"]  = 0;
@@ -367,9 +441,10 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     entry->dim          = dim;
     entry->num_vectors  = n;
     entry->index_type   = itype;
+    entry->metric_type  = metric_type;
     entry->ivf_nlist   = nlist > 0 ? nlist : 128;
     entry->ivf_nprobe  = nprobe > 0 ? nprobe : 32;
-    entry->ivf_pq_m     = pq_m > 0 ? pq_m : 16;
+    entry->ivf_pq_m     = pq_m > 0 ? pq_m : DefaultIVFPQM(dim);
     entry->ivf_pq_nbits = pq_nbits > 0 ? pq_nbits : 8;
     entry->ivf_sq_type = stype;
 
@@ -420,14 +495,14 @@ int SegmentIndexManager::SearchRaw(const std::string& segment_id,
     // Build standard config (no OpenMP, no hot-path).
     // Per-index-type search params: EF for HNSW, NPROBE for IVF variants.
     knowhere::Json cfg;
-    cfg[knowhere::meta::METRIC_TYPE] = kMetricType;
+    cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
     cfg[knowhere::meta::DIM]        = entry.dim;
     cfg[knowhere::meta::TOPK]       = topk;
 
     if (entry.index_type == "HNSW") {
-        cfg[knowhere::indexparam::M]              = kHNSW_M;
-        cfg[knowhere::indexparam::EFCONSTRUCTION] = kHNSW_EfConstruction;
-        cfg[knowhere::indexparam::EF]             = std::max(topk * 2, kHNSW_EfSearch);
+        cfg[knowhere::indexparam::HNSW_M]         = HNSWM();
+        cfg[knowhere::indexparam::EFCONSTRUCTION] = HNSWEfConstruction();
+        cfg[knowhere::indexparam::EF]             = std::max(topk * 2, HNSWEfSearch());
     } else if (entry.index_type == "IVF_FLAT") {
         cfg[knowhere::indexparam::NLIST]  = entry.ivf_nlist;
         cfg[knowhere::indexparam::NPROBE] = entry.ivf_nprobe;

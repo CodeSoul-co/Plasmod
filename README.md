@@ -25,6 +25,8 @@ Unlike traditional vector databases that focus primarily on embedding storage an
 
 Plasmod is built for scenarios where agents need more than top-k similarity matches. It supports **event-driven state evolution**, **provenance-aware retrieval**, and **structured evidence assembly** — returning query results that include proof traces, source attribution, and graph context. This makes Plasmod ideal for RAG systems, autonomous agents, long-term memory applications, and multi-agent collaboration workflows.
 
+> **Core thesis:** agent memory, state, event, artifact, and relation should be modeled as first-class database objects, and (batch) query results should return structured evidence rather than only top-k text fragments.
+
 Written in Go with a Python SDK (`pyplasmod`), Plasmod can be deployed via Docker for local development or scaled for production workloads. It integrates with LangChain and other AI frameworks, making it easy to add agent-native memory to your existing AI applications.
 
 ## Quickstart
@@ -290,6 +292,7 @@ This starts Plasmod with MinIO for S3-compatible cold storage.
 
 ## Contributing
 
+<<<<<<< HEAD
 The Plasmod open-source project welcomes contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting patches and the development workflow.
 
 ### Build Plasmod from Source
@@ -336,3 +339,9 @@ Plasmod is licensed under the [MIT License](LICENSE).
 **[GitHub](https://github.com/CodeSoul-co/Plasmod)** · **[Python SDK](https://github.com/CodeSoul-co/pyplasmod)** · **[Docker Hub](https://hub.docker.com/r/oneflybird/plasmod)** · **[Issues](https://github.com/CodeSoul-co/Plasmod/issues)**
 
 </div>
+=======
+See [`docs/contributing.md`](docs/contributing.md) for contribution guidelines, module ownership, and interface contracts.
+
+## TBD
+Please contact us for more details.
+>>>>>>> dev
