@@ -10,8 +10,10 @@ service PlasmodAPIService {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc IngestEvent(IngestEventRequest) returns (IngestEventResponse);
   rpc IngestVectors(IngestVectorsRequest) returns (IngestVectorsResponse);
+  rpc IngestVectorsFlat(IngestVectorsFlatRequest) returns (IngestVectorsResponse);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc QueryBatch(QueryBatchRequest) returns (QueryBatchResponse);
+  rpc QueryBatchFlat(QueryBatchFlatRequest) returns (QueryBatchFlatResponse);
 }
 
 message HealthRequest {}
@@ -39,6 +41,20 @@ message IngestVectorsRequest {
   int32 ivf_m = 7;
   int32 ivf_nbits = 8;
   string ivf_sq_type = 9;
+}
+
+message IngestVectorsFlatRequest {
+  string segment_id = 1;
+  repeated string object_ids = 2;
+  int32 n = 3;
+  int32 dim = 4;
+  bytes vectors_le = 5; // n*dim float32 values, little-endian, row-major
+  string index_type = 6; // HNSW, IVF_FLAT, IVF_PQ, IVF_SQ8, DISKANN
+  int32 ivf_nlist = 7;
+  int32 ivf_nprobe = 8;
+  int32 ivf_m = 9;
+  int32 ivf_nbits = 10;
+  string ivf_sq_type = 11;
 }
 
 message VectorRow {
@@ -83,6 +99,26 @@ message QueryBatchResponse {
   repeated string source_ids = 4;
   repeated QueryBatchRow rows = 5;
   map<string, StringList> by_source = 6;
+}
+
+message QueryBatchFlatRequest {
+  string warm_segment_id = 1;
+  int32 top_k = 2;
+  int32 nq = 3;
+  int32 dim = 4;
+  bytes queries_le = 5; // nq*dim float32 values, little-endian, row-major
+  bool search_raw = 6; // bypass Plasmod reorder/plugin path
+  bool serial = 7; // preserve single-query behavior while amortizing transport
+}
+
+message QueryBatchFlatResponse {
+  string status = 1;
+  string warm_segment_id = 2;
+  int32 nq = 3;
+  int32 top_k = 4;
+  int32 dim = 5;
+  bytes ids_le = 6; // nq*top_k int64 values, little-endian, row-major
+  bytes distances_le = 7; // nq*top_k float32 values, little-endian, row-major
 }
 
 message QueryBatchRow {

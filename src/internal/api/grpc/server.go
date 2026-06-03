@@ -74,6 +74,45 @@ func (s *APIServer) IngestVectors(_ context.Context, req *plasmodv1.IngestVector
 	}, nil
 }
 
+func (s *APIServer) IngestVectorsFlat(_ context.Context, req *plasmodv1.IngestVectorsFlatRequest) (*plasmodv1.IngestVectorsResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	n := int(req.GetN())
+	dim := int(req.GetDim())
+	if err := validateFlatShape(n, dim, grpcMaxBatchVectors); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	vectors, err := float32sFromLittleEndianBytes(req.GetVectorsLe(), n*dim)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid vectors_le: %v", err)
+	}
+	out, err := s.Gateway.ServiceIngestVectorsFlat(access.WarmFlatVectorsIngestRequest{
+		SegmentID:   req.GetSegmentId(),
+		ObjectIDs:   append([]string(nil), req.GetObjectIds()...),
+		FlatVectors: vectors,
+		N:           n,
+		Dim:         dim,
+		IndexType:   req.GetIndexType(),
+		IVFNlist:    int(req.GetIvfNlist()),
+		IVFNprobe:   int(req.GetIvfNprobe()),
+		IVFM:        int(req.GetIvfM()),
+		IVFNbits:    int(req.GetIvfNbits()),
+		IVFSqType:   req.GetIvfSqType(),
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &plasmodv1.IngestVectorsResponse{
+		Status:     out.Status,
+		SegmentId:  out.SegmentID,
+		Ingested:   int32(out.Ingested),
+		VectorDim:  int32(out.VectorDim),
+		IndexType:  out.IndexType,
+		DirectWarm: out.DirectWarm,
+	}, nil
+}
+
 func (s *APIServer) Query(_ context.Context, req *plasmodv1.QueryRequest) (*plasmodv1.QueryResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetQueryJson()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "query_json is required")
@@ -140,6 +179,46 @@ func (s *APIServer) QueryBatch(_ context.Context, req *plasmodv1.QueryBatchReque
 		}
 	}
 	return resp, nil
+}
+
+func (s *APIServer) QueryBatchFlat(_ context.Context, req *plasmodv1.QueryBatchFlatRequest) (*plasmodv1.QueryBatchFlatResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	nq := int(req.GetNq())
+	dim := int(req.GetDim())
+	topK := int(req.GetTopK())
+	if err := validateFlatShape(nq, dim, grpcMaxQueryBatch); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if topK <= 0 || topK > grpcMaxTopK {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid top_k=%d", topK)
+	}
+	queries, err := float32sFromLittleEndianBytes(req.GetQueriesLe(), nq*dim)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid queries_le: %v", err)
+	}
+	out, err := s.Gateway.ServiceQueryBatchFlat(access.WarmBatchFlatQueryRequest{
+		WarmSegmentID: req.GetWarmSegmentId(),
+		TopK:          topK,
+		NQ:            nq,
+		Dim:           dim,
+		Queries:       queries,
+		SearchRaw:     req.GetSearchRaw(),
+		Serial:        req.GetSerial(),
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &plasmodv1.QueryBatchFlatResponse{
+		Status:        out.Status,
+		WarmSegmentId: out.WarmSegmentID,
+		Nq:            int32(out.NQ),
+		TopK:          int32(out.TopK),
+		Dim:           int32(out.Dim),
+		IdsLe:         int64sToLittleEndianBytes(out.IDs),
+		DistancesLe:   float32sToLittleEndianBytes(out.Distances),
+	}, nil
 }
 
 func mapServiceError(err error) error {

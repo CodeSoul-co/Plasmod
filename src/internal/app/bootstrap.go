@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
+	"plasmod/retrievalplane"
 	"plasmod/src/internal/access"
 	"plasmod/src/internal/config"
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
 	"plasmod/src/internal/dataplane/embedding"
-	"plasmod/retrievalplane"
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/evidence"
 	"plasmod/src/internal/materialization"
@@ -666,8 +666,8 @@ func BuildServer() (*ServerBundle, error) {
 	grpcCfg := ResolveGRPCConfig()
 	var grpcSrv *grpc.Server
 	if grpcCfg.Enabled {
-		grpcSrv = NewGRPCServer(gateway)
-		log.Printf("[bootstrap] gRPC enabled on %s", grpcCfg.Addr)
+		grpcSrv = NewGRPCServer(gateway, grpcCfg)
+		log.Printf("[bootstrap] gRPC enabled on %s (max_message_bytes=%d)", grpcCfg.Addr, grpcCfg.MaxMessageBytes)
 	} else {
 		log.Printf("[bootstrap] gRPC disabled (PLASMOD_GRPC_ENABLED=0)")
 	}
