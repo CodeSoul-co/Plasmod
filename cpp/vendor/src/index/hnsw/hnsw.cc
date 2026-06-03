@@ -30,6 +30,10 @@
 #include "knowhere/utils.h"
 #include "knowhere/comp/hnsw_fast.h"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace knowhere {
 
 using hnswlib::QuantType;
@@ -355,6 +359,51 @@ class HnswIndexNode : public IndexNode {
         for (size_t j = rst_size; j < (size_t)k; ++j) {
             out_dists[j] = DistType(1.0 / 0.0);
             out_ids[j]   = -1;
+        }
+        return 0;
+    }
+
+    int
+    FastSearchKnnBatch(const float* queries, int64_t nq, int dim, int k, int ef,
+                       const BitsetView& bitset, const int64_t* order,
+                       bool parallel, int64_t* out_ids, float* out_dists) const {
+        if (!index_ || !queries || nq <= 0 || dim <= 0 || k <= 0) return -1;
+        hnswlib::SearchParam param{(size_t)ef};
+        const bool transform =
+            (index_->metric_type_ == hnswlib::Metric::INNER_PRODUCT ||
+             index_->metric_type_ == hnswlib::Metric::COSINE);
+
+        auto run_one = [&](int64_t pos) {
+            const int64_t orig = order ? order[pos] : pos;
+            feder::hnsw::FederResultUniq feder_result;
+            auto rst = index_->searchKnn(
+                (const char*)(queries + orig * static_cast<int64_t>(dim)),
+                k, bitset, &param, feder_result);
+            const size_t rst_size = rst.size();
+            float* one_dists = out_dists + orig * k;
+            int64_t* one_ids = out_ids + orig * k;
+            for (size_t j = 0; j < rst_size; ++j) {
+                const auto& [dist, id] = rst[j];
+                one_dists[j] = transform ? (-dist) : dist;
+                one_ids[j] = id;
+            }
+            for (size_t j = rst_size; j < (size_t)k; ++j) {
+                one_dists[j] = DistType(1.0 / 0.0);
+                one_ids[j] = -1;
+            }
+        };
+
+#ifdef _OPENMP
+        if (parallel && nq > 1) {
+#pragma omp parallel for schedule(static)
+            for (int64_t pos = 0; pos < nq; ++pos) {
+                run_one(pos);
+            }
+            return 0;
+        }
+#endif
+        for (int64_t pos = 0; pos < nq; ++pos) {
+            run_one(pos);
         }
         return 0;
     }
@@ -753,6 +802,28 @@ HnswFastSearchFloat(IndexNode* node,
                             ? BitsetView(bitset_data, bitset_bits)
                             : BitsetView();
     return hnsw->FastSearchKnnSingle(query, k, ef, bitset, out_ids, out_dists);
+}
+
+int
+HnswFastSearchBatchFloat(IndexNode* node,
+                         const float* queries,
+                         int64_t      nq,
+                         int          dim,
+                         int          k,
+                         int          ef,
+                         const uint8_t* bitset_data,
+                         size_t       bitset_bits,
+                         const int64_t* order,
+                         int          parallel,
+                         int64_t*     out_ids,
+                         float*       out_dists) {
+    if (!node || !queries || !out_ids || !out_dists || nq <= 0 || dim <= 0 || k <= 0) return -2;
+    auto* hnsw = dynamic_cast<HnswIndexNode<float, hnswlib::QuantType::None>*>(node);
+    if (!hnsw) return -2;
+    BitsetView bitset = (bitset_data && bitset_bits > 0)
+                            ? BitsetView(bitset_data, bitset_bits)
+                            : BitsetView();
+    return hnsw->FastSearchKnnBatch(queries, nq, dim, k, ef, bitset, order, parallel != 0, out_ids, out_dists);
 }
 
 }  // namespace knowhere

@@ -142,6 +142,25 @@ func (r *Runtime) IngestVectorsToWarmSegmentWithType(
 	return tp.IngestVectorsToWarmSegmentWithType(segmentID, objectIDs, vectors, indexType, nlist, nprobe, m, nbits, sqType)
 }
 
+func (r *Runtime) IngestFlatVectorsToWarmSegment(segmentID string, objectIDs []string, flatVectors []float32, n, dim int) (int, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.IngestFlatVectorsToWarmSegment(segmentID, objectIDs, flatVectors, n, dim)
+}
+
+func (r *Runtime) IngestFlatVectorsToWarmSegmentWithType(
+	segmentID string, objectIDs []string, flatVectors []float32, n, dim int,
+	indexType string, nlist, nprobe, m, nbits int, sqType string,
+) (int, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.IngestFlatVectorsToWarmSegmentWithType(segmentID, objectIDs, flatVectors, n, dim, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
 func (r *Runtime) UnloadWarmSegment(segmentID string) error {
 	tp, ok := r.plane.(*dataplane.TieredDataPlane)
 	if !ok {
@@ -172,6 +191,14 @@ func (r *Runtime) SearchWarmSegmentBatch(segmentID string, nq int, topK int, que
 		return nil, nil, fmt.Errorf("tiered plane unavailable")
 	}
 	return tp.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+}
+
+func (r *Runtime) SearchWarmSegmentSerialBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegmentSerialBatch(segmentID, nq, topK, queries)
 }
 
 func (r *Runtime) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {

@@ -24,6 +24,7 @@
 #include "index/ivf/ivf_config.h"
 #include "io/memory_io.h"
 #include "knowhere/bitsetview_idselector.h"
+#include "knowhere/comp/ivf_fast.h"
 #include "knowhere/comp/thread_pool.h"
 #include "knowhere/dataset.h"
 #include "knowhere/expected.h"
@@ -284,6 +285,33 @@ class IvfIndexNode : public IndexNode {
             return knowhere::IndexEnum::INDEX_FAISS_IVFSQ_CC;
         }
     };
+
+    int
+    FastSearchOneFloat(const float* query,
+                       int          k,
+                       int          nprobe,
+                       int64_t*     out_ids,
+                       float*       out_dists) const {
+        if (!index_ || !query || k <= 0 || !out_ids || !out_dists) {
+            return -2;
+        }
+        if constexpr (std::is_same_v<DataType, bin1> || std::is_same_v<IndexType, faiss::IndexBinaryIVF> ||
+                      std::is_same_v<IndexType, faiss::IndexScaNN> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFFlatCC> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizerCC>) {
+            return -2;
+        } else {
+            if (!index_->is_trained) {
+                return -3;
+            }
+            faiss::IVFSearchParameters params;
+            params.nprobe = nprobe > 0 ? nprobe : 1;
+            params.max_codes = 0;
+            params.sel = nullptr;
+            index_->search(1, query, k, out_dists, out_ids, &params);
+            return 0;
+        }
+    }
 
  private:
     expected<DataSetPtr>
@@ -1252,5 +1280,26 @@ KNOWHERE_MOCK_REGISTER_DENSE_FLOAT_ALL_GLOBAL(IVF_SQ8, IvfIndexNode, knowhere::f
                                               faiss::IndexIVFScalarQuantizer)
 KNOWHERE_MOCK_REGISTER_DENSE_FLOAT_ALL_GLOBAL(IVF_SQ_CC, IvfIndexNode, knowhere::feature::MMAP,
                                               faiss::IndexIVFScalarQuantizerCC)
+
+int
+IvfFastSearchFloat(IndexNode* node,
+                   const float* query,
+                   int          k,
+                   int          nprobe,
+                   int64_t*     out_ids,
+                   float*       out_dists) {
+    if (!node || !query || !out_ids || !out_dists || k <= 0) return -2;
+
+    if (auto* ivf_flat = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFFlat>*>(node)) {
+        return ivf_flat->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_pq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFPQ>*>(node)) {
+        return ivf_pq->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_sq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFScalarQuantizer>*>(node)) {
+        return ivf_sq->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    return -2;
+}
 
 }  // namespace knowhere

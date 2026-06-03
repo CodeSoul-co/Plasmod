@@ -19,13 +19,16 @@
 #include "knowhere/config.h"
 #include "knowhere/bitsetview.h"
 #include "knowhere/comp/hnsw_fast.h"
+#include "knowhere/comp/ivf_fast.h"
 
 #include <atomic>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #ifdef _OPENMP
@@ -52,7 +55,7 @@ constexpr int kErrBuildFailed   = -3;
 constexpr int kErrSearchFailed  = -4;
 
 int DefaultIVFPQM(int dim) {
-    const int target = std::min(dim, 96);
+    const int target = std::min(dim, 24);
     for (int m = target; m >= 1; --m) {
         if (dim % m == 0) return m;
     }
@@ -81,6 +84,48 @@ int HNSWEfConstruction() {
 int HNSWEfSearch() {
     static const int value = EnvInt("PLASMOD_HNSW_EF_SEARCH", kHNSW_EfSearch, 1);
     return value;
+}
+
+int IVFPQRefineK(int topk) {
+    const int fallback = std::max(topk * 8, 64);
+    return EnvInt("PLASMOD_IVF_PQ_REFINE_K", fallback, topk);
+}
+
+bool HNSWBatchDirectEnabled() {
+    const char* raw = std::getenv("PLASMOD_HNSW_BATCH_DIRECT");
+    return raw && raw[0] != '\0' && raw[0] != '0';
+}
+
+int HNSWBatchThreads() {
+    return EnvInt("PLASMOD_HNSW_BATCH_THREADS", 10, 1);
+}
+
+std::vector<float> NormalizeRowsCopy(const float* vectors, int64_t n, int dim) {
+    std::vector<float> out(static_cast<size_t>(n) * dim);
+#if HAVE_OMP
+#pragma omp parallel for schedule(static)
+#endif
+    for (int64_t i = 0; i < n; ++i) {
+        const float* src = vectors + i * dim;
+        float* dst = out.data() + i * dim;
+        double norm2 = 0.0;
+        for (int j = 0; j < dim; ++j) {
+            norm2 += static_cast<double>(src[j]) * static_cast<double>(src[j]);
+        }
+        const float inv = norm2 > 0.0 ? static_cast<float>(1.0 / std::sqrt(norm2)) : 1.0f;
+        for (int j = 0; j < dim; ++j) {
+            dst[j] = src[j] * inv;
+        }
+    }
+    return out;
+}
+
+float Dot(const float* a, const float* b, int dim) {
+    float sum = 0.0f;
+    for (int i = 0; i < dim; ++i) {
+        sum += a[i] * b[i];
+    }
+    return sum;
 }
 
 }  // namespace
@@ -125,10 +170,81 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     if (!idx || !cfg) return kErrNotFound;
 
     const int ef = std::max(topk * 2, HNSWEfSearch());
+    const bool has_filter = allow_bits && allow_count > 0;
+
+    if (!has_filter && entry.index_type == "IVF_PQ" && !entry.refine_vectors.empty()) {
+        const int candidate_k = std::min<int64_t>(
+            entry.num_vectors, std::max(topk, IVFPQRefineK(topk)));
+
+        std::vector<float> norm_queries = NormalizeRowsCopy(query, nq, entry.dim);
+        std::vector<int64_t> candidate_ids(static_cast<size_t>(nq) * candidate_k, -1);
+        std::vector<float> candidate_dists(static_cast<size_t>(nq) * candidate_k, 0.0f);
+
+        int search_rc = kOK;
+        if (nq == 1) {
+            int rc = knowhere::IvfFastSearchFloat(
+                idx->Node(), norm_queries.data(), candidate_k, entry.ivf_nprobe,
+                candidate_ids.data(), candidate_dists.data());
+            if (rc != 0) search_rc = kErrSearchFailed;
+        } else {
+            knowhere::Json pq_cfg;
+            pq_cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
+            pq_cfg[knowhere::meta::DIM]         = entry.dim;
+            pq_cfg[knowhere::meta::TOPK]        = candidate_k;
+            pq_cfg[knowhere::indexparam::NLIST]  = entry.ivf_nlist;
+            pq_cfg[knowhere::indexparam::M]      = entry.ivf_pq_m;
+            pq_cfg[knowhere::indexparam::NBITS]  = entry.ivf_pq_nbits;
+            pq_cfg[knowhere::indexparam::NPROBE] = entry.ivf_nprobe;
+            auto ds = knowhere::GenDataSet(nq, entry.dim, norm_queries.data());
+            auto res = idx->Search(ds, pq_cfg, knowhere::BitsetView());
+            if (!res.has_value()) {
+                search_rc = kErrSearchFailed;
+            } else {
+                const int64_t total = nq * static_cast<int64_t>(candidate_k);
+                std::memcpy(candidate_ids.data(), res.value()->GetIds(), total * sizeof(int64_t));
+                std::memcpy(candidate_dists.data(), res.value()->GetDistance(), total * sizeof(float));
+            }
+        }
+        if (search_rc != kOK) return search_rc;
+
+#if HAVE_OMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (int64_t qi = 0; qi < nq; ++qi) {
+            std::vector<std::pair<float, int64_t>> scored;
+            scored.reserve(candidate_k);
+            const float* q = norm_queries.data() + qi * entry.dim;
+            const int64_t* cids = candidate_ids.data() + qi * candidate_k;
+            for (int ci = 0; ci < candidate_k; ++ci) {
+                const int64_t id = cids[ci];
+                if (id < 0 || id >= entry.num_vectors) continue;
+                const float* v = entry.refine_vectors.data() + id * entry.dim;
+                scored.emplace_back(Dot(q, v, entry.dim), id);
+            }
+            const int take = std::min<int>(topk, scored.size());
+            std::partial_sort(
+                scored.begin(), scored.begin() + take, scored.end(),
+                [](const auto& a, const auto& b) {
+                    if (a.first != b.first) return a.first > b.first;
+                    return a.second < b.second;
+                });
+            for (int k = 0; k < topk; ++k) {
+                const int64_t out = qi * topk + k;
+                if (k < take) {
+                    out_dists[out] = scored[k].first;
+                    out_ids[out] = scored[k].second;
+                } else {
+                    out_dists[out] = 0.0f;
+                    out_ids[out] = -1;
+                }
+            }
+        }
+        return kOK;
+    }
 
     // ── Hot path: single query, no filter ─────────────────────────────────────
     // HnswFastSearchFloat only works for HNSW.
-    if (nq == 1 && (!allow_bits || allow_count <= 0)
+    if (nq == 1 && !has_filter
             && entry.index_type == "HNSW") {
         int rc = knowhere::HnswFastSearchFloat(
             idx->Node(), query, topk, ef,
@@ -137,8 +253,18 @@ int SegmentIndexManager::DoSearch(Entry& entry,
         // rc == -2: not HNSW float, fall through.
     }
 
+    if (nq == 1 && !has_filter
+            && (entry.index_type == "IVF_FLAT" ||
+                entry.index_type == "IVF_PQ" ||
+                entry.index_type == "IVF_SQ8")) {
+        int rc = knowhere::IvfFastSearchFloat(
+            idx->Node(), query, topk, entry.ivf_nprobe, out_ids, out_dists);
+        if (rc == 0) return kOK;
+        // Fall through to the standard Knowhere path if this is not a supported
+        // float IVF node.
+    }
+
     BatchQueryOptimizerPlugin* plugin = GetActivePlugin();
-    const bool has_filter = allow_bits && allow_count > 0;
 
     // IVF types: NPROBE set inside the full-batch path (tls_cfg declared there).
 
@@ -154,12 +280,28 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     // FAISS/Knowhere handles index-specific OpenMP internally.
 #if HAVE_OMP
     if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT && nq > 1) {
-        std::vector<int64_t> order(nq);
-        plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
-
         if (entry.index_type == "HNSW") {
+            if (HNSWBatchDirectEnabled()) {
+                int rc = knowhere::HnswFastSearchBatchFloat(
+                    idx->Node(),
+                    query,
+                    nq,
+                    entry.dim,
+                    topk,
+                    ef,
+                    nullptr,
+                    0,
+                    nullptr,
+                    1,
+                    out_ids,
+                    out_dists);
+                return rc == 0 ? kOK : kErrSearchFailed;
+            }
+
+            std::vector<int64_t> order(nq);
+            plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
             std::atomic<int> first_rc{kOK};
-#pragma omp parallel
+#pragma omp parallel num_threads(HNSWBatchThreads())
             {
                 const int thread_idx = omp_get_thread_num();
                 const int num_threads = omp_get_num_threads();
@@ -184,6 +326,9 @@ int SegmentIndexManager::DoSearch(Entry& entry,
             }
             return first_rc.load() == kOK ? kOK : kErrSearchFailed;
         }
+
+        std::vector<int64_t> order(nq);
+        plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
 
         // Reordered query matrix
         std::vector<float> reordered(static_cast<size_t>(nq) * entry.dim);
@@ -428,7 +573,13 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     }
     using KnowhereIndex = knowhere::Index<knowhere::IndexNode>;
     auto* idx = new KnowhereIndex(std::move(result.value()));
-    auto ds = knowhere::GenDataSet(n, dim, vectors);
+    std::vector<float> normalized_vectors;
+    const float* build_vectors = vectors;
+    if (itype == "IVF_PQ") {
+        normalized_vectors = NormalizeRowsCopy(vectors, n, dim);
+        build_vectors = normalized_vectors.data();
+    }
+    auto ds = knowhere::GenDataSet(n, dim, build_vectors);
     auto status = idx->Build(ds, *cfg);
     if (status != knowhere::Status::success) {
         delete idx;
@@ -447,6 +598,9 @@ int SegmentIndexManager::BuildSegmentWithIndexType(
     entry->ivf_pq_m     = pq_m > 0 ? pq_m : DefaultIVFPQM(dim);
     entry->ivf_pq_nbits = pq_nbits > 0 ? pq_nbits : 8;
     entry->ivf_sq_type = stype;
+    if (itype == "IVF_PQ") {
+        entry->refine_vectors = std::move(normalized_vectors);
+    }
 
     std::unique_lock lk(mu_);
     auto it = segments_.find(segment_id);
@@ -524,6 +678,54 @@ int SegmentIndexManager::SearchRaw(const std::string& segment_id,
     const int64_t total = nq * topk;
     std::memcpy(out_ids,   res.value()->GetIds(),      total * sizeof(int64_t));
     std::memcpy(out_dists, res.value()->GetDistance(), total * sizeof(float));
+    return kOK;
+}
+
+// ── SearchSerial ──────────────────────────────────────────────────────────────
+// One segment lookup, then nq independent single-query searches. This is useful
+// for measuring online nq=1 behavior without repeated CGO/map-lock overhead.
+int SegmentIndexManager::SearchSerial(const std::string& segment_id,
+                                       const float* query, int64_t nq, int topk,
+                                       int64_t* out_ids, float* out_dists) {
+    if (!query || nq <= 0 || topk <= 0 || !out_ids || !out_dists) return kErrInvalidParam;
+    std::shared_lock lk(mu_);
+    auto it = segments_.find(segment_id);
+    if (it == segments_.end() || !it->second) return kErrNotFound;
+    auto& entry = *it->second;
+
+    if (entry.index_type == "HNSW") {
+        using KnowhereIndex = knowhere::Index<knowhere::IndexNode>;
+        auto* idx = static_cast<KnowhereIndex*>(entry.index_ptr);
+        if (!idx) return kErrNotFound;
+        const int ef = std::max(topk * 2, HNSWEfSearch());
+        int rc = knowhere::HnswFastSearchBatchFloat(
+            idx->Node(),
+            query,
+            nq,
+            entry.dim,
+            topk,
+            ef,
+            nullptr,
+            0,
+            nullptr,
+            0,
+            out_ids,
+            out_dists);
+        return rc == 0 ? kOK : kErrSearchFailed;
+    }
+
+    for (int64_t qi = 0; qi < nq; ++qi) {
+        const int rc = DoSearch(
+            entry,
+            query + qi * entry.dim,
+            1,
+            topk,
+            nullptr,
+            0,
+            out_ids + qi * topk,
+            out_dists + qi * topk);
+        if (rc != kOK) return rc;
+    }
     return kOK;
 }
 

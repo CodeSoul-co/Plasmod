@@ -80,6 +80,16 @@ func (s *SegmentRetriever) Search(_ string, _ []float32, _, _ int) ([]int64, []f
 	return nil, nil, ErrRetrievalNotAvailable
 }
 
+// SearchInto returns ErrRetrievalNotAvailable.
+func (s *SegmentRetriever) SearchInto(_ string, _ []float32, _, _ int, _ []int64, _ []float32) error {
+	return ErrRetrievalNotAvailable
+}
+
+// SearchSerialInto returns ErrRetrievalNotAvailable.
+func (s *SegmentRetriever) SearchSerialInto(_ string, _ []float32, _, _ int, _ []int64, _ []float32) error {
+	return ErrRetrievalNotAvailable
+}
+
 // SearchWithFilter returns ErrRetrievalNotAvailable.
 func (s *SegmentRetriever) SearchWithFilter(_ string, _ []float32, _, _ int, _ []byte) ([]int64, []float32, error) {
 	return nil, nil, ErrRetrievalNotAvailable
@@ -107,8 +117,8 @@ func (s *SegmentRetriever) SegmentSize(_ string) int64 { return -1 }
 type BatchPluginMode int
 
 const (
-	BatchPluginNone           BatchPluginMode = 0
-	BatchPluginL2NormSort     BatchPluginMode = 1
+	BatchPluginNone       BatchPluginMode = 0
+	BatchPluginL2NormSort BatchPluginMode = 1
 )
 
 // SetBatchPlugin is a no-op stub.
