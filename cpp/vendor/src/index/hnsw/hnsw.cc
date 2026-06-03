@@ -344,21 +344,35 @@ class HnswIndexNode : public IndexNode {
                         const BitsetView& bitset,
                         int64_t* out_ids, float* out_dists) const {
         if (!index_) return -1;
-        hnswlib::SearchParam param{(size_t)ef};
         const bool transform =
             (index_->metric_type_ == hnswlib::Metric::INNER_PRODUCT ||
              index_->metric_type_ == hnswlib::Metric::COSINE);
+        if (bitset.empty()) {
+            int rc = index_->searchKnnNoFilterToBuffer(
+                (const char*)query, static_cast<size_t>(k), static_cast<size_t>(ef),
+                out_ids, out_dists);
+            if (rc != 0) return rc;
+            if (transform) {
+                for (int j = 0; j < k; ++j) {
+                    if (out_ids[j] >= 0) out_dists[j] = -out_dists[j];
+                }
+            }
+            return 0;
+        }
+
+        hnswlib::SearchParam param{(size_t)ef};
         feder::hnsw::FederResultUniq feder_result;  // unused; matches signature
         auto rst = index_->searchKnn((const char*)query, k, bitset, &param, feder_result);
         const size_t rst_size = rst.size();
-        for (size_t j = 0; j < rst_size; ++j) {
-            const auto& [dist, id] = rst[j];
-            out_dists[j] = transform ? (-dist) : dist;
-            out_ids[j]   = id;
-        }
-        for (size_t j = rst_size; j < (size_t)k; ++j) {
+        for (size_t j = 0; j < (size_t)k; ++j) {
+            if (j < rst_size) {
+                const auto& [dist, id] = rst[j];
+                out_dists[j] = transform ? (-dist) : dist;
+                out_ids[j] = id;
+                continue;
+            }
             out_dists[j] = DistType(1.0 / 0.0);
-            out_ids[j]   = -1;
+            out_ids[j] = -1;
         }
         return 0;
     }
@@ -375,19 +389,33 @@ class HnswIndexNode : public IndexNode {
 
         auto run_one = [&](int64_t pos) {
             const int64_t orig = order ? order[pos] : pos;
-            feder::hnsw::FederResultUniq feder_result;
-            auto rst = index_->searchKnn(
-                (const char*)(queries + orig * static_cast<int64_t>(dim)),
-                k, bitset, &param, feder_result);
-            const size_t rst_size = rst.size();
+            const char* one_query = (const char*)(queries + orig * static_cast<int64_t>(dim));
             float* one_dists = out_dists + orig * k;
             int64_t* one_ids = out_ids + orig * k;
-            for (size_t j = 0; j < rst_size; ++j) {
-                const auto& [dist, id] = rst[j];
-                one_dists[j] = transform ? (-dist) : dist;
-                one_ids[j] = id;
+
+            if (bitset.empty()) {
+                int rc = index_->searchKnnNoFilterToBuffer(
+                    one_query, static_cast<size_t>(k), static_cast<size_t>(ef), one_ids, one_dists);
+                if (rc == 0) {
+                    if (transform) {
+                        for (int j = 0; j < k; ++j) {
+                            if (one_ids[j] >= 0) one_dists[j] = -one_dists[j];
+                        }
+                    }
+                    return;
+                }
             }
-            for (size_t j = rst_size; j < (size_t)k; ++j) {
+
+            feder::hnsw::FederResultUniq feder_result;
+            auto rst = index_->searchKnn(one_query, k, bitset, &param, feder_result);
+            const size_t rst_size = rst.size();
+            for (size_t j = 0; j < (size_t)k; ++j) {
+                if (j < rst_size) {
+                    const auto& [dist, id] = rst[j];
+                    one_dists[j] = transform ? (-dist) : dist;
+                    one_ids[j] = id;
+                    continue;
+                }
                 one_dists[j] = DistType(1.0 / 0.0);
                 one_ids[j] = -1;
             }
