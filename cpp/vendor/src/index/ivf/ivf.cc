@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 namespace knowhere {
 struct IVFBaseTag {};
@@ -53,6 +54,51 @@ EnvInt(const char* name, int fallback, int min_value) {
     long value = std::strtol(raw, &end, 10);
     if (!end || *end != '\0' || value < min_value) return fallback;
     return static_cast<int>(value);
+}
+
+bool
+EnvEnabled(const char* name) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return false;
+    return std::strcmp(raw, "1") == 0 ||
+           std::strcmp(raw, "true") == 0 ||
+           std::strcmp(raw, "on") == 0 ||
+           std::strcmp(raw, "yes") == 0;
+}
+
+bool
+EnvPresent(const char* name) {
+    const char* raw = std::getenv(name);
+    return raw && raw[0] != '\0';
+}
+
+template <typename IndexType>
+void
+ConfigureFaissIVFIndex(IndexType* index) {
+    if (!index) return;
+    if constexpr (std::is_same_v<IndexType, faiss::IndexIVFFlat> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFFlatCC> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFPQ> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizer> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizerCC>) {
+        if (EnvPresent("PLASMOD_FAISS_IVF_PARALLEL_MODE")) {
+            index->parallel_mode = EnvInt("PLASMOD_FAISS_IVF_PARALLEL_MODE", index->parallel_mode, 0);
+        }
+        if (EnvPresent("PLASMOD_FAISS_IVF_MAX_CODES")) {
+            index->max_codes = static_cast<size_t>(EnvInt("PLASMOD_FAISS_IVF_MAX_CODES", 0, 0));
+        }
+    }
+    if constexpr (std::is_same_v<IndexType, faiss::IndexIVFPQ>) {
+        if (EnvEnabled("PLASMOD_FAISS_IVFPQ_PRECOMPUTE_TABLE")) {
+            index->use_precomputed_table =
+                EnvInt("PLASMOD_FAISS_IVFPQ_USE_PRECOMPUTED_TABLE", index->use_precomputed_table, -1);
+            index->precompute_table();
+        }
+        if (EnvPresent("PLASMOD_FAISS_IVFPQ_SCAN_TABLE_THRESHOLD")) {
+            index->scan_table_threshold =
+                static_cast<size_t>(EnvInt("PLASMOD_FAISS_IVFPQ_SCAN_TABLE_THRESHOLD", 0, 0));
+        }
+    }
 }
 
 }  // namespace
@@ -735,6 +781,7 @@ IvfIndexNode<DataType, IndexType>::TrainInternal(const DataSetPtr dataset, std::
         index->own_fields = true;
         index->make_direct_map(true, faiss::DirectMap::ConcurrentArray);
     }
+    ConfigureFaissIVFIndex(index.get());
     index_ = std::move(index);
 
     return Status::success;
