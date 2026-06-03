@@ -111,6 +111,15 @@ bool IVFBatchDirectEnabled(const std::string& index_type) {
            std::strcmp(raw, "yes") == 0;
 }
 
+bool IVFSerialDirectEnabled() {
+    const char* raw = std::getenv("PLASMOD_IVF_SERIAL_DIRECT");
+    if (!raw || raw[0] == '\0') return true;
+    return std::strcmp(raw, "0") != 0 &&
+           std::strcmp(raw, "false") != 0 &&
+           std::strcmp(raw, "off") != 0 &&
+           std::strcmp(raw, "no") != 0;
+}
+
 int HNSWBatchThreads() {
     return EnvInt("PLASMOD_HNSW_BATCH_THREADS", 10, 1);
 }
@@ -759,6 +768,23 @@ int SegmentIndexManager::SearchSerial(const std::string& segment_id,
             out_ids,
             out_dists);
         return rc == 0 ? kOK : kErrSearchFailed;
+    }
+
+    if (IVFSerialDirectEnabled() &&
+            (entry.index_type == "IVF_FLAT" ||
+             entry.index_type == "IVF_PQ" ||
+             entry.index_type == "IVF_SQ8")) {
+        if (entry.index_type == "IVF_PQ" && !entry.refine_vectors.empty()) {
+            const int rc = DoSearch(entry, query, nq, topk, nullptr, 0, out_ids, out_dists);
+            return rc == kOK ? kOK : rc;
+        }
+
+        using KnowhereIndex = knowhere::Index<knowhere::IndexNode>;
+        auto* idx = static_cast<KnowhereIndex*>(entry.index_ptr);
+        if (!idx) return kErrNotFound;
+        const int rc = knowhere::IvfFastSearchBatchFloat(
+            idx->Node(), query, nq, topk, entry.ivf_nprobe, out_ids, out_dists);
+        if (rc == 0) return kOK;
     }
 
     for (int64_t qi = 0; qi < nq; ++qi) {
