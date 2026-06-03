@@ -1,19 +1,20 @@
-# Full stack for Member A E2E: ANDB + MinIO (S3 cold tier).
+# Full stack: Plasmod (split) + MinIO (S3 cold tier).
+#
+# Host ports:
+#   mgmt / health / metrics     9091
+#   SDK REST API (+ internal rpc) 19530
+#   Plasmod gRPC API            19531
+#   MinIO S3 API                9000
+#   MinIO console               9001
+#
+# Dev unified (local go run / docker-compose.unified.yml): http://127.0.0.1:8080
+#
 # From repo root:
 #   docker compose up -d
-# Server: http://127.0.0.1:8080  MinIO API: http://127.0.0.1:9000  Console: http://127.0.0.1:9001
 #
-# Intranet mirror support:
-# - Put build args in repo-root `.env` to avoid public internet pulls, e.g.
-#     BASE_REGISTRY=registry.company.local/library/
-#     APT_MIRROR=http://apt-mirror.company.local/debian
-#     GO_LLAMACPP_REPO=https://git.company.local/mirror/go-llama.cpp.git
-#     GOPROXY=https://goproxy.company.local,direct
-#     GOSUMDB=off
-# - Keep these empty to use upstream defaults.
-#
-# Run capture script against the composed server (after `pip install -r requirements.txt`):
-#   PLASMOD_BASE_URL=http://127.0.0.1:8080 python scripts/e2e/member_a_capture.py --out /tmp/member_a_out
+# pyplasmod / scripts:
+#   set PLASMOD_BASE_URL=http://127.0.0.1:19530
+#   curl http://127.0.0.1:9091/healthz
 
 services:
   minio:
@@ -61,15 +62,20 @@ services:
     volumes:
       - plasmod_data:/data
     ports:
-      - "8080:8080"
+      - "9091:9091"
+      - "19530:19530"
+      - "19531:19531"
     environment:
-      PLASMOD_HTTP_ADDR: 0.0.0.0:8080
+      PLASMOD_LISTEN_MODE: split
+      PLASMOD_MGMT_ADDR: 0.0.0.0:9091
+      PLASMOD_API_ADDR: 0.0.0.0:19530
+      PLASMOD_GRPC_ADDR: 0.0.0.0:19531
+      PLASMOD_SHOW_BANNER: "1"
+      PLASMOD_PUBLIC_HOST: 127.0.0.1
       APP_MODE: ${APP_MODE:-prod}
       ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER: "true"
       PLASMOD_STORAGE: disk
       PLASMOD_DATA_DIR: /data
-      # CPU-safe defaults for Member A baseline stack.
-      # Override via env when validating GPU paths (e.g. PLASMOD_EMBEDDER=onnx, PLASMOD_EMBEDDER_DEVICE=cuda).
       PLASMOD_EMBEDDER: ${PLASMOD_EMBEDDER:-tfidf}
       PLASMOD_EMBEDDER_DEVICE: ${PLASMOD_EMBEDDER_DEVICE:-cpu}
       S3_ENDPOINT: minio:9000
@@ -80,7 +86,7 @@ services:
       S3_REGION: us-east-1
       S3_PREFIX: plasmod/docker
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9091/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10

@@ -30,4 +30,18 @@ HnswFastSearchFloat(IndexNode* node,
                     int64_t*     out_ids,
                     float*       out_dists);
 
+int
+HnswFastSearchBatchFloat(IndexNode* node,
+                         const float* queries,
+                         int64_t      nq,
+                         int          dim,
+                         int          k,
+                         int          ef,
+                         const uint8_t* bitset_data,
+                         size_t       bitset_bits,
+                         const int64_t* order,
+                         int          parallel,
+                         int64_t*     out_ids,
+                         float*       out_dists);
+
 }  // namespace knowhere

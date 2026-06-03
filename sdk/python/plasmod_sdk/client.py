@@ -14,11 +14,19 @@ class PlasmodClient:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:8080",
+        base_url: Optional[str] = None,
         timeout: Optional[float] = None,
     ):
+        # Unified dev :8080; split compose / Milvus-aligned API :19530.
+        if base_url is None:
+            base_url = os.environ.get(
+                "PLASMOD_URI",
+                os.environ.get("PLASMOD_BASE_URL", "http://127.0.0.1:19530"),
+            )
         self.base_url = base_url.rstrip("/")
-        self._timeout = timeout or float(os.environ.get("ANDB_HTTP_TIMEOUT", "10"))
+        self._timeout = timeout or float(
+            os.environ.get("PLASMOD_HTTP_TIMEOUT", os.environ.get("ANDB_HTTP_TIMEOUT", "10"))
+        )
 
     # ── Ingest ────────────────────────────────────────────────────────────────
 
@@ -58,6 +66,50 @@ class PlasmodClient:
 
         resp = requests.post(
             f"{self.base_url}/v1/ingest/events",
+            json=body,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def ingest_vectors(
+        self,
+        vectors: List[List[float]],
+        *,
+        segment_id: str = "",
+        object_ids: Optional[List[str]] = None,
+        index_type: str = "",
+        ivf_nlist: int = 0,
+        ivf_nprobe: int = 0,
+        ivf_m: int = 0,
+        ivf_nbits: int = 0,
+        ivf_sq_type: str = "",
+    ) -> dict:
+        """
+        Ingest precomputed vectors into a warm segment (POST /v1/ingest/vectors).
+
+        index_type: HNSW (default), IVF_FLAT, IVF_PQ, IVF_SQ8, or DISKANN.
+        IVF_* fields map to ivf_nlist, ivf_nprobe, ivf_m, ivf_nbits, ivf_sq_type.
+        """
+        body: Dict[str, Any] = {"vectors": vectors}
+        if segment_id:
+            body["segment_id"] = segment_id
+        if object_ids:
+            body["object_ids"] = object_ids
+        if index_type:
+            body["index_type"] = index_type
+        if ivf_nlist:
+            body["ivf_nlist"] = ivf_nlist
+        if ivf_nprobe:
+            body["ivf_nprobe"] = ivf_nprobe
+        if ivf_m:
+            body["ivf_m"] = ivf_m
+        if ivf_nbits:
+            body["ivf_nbits"] = ivf_nbits
+        if ivf_sq_type:
+            body["ivf_sq_type"] = ivf_sq_type
+        resp = requests.post(
+            f"{self.base_url}/v1/ingest/vectors",
             json=body,
             timeout=self._timeout,
         )

@@ -508,6 +508,57 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         return retset;
     }
 
+    template <bool collect_metrics = false>
+    inline void
+    searchBaseLayerSTNextNoFilterStamp(const void* data_point, Neighbor next, VisitedListPool::StampList& visited,
+                                       NeighborSetDoublePopList& retset) const {
+        auto [u, d, s] = next;
+        tableint* list = (tableint*)get_linklist0(u);
+        int size = list[0];
+
+        if constexpr (collect_metrics) {
+            metric_hops++;
+            metric_distance_computations += size;
+        }
+        for (size_t i = 1; i <= size; ++i) {
+            if (i + 1 <= size) {
+                prefetchData(list[i + 1]);
+            }
+            tableint v = list[i];
+            if (visited.test(v)) {
+                continue;
+            }
+            visited.mark(v);
+            dist_t dist = calcDistance(data_point, v);
+            if (retset.insert(Neighbor(v, dist, Neighbor::kValid))) {
+#if defined(USE_PREFETCH)
+                _mm_prefetch(get_linklist0(v), _MM_HINT_T0);
+#endif
+            }
+        }
+    }
+
+    template <bool collect_metrics = false>
+    NeighborSetDoublePopList
+    searchBaseLayerSTNoFilterStamp(tableint ep_id, const void* data_point, size_t ef,
+                                   VisitedListPool::StampList& visited) const {
+        NeighborSetDoublePopList retset(ef);
+        dist_t dist = calcDistance(data_point, ep_id);
+        retset.insert(Neighbor(ep_id, dist, Neighbor::kValid));
+        visited.mark(ep_id);
+        size_t hops = 0;
+        while (retset.has_next()) {
+            searchBaseLayerSTNextNoFilterStamp<collect_metrics>(data_point, retset.pop(), visited, retset);
+            hops++;
+        }
+#if defined(NOT_COMPILE_FOR_SWIG) && !defined(KNOWHERE_WITH_LIGHT)
+        if constexpr (collect_metrics) {
+            knowhere::knowhere_hnsw_search_hops.Observe(hops);
+        }
+#endif
+        return retset;
+    }
+
     std::vector<tableint>
     getNeighborsByHeuristic2(std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>,
                                                  CompareByFirst>& top_candidates,
@@ -1385,6 +1436,50 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         return {currObj, vec_hash};
     }
 
+    tableint
+    searchTopLayersNoMetrics(const void* query_data) const {
+        tableint currObj = enterpoint_node_;
+        dist_t curdist = calcDistance(query_data, enterpoint_node_);
+
+        if (base_layer_only) {
+            for (int i = 0; i < num_seeds; i++) {
+                tableint obj = i * (max_elements_ / num_seeds);
+                dist_t dist = fstdistfunc_(query_data, getDataByInternalId(obj), dist_func_param_);
+                if (dist < curdist) {
+                    curdist = dist;
+                    currObj = obj;
+                }
+            }
+            return currObj;
+        }
+
+        for (int level = maxlevel_; level > 0; level--) {
+            bool changed = true;
+            while (changed) {
+                changed = false;
+                unsigned int* data = (unsigned int*)get_linklist(currObj, level);
+                int size = getListCount(data);
+                tableint* datal = (tableint*)(data + 1);
+                for (int i = 0; i < size; ++i) {
+                    prefetchData(datal[i]);
+                }
+                for (int i = 0; i < size; i++) {
+                    tableint cand = datal[i];
+                    if (cand < 0 || cand > max_elements_)
+                        throw std::runtime_error("cand error");
+                    dist_t d = calcDistance(query_data, cand);
+                    if (d < curdist) {
+                        curdist = d;
+                        currObj = cand;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        return currObj;
+    }
+
     std::vector<std::pair<dist_t, labeltype>>
     searchKnn(const void* query_data, size_t k, const knowhere::BitsetView bitset, const SearchParam* param = nullptr,
               const knowhere::feder::hnsw::FederResultUniq& feder_result = nullptr) const {
@@ -1460,6 +1555,64 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         }
         return result;
     };
+
+    int
+    searchKnnNoFilterToBuffer(const void* query_data, size_t k, size_t ef, labeltype* out_ids,
+                              dist_t* out_dists) const {
+        if (cur_element_count == 0 || !out_ids || !out_dists) {
+            return -1;
+        }
+
+        SearchParam param{ef};
+        auto copy_result = [&](const std::vector<std::pair<dist_t, labeltype>>& result) {
+            const size_t len = std::min(k, result.size());
+            for (size_t i = 0; i < len; ++i) {
+                out_dists[i] = result[i].first;
+                out_ids[i] = result[i].second;
+            }
+            for (size_t i = len; i < k; ++i) {
+                out_dists[i] = std::numeric_limits<dist_t>::infinity();
+                out_ids[i] = static_cast<labeltype>(-1);
+            }
+        };
+
+        if constexpr (sq_enabled) {
+            copy_result(searchKnn(query_data, k, knowhere::BitsetView(), &param, nullptr));
+            return 0;
+        }
+
+        std::unique_ptr<data_t[]> query_data_norm;
+        if constexpr (knowhere::KnowhereFloatTypeCheck<data_t>::value) {
+            if (metric_type_ == Metric::COSINE) {
+                query_data_norm =
+                    knowhere::CopyAndNormalizeVecs((const data_t*)query_data, 1, *(size_t*)dist_func_param_);
+                query_data = query_data_norm.get();
+            }
+        }
+
+        if (k >= (cur_element_count * kHnswSearchBFTopkThreshold)) {
+            copy_result(searchKnnBF(query_data, k, knowhere::BitsetView()));
+            return 0;
+        }
+
+        tableint currObj = searchTopLayersNoMetrics(query_data);
+        auto& visited = visited_list_pool_->getFreeVisitedStampList();
+        auto retset = searchBaseLayerSTNoFilterStamp<false>(currObj, query_data, std::max(ef, k), visited);
+        if (retset.size() < k) {
+            copy_result(searchKnnBF(query_data, k, knowhere::BitsetView()));
+            return 0;
+        }
+        const size_t len = std::min(k, retset.size());
+        for (size_t i = 0; i < len; ++i) {
+            out_dists[i] = retset[i].distance;
+            out_ids[i] = static_cast<labeltype>(retset[i].id);
+        }
+        for (size_t i = len; i < k; ++i) {
+            out_dists[i] = std::numeric_limits<dist_t>::infinity();
+            out_ids[i] = static_cast<labeltype>(-1);
+        }
+        return 0;
+    }
 
     std::unique_ptr<IteratorWorkspace>
     getIteratorWorkspace(const void* query_data, const size_t ef, const knowhere::BitsetView& bitset) const {

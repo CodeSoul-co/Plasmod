@@ -24,6 +24,7 @@
 #include "index/ivf/ivf_config.h"
 #include "io/memory_io.h"
 #include "knowhere/bitsetview_idselector.h"
+#include "knowhere/comp/ivf_fast.h"
 #include "knowhere/comp/thread_pool.h"
 #include "knowhere/dataset.h"
 #include "knowhere/expected.h"
@@ -35,9 +36,26 @@
 #include "knowhere/range_util.h"
 #include "knowhere/utils.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace knowhere {
 struct IVFBaseTag {};
 struct IVFFlatTag {};
+
+namespace {
+
+int
+EnvInt(const char* name, int fallback, int min_value) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    long value = std::strtol(raw, &end, 10);
+    if (!end || *end != '\0' || value < min_value) return fallback;
+    return static_cast<int>(value);
+}
+
+}  // namespace
 
 template <class IndexType>
 struct IndexDispatch {
@@ -284,6 +302,91 @@ class IvfIndexNode : public IndexNode {
             return knowhere::IndexEnum::INDEX_FAISS_IVFSQ_CC;
         }
     };
+
+    int
+    FastSearchOneFloat(const float* query,
+                       int          k,
+                       int          nprobe,
+                       int64_t*     out_ids,
+                       float*       out_dists) const {
+        if (!index_ || !query || k <= 0 || !out_ids || !out_dists) {
+            return -2;
+        }
+        if constexpr (std::is_same_v<DataType, bin1> || std::is_same_v<IndexType, faiss::IndexBinaryIVF> ||
+                      std::is_same_v<IndexType, faiss::IndexScaNN> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFFlatCC> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizerCC>) {
+            return -2;
+        } else {
+            if (!index_->is_trained) {
+                return -3;
+            }
+            faiss::IVFSearchParameters params;
+            params.nprobe = nprobe > 0 ? nprobe : 1;
+            params.max_codes = 0;
+            params.sel = nullptr;
+            index_->search(1, query, k, out_dists, out_ids, &params);
+            return 0;
+        }
+    }
+
+    int
+    FastSearchBatchFloat(const float* queries,
+                         int64_t      nq,
+                         int          k,
+                         int          nprobe,
+                         int64_t*     out_ids,
+                         float*       out_dists) const {
+        if (!index_ || !queries || nq <= 0 || k <= 0 || !out_ids || !out_dists) {
+            return -2;
+        }
+        if constexpr (std::is_same_v<DataType, bin1> || std::is_same_v<IndexType, faiss::IndexBinaryIVF> ||
+                      std::is_same_v<IndexType, faiss::IndexScaNN> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFFlatCC> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizerCC>) {
+            return -2;
+        } else {
+            if (!index_->is_trained) {
+                return -3;
+            }
+            const int64_t chunk_size =
+                std::max<int64_t>(1, EnvInt("PLASMOD_IVF_BATCH_CHUNK_SIZE", 64, 1));
+            const int64_t num_chunks = (nq + chunk_size - 1) / chunk_size;
+            if (num_chunks <= 1 || !search_pool_ || search_pool_->size() <= 1) {
+                faiss::IVFSearchParameters params;
+                params.nprobe = nprobe > 0 ? nprobe : 1;
+                params.max_codes = 0;
+                params.sel = nullptr;
+                index_->search(nq, queries, k, out_dists, out_ids, &params);
+                return 0;
+            }
+
+            std::vector<knowhere::Future<knowhere::Unit>> futs;
+            futs.reserve(num_chunks);
+            for (int64_t start = 0; start < nq; start += chunk_size) {
+                const int64_t end = std::min<int64_t>(nq, start + chunk_size);
+                futs.emplace_back(search_pool_->push([&, start, end] {
+                    ThreadPool::ScopedSearchOmpSetter setter(1);
+                    faiss::IVFSearchParameters params;
+                    params.nprobe = nprobe > 0 ? nprobe : 1;
+                    params.max_codes = 0;
+                    params.sel = nullptr;
+                    const int64_t rows = end - start;
+                    index_->search(rows,
+                                   queries + start * index_->d,
+                                   k,
+                                   out_dists + start * k,
+                                   out_ids + start * k,
+                                   &params);
+                }));
+            }
+            auto status = WaitAllSuccess(futs);
+            if (status != Status::success) {
+                return -4;
+            }
+            return 0;
+        }
+    }
 
  private:
     expected<DataSetPtr>
@@ -1252,5 +1355,48 @@ KNOWHERE_MOCK_REGISTER_DENSE_FLOAT_ALL_GLOBAL(IVF_SQ8, IvfIndexNode, knowhere::f
                                               faiss::IndexIVFScalarQuantizer)
 KNOWHERE_MOCK_REGISTER_DENSE_FLOAT_ALL_GLOBAL(IVF_SQ_CC, IvfIndexNode, knowhere::feature::MMAP,
                                               faiss::IndexIVFScalarQuantizerCC)
+
+int
+IvfFastSearchFloat(IndexNode* node,
+                   const float* query,
+                   int          k,
+                   int          nprobe,
+                   int64_t*     out_ids,
+                   float*       out_dists) {
+    if (!node || !query || !out_ids || !out_dists || k <= 0) return -2;
+
+    if (auto* ivf_flat = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFFlat>*>(node)) {
+        return ivf_flat->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_pq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFPQ>*>(node)) {
+        return ivf_pq->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_sq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFScalarQuantizer>*>(node)) {
+        return ivf_sq->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    return -2;
+}
+
+int
+IvfFastSearchBatchFloat(IndexNode* node,
+                        const float* queries,
+                        int64_t      nq,
+                        int          k,
+                        int          nprobe,
+                        int64_t*     out_ids,
+                        float*       out_dists) {
+    if (!node || !queries || nq <= 0 || !out_ids || !out_dists || k <= 0) return -2;
+
+    if (auto* ivf_flat = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFFlat>*>(node)) {
+        return ivf_flat->FastSearchBatchFloat(queries, nq, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_pq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFPQ>*>(node)) {
+        return ivf_pq->FastSearchBatchFloat(queries, nq, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_sq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFScalarQuantizer>*>(node)) {
+        return ivf_sq->FastSearchBatchFloat(queries, nq, k, nprobe, out_ids, out_dists);
+    }
+    return -2;
+}
 
 }  // namespace knowhere

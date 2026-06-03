@@ -7,17 +7,16 @@ import (
 )
 
 func main() {
-	srv, shutdown, err := app.BuildServer()
+	bundle, err := app.BuildServer()
 	if err != nil {
 		log.Fatalf("build server failed: %v", err)
 	}
 	defer func() {
-		if err := shutdown(); err != nil {
+		if err := bundle.Shutdown(); err != nil {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("Plasmod server listen on %s", srv.Addr)
-	if err := srv.ListenAndServe(); err != nil {
+	if err := app.RunServers(bundle); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
 }

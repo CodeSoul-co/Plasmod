@@ -88,7 +88,7 @@ func NewRetrieverWithMetric(dim, m, efConstr, rrfK int, metric string) (*Retriev
 //   - HNSW     : always available (knowhere_hnsw, MIT)
 //   - IVF_FLAT : ANDB_KNOWHERE_FAISS=ON (faiss IVF, needs OpenBLAS)
 //   - DISKANN  : ANDB_KNOWHERE_DISKANN=ON (Microsoft DiskANN, needs
-//                OpenBLAS + libaio on Linux)
+//     OpenBLAS + libaio on Linux)
 const (
 	IndexHNSW    = "HNSW"
 	IndexIVFFlat = "IVF_FLAT"
@@ -102,6 +102,7 @@ const (
 //   - "HNSW"     : in-memory HNSW (always available)
 //   - "IVF_FLAT" : faiss IVF clustering (build with ANDB_KNOWHERE_FAISS=ON)
 //   - "DISKANN"  : disk-resident DiskANN (build with ANDB_KNOWHERE_DISKANN=ON)
+//
 // An empty string defaults to "HNSW". metric defaults to "IP".
 //
 // IVF-specific tuning parameters (nlist, nprobe) currently use the C++
@@ -153,7 +154,8 @@ func NewRetrieverWithIndexType(dim int, indexType, metric string) (*Retriever, e
 //
 // nlist  : number of coarse Voronoi cells (rule of thumb: 4 * sqrt(N)).
 // nprobe : cells visited per query.  <=0 falls back to C++ default (8).
-//          Higher nprobe → higher recall, lower QPS.
+//
+//	Higher nprobe → higher recall, lower QPS.
 //
 // metric must be "L2", "IP", or "COSINE".  Returns an error if the
 // IVF backend was not compiled in (build with -DANDB_KNOWHERE_FAISS=ON).
@@ -185,6 +187,7 @@ func NewIVFRetriever(dim int, metric string, nlist, nprobe int) (*Retriever, err
 	}
 	return &Retriever{ptr: ptr, dim: dim}, nil
 }
+
 // NewIVFPQRetriever creates a Retriever backed by faiss IVF_PQ.
 // m<=0 uses C++ default (16). nbits<=0 defaults to 8.
 // metric defaults to "L2" (IP requires pre-normalized vectors).
@@ -215,7 +218,7 @@ func NewIVFSQ8Retriever(dim int, metric string, nlist, nprobe int, sqType string
 		return nil, fmt.Errorf("NewIVFSQ8Retriever: dim must be > 0")
 	}
 	if metric == "" {
-	metric = "L2"
+		metric = "L2"
 	}
 	ptr := C.plasmod_retriever_create()
 	cMetric := C.CString(metric)
@@ -414,6 +417,58 @@ func (s *SegmentRetriever) BuildSegmentWithType(
 // Returns (ids[nq*topk], dists[nq*topk], error).
 func (s *SegmentRetriever) Search(segmentID string, query []float32, nq, topk int) ([]int64, []float32, error) {
 	return s.SearchWithFilter(segmentID, query, nq, topk, nil)
+}
+
+// SearchInto performs ANN search into caller-owned output buffers.
+// It is used by server-side serial loops to avoid allocating result slices on
+// every nq=1 query.
+func (s *SegmentRetriever) SearchInto(segmentID string, query []float32, nq, topk int, outIDs []int64, outDists []float32) error {
+	if len(query) == 0 || nq <= 0 || topk <= 0 {
+		return fmt.Errorf("SearchInto: invalid args")
+	}
+	total := nq * topk
+	if len(outIDs) < total || len(outDists) < total {
+		return fmt.Errorf("SearchInto: output buffers too small")
+	}
+	cs := cachedSegmentCString(segmentID)
+	rc := C.plasmod_segment_search(
+		cs,
+		(*C.float)(unsafe.Pointer(&query[0])),
+		C.int64_t(nq),
+		C.int(topk),
+		(*C.int64_t)(unsafe.Pointer(&outIDs[0])),
+		(*C.float)(unsafe.Pointer(&outDists[0])),
+	)
+	if rc != 0 {
+		return fmt.Errorf("plasmod_segment_search(%q): rc=%d", segmentID, rc)
+	}
+	return nil
+}
+
+// SearchSerialInto performs nq independent single-query searches in one C++
+// call. It preserves the HNSW nq=1 hot-path behavior while avoiding repeated
+// CGO crossings and repeated segment lookups in server-side serial benchmarks.
+func (s *SegmentRetriever) SearchSerialInto(segmentID string, query []float32, nq, topk int, outIDs []int64, outDists []float32) error {
+	if len(query) == 0 || nq <= 0 || topk <= 0 {
+		return fmt.Errorf("SearchSerialInto: invalid args")
+	}
+	total := nq * topk
+	if len(outIDs) < total || len(outDists) < total {
+		return fmt.Errorf("SearchSerialInto: output buffers too small")
+	}
+	cs := cachedSegmentCString(segmentID)
+	rc := C.plasmod_segment_search_serial(
+		cs,
+		(*C.float)(unsafe.Pointer(&query[0])),
+		C.int64_t(nq),
+		C.int(topk),
+		(*C.int64_t)(unsafe.Pointer(&outIDs[0])),
+		(*C.float)(unsafe.Pointer(&outDists[0])),
+	)
+	if rc != 0 {
+		return fmt.Errorf("plasmod_segment_search_serial(%q): rc=%d", segmentID, rc)
+	}
+	return nil
 }
 
 // SearchWithFilter performs ANN search with an optional allow-list bitmask.

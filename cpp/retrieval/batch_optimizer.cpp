@@ -4,7 +4,6 @@
 #include "plasmod/batch_optimizer.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -44,7 +43,7 @@ void L2NormSortPlugin::ReorderQueryBatch(
         float sum = 0.0f;
         const float* v = query + static_cast<size_t>(i) * static_cast<size_t>(dim);
         for (int d = 0; d < dim; ++d) { float x = v[d]; sum += x * x; }
-        norms_[i] = std::sqrt(sum);
+        norms_[i] = sum;
     }
 
     indices_.resize(nq);

@@ -12,6 +12,7 @@ bin/
 # C++ build
 cpp/build/
 cpp/build_trt/
+cpp/build-docker/
 
 # Downloaded / generated models
 models/*.onnx
@@ -68,6 +69,37 @@ benchmark
 server
 TEST/
 
-# process
-plasmod_test_env/
+# Member private docs / local notes (not for general repo policy)
+devdocs/
+KNOWN_ISSUES.md
+rule
+代码阅读顺序.md
+方案.md
+分工情况.md
+系统分层架构图.md
+docs/member-b/
+多维度数据集入库与检索规范（参考Milvus-Manu）.md
+TESTING.md
+docs/plasmod-fix/experiments/out-exp2.txt
+Plasmod.md
+reviewlist.md
+MemoryBank.docx
+HARD_DELETE_ZEP_EXECUTION_PLAN.md
+Zep_in_Plasmod.md
+new.md
+Buffer_test.md
+docs/sdk/README.md
+
+.cache/
+.out/
+.gocache_local/
+
+# Bench / local binaries at repo root
+/bin/
+Zep.docx
+vendor
+release-pack
+scripts
+
+# Local-only generated docs tree (dev policy)
 docs/

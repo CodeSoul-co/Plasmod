@@ -1,0 +1,192 @@
+package config
+
+import (
+	"os"
+	"strings"
+)
+
+// MemoryTieringConfig controls hot-tier scoring and eviction behavior.
+// All fields are soft-coded via configs/memory_tiering.yaml.
+type MemoryTieringConfig struct {
+	MemoryTiering struct {
+		HotCache struct {
+			HighWatermarkPercent float64 `yaml:"high_watermark_percent"`
+			LowWatermarkPercent  float64 `yaml:"low_watermark_percent"`
+			EvictionBatchSize    int     `yaml:"eviction_batch_size"`
+			Score                struct {
+				Wr     float64 `yaml:"wr"`
+				Wf     float64 `yaml:"wf"`
+				Ws     float64 `yaml:"ws"`
+				Lambda float64 `yaml:"lambda"`
+			} `yaml:"score"`
+			Penalty struct {
+				AlphaSize     float64 `yaml:"alpha_size"`
+				BetaWriteBack float64 `yaml:"beta_write_back"`
+				GammaHitProb  float64 `yaml:"gamma_hit_prob"`
+				DeltaReload   float64 `yaml:"delta_reload"`
+			} `yaml:"penalty"`
+			FrequencyNormWindow int                `yaml:"frequency_norm_window"`
+			RecencyTauSeconds   float64            `yaml:"recency_tau_seconds"`
+			RecencyTauByType    map[string]float64 `yaml:"recency_tau_by_type"`
+			HitProbEWMAAlpha    float64            `yaml:"hit_prob_ewma_alpha"`
+			EstimatedPoolBytes  float64            `yaml:"estimated_pool_bytes"`
+			ObjectTypeWeight    map[string]float64 `yaml:"object_type_weight"`
+			ReloadEaseByType    map[string]float64 `yaml:"reload_ease_by_type"`
+			ReloadEaseEWMAAlpha float64            `yaml:"reload_ease_ewma_alpha"`
+			WriteBackByType     map[string]float64 `yaml:"write_back_by_type"`
+			Queue               struct {
+				ProtectedRatio    float64 `yaml:"protected_ratio"`
+				LRUKValue         int     `yaml:"lru_k_value"`
+				CoolingTTLSeconds float64 `yaml:"cooling_ttl_seconds"`
+			} `yaml:"queue"`
+			Pool struct {
+				FixedRatio   float64 `yaml:"fixed_ratio"`
+				FixedStrict  bool    `yaml:"fixed_strict"`
+				HotRatio     float64 `yaml:"hot_ratio"`
+				CoolingRatio float64 `yaml:"cooling_ratio"`
+				FreeRatio    float64 `yaml:"free_ratio"`
+			} `yaml:"pool"`
+			Dirty struct {
+				MaxFlushRetries int    `yaml:"max_flush_retries"`
+				JournalPath     string `yaml:"journal_path"`
+			} `yaml:"dirty"`
+			SemanticRules struct {
+				KeywordBoost map[string]float64 `yaml:"keyword_boost"`
+				Graph        struct {
+					Enabled             bool    `yaml:"enabled"`
+					WSourceEvents       float64 `yaml:"w_source_events"`
+					WPolicyTags         float64 `yaml:"w_policy_tags"`
+					WImportance         float64 `yaml:"w_importance"`
+					WConfidence         float64 `yaml:"w_confidence"`
+					WOutDegree          float64 `yaml:"w_out_degree"`
+					WInDegree           float64 `yaml:"w_in_degree"`
+					NormalizeByMaxEdges float64 `yaml:"normalize_by_max_edges"`
+				} `yaml:"graph"`
+			} `yaml:"semantic_rules"`
+			PlacementRules struct {
+				ForceClass1Keywords  []string       `yaml:"force_class1_keywords"`
+				ForceClass2Keywords  []string       `yaml:"force_class2_keywords"`
+				ForceClass3Keywords  []string       `yaml:"force_class3_keywords"`
+				FixedTypes           []string       `yaml:"fixed_types"`
+				FixedKeywords        []string       `yaml:"fixed_keywords"`
+				ForceClassByType     map[string]int `yaml:"force_class_by_type"`
+				MemoryLifecycleClass map[string]int `yaml:"memory_lifecycle_class"`
+			} `yaml:"placement_rules"`
+			Locator struct {
+				BlockSize int64 `yaml:"block_size"`
+			} `yaml:"locator"`
+			PointerPolicy struct {
+				Class1Types []string `yaml:"class1_types"`
+				Class2Types []string `yaml:"class2_types"`
+				Class3Types []string `yaml:"class3_types"`
+			} `yaml:"pointer_policy"`
+		} `yaml:"hot_cache"`
+	} `yaml:"memory_tiering"`
+}
+
+func defaultMemoryTieringConfig() MemoryTieringConfig {
+	var cfg MemoryTieringConfig
+	h := &cfg.MemoryTiering.HotCache
+	h.HighWatermarkPercent = 0.80
+	h.LowWatermarkPercent = 0.60
+	h.EvictionBatchSize = 16
+	h.Score.Wr = 0.25
+	h.Score.Wf = 0.20
+	h.Score.Ws = 0.55
+	h.Score.Lambda = 0.80
+	h.Penalty.AlphaSize = 0.45
+	h.Penalty.BetaWriteBack = 0.20
+	h.Penalty.GammaHitProb = 0.25
+	h.Penalty.DeltaReload = 0.10
+	h.FrequencyNormWindow = 16
+	h.RecencyTauSeconds = 120.0
+	h.HitProbEWMAAlpha = 0.35
+	h.RecencyTauByType = map[string]float64{
+		"memory":   180.0,
+		"state":    120.0,
+		"artifact": 90.0,
+	}
+	h.EstimatedPoolBytes = 256 * 1024 * 1024 // 256MiB logical budget for size normalization
+	h.ObjectTypeWeight = map[string]float64{
+		"memory":   0.95,
+		"state":    0.85,
+		"artifact": 0.70,
+	}
+	h.ReloadEaseByType = map[string]float64{
+		"memory":   0.30,
+		"state":    0.50,
+		"artifact": 0.70,
+	}
+	h.ReloadEaseEWMAAlpha = 0.20
+	h.WriteBackByType = map[string]float64{
+		"memory":   0.40,
+		"state":    0.60,
+		"artifact": 0.50,
+	}
+	h.Queue.ProtectedRatio = 0.5
+	h.Queue.LRUKValue = 2
+	h.Queue.CoolingTTLSeconds = 60
+	h.Pool.FixedRatio = 0.20
+	h.Pool.FixedStrict = false
+	h.Pool.HotRatio = 0.45
+	h.Pool.CoolingRatio = 0.20
+	h.Pool.FreeRatio = 0.15
+	h.Dirty.MaxFlushRetries = 3
+	h.Dirty.JournalPath = ".andb_data/hot_dirty_journal.log"
+	h.SemanticRules.KeywordBoost = map[string]float64{
+		"core_fact":    0.20,
+		"evidence":     0.15,
+		"summary":      0.10,
+		"final":        0.10,
+		"temporary":    -0.10,
+		"retry":        -0.10,
+		"intermediate": -0.08,
+	}
+	h.SemanticRules.Graph.Enabled = true
+	h.SemanticRules.Graph.WSourceEvents = 0.45
+	h.SemanticRules.Graph.WPolicyTags = 0.25
+	h.SemanticRules.Graph.WImportance = 0.15
+	h.SemanticRules.Graph.WConfidence = 0.15
+	h.SemanticRules.Graph.WOutDegree = 0.10
+	h.SemanticRules.Graph.WInDegree = 0.10
+	h.SemanticRules.Graph.NormalizeByMaxEdges = 8.0
+	h.PlacementRules.ForceClass1Keywords = []string{"core_fact", "critical", "must_keep"}
+	h.PlacementRules.ForceClass2Keywords = []string{"thinking", "reasoning", "payload"}
+	h.PlacementRules.ForceClass3Keywords = []string{"archived", "deleted", "obsolete"}
+	h.PlacementRules.FixedTypes = []string{"index_node", "operator", "metadata_index"}
+	h.PlacementRules.FixedKeywords = []string{"fixed", "always_on", "index"}
+	h.PlacementRules.ForceClassByType = map[string]int{
+		"memory":   1,
+		"state":    1,
+		"artifact": 2,
+	}
+	h.PlacementRules.MemoryLifecycleClass = map[string]int{
+		"active":      1,
+		"reinforced":  1,
+		"compressed":  2,
+		"stale":       2,
+		"archived":    3,
+		"deleted":     3,
+		"quarantined": 3,
+	}
+	h.Locator.BlockSize = 4096
+	h.PointerPolicy.Class1Types = []string{"memory", "state"}
+	h.PointerPolicy.Class2Types = []string{"artifact"}
+	h.PointerPolicy.Class3Types = []string{}
+	return cfg
+}
+
+// LoadMemoryTieringConfig loads memory tiering settings from:
+// 1) defaults
+// 2) configs/memory_tiering.yaml (or PLASMOD_MEMORY_TIERING_CONFIG override)
+func LoadMemoryTieringConfig() (MemoryTieringConfig, error) {
+	cfg := defaultMemoryTieringConfig()
+	path := strings.TrimSpace(os.Getenv("PLASMOD_MEMORY_TIERING_CONFIG"))
+	if path == "" {
+		path = "configs/memory_tiering.yaml"
+	}
+	if err := LoadYAML(path, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}

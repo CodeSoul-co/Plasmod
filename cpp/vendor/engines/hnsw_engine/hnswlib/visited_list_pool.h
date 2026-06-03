@@ -42,6 +42,50 @@ class VisitedListPool {
         return res;
     };
 
+    class StampList {
+     public:
+        void
+        reset(size_t n) {
+            if (marks_.size() != n) {
+                marks_.assign(n, 0);
+                epoch_ = 1;
+                return;
+            }
+            ++epoch_;
+            if (epoch_ == 0) {
+                std::fill(marks_.begin(), marks_.end(), 0);
+                epoch_ = 1;
+            }
+        }
+
+        bool
+        test(size_t idx) const {
+            return marks_[idx] == epoch_;
+        }
+
+        void
+        mark(size_t idx) {
+            marks_[idx] = epoch_;
+        }
+
+        size_t
+        bytes() const {
+            return marks_.size() * sizeof(uint32_t);
+        }
+
+     private:
+        std::vector<uint32_t> marks_;
+        uint32_t epoch_ = 1;
+    };
+
+    StampList&
+    getFreeVisitedStampList() {
+        thread_local std::unordered_map<const VisitedListPool*, StampList> tls;
+        auto& res = tls[this];
+        res.reset(static_cast<size_t>(numelements));
+        return res;
+    }
+
     int64_t
     size() {
         auto threads_num = knowhere::ThreadPool::GetGlobalSearchThreadPool()->size();

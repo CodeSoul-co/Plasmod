@@ -17,10 +17,13 @@ import (
 type RuntimeAPI interface {
 	IngestVectorsToWarmSegment(segmentID string, objectIDs []string, vectors [][]float32) (int, error)
 	IngestVectorsToWarmSegmentWithType(segmentID string, objectIDs []string, vectors [][]float32, indexType string, nlist, nprobe, m, nbits int, sqType string) (int, error)
+	IngestFlatVectorsToWarmSegment(segmentID string, objectIDs []string, flatVectors []float32, n, dim int) (int, error)
+	IngestFlatVectorsToWarmSegmentWithType(segmentID string, objectIDs []string, flatVectors []float32, n, dim int, indexType string, nlist, nprobe, m, nbits int, sqType string) (int, error)
 	UnloadWarmSegment(segmentID string) error
 	SearchWarmSegment(segmentID, queryText string, topK int, queryVec []float32) ([]string, error)
 	RegisterWarmSegment(segmentID string, objectIDs []string) error
 	SearchWarmSegmentBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error)
+	SearchWarmSegmentSerialBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error)
 	SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error)
 }
 
@@ -46,6 +49,7 @@ func NewServer(runtime RuntimeAPI, wal eventbackbone.WAL, bus eventbackbone.Bus)
 //	POST /v1/internal/rpc/unload_segment   (JSON, {segment_id: string})
 //	POST /v1/internal/rpc/query_warm          (binary, application/octet-stream)
 //	POST /v1/internal/rpc/query_warm_batch    (binary, application/octet-stream)
+//	POST /v1/internal/rpc/query_warm_serial_batch (binary, application/octet-stream, server-side nq=1 loop)
 //	POST /v1/internal/rpc/query_warm_batch_raw (binary, application/octet-stream, no plugin)
 //	POST /v1/internal/rpc/register_warm      (JSON, convenience)
 //	GET  /v1/wal/stream                       (SSE, text/event-stream)
@@ -54,6 +58,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/rpc/unload_segment", s.handleUnloadSegment)
 	mux.HandleFunc("/v1/internal/rpc/query_warm", s.handleQueryWarm)
 	mux.HandleFunc("/v1/internal/rpc/query_warm_batch", s.handleQueryWarmBatch)
+	mux.HandleFunc("/v1/internal/rpc/query_warm_serial_batch", s.handleQueryWarmSerialBatch)
 	mux.HandleFunc("/v1/internal/rpc/query_warm_batch_raw", s.handleQueryWarmBatchRaw)
 	mux.HandleFunc("/v1/internal/rpc/register_warm", s.handleRegisterWarm)
 	mux.HandleFunc("/v1/wal/stream", s.handleWALStream)
@@ -74,7 +79,13 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	if segID == "" {
 		segID = "warm.default"
 	}
-	if len(req.ObjectIDs) != len(req.Vectors) {
+	vectorCount := len(req.ObjectIDs)
+	if len(req.FlatVectors) > 0 {
+		if req.Dim <= 0 || len(req.FlatVectors) != vectorCount*req.Dim {
+			http.Error(w, "object_ids/flat_vectors length mismatch", http.StatusBadRequest)
+			return
+		}
+	} else if len(req.Vectors) != vectorCount {
 		http.Error(w, "object_ids/vectors length mismatch", http.StatusBadRequest)
 		return
 	}
@@ -85,12 +96,22 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	t0 := time.Now()
 	var n int
-	if req.IndexType != "" {
-		n, err = s.runtime.IngestVectorsToWarmSegmentWithType(
-			segID, req.ObjectIDs, req.Vectors,
-			req.IndexType, req.IVFNlist, req.IVFNprobe, req.IVFM, req.IVFNbits, req.IVFSqType)
+	if len(req.FlatVectors) > 0 {
+		if req.IndexType != "" {
+			n, err = s.runtime.IngestFlatVectorsToWarmSegmentWithType(
+				segID, req.ObjectIDs, req.FlatVectors, vectorCount, req.Dim,
+				req.IndexType, req.IVFNlist, req.IVFNprobe, req.IVFM, req.IVFNbits, req.IVFSqType)
+		} else {
+			n, err = s.runtime.IngestFlatVectorsToWarmSegment(segID, req.ObjectIDs, req.FlatVectors, vectorCount, req.Dim)
+		}
 	} else {
-		n, err = s.runtime.IngestVectorsToWarmSegment(segID, req.ObjectIDs, req.Vectors)
+		if req.IndexType != "" {
+			n, err = s.runtime.IngestVectorsToWarmSegmentWithType(
+				segID, req.ObjectIDs, req.Vectors,
+				req.IndexType, req.IVFNlist, req.IVFNprobe, req.IVFM, req.IVFNbits, req.IVFSqType)
+		} else {
+			n, err = s.runtime.IngestVectorsToWarmSegment(segID, req.ObjectIDs, req.Vectors)
+		}
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -154,6 +175,39 @@ func (s *Server) handleQueryWarmBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids, dists, err := s.runtime.SearchWarmSegmentBatch(req.SegmentID, req.NQ, req.TopK, req.Queries)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	EncodeQueryWarmBatchResponse(w, &QueryWarmBatchResponse{
+		NQ:    req.NQ,
+		TopK:  req.TopK,
+		IDs:   ids,
+		Dists: dists,
+	})
+}
+
+func (s *Server) handleQueryWarmSerialBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	defer r.Body.Close()
+	req, err := DecodeQueryWarmBatch(r.Body)
+	if err != nil {
+		http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.SegmentID) == "" {
+		http.Error(w, "segment_id required", http.StatusBadRequest)
+		return
+	}
+	if req.NQ <= 0 || req.TopK <= 0 {
+		http.Error(w, "nq and topk must be positive", http.StatusBadRequest)
+		return
+	}
+	ids, dists, err := s.runtime.SearchWarmSegmentSerialBatch(req.SegmentID, req.NQ, req.TopK, req.Queries)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

@@ -1,0 +1,104 @@
+memory_tiering:
+  hot_cache:
+    high_watermark_percent: 0.80
+    low_watermark_percent: 0.60
+    eviction_batch_size: 16
+
+    score:
+      wr: 0.25
+      wf: 0.20
+      ws: 0.55
+      lambda: 0.80
+
+    penalty:
+      alpha_size: 0.45
+      beta_write_back: 0.20
+      gamma_hit_prob: 0.25
+      delta_reload: 0.10
+
+    frequency_norm_window: 16
+    recency_tau_seconds: 120
+    recency_tau_by_type:
+      memory: 180
+      state: 120
+      artifact: 90
+    hit_prob_ewma_alpha: 0.35
+    estimated_pool_bytes: 268435456
+
+    object_type_weight:
+      memory: 0.95
+      state: 0.85
+      artifact: 0.70
+
+    reload_ease_by_type:
+      memory: 0.30
+      state: 0.50
+      artifact: 0.70
+    reload_ease_ewma_alpha: 0.20
+
+    write_back_by_type:
+      memory: 0.40
+      state: 0.60
+      artifact: 0.50
+
+    queue:
+      protected_ratio: 0.5
+      lru_k_value: 2
+      cooling_ttl_seconds: 60
+
+    pool:
+      fixed_ratio: 0.20
+      fixed_strict: false
+      hot_ratio: 0.45
+      cooling_ratio: 0.20
+      free_ratio: 0.15
+
+    dirty:
+      max_flush_retries: 3
+      journal_path: ".andb_data/hot_dirty_journal.log"
+
+    semantic_rules:
+      keyword_boost:
+        core_fact: 0.20
+        evidence: 0.15
+        summary: 0.10
+        final: 0.10
+        temporary: -0.10
+        retry: -0.10
+        intermediate: -0.08
+      graph:
+        enabled: true
+        w_source_events: 0.45
+        w_policy_tags: 0.25
+        w_importance: 0.15
+        w_confidence: 0.15
+        w_out_degree: 0.10
+        w_in_degree: 0.10
+        normalize_by_max_edges: 8
+
+    placement_rules:
+      force_class1_keywords: [core_fact, critical, must_keep]
+      force_class2_keywords: [thinking, reasoning, payload]
+      force_class3_keywords: [archived, deleted, obsolete]
+      fixed_types: [index_node, operator, metadata_index]
+      fixed_keywords: [fixed, always_on, index]
+      force_class_by_type:
+        memory: 1
+        state: 1
+        artifact: 2
+      memory_lifecycle_class:
+        active: 1
+        reinforced: 1
+        compressed: 2
+        stale: 2
+        archived: 3
+        deleted: 3
+        quarantined: 3
+
+    locator:
+      block_size: 4096
+
+    pointer_policy:
+      class1_types: [memory, state]
+      class2_types: [artifact]
+      class3_types: []

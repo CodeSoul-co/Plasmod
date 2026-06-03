@@ -14,9 +14,20 @@ __pycache__
 
 # Large / irrelevant for Go build
 cpp/build
-integration_tests/fixtures/**/yfcc*.fbin
+integration_tests
+sdk
+docs
+scripts
+release-pack
 **/*.fbin
+**/*.onnx
+**/*.bin
+**/*.docx
+**/*.zip
+**/*.tar.gz
 
-# Docs and tooling (optional; uncomment to shrink context further)
-# docs
-# scripts
+# Local runtime data (can be multi-GB)
+.plasmod_data/**
+.minio-data/**
+.andb_data/**
+.acceptance-e2e-data/**

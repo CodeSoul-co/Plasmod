@@ -37,13 +37,34 @@ func resolveMaxConcurrentWrites() int {
 	return n
 }
 
+// normalizeAdminMemoryIDs trims, drops empties, and de-duplicates while preserving order.
+func normalizeAdminMemoryIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 type Gateway struct {
-	coord      *coordinator.Hub
-	runtime    *worker.Runtime
-	store      storage.RuntimeStorage
-	storageCfg *storage.ConfigSnapshot
-	bundle     *storage.RuntimeBundle // optional; used for admin Badger.DropAll
-	modeMu     sync.RWMutex
+	coord           *coordinator.Hub
+	runtime         *worker.Runtime
+	store           storage.RuntimeStorage
+	storageCfg      *storage.ConfigSnapshot
+	bundle          *storage.RuntimeBundle // optional; used for admin Badger.DropAll
+	modeMu          sync.RWMutex
 	consistencyMode string
 	hardDeleteMgr   *hardDeleteManager
 	stopCh          chan struct{}
@@ -51,6 +72,9 @@ type Gateway struct {
 	// Semaphore limits concurrent writes to prevent resource exhaustion.
 	writeSem       chan struct{}
 	writeSemActive int32
+
+	// Multi-request document body assembly (see /v1/ingest/document segment fields).
+	docAssembler *documentSegmentAssembler
 }
 
 func resolveDatasetPurgeWorkers(tieredEnabled bool) int {
@@ -131,7 +155,10 @@ type purgePhaseDurations struct {
 	outboxNs int64
 }
 
-func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectStore) purgePhaseDurations {
+func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectStore, reasonCode string) purgePhaseDurations {
+	if reasonCode == "" {
+		reasonCode = "dataset_purge"
+	}
 	var phase purgePhaseDurations
 	startDelete := time.Now()
 	if tiered != nil {
@@ -157,7 +184,7 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 			ActorType:      "system",
 			ActorID:        "admin_api",
 			Decision:       "allow",
-			ReasonCode:     "dataset_purge",
+			ReasonCode:     reasonCode,
 			Timestamp:      now,
 		})
 	}
@@ -165,10 +192,152 @@ func (g *Gateway) purgeOneMemory(memoryID string, tiered *storage.TieredObjectSt
 
 	startOutbox := time.Now()
 	if g.runtime != nil {
-		g.runtime.EnqueueMemoryDelete(memoryID, true, "dataset_purge")
+		g.runtime.EnqueueMemoryDelete(memoryID, true, reasonCode)
 	}
 	phase.outboxNs = time.Since(startOutbox).Nanoseconds()
 	return phase
+}
+
+// memoryReferencesSourceRef is true when ref equals any trimmed element of m.SourceEventIDs.
+func memoryReferencesSourceRef(m schemas.Memory, ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	for _, sid := range m.SourceEventIDs {
+		if strings.TrimSpace(sid) == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmptyAdminRef(referenceID, eventID, memoryID string) string {
+	if s := strings.TrimSpace(referenceID); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(eventID); s != "" {
+		return s
+	}
+	return strings.TrimSpace(memoryID)
+}
+
+// runPurgeIDBatches runs the batched hard-delete loop shared by admin purge handlers.
+func (g *Gateway) runPurgeIDBatches(
+	ctx context.Context,
+	purgeIDs []string,
+	tiered *storage.TieredObjectStore,
+	workspaceID string,
+	logLabel string,
+	deleteStartedAt time.Time,
+	reasonCode string,
+) (purged int, cancelled bool, cancelReason string, purgeDeleteObjectNs, purgeDeleteAuditNs, purgeDeleteOutboxNs int64) {
+	if reasonCode == "" {
+		reasonCode = "dataset_purge"
+	}
+	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
+	purgeBatchSize := resolveDatasetPurgeBatchSize()
+	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
+	for start := 0; start < len(purgeIDs); start += purgeBatchSize {
+		select {
+		case <-ctx.Done():
+			cancelled = true
+			cancelReason = ctx.Err().Error()
+		default:
+		}
+		if cancelled {
+			break
+		}
+		end := start + purgeBatchSize
+		if end > len(purgeIDs) {
+			end = len(purgeIDs)
+		}
+		batch := purgeIDs[start:end]
+		workerCount := purgeWorkers
+		if workerCount > len(batch) {
+			workerCount = len(batch)
+		}
+		if workerCount <= 1 {
+			for _, id := range batch {
+				select {
+				case <-ctx.Done():
+					cancelled = true
+					cancelReason = ctx.Err().Error()
+				default:
+				}
+				if cancelled {
+					break
+				}
+				phase := g.purgeOneMemory(id, tiered, reasonCode)
+				purgeDeleteObjectNs += phase.deleteNs
+				purgeDeleteAuditNs += phase.auditNs
+				purgeDeleteOutboxNs += phase.outboxNs
+				purged++
+			}
+		} else {
+			jobs := make(chan string, purgeQueueSize)
+			var wg sync.WaitGroup
+			var batchPurged int64
+			var batchDeleteNs int64
+			var batchAuditNs int64
+			var batchOutboxNs int64
+			for i := 0; i < workerCount; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case id, ok := <-jobs:
+							if !ok {
+								return
+							}
+							phase := g.purgeOneMemory(id, tiered, reasonCode)
+							atomic.AddInt64(&batchDeleteNs, phase.deleteNs)
+							atomic.AddInt64(&batchAuditNs, phase.auditNs)
+							atomic.AddInt64(&batchOutboxNs, phase.outboxNs)
+							atomic.AddInt64(&batchPurged, 1)
+						}
+					}
+				}()
+			}
+			for _, id := range batch {
+				select {
+				case <-ctx.Done():
+					cancelled = true
+					cancelReason = ctx.Err().Error()
+				case jobs <- id:
+				}
+				if cancelled {
+					break
+				}
+			}
+			close(jobs)
+			wg.Wait()
+			purged += int(batchPurged)
+			purgeDeleteObjectNs += atomic.LoadInt64(&batchDeleteNs)
+			purgeDeleteAuditNs += atomic.LoadInt64(&batchAuditNs)
+			purgeDeleteOutboxNs += atomic.LoadInt64(&batchOutboxNs)
+		}
+		log.Printf(
+			"admin purge progress: workspace=%s label=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
+			workspaceID,
+			logLabel,
+			(start/purgeBatchSize)+1,
+			(len(purgeIDs)+purgeBatchSize-1)/purgeBatchSize,
+			purged,
+			len(purgeIDs),
+			workerCount,
+			purgeQueueSize,
+			time.Since(deleteStartedAt).Milliseconds(),
+			cancelled,
+		)
+		if cancelled {
+			break
+		}
+	}
+	return purged, cancelled, cancelReason, purgeDeleteObjectNs, purgeDeleteAuditNs, purgeDeleteOutboxNs
 }
 
 // NewGateway wires HTTP handlers. storageCfg may be nil (tests); when set,
@@ -185,6 +354,7 @@ func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.R
 		consistencyMode: "strict_visible",
 		stopCh:          make(chan struct{}),
 		writeSem:        make(chan struct{}, maxWrites),
+		docAssembler:    newDocumentSegmentAssembler(),
 	}
 	g.hardDeleteMgr = newHardDeleteManagerFromEnv()
 	go g.hardDeleteMgr.run(g.stopCh, context.Background(), g.processHardDeleteTaskBatch)
@@ -199,8 +369,14 @@ func (g *Gateway) Shutdown() {
 	close(g.stopCh)
 }
 
+// RegisterRoutes mounts management and API routes (dev unified listener).
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
-	// System
+	g.RegisterMgmtRoutes(mux)
+	g.RegisterAPIRoutes(mux)
+}
+
+// RegisterMgmtRoutes mounts health and admin/observability endpoints (split mode → PortMgmt).
+func (g *Gateway) RegisterMgmtRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -216,18 +392,29 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 	mux.HandleFunc("/v1/admin/dataset/purge/task", g.handleDatasetPurgeTask)
+	mux.HandleFunc("/v1/admin/memory/delete-by-source", g.handleMemoryDeleteBySource)
+	mux.HandleFunc("/v1/admin/memory/purge-by-source", g.handleMemoryPurgeBySource)
 	mux.HandleFunc("/v1/admin/data/wipe", g.handleAdminDataWipe)
 	mux.HandleFunc("/v1/admin/rollback", g.handleAdminRollback)
 	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
 	mux.HandleFunc("/v1/admin/replay", g.handleAdminReplay)
+	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
+	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
+	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
+	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminAlgorithmProfileMode)
+	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminAlgorithmProfileHealth)
 	if isTestMode() {
 		mux.HandleFunc("/v1/debug/echo", g.handleDebugEcho)
 	}
+}
 
+// RegisterAPIRoutes mounts SDK/data-plane HTTP endpoints (split mode → PortAPI).
+func (g *Gateway) RegisterAPIRoutes(mux *http.ServeMux) {
 	// Event ingest & query
 	mux.HandleFunc("/v1/ingest/events", g.handleIngest)
 	mux.HandleFunc("/v1/ingest/vectors", g.handleIngestVectors)
 	mux.HandleFunc("/v1/query", g.handleQuery)
+	mux.HandleFunc("/v1/query/batch", g.handleQueryBatch)
 
 	// Warm segment registration — exposes cgo-built segments to the HTTP SearchWarmSegment path.
 	mux.HandleFunc("/v1/internal/warm-segment/register", g.handleWarmSegmentRegister)
@@ -255,13 +442,6 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
 	mux.HandleFunc("/v1/internal/memory/stale", g.handleMemoryMarkStale)
 	mux.HandleFunc("/v1/internal/memory/conflict/inject", g.handleMemoryConflictInject)
-
-	// Observability
-	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
-	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
-	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
-	mux.HandleFunc("/v1/admin/memory/providers/mode", g.handleAdminAlgorithmProfileMode)
-	mux.HandleFunc("/v1/admin/memory/providers/health", g.handleAdminAlgorithmProfileHealth)
 
 	// Task lifecycle (3-MT1~MT7, 4-M6)
 	mux.HandleFunc("/v1/internal/task/start", g.handleTaskStart)
@@ -370,36 +550,30 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.WarmSegmentID) != "" {
-		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK, req.EmbeddingVector)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, map[string]any{
-			"status":          "ok",
-			"objects":         ids,
-			"warm_segment_id": req.WarmSegmentID,
-			"tier":            "warm_segment",
-		})
+	resp, err := g.ServiceQuery(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.LatestBatchOnly {
-		workspaceID := strings.TrimSpace(req.WorkspaceID)
-		datasetName := strings.TrimSpace(req.DatasetName)
-		sourceFileName := strings.TrimSpace(req.SourceFileName)
-		if workspaceID == "" {
-			http.Error(w, "latest_batch_only requires workspace_id", http.StatusBadRequest)
-			return
-		}
-		if datasetName == "" && sourceFileName == "" {
-			http.Error(w, "latest_batch_only requires dataset_name or source_file_name", http.StatusBadRequest)
-			return
-		}
+	writeJSON(w, resp)
+}
+
+func (g *Gateway) handleQueryBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-	resp := g.runtime.ExecuteQuery(req)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	var req schemas.VectorWarmBatchQueryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	resp, err := g.ServiceQueryBatch(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, resp)
 }
 
 func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
@@ -407,46 +581,17 @@ func (g *Gateway) handleIngestVectors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	type reqBody struct {
-		SegmentID string      `json:"segment_id"`
-		ObjectIDs []string    `json:"object_ids"`
-		Vectors   [][]float32 `json:"vectors"`
-	}
-	var req reqBody
+	var req schemas.WarmVectorsIngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	req.SegmentID = strings.TrimSpace(req.SegmentID)
-	if req.SegmentID == "" {
-		req.SegmentID = "warm.default"
-	}
-	if len(req.Vectors) == 0 {
-		http.Error(w, "vectors is required", http.StatusBadRequest)
-		return
-	}
-	if len(req.ObjectIDs) == 0 {
-		req.ObjectIDs = make([]string, len(req.Vectors))
-		for i := range req.Vectors {
-			req.ObjectIDs[i] = fmt.Sprintf("%s_%d", req.SegmentID, i)
-		}
-	}
-	if len(req.ObjectIDs) != len(req.Vectors) {
-		http.Error(w, "object_ids/vectors length mismatch", http.StatusBadRequest)
-		return
-	}
-	n, err := g.runtime.IngestVectorsToWarmSegment(req.SegmentID, req.ObjectIDs, req.Vectors)
+	out, err := g.ServiceIngestVectors(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, map[string]any{
-		"status":      "ok",
-		"segment_id":  req.SegmentID,
-		"ingested":    n,
-		"vector_dim":  len(req.Vectors[0]),
-		"direct_warm": true,
-	})
+	writeJSON(w, out)
 }
 
 // handleWarmSegmentRegister registers a warm segment's object-ID list so that
@@ -553,21 +698,23 @@ func (g *Gateway) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleDatasetDelete soft-deletes uploaded dataset memories by dataset selectors.
+// handleDatasetDelete soft-deletes uploaded dataset memories by dataset selectors or explicit memory_ids.
 // Matching prefers Memory.SourceFileName / Memory.DatasetName (from ingest payload) when set;
 // otherwise falls back to token-safe parsing of Memory.Content (see schemas.MemoryDatasetMatch).
-// Selectors: file_name, dataset_name, prefix — AND semantics; at least one required.
+// Selectors: file_name, dataset_name, prefix — AND semantics; at least one required unless memory_ids is non-empty.
+// When memory_ids is non-empty, only those memories are considered (must belong to workspace_id); selectors are ignored.
 func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	type reqBody struct {
-		FileName    string `json:"file_name,omitempty"`
-		DatasetName string `json:"dataset_name,omitempty"`
-		Prefix      string `json:"prefix,omitempty"`
-		WorkspaceID string `json:"workspace_id,omitempty"`
-		DryRun      bool   `json:"dry_run,omitempty"`
+		FileName    string   `json:"file_name,omitempty"`
+		DatasetName string   `json:"dataset_name,omitempty"`
+		Prefix      string   `json:"prefix,omitempty"`
+		WorkspaceID string   `json:"workspace_id,omitempty"`
+		MemoryIDs   []string `json:"memory_ids,omitempty"`
+		DryRun      bool     `json:"dry_run,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -578,31 +725,24 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 	req.DatasetName = strings.TrimSpace(req.DatasetName)
 	req.Prefix = strings.TrimSpace(req.Prefix)
 	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	memIDs := normalizeAdminMemoryIDs(req.MemoryIDs)
 	if req.WorkspaceID == "" {
 		http.Error(w, "workspace_id is required", http.StatusBadRequest)
 		return
 	}
-	if req.FileName == "" && req.DatasetName == "" && req.Prefix == "" {
-		http.Error(w, "at least one selector is required: file_name, dataset_name, or prefix", http.StatusBadRequest)
+	if len(memIDs) == 0 && req.FileName == "" && req.DatasetName == "" && req.Prefix == "" {
+		http.Error(w, "at least one selector is required (file_name, dataset_name, prefix) unless memory_ids is non-empty", http.StatusBadRequest)
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	mems := g.store.Objects().ListMemories("", "")
 	matched := 0
 	updated := 0
 	ids := make([]string, 0)
-	for _, m := range mems {
-		// Fast path: workspace_id is required; skip cross-workspace rows early.
-		if m.Scope != req.WorkspaceID {
-			continue
-		}
-		if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
-			continue
-		}
+	applyDelete := func(m schemas.Memory) {
 		matched++
 		ids = append(ids, m.MemoryID)
 		if req.DryRun || !m.IsActive {
-			continue
+			return
 		}
 		m.IsActive = false
 		if m.ValidTo == "" {
@@ -631,7 +771,27 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 			g.runtime.EnqueueMemoryDelete(m.MemoryID, false, "dataset_delete")
 		}
 	}
-	writeJSON(w, map[string]any{
+	if len(memIDs) > 0 {
+		for _, mid := range memIDs {
+			m, ok := g.store.Objects().GetMemory(mid)
+			if !ok || m.Scope != req.WorkspaceID {
+				continue
+			}
+			applyDelete(m)
+		}
+	} else {
+		mems := g.store.Objects().ListMemories("", "")
+		for _, m := range mems {
+			if m.Scope != req.WorkspaceID {
+				continue
+			}
+			if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
+				continue
+			}
+			applyDelete(m)
+		}
+	}
+	resp := map[string]any{
 		"status":       "ok",
 		"file_name":    req.FileName,
 		"dataset_name": req.DatasetName,
@@ -641,28 +801,34 @@ func (g *Gateway) handleDatasetDelete(w http.ResponseWriter, r *http.Request) {
 		"matched":      matched,
 		"deleted":      updated,
 		"memory_ids":   ids,
-	})
+	}
+	if len(memIDs) > 0 {
+		resp["requested_memory_ids"] = memIDs
+	}
+	writeJSON(w, resp)
 }
 
-// handleDatasetPurge removes inactive (soft-deleted) memories when selectors match.
+// handleDatasetPurge removes inactive (soft-deleted) memories when selectors match or memory_ids is set.
 // Requires workspace_id. only_if_inactive defaults to true (active memories are skipped).
 // When TieredObjectStore is wired, HardDeleteMemory clears hot/warm/cold; otherwise PurgeMemoryWarmOnly
 // removes hot/warm only (cold embeddings may remain — response field purge_backend is "warm_only").
+// When memory_ids is non-empty, only those memories are considered (must belong to workspace_id); selectors are ignored.
 func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	type reqBody struct {
-		FileName       string `json:"file_name,omitempty"`
-		DatasetName    string `json:"dataset_name,omitempty"`
-		Prefix         string `json:"prefix,omitempty"`
-		WorkspaceID    string `json:"workspace_id,omitempty"`
-		DryRun         bool   `json:"dry_run,omitempty"`
-		OnlyIfInactive *bool  `json:"only_if_inactive,omitempty"`
-		IncludeMemoryIDs *bool `json:"include_memory_ids,omitempty"`
-		Async          *bool  `json:"async,omitempty"`
-		IdempotencyKey string `json:"idempotency_key,omitempty"`
+		FileName         string   `json:"file_name,omitempty"`
+		DatasetName      string   `json:"dataset_name,omitempty"`
+		Prefix           string   `json:"prefix,omitempty"`
+		WorkspaceID      string   `json:"workspace_id,omitempty"`
+		MemoryIDs        []string `json:"memory_ids,omitempty"`
+		DryRun           bool     `json:"dry_run,omitempty"`
+		OnlyIfInactive   *bool    `json:"only_if_inactive,omitempty"`
+		IncludeMemoryIDs *bool    `json:"include_memory_ids,omitempty"`
+		Async            *bool    `json:"async,omitempty"`
+		IdempotencyKey   string   `json:"idempotency_key,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -673,12 +839,13 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	req.DatasetName = strings.TrimSpace(req.DatasetName)
 	req.Prefix = strings.TrimSpace(req.Prefix)
 	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	memIDs := normalizeAdminMemoryIDs(req.MemoryIDs)
 	if req.WorkspaceID == "" {
 		http.Error(w, "workspace_id is required", http.StatusBadRequest)
 		return
 	}
-	if req.FileName == "" && req.DatasetName == "" && req.Prefix == "" {
-		http.Error(w, "at least one selector is required: file_name, dataset_name, or prefix", http.StatusBadRequest)
+	if len(memIDs) == 0 && req.FileName == "" && req.DatasetName == "" && req.Prefix == "" {
+		http.Error(w, "at least one selector is required (file_name, dataset_name, prefix) unless memory_ids is non-empty", http.StatusBadRequest)
 		return
 	}
 	onlyIfInactive := true
@@ -703,6 +870,9 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	mems := g.store.Objects().ListMemories("", "")
 	scanned := len(mems)
+	if len(memIDs) > 0 {
+		scanned = len(memIDs)
+	}
 	workspaceCandidates := 0
 	matched := 0
 	skippedActive := 0
@@ -712,37 +882,70 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	cancelReason := ""
 	ids := make([]string, 0)
 	purgeIDs := make([]string, 0)
-	for i, m := range mems {
-		if i%256 == 0 {
-			select {
-			case <-ctx.Done():
-				cancelled = true
-				cancelReason = ctx.Err().Error()
-				break
-			default:
-			}
-			if cancelled {
-				break
-			}
-		}
-		// Fast path: workspace_id is required; skip cross-workspace rows early.
-		if m.Scope != req.WorkspaceID {
-			continue
-		}
+	considerOne := func(m schemas.Memory) {
 		workspaceCandidates++
-		if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
-			continue
-		}
 		matched++
 		if includeMemoryIDs {
 			ids = append(ids, m.MemoryID)
 		}
 		if m.IsActive && onlyIfInactive {
 			skippedActive++
-			continue
+			return
 		}
 		purgeable++
 		purgeIDs = append(purgeIDs, m.MemoryID)
+	}
+	if len(memIDs) > 0 {
+		for i, mid := range memIDs {
+			if i%256 == 0 {
+				select {
+				case <-ctx.Done():
+					cancelled = true
+					cancelReason = ctx.Err().Error()
+				default:
+				}
+				if cancelled {
+					break
+				}
+			}
+			m, ok := g.store.Objects().GetMemory(mid)
+			if !ok || m.Scope != req.WorkspaceID {
+				continue
+			}
+			considerOne(m)
+		}
+	} else {
+		for i, m := range mems {
+			if i%256 == 0 {
+				select {
+				case <-ctx.Done():
+					cancelled = true
+					cancelReason = ctx.Err().Error()
+					break
+				default:
+				}
+				if cancelled {
+					break
+				}
+			}
+			if m.Scope != req.WorkspaceID {
+				continue
+			}
+			workspaceCandidates++
+			if !schemas.MemoryDatasetMatchTrimmedInWorkspace(m, req.FileName, req.DatasetName, req.Prefix) {
+				continue
+			}
+			matched++
+			if includeMemoryIDs {
+				ids = append(ids, m.MemoryID)
+			}
+			if m.IsActive && onlyIfInactive {
+				skippedActive++
+				continue
+			}
+			purgeable++
+			purgeIDs = append(purgeIDs, m.MemoryID)
+		}
 	}
 	scanElapsedMs := time.Since(scanStartedAt).Milliseconds()
 	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
@@ -806,104 +1009,14 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
-		for start := 0; start < len(purgeIDs); start += purgeBatchSize {
-			select {
-			case <-ctx.Done():
-				cancelled = true
-				cancelReason = ctx.Err().Error()
-			default:
-			}
-			if cancelled {
-				break
-			}
-			end := start + purgeBatchSize
-			if end > len(purgeIDs) {
-				end = len(purgeIDs)
-			}
-			batch := purgeIDs[start:end]
-			workerCount := purgeWorkers
-			if workerCount > len(batch) {
-				workerCount = len(batch)
-			}
-			if workerCount <= 1 {
-				for _, id := range batch {
-					select {
-					case <-ctx.Done():
-						cancelled = true
-						cancelReason = ctx.Err().Error()
-					default:
-					}
-					if cancelled {
-						break
-					}
-					phase := g.purgeOneMemory(id, tiered)
-					purgeDeleteObjectNs += phase.deleteNs
-					purgeDeleteAuditNs += phase.auditNs
-					purgeDeleteOutboxNs += phase.outboxNs
-					purged++
-				}
-			} else {
-				jobs := make(chan string, purgeQueueSize)
-				var wg sync.WaitGroup
-				var batchPurged int64
-				var batchDeleteNs int64
-				var batchAuditNs int64
-				var batchOutboxNs int64
-				for i := 0; i < workerCount; i++ {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						for {
-							select {
-							case <-ctx.Done():
-								return
-							case id, ok := <-jobs:
-								if !ok {
-									return
-								}
-								phase := g.purgeOneMemory(id, tiered)
-								atomic.AddInt64(&batchDeleteNs, phase.deleteNs)
-								atomic.AddInt64(&batchAuditNs, phase.auditNs)
-								atomic.AddInt64(&batchOutboxNs, phase.outboxNs)
-								atomic.AddInt64(&batchPurged, 1)
-							}
-						}
-					}()
-				}
-				for _, id := range batch {
-					select {
-					case <-ctx.Done():
-						cancelled = true
-						cancelReason = ctx.Err().Error()
-					case jobs <- id:
-					}
-					if cancelled {
-						break
-					}
-				}
-				close(jobs)
-				wg.Wait()
-				purged += int(batchPurged)
-				purgeDeleteObjectNs += atomic.LoadInt64(&batchDeleteNs)
-				purgeDeleteAuditNs += atomic.LoadInt64(&batchAuditNs)
-				purgeDeleteOutboxNs += atomic.LoadInt64(&batchOutboxNs)
-			}
-			log.Printf(
-				"admin purge progress: workspace=%s dataset=%s batch=%d/%d purged=%d/%d workers=%d queue=%d elapsed_ms=%d cancelled=%t",
-				req.WorkspaceID,
-				req.DatasetName,
-				(start/purgeBatchSize)+1,
-				(len(purgeIDs)+purgeBatchSize-1)/purgeBatchSize,
-				purged,
-				len(purgeIDs),
-				workerCount,
-				purgeQueueSize,
-				time.Since(deleteStartedAt).Milliseconds(),
-				cancelled,
-			)
-			if cancelled {
-				break
-			}
+		bPurged, bCancelled, bCancelReason, pObj, pAud, pOut := g.runPurgeIDBatches(ctx, purgeIDs, tiered, req.WorkspaceID, req.DatasetName, deleteStartedAt, "dataset_purge")
+		purged = bPurged
+		purgeDeleteObjectNs = pObj
+		purgeDeleteAuditNs = pAud
+		purgeDeleteOutboxNs = pOut
+		if bCancelled {
+			cancelled = true
+			cancelReason = bCancelReason
 		}
 	}
 	status := "ok"
@@ -924,34 +1037,342 @@ func (g *Gateway) handleDatasetPurge(w http.ResponseWriter, r *http.Request) {
 	deleteElapsedMs := time.Since(deleteStartedAt).Milliseconds()
 	responseStartedAt := time.Now()
 	resp := map[string]any{
-		"status":                 status,
-		"data_presence":          dataPresence,
-		"file_name":              req.FileName,
-		"dataset_name":           req.DatasetName,
-		"prefix":                 req.Prefix,
-		"workspace_id":           req.WorkspaceID,
-		"dry_run":                req.DryRun,
-		"only_if_inactive":       onlyIfInactive,
-		"purge_backend":          purgeBackend,
-		"scanned":                scanned,
-		"workspace_scanned":      workspaceCandidates,
-		"matched":                matched,
-		"skipped_active":         skippedActive,
-		"purgeable":              purgeable,
-		"purged":                 purged,
-		"cancelled":              cancelled,
-		"cancel_reason":          cancelReason,
-		"purge_workers":          purgeWorkers,
-		"purge_batch_size":       purgeBatchSize,
-		"purge_queue_size":       purgeQueueSize,
-		"purge_elapsed_ms":       time.Since(requestStartedAt).Milliseconds(),
-		"purge_scan_elapsed_ms":  scanElapsedMs,
+		"status":                  status,
+		"data_presence":           dataPresence,
+		"file_name":               req.FileName,
+		"dataset_name":            req.DatasetName,
+		"prefix":                  req.Prefix,
+		"workspace_id":            req.WorkspaceID,
+		"dry_run":                 req.DryRun,
+		"only_if_inactive":        onlyIfInactive,
+		"purge_backend":           purgeBackend,
+		"scanned":                 scanned,
+		"workspace_scanned":       workspaceCandidates,
+		"matched":                 matched,
+		"skipped_active":          skippedActive,
+		"purgeable":               purgeable,
+		"purged":                  purged,
+		"cancelled":               cancelled,
+		"cancel_reason":           cancelReason,
+		"purge_workers":           purgeWorkers,
+		"purge_batch_size":        purgeBatchSize,
+		"purge_queue_size":        purgeQueueSize,
+		"purge_elapsed_ms":        time.Since(requestStartedAt).Milliseconds(),
+		"purge_scan_elapsed_ms":   scanElapsedMs,
 		"purge_delete_elapsed_ms": deleteElapsedMs,
-		"purge_progress_percent": progressPercent,
-		"purge_delete_object_ms": float64(purgeDeleteObjectNs) / float64(time.Millisecond),
-		"purge_delete_audit_ms":  float64(purgeDeleteAuditNs) / float64(time.Millisecond),
-		"purge_delete_outbox_ms": float64(purgeDeleteOutboxNs) / float64(time.Millisecond),
-		"include_memory_ids":     includeMemoryIDs,
+		"purge_progress_percent":  progressPercent,
+		"purge_delete_object_ms":  float64(purgeDeleteObjectNs) / float64(time.Millisecond),
+		"purge_delete_audit_ms":   float64(purgeDeleteAuditNs) / float64(time.Millisecond),
+		"purge_delete_outbox_ms":  float64(purgeDeleteOutboxNs) / float64(time.Millisecond),
+		"include_memory_ids":      includeMemoryIDs,
+	}
+	if includeMemoryIDs {
+		resp["memory_ids"] = ids
+		resp["purged_memory_ids"] = purgeIDs
+	} else {
+		resp["memory_ids_omitted"] = true
+	}
+	if len(memIDs) > 0 {
+		resp["requested_memory_ids"] = memIDs
+	}
+	resp["purge_response_build_elapsed_ms"] = time.Since(responseStartedAt).Milliseconds()
+	writeJSON(w, resp)
+}
+
+// handleMemoryDeleteBySource soft-deletes every Memory in workspace_id whose source_event_ids
+// contains the reference string (exact match to a list element after trim). Provide reference_id,
+// or event_id, or memory_id — first non-empty wins (typically an event id like evt_...).
+func (g *Gateway) handleMemoryDeleteBySource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		WorkspaceID string `json:"workspace_id"`
+		ReferenceID string `json:"reference_id,omitempty"`
+		EventID     string `json:"event_id,omitempty"`
+		MemoryID    string `json:"memory_id,omitempty"`
+		DryRun      bool   `json:"dry_run,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	workspace := strings.TrimSpace(req.WorkspaceID)
+	ref := firstNonEmptyAdminRef(req.ReferenceID, req.EventID, req.MemoryID)
+	if workspace == "" {
+		http.Error(w, "workspace_id is required", http.StatusBadRequest)
+		return
+	}
+	if ref == "" {
+		http.Error(w, "reference_id, event_id, or memory_id is required (matched against memory.source_event_ids elements)", http.StatusBadRequest)
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	matched := 0
+	updated := 0
+	ids := make([]string, 0)
+	for _, m := range g.store.Objects().ListMemories("", "") {
+		if m.Scope != workspace {
+			continue
+		}
+		if !memoryReferencesSourceRef(m, ref) {
+			continue
+		}
+		matched++
+		ids = append(ids, m.MemoryID)
+		if req.DryRun || !m.IsActive {
+			continue
+		}
+		m.IsActive = false
+		if m.ValidTo == "" {
+			m.ValidTo = now
+		}
+		g.store.Objects().PutMemory(m)
+		if tiered := g.runtime.TieredObjects(); tiered != nil {
+			tiered.SoftDeleteMemoryTierCleanup(m.MemoryID)
+		}
+		if g.store.Policies() != nil {
+			g.store.Policies().AppendPolicy(schemas.PolicyRecord{
+				PolicyID:         "policy_srcdel_" + m.MemoryID,
+				ObjectID:         m.MemoryID,
+				ObjectType:       string(schemas.ObjectTypeMemory),
+				PolicyVersion:    time.Now().UnixNano(),
+				Context:          "admin memory delete by source reference",
+				VerifiedState:    string(schemas.VerifiedStateRetracted),
+				QuarantineFlag:   true,
+				VisibilityPolicy: m.Scope,
+				PolicyReason:     "source_event_ids matched delete-by-source request",
+				PolicySource:     "admin_api",
+			})
+		}
+		updated++
+		if g.runtime != nil {
+			g.runtime.EnqueueMemoryDelete(m.MemoryID, false, "memory_source_delete")
+		}
+	}
+	writeJSON(w, map[string]any{
+		"status":       "ok",
+		"workspace_id": workspace,
+		"reference_id": ref,
+		"dry_run":      req.DryRun,
+		"matched":      matched,
+		"deleted":      updated,
+		"memory_ids":   ids,
+	})
+}
+
+// handleMemoryPurgeBySource hard-deletes memories in workspace whose source_event_ids contains reference.
+// Options mirror dataset purge: only_if_inactive (default true), dry_run, include_memory_ids, async.
+func (g *Gateway) handleMemoryPurgeBySource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		WorkspaceID      string `json:"workspace_id"`
+		ReferenceID      string `json:"reference_id,omitempty"`
+		EventID          string `json:"event_id,omitempty"`
+		MemoryID         string `json:"memory_id,omitempty"`
+		DryRun           bool   `json:"dry_run,omitempty"`
+		OnlyIfInactive   *bool  `json:"only_if_inactive,omitempty"`
+		IncludeMemoryIDs *bool  `json:"include_memory_ids,omitempty"`
+		Async            *bool  `json:"async,omitempty"`
+		IdempotencyKey   string `json:"idempotency_key,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	workspace := strings.TrimSpace(req.WorkspaceID)
+	ref := firstNonEmptyAdminRef(req.ReferenceID, req.EventID, req.MemoryID)
+	if workspace == "" {
+		http.Error(w, "workspace_id is required", http.StatusBadRequest)
+		return
+	}
+	if ref == "" {
+		http.Error(w, "reference_id, event_id, or memory_id is required", http.StatusBadRequest)
+		return
+	}
+	onlyIfInactive := true
+	if req.OnlyIfInactive != nil {
+		onlyIfInactive = *req.OnlyIfInactive
+	}
+	includeMemoryIDs := true
+	if req.IncludeMemoryIDs != nil {
+		includeMemoryIDs = *req.IncludeMemoryIDs
+	}
+	asyncMode := false
+	if req.Async != nil {
+		asyncMode = *req.Async
+	}
+	tiered := g.runtime.TieredObjects()
+	purgeBackend := "tiered"
+	if tiered == nil {
+		purgeBackend = "warm_only"
+	}
+	ctx := r.Context()
+	requestStartedAt := time.Now()
+	scanStartedAt := requestStartedAt
+	mems := g.store.Objects().ListMemories("", "")
+	scanned := len(mems)
+	workspaceCandidates := 0
+	matched := 0
+	skippedActive := 0
+	purgeable := 0
+	purged := 0
+	cancelled := false
+	cancelReason := ""
+	ids := make([]string, 0)
+	purgeIDs := make([]string, 0)
+	for i, m := range mems {
+		if i%256 == 0 {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+				cancelReason = ctx.Err().Error()
+			default:
+			}
+			if cancelled {
+				break
+			}
+		}
+		if m.Scope != workspace {
+			continue
+		}
+		workspaceCandidates++
+		if !memoryReferencesSourceRef(m, ref) {
+			continue
+		}
+		matched++
+		if includeMemoryIDs {
+			ids = append(ids, m.MemoryID)
+		}
+		if m.IsActive && onlyIfInactive {
+			skippedActive++
+			continue
+		}
+		purgeable++
+		purgeIDs = append(purgeIDs, m.MemoryID)
+	}
+	scanElapsedMs := time.Since(scanStartedAt).Milliseconds()
+	purgeWorkers := resolveDatasetPurgeWorkers(tiered != nil)
+	purgeBatchSize := resolveDatasetPurgeBatchSize()
+	purgeQueueSize := resolveDatasetPurgeQueueSize(purgeWorkers)
+	var purgeDeleteObjectNs int64
+	var purgeDeleteAuditNs int64
+	var purgeDeleteOutboxNs int64
+	deleteStartedAt := time.Now()
+	if asyncMode && !req.DryRun && len(purgeIDs) > 0 {
+		if g.hardDeleteMgr == nil {
+			http.Error(w, "hard delete manager unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+		if existing, ok := g.hardDeleteMgr.getActiveByIdempotencyKey(idempotencyKey); ok {
+			writeJSON(w, map[string]any{
+				"status":                "accepted",
+				"async":                 true,
+				"task_id":               existing.TaskID,
+				"workspace_id":          workspace,
+				"reference_id":          ref,
+				"matched":               matched,
+				"purgeable":             purgeable,
+				"purge_backend":         purgeBackend,
+				"purge_scan_elapsed_ms": scanElapsedMs,
+				"include_memory_ids":    includeMemoryIDs,
+				"idempotency_key":       idempotencyKey,
+				"deduplicated":          true,
+			})
+			return
+		}
+		task := &hardDeleteTask{
+			TaskID:         generateObjectID("purge_task"),
+			WorkspaceID:    workspace,
+			DatasetName:    "by_source:" + ref,
+			MemoryIDs:      purgeIDs,
+			State:          hardDeleteStateQueued,
+			CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+			IdempotencyKey: idempotencyKey,
+			PurgeBackend:   purgeBackend,
+			Workers:        purgeWorkers,
+			BatchSize:      purgeBatchSize,
+		}
+		if g.hardDeleteMgr.enqueue(task) {
+			writeJSON(w, map[string]any{
+				"status":                "accepted",
+				"async":                 true,
+				"task_id":               task.TaskID,
+				"workspace_id":          workspace,
+				"reference_id":          ref,
+				"matched":               matched,
+				"purgeable":             purgeable,
+				"purge_backend":         purgeBackend,
+				"purge_scan_elapsed_ms": scanElapsedMs,
+				"include_memory_ids":    includeMemoryIDs,
+				"idempotency_key":       task.IdempotencyKey,
+			})
+			return
+		}
+		http.Error(w, "failed to enqueue hard delete task", http.StatusInternalServerError)
+		return
+	}
+	if !req.DryRun && len(purgeIDs) > 0 && !cancelled {
+		bPurged, bCancelled, bCancelReason, pObj, pAud, pOut := g.runPurgeIDBatches(ctx, purgeIDs, tiered, workspace, ref, deleteStartedAt, "memory_source_purge")
+		purged = bPurged
+		purgeDeleteObjectNs = pObj
+		purgeDeleteAuditNs = pAud
+		purgeDeleteOutboxNs = pOut
+		if bCancelled {
+			cancelled = true
+			cancelReason = bCancelReason
+		}
+	}
+	status := "ok"
+	if cancelled {
+		status = "cancelled"
+	}
+	dataPresence := "has_data"
+	if matched == 0 || purgeable == 0 {
+		dataPresence = "no_data"
+	}
+	progressPercent := 0
+	if purgeable > 0 {
+		progressPercent = int((float64(purged) / float64(purgeable)) * 100)
+		if progressPercent > 100 {
+			progressPercent = 100
+		}
+	}
+	deleteElapsedMs := time.Since(deleteStartedAt).Milliseconds()
+	responseStartedAt := time.Now()
+	resp := map[string]any{
+		"status":                  status,
+		"data_presence":           dataPresence,
+		"workspace_id":            workspace,
+		"reference_id":            ref,
+		"dry_run":                 req.DryRun,
+		"only_if_inactive":        onlyIfInactive,
+		"purge_backend":           purgeBackend,
+		"scanned":                 scanned,
+		"workspace_scanned":       workspaceCandidates,
+		"matched":                 matched,
+		"skipped_active":          skippedActive,
+		"purgeable":               purgeable,
+		"purged":                  purged,
+		"cancelled":               cancelled,
+		"cancel_reason":           cancelReason,
+		"purge_workers":           purgeWorkers,
+		"purge_batch_size":        purgeBatchSize,
+		"purge_queue_size":        purgeQueueSize,
+		"purge_elapsed_ms":        time.Since(requestStartedAt).Milliseconds(),
+		"purge_scan_elapsed_ms":   scanElapsedMs,
+		"purge_delete_elapsed_ms": deleteElapsedMs,
+		"purge_progress_percent":  progressPercent,
+		"purge_delete_object_ms":  float64(purgeDeleteObjectNs) / float64(time.Millisecond),
+		"purge_delete_audit_ms":   float64(purgeDeleteAuditNs) / float64(time.Millisecond),
+		"purge_delete_outbox_ms":  float64(purgeDeleteOutboxNs) / float64(time.Millisecond),
+		"include_memory_ids":      includeMemoryIDs,
 	}
 	if includeMemoryIDs {
 		resp["memory_ids"] = ids
@@ -1014,6 +1435,13 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 	ids := task.MemoryIDs[start:end]
 	itemTimeout := resolveHardDeleteItemTimeout()
 	workers := resolveAdaptiveHardDeleteBatchWorkers(task, len(ids), itemTimeout)
+	purgeOne := func(mid string, t *storage.TieredObjectStore) purgePhaseDurations {
+		reason := "dataset_purge"
+		if strings.HasPrefix(task.DatasetName, "by_source:") {
+			reason = "memory_source_purge"
+		}
+		return g.purgeOneMemory(mid, t, reason)
+	}
 	stats = hardDeleteBatchStats{
 		Workers:   workers,
 		BatchSize: len(ids),
@@ -1024,7 +1452,7 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 		var auditNsAtomic int64
 		var outboxNsAtomic int64
 		for _, id := range ids {
-			phase, timedOut, panicked := runPurgeOneMemoryWithTimeout(id, tiered, itemTimeout, g.purgeOneMemory)
+			phase, timedOut, panicked := runPurgeOneMemoryWithTimeout(id, tiered, itemTimeout, purgeOne)
 			if timedOut || panicked {
 				atomic.AddInt64(&fAtomic, 1)
 				continue
@@ -1054,7 +1482,7 @@ func (g *Gateway) processHardDeleteTaskBatch(task *hardDeleteTask, batchSize int
 		go func() {
 			defer wg.Done()
 			for id := range jobs {
-				phase, timedOut, panicked := runPurgeOneMemoryWithTimeout(id, tiered, itemTimeout, g.purgeOneMemory)
+				phase, timedOut, panicked := runPurgeOneMemoryWithTimeout(id, tiered, itemTimeout, purgeOne)
 				if timedOut || panicked {
 					atomic.AddInt64(&failedAtomic, 1)
 					continue
@@ -1337,10 +1765,10 @@ func (g *Gateway) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		FromLSN int64 `json:"from_lsn"`
-		Limit   int   `json:"limit"`
-		DryRun  *bool `json:"dry_run,omitempty"`
-		Apply   bool  `json:"apply,omitempty"`
+		FromLSN int64  `json:"from_lsn"`
+		Limit   int    `json:"limit"`
+		DryRun  *bool  `json:"dry_run,omitempty"`
+		Apply   bool   `json:"apply,omitempty"`
 		Confirm string `json:"confirm,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1483,11 +1911,11 @@ func (g *Gateway) handleS3ColdPurge(w http.ResponseWriter, r *http.Request) {
 	tiered := g.runtime.TieredObjects()
 	if tiered == nil {
 		writeJSON(w, map[string]any{
-			"status":   "ok",
-			"dry_run":  req.DryRun,
-			"result":   "no_tiered_store",
-			"purged":   false,
-			"note":     "tiered object store not configured",
+			"status":  "ok",
+			"dry_run": req.DryRun,
+			"result":  "no_tiered_store",
+			"purged":  false,
+			"note":    "tiered object store not configured",
 		})
 		return
 	}
@@ -2293,15 +2721,17 @@ func (g *Gateway) handleMemoryConflictResolve(w http.ResponseWriter, r *http.Req
 // GET /v1/admin/metrics
 //
 // Returns a point-in-time snapshot of all runtime metrics.  Covers:
-//   3-MS1 query latency, 3-MS2 write latency, 3-MS3 write-to-visible latency,
-//   3-MS4 storage growth, 3-MS5 retrieval error rate, 3-MS6 resource overhead,
-//   1-M8 memory footprint, 1-M10 scale-out efficiency,
-//   3-MT1~MT7 task-level metrics, 4-M1/M4/M5/M6 MAS metrics.
+//
+//	3-MS1 query latency, 3-MS2 write latency, 3-MS3 write-to-visible latency,
+//	3-MS4 storage growth, 3-MS5 retrieval error rate, 3-MS6 resource overhead,
+//	1-M8 memory footprint, 1-M10 scale-out efficiency,
+//	3-MT1~MT7 task-level metrics, 4-M1/M4/M5/M6 MAS metrics.
 //
 // Optional query param:
-//   ?storage=true   populate storage_bytes_total / storage_memory_count /
-//                   storage_event_count from the live ObjectStore (slightly
-//                   heavier; defaults to the atomic counters updated at ingest).
+//
+//	?storage=true   populate storage_bytes_total / storage_memory_count /
+//	                storage_event_count from the live ObjectStore (slightly
+//	                heavier; defaults to the atomic counters updated at ingest).
 func (g *Gateway) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2368,8 +2798,8 @@ func (g *Gateway) handleAdminRuntimeMode(w http.ResponseWriter, r *http.Request)
 		})
 	case http.MethodPost:
 		var body struct {
-			VectorOnlyMode    *bool `json:"vector_only_mode"`
-			MinimalMode       *bool `json:"minimal_mode"`
+			VectorOnlyMode     *bool `json:"vector_only_mode"`
+			MinimalMode        *bool `json:"minimal_mode"`
 			GovernanceDisabled *bool `json:"governance_disabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -2489,13 +2919,14 @@ func (g *Gateway) handleMemoryMarkStale(w http.ResponseWriter, r *http.Request) 
 // ── /v1/internal/memory/conflict/inject ─────────────────────────────────────
 //
 // POST /v1/internal/memory/conflict/inject
-// Body: {
-//   "agent_id":     "...",
-//   "session_id":   "...",
-//   "content_a":    "conflicting claim A",
-//   "content_b":    "conflicting claim B",
-//   "importance":   0.7       (optional, default 0.5)
-// }
+//
+//	Body: {
+//	  "agent_id":     "...",
+//	  "session_id":   "...",
+//	  "content_a":    "conflicting claim A",
+//	  "content_b":    "conflicting claim B",
+//	  "importance":   0.7       (optional, default 0.5)
+//	}
 //
 // Synthesises two episodic Memory objects with identical provenance but
 // contradictory content and links them with a "conflict" edge.  The pair is
@@ -2559,14 +2990,14 @@ func (g *Gateway) handleMemoryConflictInject(w http.ResponseWriter, r *http.Requ
 	g.store.Objects().PutMemory(memB)
 
 	conflictEdge := schemas.Edge{
-		EdgeID:       generateObjectID("cedge"),
-		SrcObjectID:  idA,
-		SrcType:      string(schemas.ObjectTypeMemory),
-		DstObjectID:  idB,
-		DstType:      string(schemas.ObjectTypeMemory),
-		EdgeType:     "conflict",
-		CreatedTS:    now,
-		Properties:   map[string]any{"injected": true},
+		EdgeID:      generateObjectID("cedge"),
+		SrcObjectID: idA,
+		SrcType:     string(schemas.ObjectTypeMemory),
+		DstObjectID: idB,
+		DstType:     string(schemas.ObjectTypeMemory),
+		EdgeType:    "conflict",
+		CreatedTS:   now,
+		Properties:  map[string]any{"injected": true},
 	}
 	g.store.Edges().PutEdge(conflictEdge)
 
@@ -2581,10 +3012,10 @@ func (g *Gateway) handleMemoryConflictInject(w http.ResponseWriter, r *http.Requ
 		Timestamp:      now,
 	})
 	writeJSON(w, map[string]any{
-		"status":     "ok",
+		"status":      "ok",
 		"memory_id_a": idA,
 		"memory_id_b": idB,
-		"edge_id":    conflictEdge.EdgeID,
+		"edge_id":     conflictEdge.EdgeID,
 	})
 }
 
@@ -2823,16 +3254,20 @@ func (g *Gateway) handlePlanRepair(w http.ResponseWriter, r *http.Request) {
 // ── /v1/ingest/document ───────────────────────────────────────────────────────
 //
 // POST /v1/ingest/document
-// Body: {
-//   "agent_id":     "...",
-//   "session_id":   "...",
-//   "workspace_id": "...",
-//   "title":        "...",
-//   "text":         "<full document text>",
-//   "chunk_size":   512,    // chars per chunk, default 1000
-//   "overlap":      50,     // overlap chars between chunks, default 0
-//   "importance":   0.6
-// }
+//
+//	Body: {
+//	  "agent_id":     "...",
+//	  "session_id":   "...",
+//	  "workspace_id": "...",
+//	  "title":        "...",
+//	  "text":         "<full document text or one segment>",
+//	  "chunk_size":   512,    // chars per chunk, default 1000
+//	  "overlap":      50,     // overlap chars between chunks, default 0
+//	  "importance":   0.6
+//	  "upload_batch_id": "uuid",  // required when segment_total > 1
+//	  "segment_index": 0,         // 0-based, each request must stay under proxy body limits
+//	  "segment_total": 1          // >1 enables multi-request assembly before chunking
+//	}
 //
 // Splits the document into chunks and ingests each as an episodic memory
 // event.  All chunks share the same ImportBatchID so they can be queried
@@ -2845,14 +3280,17 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		AgentID     string  `json:"agent_id"`
-		SessionID   string  `json:"session_id"`
-		WorkspaceID string  `json:"workspace_id"`
-		Title       string  `json:"title"`
-		Text        string  `json:"text"`
-		ChunkSize   int     `json:"chunk_size"`
-		Overlap     int     `json:"overlap"`
-		Importance  float64 `json:"importance"`
+		AgentID       string  `json:"agent_id"`
+		SessionID     string  `json:"session_id"`
+		WorkspaceID   string  `json:"workspace_id"`
+		Title         string  `json:"title"`
+		Text          string  `json:"text"`
+		ChunkSize     int     `json:"chunk_size"`
+		Overlap       int     `json:"overlap"`
+		Importance    float64 `json:"importance"`
+		UploadBatchID string  `json:"upload_batch_id"`
+		SegmentIndex  int     `json:"segment_index"`
+		SegmentTotal  int     `json:"segment_total"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2860,6 +3298,20 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Text) == "" {
 		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	segTotal := req.SegmentTotal
+	if segTotal <= 0 {
+		segTotal = 1
+	}
+	fullText, accumulating, aerr := g.docAssembler.tryAssembleDocument(req.UploadBatchID, req.SegmentIndex, segTotal, req.Text)
+	if aerr != nil {
+		http.Error(w, aerr.Error(), http.StatusBadRequest)
+		return
+	}
+	if accumulating != nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(accumulating)
 		return
 	}
 	if req.ChunkSize <= 0 {
@@ -2872,7 +3324,7 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 		req.Importance = 0.5
 	}
 
-	chunks := splitTextIntoChunks(req.Text, req.ChunkSize, req.Overlap)
+	chunks := splitTextIntoChunks(fullText, req.ChunkSize, req.Overlap)
 	batchID := generateObjectID("batch")
 	now := time.Now().UTC().Format(time.RFC3339)
 	memoryIDs := make([]string, 0, len(chunks))
@@ -2895,11 +3347,11 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 			EventTime:   now,
 			Importance:  req.Importance,
 			Payload: map[string]any{
-				"text":          chunk,
-				"title":         title,
-				"chunk_index":   i,
-				"chunk_total":   len(chunks),
-				"import_batch":  batchID,
+				"text":         chunk,
+				"title":        title,
+				"chunk_index":  i,
+				"chunk_total":  len(chunks),
+				"import_batch": batchID,
 			},
 		}
 		ack, err := g.runtime.SubmitIngest(ev)
@@ -2981,7 +3433,8 @@ func splitTextIntoChunks(text string, chunkSize, overlap int) []string {
 //
 // POST /v1/internal/task/stage
 // Body: {"session_id":"...", "stage":"outline"|"draft"|"review"|"final",
-//        "stage_index":2, "total_stages":4, "description":"..."}
+//
+//	"stage_index":2, "total_stages":4, "description":"..."}
 //
 // Records the current stage of a multi-stage report generation task (3-T3).
 // Each stage call is stored as a memory event so the stage progression is
@@ -3076,12 +3529,13 @@ func (g *Gateway) handleMASAnswerConsistency(w http.ResponseWriter, r *http.Requ
 // ── /v1/internal/mas/aggregate ────────────────────────────────────────────────
 //
 // POST /v1/internal/mas/aggregate
-// Body: {
-//   "requester_agent_id": "agent-A",
-//   "source_agent_ids":   ["agent-B", "agent-C"],
-//   "query":              "recent findings on topic X",
-//   "top_k":              5
-// }
+//
+//	Body: {
+//	  "requester_agent_id": "agent-A",
+//	  "source_agent_ids":   ["agent-B", "agent-C"],
+//	  "query":              "recent findings on topic X",
+//	  "top_k":              5
+//	}
 //
 // Aggregates memories contributed by multiple agents into a single result
 // list visible to the requester.  Only memories explicitly shared (via a
@@ -3184,10 +3638,10 @@ func (g *Gateway) handleMASAggregate(w http.ResponseWriter, r *http.Request) {
 // them up so callers can determine which tool calls are still pending (no
 // matching result) and which have completed.
 //
-// Response: {
-//   "pending":   [{"event_id":"...", "tool":"...", "args":{...}}],
-//   "completed": [{"call_event_id":"...", "result_event_id":"...", "tool":"...", "result":{...}}]
-// }
+//	Response: {
+//	  "pending":   [{"event_id":"...", "tool":"...", "args":{...}}],
+//	  "completed": [{"call_event_id":"...", "result_event_id":"...", "tool":"...", "result":{...}}]
+//	}
 func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3271,14 +3725,15 @@ func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
 // ── /v1/internal/agent/handoff ────────────────────────────────────────────────
 //
 // POST /v1/internal/agent/handoff
-// Body: {
-//   "from_agent_id": "planner-agent",
-//   "to_agent_id":   "executor-agent",
-//   "session_id":    "...",
-//   "role_from":     "planner",
-//   "role_to":       "executor",
-//   "context":       {...}   // arbitrary payload forwarded to the next agent
-// }
+//
+//	Body: {
+//	  "from_agent_id": "planner-agent",
+//	  "to_agent_id":   "executor-agent",
+//	  "session_id":    "...",
+//	  "role_from":     "planner",
+//	  "role_to":       "executor",
+//	  "context":       {...}   // arbitrary payload forwarded to the next agent
+//	}
 //
 // Records a role handoff between agents in a MAS run (4-T1: planner →
 // executor → critic triangle).  A HandoffOccurred event is written to the
@@ -3401,12 +3856,13 @@ func (g *Gateway) handleAgentList(w http.ResponseWriter, r *http.Request) {
 // the full event stream.
 //
 // Response:
-// {
-//   "session":  {...},
-//   "events":   [...],    // last_n events sorted by event_time desc
-//   "memories": [...],    // memories linked to this session
-//   "turns":    N         // total event count in session
-// }
+//
+//	{
+//	  "session":  {...},
+//	  "events":   [...],    // last_n events sorted by event_time desc
+//	  "memories": [...],    // memories linked to this session
+//	  "turns":    N         // total event count in session
+//	}
 func (g *Gateway) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3430,15 +3886,15 @@ func (g *Gateway) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 
 	// Filter to interaction-relevant event types.
 	relevantTypes := map[string]bool{
-		string(schemas.EventTypeUserMessage):        true,
-		string(schemas.EventTypeAssistantMessage):   true,
-		string(schemas.EventTypeToolCallIssued):     true,
-		string(schemas.EventTypeToolCall):           true,
-		string(schemas.EventTypeToolResultReturned): true,
-		string(schemas.EventTypeToolResult):         true,
-		string(schemas.EventTypePlanUpdated):        true,
+		string(schemas.EventTypeUserMessage):          true,
+		string(schemas.EventTypeAssistantMessage):     true,
+		string(schemas.EventTypeToolCallIssued):       true,
+		string(schemas.EventTypeToolCall):             true,
+		string(schemas.EventTypeToolResultReturned):   true,
+		string(schemas.EventTypeToolResult):           true,
+		string(schemas.EventTypePlanUpdated):          true,
 		string(schemas.EventTypeMemoryWriteRequested): true,
-		string(schemas.EventTypeMemoryConsolidated): true,
+		string(schemas.EventTypeMemoryConsolidated):   true,
 	}
 	var filtered []schemas.Event
 	for _, ev := range allEvents {
@@ -3475,15 +3931,15 @@ func (g *Gateway) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 //   Query: ?task_id=...   (omit to list all)
 
 var (
-	groundTruthMu   sync.RWMutex
+	groundTruthMu    sync.RWMutex
 	groundTruthStore = make(map[string]groundTruthRecord)
 )
 
 type groundTruthRecord struct {
-	TaskID   string         `json:"task_id"`
-	Expected string         `json:"expected"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	CreatedAt string        `json:"created_at"`
+	TaskID    string         `json:"task_id"`
+	Expected  string         `json:"expected"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	CreatedAt string         `json:"created_at"`
 }
 
 func (g *Gateway) handleEvalGroundTruth(w http.ResponseWriter, r *http.Request) {

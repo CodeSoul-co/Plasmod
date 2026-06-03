@@ -21,6 +21,7 @@ const defaultRRFK = 60
 //   - lexical (segmentstore.Index, pure-Go string match)
 //   - dense vectors via CGO Knowhere/HNSW (VectorStore)
 //   - sparse / BM25-style via CGO Knowhere SPARSE_INVERTED_INDEX (SparseStore)
+//
 // Results from each ready channel are fused with Reciprocal Rank Fusion.
 // When CGO is unavailable or the index has not been built yet, the absent
 // channels are simply skipped — Search degrades gracefully and never fails.
@@ -434,6 +435,31 @@ func (p *SegmentDataPlane) IngestVectorsToWarmSegmentWithType(
 	return p.ingestWithIndexType(segmentID, objectIDs, vectors, indexType, nlist, nprobe, m, nbits, sqType)
 }
 
+// IngestFlatVectorsToWarmSegment writes row-major vectors directly into a named
+// warm segment without constructing per-vector Go slices.
+func (p *SegmentDataPlane) IngestFlatVectorsToWarmSegment(
+	segmentID string,
+	objectIDs []string,
+	flatVectors []float32,
+	n, dim int,
+) (int, error) {
+	return p.ingestFlatWithIndexType(segmentID, objectIDs, flatVectors, n, dim, "HNSW", 0, 0, 0, 0, "")
+}
+
+// IngestFlatVectorsToWarmSegmentWithType writes row-major vectors into a named
+// warm segment with the specified ANN index type.
+func (p *SegmentDataPlane) IngestFlatVectorsToWarmSegmentWithType(
+	segmentID string,
+	objectIDs []string,
+	flatVectors []float32,
+	n, dim int,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) (int, error) {
+	return p.ingestFlatWithIndexType(segmentID, objectIDs, flatVectors, n, dim, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
 // ingestWithIndexType is the shared helper that both ingest methods call.
 func (p *SegmentDataPlane) ingestWithIndexType(
 	segmentID string,
@@ -456,7 +482,7 @@ func (p *SegmentDataPlane) ingestWithIndexType(
 	if dim <= 0 {
 		return 0, fmt.Errorf("vector dim must be > 0")
 	}
-	flat := make([]float32, 0, len(vectors)*dim)
+	flat := make([]float32, len(vectors)*dim)
 	for i, vec := range vectors {
 		if len(vec) != dim {
 			return 0, fmt.Errorf("all vectors must share same dim")
@@ -464,16 +490,49 @@ func (p *SegmentDataPlane) ingestWithIndexType(
 		if objectIDs[i] == "" {
 			return 0, fmt.Errorf("object_ids[%d] is empty", i)
 		}
-		flat = append(flat, vec...)
+		copy(flat[i*dim:(i+1)*dim], vec)
+	}
+
+	return p.ingestFlatWithIndexType(segmentID, objectIDs, flat, len(vectors), dim, indexType, nlist, nprobe, m, nbits, sqType)
+}
+
+func (p *SegmentDataPlane) ingestFlatWithIndexType(
+	segmentID string,
+	objectIDs []string,
+	flatVectors []float32,
+	n, dim int,
+	indexType string,
+	nlist, nprobe, m, nbits int,
+	sqType string,
+) (int, error) {
+	if segmentID == "" {
+		return 0, fmt.Errorf("segment_id is required")
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("vectors is required")
+	}
+	if dim <= 0 {
+		return 0, fmt.Errorf("vector dim must be > 0")
+	}
+	if len(objectIDs) != n {
+		return 0, fmt.Errorf("object_ids/vectors length mismatch")
+	}
+	if len(flatVectors) != n*dim {
+		return 0, fmt.Errorf("flat vector length mismatch: got %d, want %d", len(flatVectors), n*dim)
+	}
+	for i, id := range objectIDs {
+		if id == "" {
+			return 0, fmt.Errorf("object_ids[%d] is empty", i)
+		}
 	}
 
 	var err error
 	switch indexType {
 	case "HNSW", "":
-		err = retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flat, len(vectors), dim)
+		err = retrievalplane.GlobalSegmentRetriever.BuildSegment(segmentID, flatVectors, n, dim)
 	default:
 		err = retrievalplane.GlobalSegmentRetriever.BuildSegmentWithType(
-			segmentID, flat, len(vectors), dim,
+			segmentID, flatVectors, n, dim,
 			indexType, nlist, nprobe, m, nbits, sqType,
 		)
 	}
@@ -483,7 +542,7 @@ func (p *SegmentDataPlane) ingestWithIndexType(
 	p.segMu.Lock()
 	p.segments[segmentID] = append([]string(nil), objectIDs...)
 	p.segMu.Unlock()
-	return len(vectors), nil
+	return n, nil
 }
 
 // SearchWarmSegment runs ANN query against a prebuilt warm segment.
@@ -565,14 +624,22 @@ func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK
 	if nq <= 0 || topK <= 0 || len(queries) == 0 {
 		return nil, nil, fmt.Errorf("invalid args: nq=%d topK=%d len(queries)=%d", nq, topK, len(queries))
 	}
+	if len(queries)%nq != 0 {
+		return nil, nil, fmt.Errorf("queries length %d not divisible by nq=%d", len(queries), nq)
+	}
+	dim := len(queries) / nq
+	ids := make([]int64, nq*topK)
+	dists := make([]float32, nq*topK)
 	chunkSize := pluginChunkSize()
 	if nq <= chunkSize {
-		return retrievalplane.GlobalSegmentRetriever.Search(segmentID, queries, nq, topK)
+		if err := retrievalplane.GlobalSegmentRetriever.SearchInto(segmentID, queries, nq, topK, ids, dists); err != nil {
+			return nil, nil, err
+		}
+		return ids, dists, nil
 	}
-	// Chunked: split into multiple DoSearch calls, concat results.
-	allIDs   := make([]int64,   0, nq*topK)
-	allDists := make([]float32, 0, nq*topK)
-	dim := len(queries) / nq
+	// Chunked: split into multiple DoSearch calls, writing into final output
+	// buffers directly. This keeps memory bounded without per-chunk result
+	// allocation and append copies.
 	for start := 0; start < nq; start += chunkSize {
 		end := start + chunkSize
 		if end > nq {
@@ -580,14 +647,72 @@ func (p *SegmentDataPlane) SearchWarmSegmentBatch(segmentID string, nq int, topK
 		}
 		cq := end - start
 		chunk := queries[start*dim : start*dim+cq*dim]
-		ids, dists, err := retrievalplane.GlobalSegmentRetriever.Search(segmentID, chunk, cq, topK)
-		if err != nil {
+		outIDs := ids[start*topK : end*topK]
+		outDists := dists[start*topK : end*topK]
+		if err := retrievalplane.GlobalSegmentRetriever.SearchInto(segmentID, chunk, cq, topK, outIDs, outDists); err != nil {
 			return nil, nil, fmt.Errorf("chunk [%d:%d]: %w", start, end, err)
 		}
-		allIDs   = append(allIDs,   ids...)
-		allDists = append(allDists, dists...)
 	}
-	return allIDs, allDists, nil
+	return ids, dists, nil
+}
+
+// SearchWarmSegmentSerialBatch performs a server-side serial loop: each query
+// is dispatched as nq=1 to preserve online single-query behavior while avoiding
+// one HTTP round trip and one Go result allocation per query.
+func (p *SegmentDataPlane) SearchWarmSegmentSerialBatch(segmentID string, nq int, topK int, queries []float32) ([]int64, []float32, error) {
+	if segmentID == "" {
+		return nil, nil, fmt.Errorf("segment_id is required")
+	}
+	if nq <= 0 || topK <= 0 || len(queries) == 0 {
+		return nil, nil, fmt.Errorf("invalid args: nq=%d topK=%d len(queries)=%d", nq, topK, len(queries))
+	}
+	if len(queries)%nq != 0 {
+		return nil, nil, fmt.Errorf("queries length %d not divisible by nq=%d", len(queries), nq)
+	}
+	ids := make([]int64, nq*topK)
+	dists := make([]float32, nq*topK)
+	if err := retrievalplane.GlobalSegmentRetriever.SearchSerialInto(segmentID, queries, nq, topK, ids, dists); err != nil {
+		return nil, nil, err
+	}
+	return ids, dists, nil
+}
+
+// SearchWarmSegmentBatchObjectIDs runs batch ANN search and maps hits to object id strings.
+func (p *SegmentDataPlane) SearchWarmSegmentBatchObjectIDs(segmentID string, nq int, topK int, queries []float32, raw bool) ([][]string, [][]float32, error) {
+	var intIDs []int64
+	var dists []float32
+	var err error
+	if raw {
+		intIDs, dists, err = p.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
+	} else {
+		intIDs, dists, err = p.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	p.segMu.RLock()
+	segObjs := p.segments[segmentID]
+	p.segMu.RUnlock()
+	out := make([][]string, nq)
+	outD := make([][]float32, nq)
+	for qi := 0; qi < nq; qi++ {
+		base := qi * topK
+		rowIDs := intIDs[base : base+topK]
+		rowD := dists[base : base+topK]
+		s := make([]string, 0, topK)
+		ds := make([]float32, 0, topK)
+		for j, idx := range rowIDs {
+			if idx >= 0 && int(idx) < len(segObjs) {
+				s = append(s, segObjs[idx])
+				if j < len(rowD) {
+					ds = append(ds, rowD[j])
+				}
+			}
+		}
+		out[qi] = s
+		outD[qi] = ds
+	}
+	return out, outD, nil
 }
 
 // pluginChunkSize returns the maximum number of queries per C++ search call.

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"unsafe"
 )
 
 // Wire-format constants. All multi-byte fields are little-endian.
@@ -39,7 +39,7 @@ const (
 	magicQueryWarmBatch = "PLQB"
 	wireVersion         = byte(1)
 	wireVersion2        = byte(2)
-	wireVersion3        = byte(3)  // adds index_type field to ingest
+	wireVersion3        = byte(3) // adds index_type field to ingest
 
 	maxBatchVectors = 1 << 22 // 4M vectors / request
 	maxDim          = 1 << 14 // 16384
@@ -49,17 +49,18 @@ const (
 
 // IngestBatch is the decoded payload of an ingest_batch binary request.
 type IngestBatch struct {
-	SegmentID string
-	Dim       int
-	ObjectIDs []string
-	Vectors   [][]float32
-	IndexType string  // ANN index type: "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN"
+	SegmentID   string
+	Dim         int
+	ObjectIDs   []string
+	Vectors     [][]float32
+	FlatVectors []float32
+	IndexType   string // ANN index type: "HNSW" | "IVF_FLAT" | "IVF_PQ" | "IVF_SQ8" | "DISKANN"
 	// IVF build parameters (used when IndexType is an IVF variant)
-	IVFNlist   int    // IVF nlist (0 = use default 128)
-	IVFNprobe  int    // IVF nprobe (0 = use default 32)
-	IVFM       int    // IVF_PQ sub-vectors (0 = use default 16)
-	IVFNbits   int    // IVF_PQ bits/subvec (0 = use default 8)
-	IVFSqType  string // IVF_SQ8 sq type ("INT8" or "FP32")
+	IVFNlist  int    // IVF nlist (0 = use default 128)
+	IVFNprobe int    // IVF nprobe (0 = use default 32)
+	IVFM      int    // IVF_PQ sub-vectors (0 = use default 16)
+	IVFNbits  int    // IVF_PQ bits/subvec (0 = use default 8)
+	IVFSqType string // IVF_SQ8 sq type ("INT8" or "FP32")
 }
 
 // QueryWarm is the decoded payload of a query_warm binary request.
@@ -112,11 +113,42 @@ func readString(r io.Reader, n int) (string, error) {
 	return string(buf), nil
 }
 
+func readFloat32Slice(r io.Reader, n int) ([]float32, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	values := make([]float32, n)
+	raw := unsafe.Slice((*byte)(unsafe.Pointer(&values[0])), n*4)
+	if err := readExact(r, raw); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func writeInt64Slice(w io.Writer, values []int64) error {
+	if len(values) == 0 {
+		return nil
+	}
+	raw := unsafe.Slice((*byte)(unsafe.Pointer(&values[0])), len(values)*8)
+	_, err := w.Write(raw)
+	return err
+}
+
+func writeFloat32Slice(w io.Writer, values []float32) error {
+	if len(values) == 0 {
+		return nil
+	}
+	raw := unsafe.Slice((*byte)(unsafe.Pointer(&values[0])), len(values)*4)
+	_, err := w.Write(raw)
+	return err
+}
+
 // DecodeIngestBatch reads a binary IngestBatch request from r.
 // Supports wire versions:
-//   1: legacy (indexed_count field in header)
-//   2: benchmark format
-//   3: + index_type field for configurable ANN index type
+//
+//	1: legacy (indexed_count field in header)
+//	2: benchmark format
+//	3: + index_type field for configurable ANN index type
 func DecodeIngestBatch(r io.Reader) (*IngestBatch, error) {
 	var hdr [5]byte
 	if err := readExact(r, hdr[:]); err != nil {
@@ -158,21 +190,9 @@ func DecodeIngestBatch(r io.Reader) (*IngestBatch, error) {
 		return nil, fmt.Errorf("invalid dim=%d", dim)
 	}
 
-	// Read raw float32 blob in one shot for cache friendliness.
-	rawLen := n * dim * 4
-	raw := make([]byte, rawLen)
-	if err := readExact(r, raw); err != nil {
+	flatVectors, err := readFloat32Slice(r, n*dim)
+	if err != nil {
 		return nil, fmt.Errorf("read vectors: %w", err)
-	}
-	vectors := make([][]float32, n)
-	off := 0
-	for i := 0; i < n; i++ {
-		v := make([]float32, dim)
-		for j := 0; j < dim; j++ {
-			v[j] = math.Float32frombits(binary.LittleEndian.Uint32(raw[off : off+4]))
-			off += 4
-		}
-		vectors[i] = v
 	}
 
 	ids := make([]string, n)
@@ -232,18 +252,17 @@ func DecodeIngestBatch(r io.Reader) (*IngestBatch, error) {
 		}
 	}
 
-
 	return &IngestBatch{
-		SegmentID: segID,
-		Dim:       dim,
-		ObjectIDs: ids,
-		Vectors:   vectors,
-		IndexType: indexType,
-		IVFNlist:  nlist,
-		IVFNprobe: nprobe,
-		IVFM:      m,
-		IVFNbits:  nbits,
-		IVFSqType: sqType,
+		SegmentID:   segID,
+		Dim:         dim,
+		ObjectIDs:   ids,
+		FlatVectors: flatVectors,
+		IndexType:   indexType,
+		IVFNlist:    nlist,
+		IVFNprobe:   nprobe,
+		IVFM:        m,
+		IVFNbits:    nbits,
+		IVFSqType:   sqType,
 	}, nil
 }
 
@@ -303,13 +322,9 @@ func DecodeQueryWarm(r io.Reader) (*QueryWarm, error) {
 		return nil, fmt.Errorf("invalid dim=%d", dim)
 	}
 
-	raw := make([]byte, dim*4)
-	if err := readExact(r, raw); err != nil {
+	vec, err := readFloat32Slice(r, dim)
+	if err != nil {
 		return nil, err
-	}
-	vec := make([]float32, dim)
-	for j := 0; j < dim; j++ {
-		vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(raw[j*4 : j*4+4]))
 	}
 
 	return &QueryWarm{
@@ -347,10 +362,11 @@ func EncodeQueryWarmResponse(w io.Writer, ids []string) error {
 // DecodeQueryWarmBatch reads a binary batch-query request.
 //
 // Wire format:
-//   [magic='PLQB'(4)][ver(1)=1]
-//   [seg_id_len(u16)][seg_id_bytes]
-//   [topk(u32)][nq(u32)][dim(u32)]
-//   [nq*dim*float32]  — row-major flat array
+//
+//	[magic='PLQB'(4)][ver(1)=1]
+//	[seg_id_len(u16)][seg_id_bytes]
+//	[topk(u32)][nq(u32)][dim(u32)]
+//	[nq*dim*float32]  — row-major flat array
 func DecodeQueryWarmBatch(r io.Reader) (*QueryWarmBatch, error) {
 	var hdr [5]byte
 	if err := readExact(r, hdr[:]); err != nil {
@@ -394,17 +410,9 @@ func DecodeQueryWarmBatch(r io.Reader) (*QueryWarmBatch, error) {
 		return nil, fmt.Errorf("invalid dim=%d", dim)
 	}
 
-	totalBytes := nq * dim * 4
-	raw := make([]byte, totalBytes)
-	if err := readExact(r, raw); err != nil {
+	vecs, err := readFloat32Slice(r, nq*dim)
+	if err != nil {
 		return nil, fmt.Errorf("read queries: %w", err)
-	}
-
-	vecs := make([]float32, nq*dim)
-	off := 0
-	for i := 0; i < nq*dim; i++ {
-		vecs[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[off : off+4]))
-		off += 4
 	}
 
 	return &QueryWarmBatch{
@@ -426,9 +434,9 @@ type QueryWarmBatchResponse struct {
 
 // EncodeQueryWarmBatchResponse writes a batch response in binary format:
 //
-//   [nq(u32)][topk(u32)]
-//   [nq*topk * int64]   — flat row-major integer indices
-//   [nq*topk * float32]  — flat row-major distances
+//	[nq(u32)][topk(u32)]
+//	[nq*topk * int64]   — flat row-major integer indices
+//	[nq*topk * float32]  — flat row-major distances
 func EncodeQueryWarmBatchResponse(w io.Writer, resp *QueryWarmBatchResponse) error {
 	var hdr [8]byte
 	binary.LittleEndian.PutUint32(hdr[:4], uint32(resp.NQ))
@@ -436,25 +444,8 @@ func EncodeQueryWarmBatchResponse(w io.Writer, resp *QueryWarmBatchResponse) err
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
-	// Write IDs as raw bytes
-	if len(resp.IDs) > 0 {
-		idBytes := make([]byte, len(resp.IDs)*8)
-		for i, id := range resp.IDs {
-			binary.LittleEndian.PutUint64(idBytes[i*8:i*8+8], uint64(id))
-		}
-		if _, err := w.Write(idBytes); err != nil {
-			return err
-		}
+	if err := writeInt64Slice(w, resp.IDs); err != nil {
+		return err
 	}
-	// Write dists as raw bytes
-	if len(resp.Dists) > 0 {
-		distBytes := make([]byte, len(resp.Dists)*4)
-		for i, d := range resp.Dists {
-			binary.LittleEndian.PutUint32(distBytes[i*4:i*4+4], math.Float32bits(d))
-		}
-		if _, err := w.Write(distBytes); err != nil {
-			return err
-		}
-	}
-	return nil
+	return writeFloat32Slice(w, resp.Dists)
 }

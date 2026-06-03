@@ -79,6 +79,16 @@ public:
                   int64_t*           out_ids,
                   float*             out_dists);
 
+    // SearchSerial — run nq single-query searches after one segment lookup.
+    // This preserves nq=1 online behavior while avoiding repeated C API calls
+    // and repeated shared-map lookups from Go server-side serial benchmarks.
+    int SearchSerial(const std::string& segment_id,
+                     const float*       query,
+                     int64_t            nq,
+                     int                topk,
+                     int64_t*           out_ids,
+                     float*             out_dists);
+
     // ANN search with allow-list filter (BitsetView).
     // allow_bits  : bitmask — bit i=1 means vector i is a valid candidate
     // allow_count : total number of vectors the bitmask covers (bits, not bytes)
@@ -131,10 +141,11 @@ private:
 	std::string metric_type = "IP";	// IVF_PQ uses L2 for quantized search on normalized vectors.
 	int     ivf_nlist   = 128;	// IVF coarse-centroid count
 	int     ivf_nprobe  = 32;	// IVF centroids probed per query
-	int     ivf_pq_m     = 96;	// IVF_PQ: number of sub-vectors
+	int     ivf_pq_m     = 24;	// IVF_PQ: number of sub-vectors
 	int     ivf_pq_nbits = 8;	// IVF_PQ: bits per sub-vector
 	std::string ivf_sq_type = "INT8";	// IVF_SQ8: "INT8" or "FP32"
 	std::string diskann_prefix;	// DISKANN index file prefix
+	std::vector<float> refine_vectors;	// normalized raw vectors for exact rerank
 };
 
     mutable std::shared_mutex                                   mu_;
