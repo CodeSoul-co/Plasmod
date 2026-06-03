@@ -1,0 +1,96 @@
+# Plasmod + MinIO with a single HTTP listener (PLASMOD_LISTEN_MODE=unified).
+#
+# Host ports:
+#   Plasmod (admin + SDK + internal rpc)  8080
+#   Plasmod gRPC API                      19531
+#   MinIO S3 API                          9000
+#   MinIO console                         9001
+#
+# Use when you want one URL for everything (similar to local `go run` / `make dev`):
+#
+#   docker compose -f docker-compose.unified.yml up -d
+#   curl http://127.0.0.1:8080/healthz
+#   set PLASMOD_BASE_URL=http://127.0.0.1:8080
+#
+# For split deploy (mgmt 9091 + API 19530), use docker-compose.yml instead.
+
+services:
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --address ":9000" --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      - minio
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+          if mc alias set local http://minio:9000 minioadmin minioadmin 2>/dev/null; then
+            break
+          fi
+          sleep 2
+        done
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb local/plasmod-integration || true
+
+  plasmod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-}
+        APT_MIRROR: ${APT_MIRROR:-}
+        GO_LLAMACPP_REPO: ${GO_LLAMACPP_REPO:-https://github.com/go-skynet/go-llama.cpp.git}
+        GOPROXY: ${GOPROXY:-}
+        GOSUMDB: ${GOSUMDB:-}
+    image: plasmod:latest
+    volumes:
+      - plasmod_data:/data
+    ports:
+      - "8080:8080"
+      - "19531:19531"
+    environment:
+      PLASMOD_LISTEN_MODE: unified
+      PLASMOD_HTTP_ADDR: 0.0.0.0:8080
+      PLASMOD_GRPC_ADDR: 0.0.0.0:19531
+      PLASMOD_SHOW_BANNER: "1"
+      PLASMOD_PUBLIC_HOST: 127.0.0.1
+      APP_MODE: ${APP_MODE:-prod}
+      ANDB_CONFLICT_MERGE_SKIP_DATASET_LOADER: "true"
+      PLASMOD_STORAGE: disk
+      PLASMOD_DATA_DIR: /data
+      PLASMOD_EMBEDDER: ${PLASMOD_EMBEDDER:-tfidf}
+      PLASMOD_EMBEDDER_DEVICE: ${PLASMOD_EMBEDDER_DEVICE:-cpu}
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: plasmod-integration
+      S3_SECURE: "false"
+      S3_REGION: us-east-1
+      S3_PREFIX: plasmod/docker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  minio_data:
+  plasmod_data:

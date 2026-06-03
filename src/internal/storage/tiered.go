@@ -65,6 +65,7 @@ type HotObjectCache struct {
 	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
 	order []string
+	policy HotCachePolicy
 }
 
 func NewHotObjectCache(maxSize int) *HotObjectCache {

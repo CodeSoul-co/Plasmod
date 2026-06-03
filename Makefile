@@ -1,4 +1,4 @@
-.PHONY: dev dev-with-s3 minio-start minio-stop build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
+.PHONY: dev dev-with-s3 minio-start minio-stop demo-warm-batch build build-benchmark test integration-test integration-test-s3 cpp sdk-python fmt proto docker-up docker-down member-a-capture member-a-verify member-a-gpu-check member-a-task4-strict member-a-all prod-safety-check setup bench-layer1 bench-retrieval
 
 # Default MinIO settings for local S3/MinIO integration tests.
 # Override these when invoking make if your MinIO differs.
@@ -73,6 +73,13 @@ setup:
 dev:
 	PLASMOD_BATCH_PLUGIN=1 CGO_LDFLAGS="$(CGO_LDFLAGS)" RETRIEVAL_TAG="$(RETRIEVAL_TAG)" bash scripts/dev_up.sh
 
+# Second terminal only: assumes `make dev` is already running (default http://127.0.0.1:8080).
+# Uses existing HTTP APIs: POST /v1/ingest/vectors then POST /v1/query/batch (single + multi agent).
+# Override base URL: make demo-warm-batch PLASMOD_BASE_URL=http://127.0.0.1:19530
+PLASMOD_BASE_URL ?= http://127.0.0.1:8080
+demo-warm-batch:
+	PLASMOD_BASE_URL="$(PLASMOD_BASE_URL)" bash scripts/demo/run_demo_warm_batch.sh
+
 build:
 	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go build $(RETRIEVAL_TAG) -o bin/plasmod ./src/cmd/server'
 
@@ -144,6 +151,16 @@ integration-test-s3:
 
 fmt:
 	gofmt -w $(shell find src -name '*.go')
+
+# Regenerate Plasmod gRPC stubs from plasmod.proto (requires protoc + plugins on PATH).
+PROTO_DIR := src/internal/api/grpc/proto
+PROTO_OUT := src/internal/api/grpc/pb
+proto:
+	protoc -I $(PROTO_DIR) \
+	  --go_out=$(PROTO_OUT) --go_opt=paths=source_relative \
+	  --go-grpc_out=$(PROTO_OUT) --go-grpc_opt=paths=source_relative \
+	  $(PROTO_DIR)/plasmod/v1/plasmod.proto
+
 
 # Docker Compose: MinIO + ANDB with disk storage and S3 cold tier (see README Integration Tests).
 docker-up:

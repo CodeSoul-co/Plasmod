@@ -677,6 +677,44 @@ func (p *SegmentDataPlane) SearchWarmSegmentSerialBatch(segmentID string, nq int
 	return ids, dists, nil
 }
 
+// SearchWarmSegmentBatchObjectIDs runs batch ANN search and maps hits to object id strings.
+func (p *SegmentDataPlane) SearchWarmSegmentBatchObjectIDs(segmentID string, nq int, topK int, queries []float32, raw bool) ([][]string, [][]float32, error) {
+	var intIDs []int64
+	var dists []float32
+	var err error
+	if raw {
+		intIDs, dists, err = p.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
+	} else {
+		intIDs, dists, err = p.SearchWarmSegmentBatch(segmentID, nq, topK, queries)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	p.segMu.RLock()
+	segObjs := p.segments[segmentID]
+	p.segMu.RUnlock()
+	out := make([][]string, nq)
+	outD := make([][]float32, nq)
+	for qi := 0; qi < nq; qi++ {
+		base := qi * topK
+		rowIDs := intIDs[base : base+topK]
+		rowD := dists[base : base+topK]
+		s := make([]string, 0, topK)
+		ds := make([]float32, 0, topK)
+		for j, idx := range rowIDs {
+			if idx >= 0 && int(idx) < len(segObjs) {
+				s = append(s, segObjs[idx])
+				if j < len(rowD) {
+					ds = append(ds, rowD[j])
+				}
+			}
+		}
+		out[qi] = s
+		outD[qi] = ds
+	}
+	return out, outD, nil
+}
+
 // pluginChunkSize returns the maximum number of queries per C++ search call.
 // Override with PLASMOD_PLUGIN_CHUNK_SIZE for memory-constrained runs.
 func pluginChunkSize() int {

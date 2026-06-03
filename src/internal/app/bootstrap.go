@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"google.golang.org/grpc"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,25 +38,50 @@ import (
 	"plasmod/src/internal/worker/nodes"
 )
 
+// ServerBundle holds HTTP and optional gRPC listeners produced by BuildServer.
+type ServerBundle struct {
+	HTTPServers []*http.Server
+	GRPCServer  *grpc.Server
+	GRPCAddr    string
+	GRPCEnabled bool
+	Shutdown    func() error
+}
+
 // BuildServer constructs and wires all Plasmod server components.
-// Returns the HTTP server, a cleanup function, and any build error.
-// The cleanup function must be called when the server is shutting down;
-// it cancels the background worker contexts (EventSubscriber, Orchestrator).
+// Returns HTTP servers (unified dev :8080, or split mgmt :9091 + api :19530),
+// an optional gRPC server (:19531 by default), a cleanup function, and any build error.
+//
+// Listen modes (see ports.go):
+//   - PLASMOD_LISTEN_MODE=unified (default): PLASMOD_HTTP_ADDR → 127.0.0.1:8080
+//   - PLASMOD_LISTEN_MODE=split: PLASMOD_MGMT_ADDR → :9091, PLASMOD_API_ADDR → :19530
 //
 // Usage:
 //
-//	srv, cleanup, err := app.BuildServer()
+//	bundle, err := app.BuildServer()
 //	if err != nil { ... }
-//	defer cleanup()
-//	if err := srv.ListenAndServe(); err != nil { ... }
-func BuildServer() (*http.Server, func() error, error) {
-	addr := os.Getenv("PLASMOD_HTTP_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:8080"
+//	defer bundle.Shutdown()
+//	app.RunServers(bundle)
+
+// parseHTTPDuration reads a time.ParseDuration value from env.
+// Empty env yields defaultVal. "0", "none", or "off" mean no timeout (0).
+func parseHTTPDuration(envKey string, defaultVal time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(envKey))
+	if raw == "" {
+		return defaultVal
 	}
-	readTimeout := resolveHTTPTimeout("PLASMOD_HTTP_READ_TIMEOUT_SECONDS", 30*time.Second)
-	writeTimeout := resolveHTTPTimeout("PLASMOD_HTTP_WRITE_TIMEOUT_SECONDS", 60*time.Second)
-	idleTimeout := resolveHTTPTimeout("PLASMOD_HTTP_IDLE_TIMEOUT_SECONDS", 120*time.Second)
+	if raw == "0" || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "off") {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("[bootstrap] invalid %s=%q, using default %v", envKey, raw, defaultVal)
+		return defaultVal
+	}
+	return d
+}
+
+func BuildServer() (*ServerBundle, error) {
+	listenCfg := ResolveListenConfig()
 
 	// ── Vector-only mode (Baseline 1) ────────────────────────────────────────
 	// When PLASMOD_VECTOR_ONLY_MODE=true, disable graph expansion, policy
@@ -75,7 +102,7 @@ func BuildServer() (*http.Server, func() error, error) {
 	// for Badger-backed persistent storage under PLASMOD_DATA_DIR.
 	bundle, err := storage.BuildRuntimeFromEnv()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
@@ -106,6 +133,65 @@ func BuildServer() (*http.Server, func() error, error) {
 	if err != nil {
 		log.Printf("[bootstrap] shared algorithm config load failed, using defaults: %v", err)
 		algoCfg = schemas.DefaultAlgorithmConfig()
+	}
+	memTierCfg, mtErr := config.LoadMemoryTieringConfig()
+	if mtErr != nil {
+		log.Printf("[bootstrap] memory tiering config load failed, using defaults: %v", mtErr)
+	}
+	if hot := store.HotCache(); hot != nil {
+		h := memTierCfg.MemoryTiering.HotCache
+		hot.ConfigurePolicy(storage.HotCachePolicy{
+			HighWatermarkPercent: h.HighWatermarkPercent,
+			LowWatermarkPercent:  h.LowWatermarkPercent,
+			EvictionBatchSize:    h.EvictionBatchSize,
+			Wr:                   h.Score.Wr,
+			Wf:                   h.Score.Wf,
+			Ws:                   h.Score.Ws,
+			Lambda:               h.Score.Lambda,
+			AlphaSize:            h.Penalty.AlphaSize,
+			BetaWriteBack:        h.Penalty.BetaWriteBack,
+			GammaHitProb:         h.Penalty.GammaHitProb,
+			DeltaReload:          h.Penalty.DeltaReload,
+			FrequencyNormWindow:  h.FrequencyNormWindow,
+			RecencyTauSeconds:    h.RecencyTauSeconds,
+			RecencyTauByType:     h.RecencyTauByType,
+			HitProbEWMAAlpha:     h.HitProbEWMAAlpha,
+			EstimatedPoolBytes:   h.EstimatedPoolBytes,
+			ObjectTypeWeight:     h.ObjectTypeWeight,
+			ReloadEaseByType:     h.ReloadEaseByType,
+			ReloadEaseEWMAAlpha:  h.ReloadEaseEWMAAlpha,
+			WriteBackByType:      h.WriteBackByType,
+			ProtectedRatio:       h.Queue.ProtectedRatio,
+			LRUKValue:            h.Queue.LRUKValue,
+			CoolingTTLSeconds:    h.Queue.CoolingTTLSeconds,
+			FixedPoolRatio:       h.Pool.FixedRatio,
+			FixedStrict:          h.Pool.FixedStrict,
+			HotPoolRatio:         h.Pool.HotRatio,
+			CoolingPoolRatio:     h.Pool.CoolingRatio,
+			FreePoolRatio:        h.Pool.FreeRatio,
+			MaxFlushRetries:      h.Dirty.MaxFlushRetries,
+			DirtyJournalPath:     h.Dirty.JournalPath,
+			LocatorBlockSize:     h.Locator.BlockSize,
+			SemanticKeywordBoost: h.SemanticRules.KeywordBoost,
+			GraphSemanticEnabled: h.SemanticRules.Graph.Enabled,
+			WSourceEvents:        h.SemanticRules.Graph.WSourceEvents,
+			WPolicyTags:          h.SemanticRules.Graph.WPolicyTags,
+			WImportance:          h.SemanticRules.Graph.WImportance,
+			WConfidence:          h.SemanticRules.Graph.WConfidence,
+			WOutDegree:           h.SemanticRules.Graph.WOutDegree,
+			WInDegree:            h.SemanticRules.Graph.WInDegree,
+			NormalizeByMaxEdges:  h.SemanticRules.Graph.NormalizeByMaxEdges,
+			ForceClass1Keywords:  h.PlacementRules.ForceClass1Keywords,
+			ForceClass2Keywords:  h.PlacementRules.ForceClass2Keywords,
+			ForceClass3Keywords:  h.PlacementRules.ForceClass3Keywords,
+			FixedTypes:           h.PlacementRules.FixedTypes,
+			FixedKeywords:        h.PlacementRules.FixedKeywords,
+			ForceClassByType:     h.PlacementRules.ForceClassByType,
+			MemoryLifecycleClass: h.PlacementRules.MemoryLifecycleClass,
+			Class1Types:          h.PointerPolicy.Class1Types,
+			Class2Types:          h.PointerPolicy.Class2Types,
+			Class3Types:          h.PointerPolicy.Class3Types,
+		})
 	}
 
 	// ── Cold-tier selection: S3 if env vars present, otherwise in-memory sim ──
@@ -217,7 +303,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		ctx := context.Background()
 		embedder, embedderErr = embedding.NewOpenAI(ctx, cfg, embedderDim)
 		if embedderErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, embedderErr)
+			return nil, fmt.Errorf("failed to initialize %s embedder: %w", embedderType, embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: %s model=%s dim=%d", embedderType, model, embedderDim)
 	case "cohere":
@@ -231,12 +317,12 @@ func BuildServer() (*http.Server, func() error, error) {
 			}
 		}
 		if embedderDim <= 0 {
-			return nil, nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
+			return nil, fmt.Errorf("PLASMOD_EMBEDDER_DIM is required for Cohere (e.g. 1024)")
 		}
 		apiKey := os.Getenv("PLASMOD_EMBEDDER_API_KEY")
 		embedder, embedderErr = embedding.NewCohere(context.Background(), apiKey, model, embedderDim)
 		if embedderErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Cohere embedder: %w", embedderErr)
+			return nil, fmt.Errorf("failed to initialize Cohere embedder: %w", embedderErr)
 		}
 		log.Printf("[bootstrap] embedder: cohere model=%s dim=%d", model, embedderDim)
 	case "huggingface":
@@ -263,7 +349,7 @@ func BuildServer() (*http.Server, func() error, error) {
 			WaitForModel: true,
 		}, embedderDim)
 		if hfErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize HuggingFace embedder: %w", hfErr)
+			return nil, fmt.Errorf("failed to initialize HuggingFace embedder: %w", hfErr)
 		}
 		embedder = hfEmbedder
 		if embedderDim <= 0 {
@@ -278,7 +364,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		}
 		vaEmbedder, vaErr := embedding.NewVertexAIFromEnv(context.Background(), embedderDim)
 		if vaErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize VertexAI embedder: %w", vaErr)
+			return nil, fmt.Errorf("failed to initialize VertexAI embedder: %w", vaErr)
 		}
 		embedder = vaEmbedder
 		if embedderDim <= 0 {
@@ -297,7 +383,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		}
 		onnxEmbedder, onnxErr := embedding.NewOnnxFromEnv(context.Background(), embedderDim)
 		if onnxErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
+			return nil, fmt.Errorf("failed to initialize ONNX embedder: %w", onnxErr)
 		}
 		embedder = onnxEmbedder
 		log.Printf("[bootstrap] embedder: onnx model=%s dim=%d",
@@ -310,7 +396,7 @@ func BuildServer() (*http.Server, func() error, error) {
 		}
 		trtEmbedder, trtErr := embedding.NewTensorRTFromEnv(context.Background(), embedderDim)
 		if trtErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize TensorRT embedder: %w", trtErr)
+			return nil, fmt.Errorf("failed to initialize TensorRT embedder: %w", trtErr)
 		}
 		embedder = trtEmbedder
 		if embedderDim <= 0 {
@@ -340,10 +426,10 @@ func BuildServer() (*http.Server, func() error, error) {
 		if m, parseErr := strconv.Atoi(pluginMode); parseErr == nil && m >= 0 && m <= 1 {
 			mode = retrievalplane.BatchPluginMode(m)
 		} else {
-			return nil, nil, fmt.Errorf("PLASMOD_BATCH_PLUGIN must be 0 or 1, got: %s", pluginMode)
+			return nil, fmt.Errorf("PLASMOD_BATCH_PLUGIN must be 0 or 1, got: %s", pluginMode)
 		}
 		if err := retrievalplane.SetBatchPlugin(mode); err != nil {
-			return nil, nil, fmt.Errorf("SetBatchPlugin(%d): %w", mode, err)
+			return nil, fmt.Errorf("SetBatchPlugin(%d): %w", mode, err)
 		}
 		log.Printf("[bootstrap] batch plugin: mode=%d", mode)
 	}
@@ -353,7 +439,7 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	plane, err := dataplane.NewTieredDataPlaneWithEmbedderAndConfig(tieredObjects, embedder, algoCfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	embeddingFamily := storage.ResolveEmbeddingFamily(nil)
 	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
@@ -523,46 +609,110 @@ func BuildServer() (*http.Server, func() error, error) {
 
 	// ── HTTP Gateway ─────────────────────────────────────────────────────────
 	gateway := access.NewGateway(coord, runtime, store, storageCfg, bundle)
-	gatewayMux := http.NewServeMux()
-	gateway.RegisterRoutes(gatewayMux)
-	wrapped := access.WrapVisibility(access.WrapAdminAuth(gatewayMux))
+	readTO := parseHTTPDuration("PLASMOD_HTTP_READ_TIMEOUT", 0)
+	writeTO := parseHTTPDuration("PLASMOD_HTTP_WRITE_TIMEOUT", 0)
+	idleTO := parseHTTPDuration("PLASMOD_HTTP_IDLE_TIMEOUT", 120*time.Second)
+	readHdrTO := parseHTTPDuration("PLASMOD_HTTP_READ_HEADER_TIMEOUT", 10*time.Second)
+	log.Printf("[bootstrap] listen mode=%s addrs=%s", listenCfg.Mode, listenCfg.FormatListenAddrs())
+	log.Printf("[bootstrap] http.Server timeouts read=%v write=%v idle=%v read_header=%v",
+		readTO, writeTO, idleTO, readHdrTO)
 
-	// Internal high-throughput transport: binary batch ingest/query and
-	// SSE WAL streaming.  Mounted on the root mux so the visibility wrapper
-	// (which buffers full responses) does not interfere with streaming or
-	// binary payloads.
-	mux := http.NewServeMux()
-	transport.NewServer(runtime, wal, bus).RegisterRoutes(mux)
-	mux.Handle("/", wrapped)
-	handler := mux
+	newHTTPServer := func(addr string, handler http.Handler) *http.Server {
+		return &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadTimeout:       readTO,
+			ReadHeaderTimeout: readHdrTO,
+			WriteTimeout:      writeTO,
+			IdleTimeout:       idleTO,
+			MaxHeaderBytes:    1 << 20,
+		}
+	}
 
-	// shutdown bundles context cancellation (subscriber/orchestrator) and
-	// Badger close (storage cleanup) into one cleanup function.
+	buildAPIHandler := func() http.Handler {
+		apiMux := http.NewServeMux()
+		gateway.RegisterAPIRoutes(apiMux)
+		wrappedAPI := access.WrapVisibility(apiMux)
+		root := http.NewServeMux()
+		transport.NewServer(runtime, wal, bus).RegisterRoutes(root)
+		root.Handle("/", wrappedAPI)
+		return root
+	}
+
+	var servers []*http.Server
+	switch listenCfg.Mode {
+	case ListenModeSplit:
+		mgmtMux := http.NewServeMux()
+		gateway.RegisterMgmtRoutes(mgmtMux)
+		servers = append(servers,
+			newHTTPServer(listenCfg.MgmtAddr, access.WrapAdminAuth(mgmtMux)),
+			newHTTPServer(listenCfg.APIAddr, buildAPIHandler()),
+		)
+	default:
+		gatewayMux := http.NewServeMux()
+		gateway.RegisterRoutes(gatewayMux)
+		wrapped := access.WrapVisibility(access.WrapAdminAuth(gatewayMux))
+		root := http.NewServeMux()
+		transport.NewServer(runtime, wal, bus).RegisterRoutes(root)
+		root.Handle("/", wrapped)
+		servers = append(servers, newHTTPServer(listenCfg.UnifiedAddr, root))
+	}
+
 	shutdown := func() error {
 		cancel()
 		return bundle.Close()
 	}
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadTimeout:       readTimeout,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
-		MaxHeaderBytes:    1 << 20, // 1 MB
+	grpcCfg := ResolveGRPCConfig()
+	var grpcSrv *grpc.Server
+	if grpcCfg.Enabled {
+		grpcSrv = NewGRPCServer(gateway)
+		log.Printf("[bootstrap] gRPC enabled on %s", grpcCfg.Addr)
+	} else {
+		log.Printf("[bootstrap] gRPC disabled (PLASMOD_GRPC_ENABLED=0)")
 	}
-	return srv, shutdown, nil
+
+	return &ServerBundle{
+		HTTPServers: servers,
+		GRPCServer:  grpcSrv,
+		GRPCAddr:    grpcCfg.Addr,
+		GRPCEnabled: grpcCfg.Enabled,
+		Shutdown:    shutdown,
+	}, nil
 }
 
-func resolveHTTPTimeout(envName string, fallback time.Duration) time.Duration {
-	raw := strings.TrimSpace(os.Getenv(envName))
-	if raw == "" {
-		return fallback
+// RunServers starts HTTP and optional gRPC listeners; blocks until one returns a non-ErrServerClosed error.
+func RunServers(bundle *ServerBundle) error {
+	if bundle == nil {
+		return fmt.Errorf("server bundle is nil")
 	}
-	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds < 0 {
-		return fallback
+	if len(bundle.HTTPServers) == 0 {
+		return fmt.Errorf("no http servers to run")
 	}
-	return time.Duration(seconds) * time.Second
+	PrintStartupBanner(ResolveListenConfig(), bundle)
+
+	nListeners := len(bundle.HTTPServers)
+	if bundle.GRPCEnabled && bundle.GRPCServer != nil {
+		nListeners++
+	}
+	errCh := make(chan error, nListeners)
+
+	for _, srv := range bundle.HTTPServers {
+		s := srv
+		go func() {
+			log.Printf("Plasmod HTTP listen on %s", s.Addr)
+			errCh <- s.ListenAndServe()
+		}()
+	}
+	if bundle.GRPCEnabled && bundle.GRPCServer != nil {
+		go func() {
+			errCh <- RunGRPC(bundle.GRPCServer, bundle.GRPCAddr)
+		}()
+	}
+
+	err := <-errCh
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }

@@ -209,6 +209,15 @@ func (r *Runtime) SearchWarmSegmentBatchRaw(segmentID string, nq int, topK int, 
 	return tp.SearchWarmSegmentBatchRaw(segmentID, nq, topK, queries)
 }
 
+// SearchWarmSegmentBatchObjectIDs runs warm batch ANN and maps hits to registered object id strings.
+func (r *Runtime) SearchWarmSegmentBatchObjectIDs(segmentID string, nq int, topK int, queries []float32, raw bool) ([][]string, [][]float32, error) {
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return nil, nil, fmt.Errorf("tiered plane unavailable")
+	}
+	return tp.SearchWarmSegmentBatchObjectIDs(segmentID, nq, topK, queries, raw)
+}
+
 func (r *Runtime) AdminWarmPrebuild() error {
 	if r.plane == nil {
 		return fmt.Errorf("data plane unavailable")
