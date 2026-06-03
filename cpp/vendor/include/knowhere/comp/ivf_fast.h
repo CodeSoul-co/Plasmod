@@ -21,4 +21,13 @@ IvfFastSearchFloat(IndexNode* node,
                    int64_t*     out_ids,
                    float*       out_dists);
 
+int
+IvfFastSearchBatchFloat(IndexNode* node,
+                        const float* queries,
+                        int64_t      nq,
+                        int          k,
+                        int          nprobe,
+                        int64_t*     out_ids,
+                        float*       out_dists);
+
 }  // namespace knowhere

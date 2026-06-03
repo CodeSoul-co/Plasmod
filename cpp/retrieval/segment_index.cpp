@@ -100,6 +100,15 @@ bool HNSWBatchDirectEnabled() {
            std::strcmp(raw, "no") != 0;
 }
 
+bool IVFBatchDirectEnabled() {
+    const char* raw = std::getenv("PLASMOD_IVF_BATCH_DIRECT");
+    if (!raw || raw[0] == '\0') return false;
+    return std::strcmp(raw, "1") == 0 ||
+           std::strcmp(raw, "true") == 0 ||
+           std::strcmp(raw, "on") == 0 ||
+           std::strcmp(raw, "yes") == 0;
+}
+
 int HNSWBatchThreads() {
     return EnvInt("PLASMOD_HNSW_BATCH_THREADS", 10, 1);
 }
@@ -185,12 +194,13 @@ int SegmentIndexManager::DoSearch(Entry& entry,
         std::vector<float> candidate_dists(static_cast<size_t>(nq) * candidate_k, 0.0f);
 
         int search_rc = kOK;
-        if (nq == 1) {
-            int rc = knowhere::IvfFastSearchFloat(
-                idx->Node(), norm_queries.data(), candidate_k, entry.ivf_nprobe,
+        int rc = -2;
+        if (IVFBatchDirectEnabled()) {
+            rc = knowhere::IvfFastSearchBatchFloat(
+                idx->Node(), norm_queries.data(), nq, candidate_k, entry.ivf_nprobe,
                 candidate_ids.data(), candidate_dists.data());
-            if (rc != 0) search_rc = kErrSearchFailed;
-        } else {
+        }
+        if (rc != 0) {
             knowhere::Json pq_cfg;
             pq_cfg[knowhere::meta::METRIC_TYPE] = entry.metric_type;
             pq_cfg[knowhere::meta::DIM]         = entry.dim;
@@ -212,11 +222,19 @@ int SegmentIndexManager::DoSearch(Entry& entry,
         if (search_rc != kOK) return search_rc;
 
 #if HAVE_OMP
-#pragma omp parallel for schedule(static)
-#endif
+#pragma omp parallel
+        {
+        std::vector<std::pair<float, int64_t>> scored;
+        scored.reserve(candidate_k);
+#pragma omp for schedule(static)
         for (int64_t qi = 0; qi < nq; ++qi) {
-            std::vector<std::pair<float, int64_t>> scored;
-            scored.reserve(candidate_k);
+            scored.clear();
+#else
+        std::vector<std::pair<float, int64_t>> scored;
+        scored.reserve(candidate_k);
+        for (int64_t qi = 0; qi < nq; ++qi) {
+            scored.clear();
+#endif
             const float* q = norm_queries.data() + qi * entry.dim;
             const int64_t* cids = candidate_ids.data() + qi * candidate_k;
             for (int ci = 0; ci < candidate_k; ++ci) {
@@ -243,6 +261,9 @@ int SegmentIndexManager::DoSearch(Entry& entry,
                 }
             }
         }
+#if HAVE_OMP
+        }
+#endif
         return kOK;
     }
 
@@ -295,6 +316,17 @@ int SegmentIndexManager::DoSearch(Entry& entry,
         return rc == 0 ? kOK : kErrSearchFailed;
     }
 #endif
+
+    if (!has_filter && nq > 1 && IVFBatchDirectEnabled()
+            && (entry.index_type == "IVF_FLAT" ||
+                entry.index_type == "IVF_PQ" ||
+                entry.index_type == "IVF_SQ8")) {
+        int rc = knowhere::IvfFastSearchBatchFloat(
+            idx->Node(), query, nq, topk, entry.ivf_nprobe, out_ids, out_dists);
+        if (rc == 0) return kOK;
+        // Fall through to Knowhere full-batch if the concrete IVF node does not
+        // support the direct float path.
+    }
 
     // IVF types: NPROBE set inside the full-batch path (tls_cfg declared there).
 

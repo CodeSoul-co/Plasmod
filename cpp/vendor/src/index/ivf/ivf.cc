@@ -313,6 +313,34 @@ class IvfIndexNode : public IndexNode {
         }
     }
 
+    int
+    FastSearchBatchFloat(const float* queries,
+                         int64_t      nq,
+                         int          k,
+                         int          nprobe,
+                         int64_t*     out_ids,
+                         float*       out_dists) const {
+        if (!index_ || !queries || nq <= 0 || k <= 0 || !out_ids || !out_dists) {
+            return -2;
+        }
+        if constexpr (std::is_same_v<DataType, bin1> || std::is_same_v<IndexType, faiss::IndexBinaryIVF> ||
+                      std::is_same_v<IndexType, faiss::IndexScaNN> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFFlatCC> ||
+                      std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizerCC>) {
+            return -2;
+        } else {
+            if (!index_->is_trained) {
+                return -3;
+            }
+            faiss::IVFSearchParameters params;
+            params.nprobe = nprobe > 0 ? nprobe : 1;
+            params.max_codes = 0;
+            params.sel = nullptr;
+            index_->search(nq, queries, k, out_dists, out_ids, &params);
+            return 0;
+        }
+    }
+
  private:
     expected<DataSetPtr>
     GetIndexMetaImpl(std::unique_ptr<Config> cfg, IVFBaseTag) const {
@@ -1298,6 +1326,28 @@ IvfFastSearchFloat(IndexNode* node,
     }
     if (auto* ivf_sq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFScalarQuantizer>*>(node)) {
         return ivf_sq->FastSearchOneFloat(query, k, nprobe, out_ids, out_dists);
+    }
+    return -2;
+}
+
+int
+IvfFastSearchBatchFloat(IndexNode* node,
+                        const float* queries,
+                        int64_t      nq,
+                        int          k,
+                        int          nprobe,
+                        int64_t*     out_ids,
+                        float*       out_dists) {
+    if (!node || !queries || nq <= 0 || !out_ids || !out_dists || k <= 0) return -2;
+
+    if (auto* ivf_flat = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFFlat>*>(node)) {
+        return ivf_flat->FastSearchBatchFloat(queries, nq, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_pq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFPQ>*>(node)) {
+        return ivf_pq->FastSearchBatchFloat(queries, nq, k, nprobe, out_ids, out_dists);
+    }
+    if (auto* ivf_sq = dynamic_cast<IvfIndexNode<fp32, faiss::IndexIVFScalarQuantizer>*>(node)) {
+        return ivf_sq->FastSearchBatchFloat(queries, nq, k, nprobe, out_ids, out_dists);
     }
     return -2;
 }
