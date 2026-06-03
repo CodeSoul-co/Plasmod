@@ -23,7 +23,7 @@ type GRPCConfig struct {
 	MaxMessageBytes int
 }
 
-const defaultGRPCMaxMessageBytes = 64 << 20
+const defaultGRPCMaxMessageBytes = 512 << 20
 
 // ResolveGRPCConfig reads PLASMOD_GRPC_* env vars.
 // gRPC is enabled by default on 0.0.0.0:19531 (distinct from HTTP API :19530).

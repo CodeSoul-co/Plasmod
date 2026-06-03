@@ -21,10 +21,10 @@ func TestResolveGRPCConfigDefaults(t *testing.T) {
 
 func TestResolveGRPCConfigMaxMessageOverride(t *testing.T) {
 	t.Setenv("PLASMOD_GRPC_ENABLED", "")
-	t.Setenv("PLASMOD_GRPC_MAX_MESSAGE_BYTES", "134217728")
+	t.Setenv("PLASMOD_GRPC_MAX_MESSAGE_BYTES", "1073741824")
 
 	cfg := ResolveGRPCConfig()
-	if cfg.MaxMessageBytes != 134217728 {
+	if cfg.MaxMessageBytes != 1073741824 {
 		t.Fatalf("max message bytes=%d want override", cfg.MaxMessageBytes)
 	}
 }

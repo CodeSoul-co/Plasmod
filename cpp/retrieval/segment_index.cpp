@@ -43,7 +43,7 @@ namespace {
 // Index tuning parameters
 constexpr int kHNSW_M              = 16;
 constexpr int kHNSW_EfConstruction = 256;
-constexpr int kHNSW_EfSearch       = 128;
+constexpr int kHNSW_EfSearch       = 96;
 constexpr const char* kMetricType  = "IP";
 constexpr const char* kIndexType   = "HNSW";
 
@@ -93,7 +93,11 @@ int IVFPQRefineK(int topk) {
 
 bool HNSWBatchDirectEnabled() {
     const char* raw = std::getenv("PLASMOD_HNSW_BATCH_DIRECT");
-    return raw && raw[0] != '\0' && raw[0] != '0';
+    if (!raw || raw[0] == '\0') return true;
+    return std::strcmp(raw, "0") != 0 &&
+           std::strcmp(raw, "false") != 0 &&
+           std::strcmp(raw, "off") != 0 &&
+           std::strcmp(raw, "no") != 0;
 }
 
 int HNSWBatchThreads() {
@@ -266,6 +270,32 @@ int SegmentIndexManager::DoSearch(Entry& entry,
 
     BatchQueryOptimizerPlugin* plugin = GetActivePlugin();
 
+#if HAVE_OMP
+    if (!has_filter && entry.index_type == "HNSW" && nq > 1 && HNSWBatchDirectEnabled()) {
+        std::vector<int64_t> order;
+        const int64_t* order_ptr = nullptr;
+        if (plugin && plugin->Mode() == PluginMode::L2_NORM_SORT) {
+            order.resize(nq);
+            plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
+            order_ptr = order.data();
+        }
+        int rc = knowhere::HnswFastSearchBatchFloat(
+            idx->Node(),
+            query,
+            nq,
+            entry.dim,
+            topk,
+            ef,
+            nullptr,
+            0,
+            order_ptr,
+            1,
+            out_ids,
+            out_dists);
+        return rc == 0 ? kOK : kErrSearchFailed;
+    }
+#endif
+
     // IVF types: NPROBE set inside the full-batch path (tls_cfg declared there).
 
 
@@ -281,23 +311,6 @@ int SegmentIndexManager::DoSearch(Entry& entry,
 #if HAVE_OMP
     if (!has_filter && plugin && plugin->Mode() == PluginMode::L2_NORM_SORT && nq > 1) {
         if (entry.index_type == "HNSW") {
-            if (HNSWBatchDirectEnabled()) {
-                int rc = knowhere::HnswFastSearchBatchFloat(
-                    idx->Node(),
-                    query,
-                    nq,
-                    entry.dim,
-                    topk,
-                    ef,
-                    nullptr,
-                    0,
-                    nullptr,
-                    1,
-                    out_ids,
-                    out_dists);
-                return rc == 0 ? kOK : kErrSearchFailed;
-            }
-
             std::vector<int64_t> order(nq);
             plugin->ReorderQueryBatch(query, nq, entry.dim, order.data());
             std::atomic<int> first_rc{kOK};

@@ -710,9 +710,17 @@ func RunServers(bundle *ServerBundle) error {
 		}()
 	}
 
-	err := <-errCh
-	if err == http.ErrServerClosed {
-		return nil
+	closed := 0
+	for err := range errCh {
+		if err == nil || err == http.ErrServerClosed {
+			closed++
+			log.Printf("[bootstrap] listener exited cleanly (%d/%d)", closed, nListeners)
+			if closed == nListeners {
+				return nil
+			}
+			continue
+		}
+		return err
 	}
-	return err
+	return nil
 }
