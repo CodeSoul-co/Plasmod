@@ -103,7 +103,7 @@ bool HNSWBatchDirectEnabled() {
 bool IVFBatchDirectEnabled(const std::string& index_type) {
     const char* raw = std::getenv("PLASMOD_IVF_BATCH_DIRECT");
     if (!raw || raw[0] == '\0' || std::strcmp(raw, "auto") == 0) {
-        return index_type == "IVF_PQ";
+        return index_type == "IVF_FLAT" || index_type == "IVF_PQ";
     }
     return std::strcmp(raw, "1") == 0 ||
            std::strcmp(raw, "true") == 0 ||
