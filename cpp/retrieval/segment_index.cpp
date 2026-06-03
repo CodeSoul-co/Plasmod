@@ -113,11 +113,11 @@ bool IVFBatchDirectEnabled(const std::string& index_type) {
 
 bool IVFSerialDirectEnabled() {
     const char* raw = std::getenv("PLASMOD_IVF_SERIAL_DIRECT");
-    if (!raw || raw[0] == '\0') return true;
-    return std::strcmp(raw, "0") != 0 &&
-           std::strcmp(raw, "false") != 0 &&
-           std::strcmp(raw, "off") != 0 &&
-           std::strcmp(raw, "no") != 0;
+    if (!raw || raw[0] == '\0') return false;
+    return std::strcmp(raw, "1") == 0 ||
+           std::strcmp(raw, "true") == 0 ||
+           std::strcmp(raw, "on") == 0 ||
+           std::strcmp(raw, "yes") == 0;
 }
 
 int HNSWBatchThreads() {
