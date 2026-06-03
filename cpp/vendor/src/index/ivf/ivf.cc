@@ -36,9 +36,26 @@
 #include "knowhere/range_util.h"
 #include "knowhere/utils.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace knowhere {
 struct IVFBaseTag {};
 struct IVFFlatTag {};
+
+namespace {
+
+int
+EnvInt(const char* name, int fallback, int min_value) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return fallback;
+    char* end = nullptr;
+    long value = std::strtol(raw, &end, 10);
+    if (!end || *end != '\0' || value < min_value) return fallback;
+    return static_cast<int>(value);
+}
+
+}  // namespace
 
 template <class IndexType>
 struct IndexDispatch {
@@ -332,11 +349,41 @@ class IvfIndexNode : public IndexNode {
             if (!index_->is_trained) {
                 return -3;
             }
-            faiss::IVFSearchParameters params;
-            params.nprobe = nprobe > 0 ? nprobe : 1;
-            params.max_codes = 0;
-            params.sel = nullptr;
-            index_->search(nq, queries, k, out_dists, out_ids, &params);
+            const int64_t chunk_size =
+                std::max<int64_t>(1, EnvInt("PLASMOD_IVF_BATCH_CHUNK_SIZE", 64, 1));
+            const int64_t num_chunks = (nq + chunk_size - 1) / chunk_size;
+            if (num_chunks <= 1 || !search_pool_ || search_pool_->size() <= 1) {
+                faiss::IVFSearchParameters params;
+                params.nprobe = nprobe > 0 ? nprobe : 1;
+                params.max_codes = 0;
+                params.sel = nullptr;
+                index_->search(nq, queries, k, out_dists, out_ids, &params);
+                return 0;
+            }
+
+            std::vector<knowhere::Future<knowhere::Unit>> futs;
+            futs.reserve(num_chunks);
+            for (int64_t start = 0; start < nq; start += chunk_size) {
+                const int64_t end = std::min<int64_t>(nq, start + chunk_size);
+                futs.emplace_back(search_pool_->push([&, start, end] {
+                    ThreadPool::ScopedSearchOmpSetter setter(1);
+                    faiss::IVFSearchParameters params;
+                    params.nprobe = nprobe > 0 ? nprobe : 1;
+                    params.max_codes = 0;
+                    params.sel = nullptr;
+                    const int64_t rows = end - start;
+                    index_->search(rows,
+                                   queries + start * index_->d,
+                                   k,
+                                   out_dists + start * k,
+                                   out_ids + start * k,
+                                   &params);
+                }));
+            }
+            auto status = WaitAllSuccess(futs);
+            if (status != Status::success) {
+                return -4;
+            }
             return 0;
         }
     }

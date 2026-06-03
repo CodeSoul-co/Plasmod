@@ -100,9 +100,11 @@ bool HNSWBatchDirectEnabled() {
            std::strcmp(raw, "no") != 0;
 }
 
-bool IVFBatchDirectEnabled() {
+bool IVFBatchDirectEnabled(const std::string& index_type) {
     const char* raw = std::getenv("PLASMOD_IVF_BATCH_DIRECT");
-    if (!raw || raw[0] == '\0') return false;
+    if (!raw || raw[0] == '\0' || std::strcmp(raw, "auto") == 0) {
+        return index_type == "IVF_PQ";
+    }
     return std::strcmp(raw, "1") == 0 ||
            std::strcmp(raw, "true") == 0 ||
            std::strcmp(raw, "on") == 0 ||
@@ -195,7 +197,7 @@ int SegmentIndexManager::DoSearch(Entry& entry,
 
         int search_rc = kOK;
         int rc = -2;
-        if (IVFBatchDirectEnabled()) {
+        if (IVFBatchDirectEnabled(entry.index_type)) {
             rc = knowhere::IvfFastSearchBatchFloat(
                 idx->Node(), norm_queries.data(), nq, candidate_k, entry.ivf_nprobe,
                 candidate_ids.data(), candidate_dists.data());
@@ -317,7 +319,7 @@ int SegmentIndexManager::DoSearch(Entry& entry,
     }
 #endif
 
-    if (!has_filter && nq > 1 && IVFBatchDirectEnabled()
+    if (!has_filter && nq > 1 && IVFBatchDirectEnabled(entry.index_type)
             && (entry.index_type == "IVF_FLAT" ||
                 entry.index_type == "IVF_PQ" ||
                 entry.index_type == "IVF_SQ8")) {
