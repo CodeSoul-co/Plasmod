@@ -21,6 +21,7 @@
 #include "faiss/IndexScaNN.h"
 #include "faiss/IndexScalarQuantizer.h"
 #include "faiss/index_io.h"
+#include "faiss/utils/distances.h"
 #include "index/ivf/ivf_config.h"
 #include "io/memory_io.h"
 #include "knowhere/bitsetview_idselector.h"
@@ -38,6 +39,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 
 namespace knowhere {
 struct IVFBaseTag {};
@@ -53,6 +56,61 @@ EnvInt(const char* name, int fallback, int min_value) {
     long value = std::strtol(raw, &end, 10);
     if (!end || *end != '\0' || value < min_value) return fallback;
     return static_cast<int>(value);
+}
+
+bool
+EnvEnabled(const char* name) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return false;
+    return std::strcmp(raw, "1") == 0 ||
+           std::strcmp(raw, "true") == 0 ||
+           std::strcmp(raw, "on") == 0 ||
+           std::strcmp(raw, "yes") == 0;
+}
+
+bool
+EnvEnabledDefault(const char* name, bool fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || raw[0] == '\0') return fallback;
+    return std::strcmp(raw, "1") == 0 ||
+           std::strcmp(raw, "true") == 0 ||
+           std::strcmp(raw, "on") == 0 ||
+           std::strcmp(raw, "yes") == 0;
+}
+
+bool
+EnvPresent(const char* name) {
+    const char* raw = std::getenv(name);
+    return raw && raw[0] != '\0';
+}
+
+template <typename IndexType>
+void
+ConfigureFaissIVFIndex(IndexType* index) {
+    if (!index) return;
+    if constexpr (std::is_same_v<IndexType, faiss::IndexIVFFlat> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFFlatCC> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFPQ> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizer> ||
+                  std::is_same_v<IndexType, faiss::IndexIVFScalarQuantizerCC>) {
+        if (EnvPresent("PLASMOD_FAISS_IVF_PARALLEL_MODE")) {
+            index->parallel_mode = EnvInt("PLASMOD_FAISS_IVF_PARALLEL_MODE", index->parallel_mode, 0);
+        }
+        if (EnvPresent("PLASMOD_FAISS_IVF_MAX_CODES")) {
+            index->max_codes = static_cast<size_t>(EnvInt("PLASMOD_FAISS_IVF_MAX_CODES", 0, 0));
+        }
+    }
+    if constexpr (std::is_same_v<IndexType, faiss::IndexIVFPQ>) {
+        if (EnvEnabled("PLASMOD_FAISS_IVFPQ_PRECOMPUTE_TABLE")) {
+            index->use_precomputed_table =
+                EnvInt("PLASMOD_FAISS_IVFPQ_USE_PRECOMPUTED_TABLE", index->use_precomputed_table, -1);
+            index->precompute_table();
+        }
+        if (EnvPresent("PLASMOD_FAISS_IVFPQ_SCAN_TABLE_THRESHOLD")) {
+            index->scan_table_threshold =
+                static_cast<size_t>(EnvInt("PLASMOD_FAISS_IVFPQ_SCAN_TABLE_THRESHOLD", 0, 0));
+        }
+    }
 }
 
 }  // namespace
@@ -349,6 +407,14 @@ class IvfIndexNode : public IndexNode {
             if (!index_->is_trained) {
                 return -3;
             }
+            if constexpr (std::is_same_v<IndexType, faiss::IndexIVFFlat>) {
+                if (EnvEnabledDefault("PLASMOD_IVF_FLAT_LIST_MAJOR_BATCH", true) &&
+                    index_->metric_type == faiss::METRIC_INNER_PRODUCT &&
+                    !index_->is_cosine) {
+                    return FastSearchBatchIVFFlatIPListMajor(
+                        queries, nq, k, nprobe, out_ids, out_dists);
+                }
+            }
             const int64_t chunk_size =
                 std::max<int64_t>(1, EnvInt("PLASMOD_IVF_BATCH_CHUNK_SIZE", 64, 1));
             const int64_t num_chunks = (nq + chunk_size - 1) / chunk_size;
@@ -383,6 +449,151 @@ class IvfIndexNode : public IndexNode {
             auto status = WaitAllSuccess(futs);
             if (status != Status::success) {
                 return -4;
+            }
+            return 0;
+        }
+    }
+
+ private:
+    int
+    FastSearchBatchIVFFlatIPListMajor(const float* queries,
+                                      int64_t      nq,
+                                      int          k,
+                                      int          nprobe,
+                                      int64_t*     out_ids,
+                                      float*       out_dists) const {
+        if constexpr (!std::is_same_v<IndexType, faiss::IndexIVFFlat>) {
+            return -2;
+        } else {
+            const int64_t probes = std::min<int64_t>(index_->nlist, nprobe > 0 ? nprobe : 1);
+            if (probes <= 0) return -2;
+
+            std::vector<faiss::idx_t> keys(static_cast<size_t>(nq) * probes, -1);
+            std::vector<float> coarse_dis(static_cast<size_t>(nq) * probes, 0.0f);
+            index_->quantizer->search(nq, queries, probes, coarse_dis.data(), keys.data(), nullptr);
+            index_->invlists->prefetch_lists(keys.data(), static_cast<size_t>(nq) * probes);
+
+            std::vector<int64_t> list_counts(index_->nlist, 0);
+            for (int64_t qi = 0; qi < nq; ++qi) {
+                for (int64_t pi = 0; pi < probes; ++pi) {
+                    const faiss::idx_t key = keys[qi * probes + pi];
+                    if (key >= 0 && key < static_cast<faiss::idx_t>(index_->nlist)) {
+                        ++list_counts[key];
+                    }
+                }
+            }
+
+            std::vector<std::vector<int64_t>> queries_by_list(index_->nlist);
+            for (size_t li = 0; li < index_->nlist; ++li) {
+                queries_by_list[li].reserve(list_counts[li]);
+            }
+            for (int64_t qi = 0; qi < nq; ++qi) {
+                for (int64_t pi = 0; pi < probes; ++pi) {
+                    const faiss::idx_t key = keys[qi * probes + pi];
+                    if (key >= 0 && key < static_cast<faiss::idx_t>(index_->nlist)) {
+                        queries_by_list[key].push_back(qi);
+                    }
+                }
+            }
+
+            const int max_threads = std::max(1, omp_get_max_threads());
+            const int requested_workers =
+                std::max(1, EnvInt("PLASMOD_IVF_FLAT_LIST_MAJOR_THREADS", max_threads, 1));
+            const int workers =
+                std::min<int>(requested_workers, std::max<size_t>(1, index_->nlist));
+            const size_t result_size = static_cast<size_t>(nq) * k;
+            const float neg_inf = -std::numeric_limits<float>::infinity();
+            std::vector<std::vector<float>> local_dists(
+                workers, std::vector<float>(result_size, neg_inf));
+            std::vector<std::vector<int64_t>> local_ids(
+                workers, std::vector<int64_t>(result_size, -1));
+            std::vector<std::vector<float>> local_min_scores(
+                workers, std::vector<float>(nq, neg_inf));
+            std::vector<std::vector<int>> local_min_pos(
+                workers, std::vector<int>(nq, 0));
+
+            auto insert_local = [k](float* dists,
+                                    int64_t* ids,
+                                    float* min_scores,
+                                    int* min_pos,
+                                    int64_t qi,
+                                    float score,
+                                    int64_t id) {
+                if (score <= min_scores[qi]) return;
+                const int64_t base = qi * k;
+                dists[base + min_pos[qi]] = score;
+                ids[base + min_pos[qi]] = id;
+                int pos = 0;
+                float min_score = dists[base];
+                for (int kk = 1; kk < k; ++kk) {
+                    const float cur = dists[base + kk];
+                    if (cur < min_score) {
+                        min_score = cur;
+                        pos = kk;
+                    }
+                }
+                min_scores[qi] = min_score;
+                min_pos[qi] = pos;
+            };
+
+#pragma omp parallel for num_threads(workers) schedule(dynamic)
+            for (int64_t list_no = 0; list_no < static_cast<int64_t>(index_->nlist); ++list_no) {
+                const auto& qids = queries_by_list[list_no];
+                if (qids.empty() || index_->invlists->is_empty(list_no)) continue;
+                const int tid = omp_get_thread_num();
+                float* td = local_dists[tid].data();
+                int64_t* ti = local_ids[tid].data();
+                float* tmin = local_min_scores[tid].data();
+                int* tpos = local_min_pos[tid].data();
+
+                const size_t segment_num = index_->invlists->get_segment_num(list_no);
+                for (size_t segment_idx = 0; segment_idx < segment_num; ++segment_idx) {
+                    const size_t segment_size = index_->invlists->get_segment_size(list_no, segment_idx);
+                    const size_t segment_offset = index_->invlists->get_segment_offset(list_no, segment_idx);
+                    faiss::InvertedLists::ScopedCodes scodes(index_->invlists, list_no, segment_offset);
+                    faiss::InvertedLists::ScopedIds sids(index_->invlists, list_no, segment_offset);
+                    const float* list_vecs = reinterpret_cast<const float*>(scodes.get());
+                    const faiss::idx_t* ids = sids.get();
+                    for (size_t j = 0; j < segment_size; ++j) {
+                        const float* vec = list_vecs + j * index_->d;
+                        const int64_t id = ids[j];
+                        for (const int64_t qi : qids) {
+                            const float score =
+                                faiss::fvec_inner_product(queries + qi * index_->d, vec, index_->d);
+                            insert_local(td, ti, tmin, tpos, qi, score, id);
+                        }
+                    }
+                }
+            }
+
+            std::vector<std::pair<float, int64_t>> merged;
+            merged.reserve(static_cast<size_t>(workers) * k);
+            for (int64_t qi = 0; qi < nq; ++qi) {
+                merged.clear();
+                for (int wi = 0; wi < workers; ++wi) {
+                    const float* td = local_dists[wi].data() + qi * k;
+                    const int64_t* ti = local_ids[wi].data() + qi * k;
+                    for (int kk = 0; kk < k; ++kk) {
+                        if (ti[kk] >= 0) merged.emplace_back(td[kk], ti[kk]);
+                    }
+                }
+                const int take = std::min<int>(k, merged.size());
+                std::partial_sort(
+                    merged.begin(), merged.begin() + take, merged.end(),
+                    [](const auto& a, const auto& b) {
+                        if (a.first != b.first) return a.first > b.first;
+                        return a.second < b.second;
+                    });
+                for (int kk = 0; kk < k; ++kk) {
+                    const int64_t out = qi * k + kk;
+                    if (kk < take) {
+                        out_dists[out] = merged[kk].first;
+                        out_ids[out] = merged[kk].second;
+                    } else {
+                        out_dists[out] = neg_inf;
+                        out_ids[out] = -1;
+                    }
+                }
             }
             return 0;
         }
@@ -735,6 +946,7 @@ IvfIndexNode<DataType, IndexType>::TrainInternal(const DataSetPtr dataset, std::
         index->own_fields = true;
         index->make_direct_map(true, faiss::DirectMap::ConcurrentArray);
     }
+    ConfigureFaissIVFIndex(index.get());
     index_ = std::move(index);
 
     return Status::success;
