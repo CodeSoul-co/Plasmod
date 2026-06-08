@@ -252,7 +252,8 @@ func (s *badgerObjectStore) ListArtifacts(sessionID string) []schemas.Artifact {
 }
 
 func (s *badgerObjectStore) PutEvent(obj schemas.Event) {
-	_ = badgerSetJSON(s.db, []byte(kpObjEvent+obj.EventID), obj)
+	obj = obj.NormalizeDynamicEventV04()
+	_ = badgerSetJSON(s.db, []byte(kpObjEvent+obj.Identity.EventID), obj)
 }
 func (s *badgerObjectStore) GetEvent(id string) (schemas.Event, bool) {
 	var o schemas.Event
@@ -266,8 +267,9 @@ func (s *badgerObjectStore) ListEvents(agentID, sessionID string) []schemas.Even
 	}
 	out := make([]schemas.Event, 0)
 	for _, v := range all {
-		if (agentID == "" || v.AgentID == agentID) &&
-			(sessionID == "" || v.SessionID == sessionID) {
+		ev := v.NormalizeDynamicEventV04()
+		if (agentID == "" || ev.Actor.AgentID == agentID) &&
+			(sessionID == "" || ev.Actor.SessionID == sessionID) {
 			out = append(out, v)
 		}
 	}

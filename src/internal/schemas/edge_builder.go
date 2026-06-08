@@ -105,51 +105,52 @@ func BuildArtifactBaseEdges(a Artifact) []Edge {
 }
 
 func BuildEventBaseEdges(e Event) []Edge {
+	e = e.NormalizeDynamicEventV04()
 	edges := make([]Edge, 0, 4)
 
-	if e.SessionID != "" {
+	if e.Actor.SessionID != "" {
 		edges = append(edges, Edge{
-			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.EventID, EdgeTypeBelongsToSession, e.SessionID),
-			SrcObjectID: e.EventID,
+			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.Identity.EventID, EdgeTypeBelongsToSession, e.Actor.SessionID),
+			SrcObjectID: e.Identity.EventID,
 			SrcType:     string(ObjectTypeEvent),
 			EdgeType:    string(EdgeTypeBelongsToSession),
-			DstObjectID: e.SessionID,
+			DstObjectID: e.Actor.SessionID,
 			DstType:     string(ObjectTypeSession),
 			Weight:      DefaultEdgeWeight,
 		})
 	}
 
-	if e.AgentID != "" {
+	if e.Actor.AgentID != "" {
 		edges = append(edges, Edge{
-			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.EventID, EdgeTypeOwnedByAgent, e.AgentID),
-			SrcObjectID: e.EventID,
+			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.Identity.EventID, EdgeTypeOwnedByAgent, e.Actor.AgentID),
+			SrcObjectID: e.Identity.EventID,
 			SrcType:     string(ObjectTypeEvent),
 			EdgeType:    string(EdgeTypeOwnedByAgent),
-			DstObjectID: e.AgentID,
+			DstObjectID: e.Actor.AgentID,
 			DstType:     string(ObjectTypeAgent),
 			Weight:      DefaultEdgeWeight,
 		})
 	}
 
-	if e.ParentEventID != "" {
+	if e.Causality.ParentEventID != "" {
 		edges = append(edges, Edge{
-			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.EventID, EdgeTypeCausedBy, e.ParentEventID),
-			SrcObjectID: e.EventID,
+			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.Identity.EventID, EdgeTypeCausedBy, e.Causality.ParentEventID),
+			SrcObjectID: e.Identity.EventID,
 			SrcType:     string(ObjectTypeEvent),
 			EdgeType:    string(EdgeTypeCausedBy),
-			DstObjectID: e.ParentEventID,
+			DstObjectID: e.Causality.ParentEventID,
 			DstType:     string(ObjectTypeEvent),
 			Weight:      DefaultCausalWeight,
 		})
 	}
 
-	for _, ref := range e.CausalRefs {
+	for _, ref := range e.Causality.CausalRefs {
 		if ref == "" {
 			continue
 		}
 		edges = append(edges, Edge{
-			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.EventID, EdgeTypeCausedBy, ref),
-			SrcObjectID: e.EventID,
+			EdgeID:      fmt.Sprintf("%s%s_%s_%s", IDPrefixEdge, e.Identity.EventID, EdgeTypeCausedBy, ref),
+			SrcObjectID: e.Identity.EventID,
 			SrcType:     string(ObjectTypeEvent),
 			EdgeType:    string(EdgeTypeCausedBy),
 			DstObjectID: ref,

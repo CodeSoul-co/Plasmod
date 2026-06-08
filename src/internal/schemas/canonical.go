@@ -38,27 +38,28 @@ type Event struct {
 	Access          EventAccess          `json:"access,omitempty"`
 	Materialization EventMaterialization `json:"materialization,omitempty"`
 	Retrieval       EventRetrieval       `json:"retrieval,omitempty"`
-	EventID         string               `json:"event_id"`
-	TenantID        string               `json:"tenant_id"`
-	WorkspaceID     string               `json:"workspace_id"`
-	AgentID         string               `json:"agent_id"`
-	SessionID       string               `json:"session_id"`
-	EventType       string               `json:"event_type"`
-	EventTime       string               `json:"event_time"`
-	IngestTime      string               `json:"ingest_time"`
-	VisibleTime     string               `json:"visible_time"`
-	LogicalTS       int64                `json:"logical_ts"`
-	ParentEventID   string               `json:"parent_event_id"`
-	CausalRefs      []string             `json:"causal_refs"`
+	EventID         string               `json:"-"`
+	TenantID        string               `json:"-"`
+	WorkspaceID     string               `json:"-"`
+	AgentID         string               `json:"-"`
+	SessionID       string               `json:"-"`
+	EventType       string               `json:"-"`
+	EventTime       string               `json:"-"`
+	IngestTime      string               `json:"-"`
+	VisibleTime     string               `json:"-"`
+	LogicalTS       int64                `json:"-"`
+	ParentEventID   string               `json:"-"`
+	CausalRefs      []string             `json:"-"`
 	Payload         map[string]any       `json:"payload"`
 	// EmbeddingVector bypasses Payload["embedding"] dimension validation.
 	// When set, the materializer uses it directly instead of calling the ONNX embedder.
-	// JSON tag "embedding_vector" lets callers pass precomputed embeddings of any dim.
-	EmbeddingVector []float32       `json:"embedding_vector"`
-	Source          string          `json:"source"`
-	Importance      float64         `json:"importance"`
-	Visibility      string          `json:"visibility"`
-	Version         int64           `json:"version"`
+	// Legacy JSON input still accepts top-level "embedding_vector", but canonical
+	// events store it under retrieval.embedding_vector.
+	EmbeddingVector []float32       `json:"-"`
+	Source          string          `json:"-"`
+	Importance      float64         `json:"-"`
+	Visibility      string          `json:"-"`
+	Version         int64           `json:"-"`
 	Data            EventData       `json:"data,omitempty"`
 	Runtime         EventRuntime    `json:"runtime,omitempty"`
 	Extensions      EventExtensions `json:"extensions,omitempty"`

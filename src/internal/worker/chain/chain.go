@@ -71,7 +71,7 @@ func CreateMainChain(mgr *nodes.Manager) *MainChain { return &MainChain{mgr: mgr
 
 // Run executes the main write pipeline synchronously and returns a ChainResult.
 func (c *MainChain) Run(in MainChainInput) ChainResult {
-	ev := in.Event
+	ev := in.Event.NormalizeDynamicEventV04()
 
 	// 1 – Object routing (Memory → ObjectMat; State → StateMat; Artifact → ObjectMat)
 	c.mgr.DispatchObjectMaterialization(ev)
@@ -83,11 +83,11 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	// 3 – Index the primary memory object
 	memID := in.MemoryID
 	if memID == "" {
-		memID = schemas.IDPrefixMemory + ev.EventID
+		memID = schemas.IDPrefixMemory + ev.Identity.EventID
 	}
 	ns := in.Namespace
 	if ns == "" {
-		ns = ev.WorkspaceID
+		ns = ev.RetrievalNamespaceOrDefault()
 	}
 	text := ""
 	if ev.Payload != nil {
@@ -98,12 +98,12 @@ func (c *MainChain) Run(in MainChainInput) ChainResult {
 	c.mgr.DispatchIndexBuild(memID, string(schemas.ObjectTypeMemory), ns, text)
 
 	// 4 – Graph: link memory to its source event
-	c.mgr.DispatchGraphRelation(memID, string(schemas.ObjectTypeMemory), ev.EventID, string(schemas.ObjectTypeEvent), string(schemas.EdgeTypeDerivedFrom), schemas.DefaultEdgeWeight)
+	c.mgr.DispatchGraphRelation(memID, string(schemas.ObjectTypeMemory), ev.Identity.EventID, string(schemas.ObjectTypeEvent), string(schemas.EdgeTypeDerivedFrom), schemas.DefaultEdgeWeight)
 
 	return ok("main_chain", map[string]any{
 		"memory_id": memID,
 		"namespace": ns,
-		"event_id":  ev.EventID,
+		"event_id":  ev.Identity.EventID,
 	})
 }
 

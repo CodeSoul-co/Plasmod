@@ -18,24 +18,37 @@ func (s *AgentSession) submitEvent(ctx context.Context, eventType schemas.EventT
 	}
 
 	now := time.Now().UTC()
+	eventID := "evt_" + s.agentID + "_" + now.Format("20060102T150405.000000")
+	nowMS := now.UnixMilli()
+	importance := 0.5
 	ev := schemas.Event{
-		EventID:       "evt_" + s.agentID + "_" + now.Format("20060102T150405.000000"),
-		TenantID:      s.tenantID,
-		WorkspaceID:   s.workspaceID,
-		AgentID:       s.agentID,
-		SessionID:     sessionID,
-		EventType:     string(eventType),
-		EventTime:     now.Format(time.RFC3339Nano),
-		IngestTime:    now.Format(time.RFC3339Nano),
-		VisibleTime:   now.Format(time.RFC3339Nano),
-		LogicalTS:     0, // assigned by CogDB WAL
-		ParentEventID: "",
-		CausalRefs:    causalRefs,
-		Payload:       payload,
-		Source:       "agent",
-		Importance:   0.5,
-		Visibility:   "private",
-		Version:      1,
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity: schemas.EventIdentity{
+			EventID:     eventID,
+			TenantID:    s.tenantID,
+			WorkspaceID: s.workspaceID,
+			Source:      "agent",
+		},
+		Actor: schemas.EventActor{
+			AgentID:   s.agentID,
+			SessionID: sessionID,
+		},
+		Time: schemas.EventTime{
+			EventTime:   nowMS,
+			IngestTime:  nowMS,
+			VisibleTime: nowMS,
+		},
+		EventInfo: schemas.EventDescriptor{
+			EventType:  string(eventType),
+			Importance: &importance,
+		},
+		Causality: schemas.EventCausality{
+			CausalRefs: causalRefs,
+		},
+		Access: schemas.EventAccess{
+			Visibility: "private",
+		},
+		Payload: payload,
 	}
 
 	var ack IngestAck

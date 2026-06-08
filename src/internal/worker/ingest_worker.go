@@ -3,6 +3,7 @@ package worker
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"plasmod/src/internal/coordinator"
 	"plasmod/src/internal/dataplane"
@@ -58,7 +59,8 @@ func NewPipelineIngestWorker(
 // Accept runs validate → WAL → materialize → persist → pre-compute →
 // DispatchIngest (data/index nodes) → DataPlane.Ingest.
 func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) {
-	if strings.TrimSpace(ev.EventID) == "" {
+	ev = ev.NormalizeDynamicEventV04()
+	if strings.TrimSpace(ev.Identity.EventID) == "" {
 		return nil, errors.New("event_id is required")
 	}
 
@@ -71,9 +73,7 @@ func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
-	if ev.LogicalTS == 0 {
-		ev.LogicalTS = entry.LSN
-	}
+	ev = entry.Event
 
 	mat := w.materializer.MaterializeEvent(ev)
 	record := mat.Record
@@ -95,7 +95,7 @@ func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) 
 	if w.preCompute != nil {
 		frag := w.preCompute.Compute(ev, record)
 		if frag.SalienceScore >= 0.5 {
-			w.storage.HotCache().Put(record.ObjectID, ev.EventType, record, frag.SalienceScore)
+			w.storage.HotCache().Put(record.ObjectID, ev.EventInfo.EventType, record, frag.SalienceScore)
 		}
 	}
 
@@ -107,16 +107,16 @@ func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) 
 		"ingest",
 		[]string{mat.Memory.MemoryID},
 		"",
-		ev.EventTime,
-		ev.AgentID,
-		ev.SessionID,
+		rfc3339FromMillis(ev.Time.EventTime),
+		ev.Actor.AgentID,
+		ev.Actor.SessionID,
 		nil,
 	)
 
 	ack := map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
-		"event_id":  ev.EventID,
+		"event_id":  ev.Identity.EventID,
 		"memory_id": mat.Memory.MemoryID,
 		"edges":     len(mat.Edges),
 	}
@@ -127,4 +127,11 @@ func (w *PipelineIngestWorker) Accept(ev schemas.Event) (map[string]any, error) 
 		ack["artifact_id"] = mat.Artifact.ArtifactID
 	}
 	return ack, nil
+}
+
+func rfc3339FromMillis(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return time.UnixMilli(value).UTC().Format(time.RFC3339)
 }

@@ -12,6 +12,11 @@ import (
 	"plasmod/src/internal/schemas"
 )
 
+func eventField(doc map[string]any, section, field string) any {
+	nested, _ := doc[section].(map[string]any)
+	return nested[field]
+}
+
 // ─── Config tests ──────────────────────────────────────────────────────────────
 
 func TestLoadFromEnv_Defaults(t *testing.T) {
@@ -51,8 +56,8 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config passes",
 			cfg: Config{
 				CogDBEndpoint: "http://127.0.0.1:8080",
-				AgentID:      "agent_a",
-				TenantID:     "t1",
+				AgentID:       "agent_a",
+				TenantID:      "t1",
 				WorkspaceID:   "w1",
 			},
 			wantErr: false,
@@ -61,8 +66,8 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid url fails",
 			cfg: Config{
 				CogDBEndpoint: "not-a-url",
-				AgentID:      "agent_a",
-				TenantID:     "t1",
+				AgentID:       "agent_a",
+				TenantID:      "t1",
 				WorkspaceID:   "w1",
 			},
 			wantErr: true,
@@ -231,10 +236,10 @@ func TestAgentSession_SubmitUserMessage_Success(t *testing.T) {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":    "accepted",
-				"lsn":       1,
-				"event_id":  receivedEvent["event_id"],
-				"memory_id": "mem_test_001",
+				"status":     "accepted",
+				"lsn":        1,
+				"event_id":   eventField(receivedEvent, "identity", "event_id"),
+				"memory_id":  "mem_test_001",
 				"edge_count": 0,
 			})
 		} else {
@@ -254,11 +259,11 @@ func TestAgentSession_SubmitUserMessage_Success(t *testing.T) {
 	if ack.Status != "accepted" {
 		t.Errorf("ack.Status = %q, want %q", ack.Status, "accepted")
 	}
-	if receivedEvent["event_type"] != "user_message" {
-		t.Errorf("event_type = %q, want %q", receivedEvent["event_type"], "user_message")
+	if eventField(receivedEvent, "event", "event_type") != "user_message" {
+		t.Errorf("event.event_type = %q, want %q", eventField(receivedEvent, "event", "event_type"), "user_message")
 	}
-	if receivedEvent["agent_id"] != "agent_a" {
-		t.Errorf("agent_id = %q, want %q", receivedEvent["agent_id"], "agent_a")
+	if eventField(receivedEvent, "actor", "agent_id") != "agent_a" {
+		t.Errorf("actor.agent_id = %q, want %q", eventField(receivedEvent, "actor", "agent_id"), "agent_a")
 	}
 }
 
@@ -271,10 +276,10 @@ func TestAgentSession_SubmitToolCall_Success(t *testing.T) {
 		} else if r.URL.Path == "/v1/ingest/events" {
 			_ = json.NewDecoder(r.Body).Decode(&receivedEvent)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":    "accepted",
-				"lsn":       2,
-				"event_id":  receivedEvent["event_id"],
-				"memory_id": "",
+				"status":     "accepted",
+				"lsn":        2,
+				"event_id":   eventField(receivedEvent, "identity", "event_id"),
+				"memory_id":  "",
 				"edge_count": 0,
 			})
 		}
@@ -292,8 +297,8 @@ func TestAgentSession_SubmitToolCall_Success(t *testing.T) {
 	if ack.Status != "accepted" {
 		t.Errorf("ack.Status = %q", ack.Status)
 	}
-	if receivedEvent["event_type"] != "tool_call" {
-		t.Errorf("event_type = %q, want %q", receivedEvent["event_type"], "tool_call")
+	if eventField(receivedEvent, "event", "event_type") != "tool_call" {
+		t.Errorf("event.event_type = %q, want %q", eventField(receivedEvent, "event", "event_type"), "tool_call")
 	}
 }
 
@@ -329,7 +334,7 @@ func TestAgentSession_Heartbeat(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		} else if r.URL.Path == "/v1/ingest/events" {
 			_ = json.NewDecoder(r.Body).Decode(&receivedEvent)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "lsn": 1, "event_id": receivedEvent["event_id"], "memory_id": "", "edge_count": 0})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "lsn": 1, "event_id": eventField(receivedEvent, "identity", "event_id"), "memory_id": "", "edge_count": 0})
 		}
 	}))
 	defer server.Close()
@@ -342,8 +347,8 @@ func TestAgentSession_Heartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
-	if receivedEvent["event_type"] != "checkpoint" {
-		t.Errorf("event_type = %q", receivedEvent["event_type"])
+	if eventField(receivedEvent, "event", "event_type") != "checkpoint" {
+		t.Errorf("event.event_type = %q", eventField(receivedEvent, "event", "event_type"))
 	}
 }
 
@@ -373,8 +378,8 @@ func TestBaselineMemoryManager_Recall(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"request_id":          "recall_001",
 			"requester_id":        "agent_a",
-			"agent_id":           "agent_a",
-			"resolved_scope":     "workspace",
+			"agent_id":            "agent_a",
+			"resolved_scope":      "workspace",
 			"visible_memory_refs": []string{"mem_1", "mem_2"},
 		})
 	}))
@@ -455,12 +460,12 @@ func TestBaselineMemoryManager_Decay(t *testing.T) {
 // without a live CogDB endpoint.
 type noOpManager struct{}
 
-func (noOpManager) Name() string                      { return "noop" }
-func (noOpManager) Close() error                     { return nil }
+func (noOpManager) Name() string { return "noop" }
+func (noOpManager) Close() error { return nil }
 func (noOpManager) Recall(ctx context.Context, query, scope string, topK int) (*schemas.MemoryView, error) {
 	return &schemas.MemoryView{}, nil
 }
-func (noOpManager) Ingest(ctx context.Context, memoryIDs []string) error    { return nil }
+func (noOpManager) Ingest(ctx context.Context, memoryIDs []string) error          { return nil }
 func (noOpManager) Compress(ctx context.Context, agentID, sessionID string) error { return nil }
 func (noOpManager) Summarize(ctx context.Context, agentID, sessionID string, maxLevel int) ([]schemas.Memory, error) {
 	return nil, nil
@@ -578,7 +583,7 @@ func TestAgentSession_ShareMemory(t *testing.T) {
 				"status":           "ok",
 				"shared_memory_id": "shared_mem_001_to_agent_b",
 				"memory_id":        receivedReq["memory_id"],
-				"to_agent_id":     receivedReq["to_agent_id"],
+				"to_agent_id":      receivedReq["to_agent_id"],
 			})
 		}
 	}))
@@ -660,9 +665,9 @@ func TestAgentSession_ResolveConflict_SameID(t *testing.T) {
 func TestAgentGateway_HealthCheck(t *testing.T) {
 	gw, err := NewAgentGateway(Config{
 		CogDBEndpoint: "http://127.0.0.1:8080",
-		AgentID:      "agent_a",
-		TenantID:     "t1",
-		WorkspaceID:  "w1",
+		AgentID:       "agent_a",
+		TenantID:      "t1",
+		WorkspaceID:   "w1",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentGateway: %v", err)
@@ -700,9 +705,9 @@ func TestAgentGateway_SessionStartEnd(t *testing.T) {
 
 	gw, err := NewAgentGateway(Config{
 		CogDBEndpoint: server.URL,
-		AgentID:      "agent_a",
-		TenantID:     "t1",
-		WorkspaceID:  "w1",
+		AgentID:       "agent_a",
+		TenantID:      "t1",
+		WorkspaceID:   "w1",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentGateway: %v", err)
@@ -736,9 +741,9 @@ func TestAgentGateway_SessionStartEnd(t *testing.T) {
 func TestAgentGateway_RequiresSession(t *testing.T) {
 	gw, _ := NewAgentGateway(Config{
 		CogDBEndpoint: "http://127.0.0.1:8080",
-		AgentID:      "agent_a",
-		TenantID:     "t1",
-		WorkspaceID:  "w1",
+		AgentID:       "agent_a",
+		TenantID:      "t1",
+		WorkspaceID:   "w1",
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/agent/events/message", nil)
@@ -767,7 +772,7 @@ func TestAgentGateway_Query(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"request_id":          "recall_test",
 				"visible_memory_refs": []string{"mem_1"},
-				"resolved_scope":     "workspace",
+				"resolved_scope":      "workspace",
 			})
 		} else {
 			w.WriteHeader(http.StatusNotFound)
@@ -778,9 +783,9 @@ func TestAgentGateway_Query(t *testing.T) {
 
 	gw, _ := NewAgentGateway(Config{
 		CogDBEndpoint: server.URL,
-		AgentID:      "agent_a",
-		TenantID:     "t1",
-		WorkspaceID:  "w1",
+		AgentID:       "agent_a",
+		TenantID:      "t1",
+		WorkspaceID:   "w1",
 	})
 
 	// Start session
@@ -819,9 +824,9 @@ func TestAgentGateway_MemoryCompressSummarize(t *testing.T) {
 
 	gw, _ := NewAgentGateway(Config{
 		CogDBEndpoint: server.URL,
-		AgentID:      "agent_a",
-		TenantID:     "t1",
-		WorkspaceID:  "w1",
+		AgentID:       "agent_a",
+		TenantID:      "t1",
+		WorkspaceID:   "w1",
 	})
 
 	// Start session
@@ -867,17 +872,17 @@ func TestAgentSession_FullLifecycle(t *testing.T) {
 			var ev map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&ev)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":    "accepted",
-				"lsn":       1,
-				"event_id":  ev["event_id"],
-				"memory_id": "mem_001",
+				"status":     "accepted",
+				"lsn":        1,
+				"event_id":   ev["event_id"],
+				"memory_id":  "mem_001",
 				"edge_count": 0,
 			})
 		case "/v1/internal/memory/recall":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"request_id":          "recall_e2e",
 				"visible_memory_refs": []string{"mem_001"},
-				"resolved_scope":     "workspace",
+				"resolved_scope":      "workspace",
 			})
 		}
 	}))

@@ -60,13 +60,13 @@ func objectTypeFromEvent(ev schemas.Event) (objectType, objectID string) {
 	if ev.Object.ObjectType != "" && ev.Object.ObjectID != "" {
 		return schemas.NormalizeObjectTypeName(ev.Object.ObjectType), ev.Object.ObjectID
 	}
-	switch ev.EventType {
+	switch ev.EventInfo.EventType {
 	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
-		return string(schemas.ObjectTypeArtifact), schemas.IDPrefixArtifact + ev.EventID
+		return string(schemas.ObjectTypeArtifact), schemas.IDPrefixArtifact + ev.Identity.EventID
 	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
-		return string(schemas.ObjectTypeAgentState), schemas.IDPrefixState + ev.EventID
+		return string(schemas.ObjectTypeAgentState), schemas.IDPrefixState + ev.Identity.EventID
 	default:
-		return string(schemas.ObjectTypeMemory), schemas.IDPrefixMemory + ev.EventID
+		return string(schemas.ObjectTypeMemory), schemas.IDPrefixMemory + ev.Identity.EventID
 	}
 }
 
@@ -94,15 +94,15 @@ func (w *InMemoryObjectMaterializationWorker) Info() nodes.NodeInfo {
 func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) error {
 	ev = ev.NormalizeDynamicEventV04()
 	now := time.Now().UTC().Format(time.RFC3339)
-	switch ev.EventType {
+	switch ev.EventInfo.EventType {
 	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
 		artifact := schemas.Artifact{
-			ArtifactID:        schemas.IDPrefixArtifact + ev.EventID,
-			SessionID:         ev.SessionID,
-			OwnerAgentID:      ev.AgentID,
-			ArtifactType:      ev.EventType,
-			ProducedByEventID: ev.EventID,
-			Version:           ev.Version,
+			ArtifactID:        schemas.IDPrefixArtifact + ev.Identity.EventID,
+			SessionID:         ev.Actor.SessionID,
+			OwnerAgentID:      ev.Actor.AgentID,
+			ArtifactType:      ev.EventInfo.EventType,
+			ProducedByEventID: ev.Identity.EventID,
+			Version:           ev.Time.LogicalTS,
 		}
 		if ev.Payload != nil {
 			if uri := ev.ArtifactURI(); uri != "" {
@@ -119,12 +119,12 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 		w.verStore.PutVersion(schemas.ObjectVersion{
 			ObjectID:        artifact.ArtifactID,
 			ObjectType:      string(schemas.ObjectTypeArtifact),
-			Version:         ev.Version + 1,
-			MutationEventID: ev.EventID,
+			Version:         ev.Time.LogicalTS + 1,
+			MutationEventID: ev.Identity.EventID,
 			ValidFrom:       now,
 		})
 		if w.derivLog != nil {
-			w.derivLog.Append(ev.EventID, "event", artifact.ArtifactID, "artifact", "object_materialization")
+			w.derivLog.Append(ev.Identity.EventID, "event", artifact.ArtifactID, "artifact", "object_materialization")
 		}
 
 		// State objects are created exclusively by InMemoryStateMaterializationWorker

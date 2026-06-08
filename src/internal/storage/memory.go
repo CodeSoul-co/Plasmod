@@ -145,9 +145,10 @@ func (s *memoryObjectStore) ListSessions(agentID string) []schemas.Session {
 }
 
 func (s *memoryObjectStore) PutEvent(obj schemas.Event) {
+	obj = obj.NormalizeDynamicEventV04()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events[obj.EventID] = obj
+	s.events[obj.Identity.EventID] = obj
 }
 
 func (s *memoryObjectStore) GetEvent(id string) (schemas.Event, bool) {
@@ -162,8 +163,9 @@ func (s *memoryObjectStore) ListEvents(agentID, sessionID string) []schemas.Even
 	defer s.mu.RUnlock()
 	out := []schemas.Event{}
 	for _, v := range s.events {
-		if (agentID == "" || v.AgentID == agentID) &&
-			(sessionID == "" || v.SessionID == sessionID) {
+		ev := v.NormalizeDynamicEventV04()
+		if (agentID == "" || ev.Actor.AgentID == agentID) &&
+			(sessionID == "" || ev.Actor.SessionID == sessionID) {
 			out = append(out, v)
 		}
 	}

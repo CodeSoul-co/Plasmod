@@ -271,7 +271,7 @@ func TestResolveMemoryType(t *testing.T) {
 		{"unknown_type", "episodic"},
 	}
 	for _, tc := range cases {
-		ev := schemas.Event{EventType: tc.eventType}
+		ev := schemas.Event{EventInfo: schemas.EventDescriptor{EventType: tc.eventType}}
 		got := resolveMemoryType(ev)
 		if got != tc.wantMemory {
 			t.Errorf("resolveMemoryType(%q): want %q, got %q", tc.eventType, tc.wantMemory, got)

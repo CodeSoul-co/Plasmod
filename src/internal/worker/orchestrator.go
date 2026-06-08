@@ -137,8 +137,9 @@ func (o *Orchestrator) Submit(t Task) bool {
 // SubmitIngest is a convenience wrapper that enqueues an ingest task at
 // PriorityHigh (ingestion should not starve queries, but beats background work).
 func (o *Orchestrator) SubmitIngest(ev schemas.Event) bool {
+	ev = ev.NormalizeDynamicEventV04()
 	return o.Submit(Task{
-		ID:       "ingest_" + ev.EventID,
+		ID:       "ingest_" + ev.Identity.EventID,
 		Type:     TaskTypeIngest,
 		Priority: PriorityHigh,
 		Payload:  chain.MainChainInput{Event: ev},

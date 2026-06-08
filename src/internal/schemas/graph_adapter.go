@@ -45,37 +45,45 @@ func MemoryToGraphNode(m Memory) GraphNode {
 }
 
 func EventToGraphNode(e Event) GraphNode {
+	e = e.NormalizeDynamicEventV04()
 	props := map[string]any{
-		"tenant_id":       e.TenantID,
-		"workspace_id":    e.WorkspaceID,
-		"agent_id":        e.AgentID,
-		"session_id":      e.SessionID,
-		"event_type":      e.EventType,
-		"event_time":      e.EventTime,
-		"ingest_time":     e.IngestTime,
-		"visible_time":    e.VisibleTime,
-		"logical_ts":      e.LogicalTS,
-		"parent_event_id": e.ParentEventID,
-		"causal_refs":     e.CausalRefs,
+		"tenant_id":       e.Identity.TenantID,
+		"workspace_id":    e.Identity.WorkspaceID,
+		"agent_id":        e.Actor.AgentID,
+		"session_id":      e.Actor.SessionID,
+		"event_type":      e.EventInfo.EventType,
+		"event_time":      e.Time.EventTime,
+		"ingest_time":     e.Time.IngestTime,
+		"visible_time":    e.Time.VisibleTime,
+		"logical_ts":      e.Time.LogicalTS,
+		"parent_event_id": e.Causality.ParentEventID,
+		"causal_refs":     e.Causality.CausalRefs,
 		"payload":         e.Payload,
-		"source":          e.Source,
-		"importance":      e.Importance,
-		"visibility":      e.Visibility,
+		"source":          e.Identity.Source,
+		"importance":      resolveGraphEventImportance(e),
+		"visibility":      e.Access.Visibility,
 		"version":         e.Version,
-		"join_key":        "evt:" + e.EventID,
+		"join_key":        "evt:" + e.Identity.EventID,
 	}
 
-	label := e.EventType
+	label := e.EventInfo.EventType
 	if label == "" {
 		label = "event"
 	}
 
 	return GraphNode{
-		ObjectID:   e.EventID,
+		ObjectID:   e.Identity.EventID,
 		ObjectType: "event",
 		Label:      label,
 		Properties: props,
 	}
+}
+
+func resolveGraphEventImportance(e Event) float64 {
+	if e.EventInfo.Importance != nil {
+		return *e.EventInfo.Importance
+	}
+	return 0
 }
 
 func ArtifactToGraphNode(a Artifact) GraphNode {

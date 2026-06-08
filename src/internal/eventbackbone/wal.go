@@ -24,6 +24,11 @@ func NewInMemoryWAL(bus Bus, clock *HybridClock) *InMemoryWAL {
 
 func (w *InMemoryWAL) Append(event schemas.Event) (WALEntry, error) {
 	lsn := w.clock.Next()
+	event = event.NormalizeDynamicEventV04()
+	event.Time.WalLSN = lsn
+	if event.Time.LogicalTS == 0 {
+		event.Time.LogicalTS = lsn
+	}
 	entry := WALEntry{LSN: lsn, Event: event}
 	w.mu.Lock()
 	w.entries = append(w.entries, entry)

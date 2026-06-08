@@ -165,7 +165,26 @@ type eventWire struct {
 	Extensions      EventExtensions      `json:"extensions"`
 }
 
-type eventAlias Event
+type eventLegacyWire struct {
+	EventID         string         `json:"event_id"`
+	TenantID        string         `json:"tenant_id"`
+	WorkspaceID     string         `json:"workspace_id"`
+	AgentID         string         `json:"agent_id"`
+	SessionID       string         `json:"session_id"`
+	EventType       string         `json:"event_type"`
+	EventTime       string         `json:"event_time"`
+	IngestTime      string         `json:"ingest_time"`
+	VisibleTime     string         `json:"visible_time"`
+	LogicalTS       int64          `json:"logical_ts"`
+	ParentEventID   string         `json:"parent_event_id"`
+	CausalRefs      []string       `json:"causal_refs"`
+	Payload         map[string]any `json:"payload"`
+	EmbeddingVector []float32      `json:"embedding_vector"`
+	Source          string         `json:"source"`
+	Importance      float64        `json:"importance"`
+	Visibility      string         `json:"visibility"`
+	Version         int64          `json:"version"`
+}
 
 func (e Event) MarshalJSON() ([]byte, error) {
 	normalized := e.NormalizeDynamicEventV04()
@@ -173,18 +192,38 @@ func (e Event) MarshalJSON() ([]byte, error) {
 }
 
 func (e *Event) UnmarshalJSON(data []byte) error {
-	var legacy eventAlias
+	var wire eventWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	out := Event{
+		SchemaVersion:   wire.SchemaVersion,
+		Identity:        wire.Identity,
+		Actor:           wire.Actor,
+		Time:            wire.Time,
+		EventInfo:       wire.Event,
+		Object:          wire.Object,
+		Causality:       wire.Causality,
+		Access:          wire.Access,
+		Materialization: wire.Materialization,
+		Retrieval:       wire.Retrieval,
+		Payload:         wire.Payload,
+		Data:            wire.Data,
+		Runtime:         wire.Runtime,
+		Extensions:      wire.Extensions,
+	}
+	var legacy eventLegacyWire
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
-	out := Event(legacy)
+	out.applyLegacyWire(legacy)
 	out = out.NormalizeDynamicEventV04()
 	*e = out
 	return nil
 }
 
 func (e Event) NormalizeDynamicEventV04() Event {
-	if e.SchemaVersion == "" && hasOnlyLegacyEventFields(e) {
+	if hasOnlyLegacyEventFields(e) {
 		e = e.promoteLegacyToDynamic()
 	}
 	if e.SchemaVersion == "" {
@@ -262,6 +301,61 @@ func (e Event) toWire() eventWire {
 		Runtime:         e.Runtime,
 		Extensions:      e.Extensions,
 	}
+}
+
+func (e *Event) applyLegacyWire(legacy eventLegacyWire) {
+	if e.Identity.EventID == "" {
+		e.Identity.EventID = legacy.EventID
+	}
+	if e.Identity.TenantID == "" {
+		e.Identity.TenantID = legacy.TenantID
+	}
+	if e.Identity.WorkspaceID == "" {
+		e.Identity.WorkspaceID = legacy.WorkspaceID
+	}
+	if e.Identity.Source == "" {
+		e.Identity.Source = legacy.Source
+	}
+	if e.Actor.AgentID == "" {
+		e.Actor.AgentID = legacy.AgentID
+	}
+	if e.Actor.SessionID == "" {
+		e.Actor.SessionID = legacy.SessionID
+	}
+	if e.EventInfo.EventType == "" {
+		e.EventInfo.EventType = legacy.EventType
+	}
+	if e.EventInfo.Importance == nil && legacy.Importance != 0 {
+		e.EventInfo.Importance = &legacy.Importance
+	}
+	if e.Time.LogicalTS == 0 {
+		e.Time.LogicalTS = legacy.LogicalTS
+	}
+	if e.Time.EventTime == 0 {
+		e.Time.EventTime = rfc3339ToMillis(legacy.EventTime)
+	}
+	if e.Time.IngestTime == 0 {
+		e.Time.IngestTime = rfc3339ToMillis(legacy.IngestTime)
+	}
+	if e.Time.VisibleTime == 0 {
+		e.Time.VisibleTime = rfc3339ToMillis(legacy.VisibleTime)
+	}
+	if e.Causality.ParentEventID == "" {
+		e.Causality.ParentEventID = legacy.ParentEventID
+	}
+	if len(e.Causality.CausalRefs) == 0 {
+		e.Causality.CausalRefs = append([]string(nil), legacy.CausalRefs...)
+	}
+	if e.Access.Visibility == "" {
+		e.Access.Visibility = legacy.Visibility
+	}
+	if len(e.Retrieval.EmbeddingVector) == 0 {
+		e.Retrieval.EmbeddingVector = append([]float32(nil), legacy.EmbeddingVector...)
+	}
+	if e.Payload == nil {
+		e.Payload = legacy.Payload
+	}
+	e.Version = legacy.Version
 }
 
 func (e Event) promoteLegacyToDynamic() Event {
@@ -456,14 +550,15 @@ func (e Event) EdgeKind() string {
 }
 
 func (e Event) RetrievalNamespaceOrDefault() string {
+	e = e.NormalizeDynamicEventV04()
 	if e.Retrieval.RetrievalNamespace != "" {
 		return e.Retrieval.RetrievalNamespace
 	}
-	if e.WorkspaceID != "" {
-		return e.WorkspaceID
+	if e.Identity.WorkspaceID != "" {
+		return e.Identity.WorkspaceID
 	}
-	if e.SessionID != "" {
-		return e.SessionID
+	if e.Actor.SessionID != "" {
+		return e.Actor.SessionID
 	}
 	return "default"
 }

@@ -525,8 +525,9 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(ev.EventID) == "" {
-		ev.EventID = generateObjectID("evt")
+	ev = ev.NormalizeDynamicEventV04()
+	if strings.TrimSpace(ev.Identity.EventID) == "" {
+		ev.Identity.EventID = generateObjectID("evt")
 	}
 	t0Visible := time.Now()
 	ack, err := g.runtime.SubmitIngest(ev)
@@ -1987,24 +1988,32 @@ func (g *Gateway) handleS3Export(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build sample ingest event (based on integration tests).
+	importance := 0.5
+	nowMS := now.UnixMilli()
 	ev := schemas.Event{
-		EventID:       "evt_rt_" + timestamp,
-		TenantID:      "t_demo",
-		WorkspaceID:   "w_demo",
-		AgentID:       "agent_a",
-		SessionID:     "sess_a",
-		EventType:     "user_message",
-		EventTime:     now.Format(time.RFC3339),
-		IngestTime:    now.Format(time.RFC3339),
-		VisibleTime:   now.Format(time.RFC3339),
-		LogicalTS:     1,
-		ParentEventID: "",
-		CausalRefs:    []string{},
-		Payload:       map[string]any{"text": "hello runtime export"},
-		Source:        "runtime_export",
-		Importance:    0.5,
-		Visibility:    "private",
-		Version:       1,
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity: schemas.EventIdentity{
+			EventID:     "evt_rt_" + timestamp,
+			TenantID:    "t_demo",
+			WorkspaceID: "w_demo",
+			Source:      "runtime_export",
+		},
+		Actor: schemas.EventActor{
+			AgentID:   "agent_a",
+			SessionID: "sess_a",
+		},
+		Time: schemas.EventTime{
+			EventTime:   nowMS,
+			IngestTime:  nowMS,
+			VisibleTime: nowMS,
+			LogicalTS:   1,
+		},
+		EventInfo: schemas.EventDescriptor{
+			EventType:  "user_message",
+			Importance: &importance,
+		},
+		Access:  schemas.EventAccess{Visibility: "private"},
+		Payload: map[string]any{"text": "hello runtime export"},
 	}
 
 	ack, err := g.runtime.SubmitIngest(ev)
@@ -3326,7 +3335,7 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 
 	chunks := splitTextIntoChunks(fullText, req.ChunkSize, req.Overlap)
 	batchID := generateObjectID("batch")
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	memoryIDs := make([]string, 0, len(chunks))
 	errs := []string{}
 
@@ -3338,14 +3347,24 @@ func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
 		} else {
 			title = fmt.Sprintf("%s_chunk_%d", title, i)
 		}
+		importance := req.Importance
 		ev := schemas.Event{
-			EventID:     evID,
-			AgentID:     req.AgentID,
-			SessionID:   req.SessionID,
-			WorkspaceID: req.WorkspaceID,
-			EventType:   string(schemas.EventTypeMemoryWriteRequested),
-			EventTime:   now,
-			Importance:  req.Importance,
+			SchemaVersion: schemas.DynamicEventSchemaV04,
+			Identity: schemas.EventIdentity{
+				EventID:     evID,
+				WorkspaceID: req.WorkspaceID,
+			},
+			Actor: schemas.EventActor{
+				AgentID:   req.AgentID,
+				SessionID: req.SessionID,
+			},
+			Time: schemas.EventTime{
+				EventTime: now.UnixMilli(),
+			},
+			EventInfo: schemas.EventDescriptor{
+				EventType:  string(schemas.EventTypeMemoryWriteRequested),
+				Importance: &importance,
+			},
 			Payload: map[string]any{
 				"text":         chunk,
 				"title":        title,
@@ -3466,11 +3485,14 @@ func (g *Gateway) handleTaskStage(w http.ResponseWriter, r *http.Request) {
 	// Persist stage milestone as a memory-write event for provenance.
 	evID := generateObjectID("stage")
 	ev := schemas.Event{
-		EventID:   evID,
-		AgentID:   req.AgentID,
-		SessionID: req.SessionID,
-		EventType: string(schemas.EventTypePlanUpdated),
-		EventTime: time.Now().UTC().Format(time.RFC3339),
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity:      schemas.EventIdentity{EventID: evID},
+		Actor: schemas.EventActor{
+			AgentID:   req.AgentID,
+			SessionID: req.SessionID,
+		},
+		Time:      schemas.EventTime{EventTime: time.Now().UTC().UnixMilli()},
+		EventInfo: schemas.EventDescriptor{EventType: string(schemas.EventTypePlanUpdated)},
 		Payload: map[string]any{
 			"stage":        req.Stage,
 			"stage_index":  req.StageIndex,
@@ -3668,9 +3690,10 @@ func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
 	var resultEvents []schemas.Event
 
 	for _, ev := range events {
-		switch ev.EventType {
+		ev = ev.NormalizeDynamicEventV04()
+		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeToolCallIssued), string(schemas.EventTypeToolCall):
-			callsByID[ev.EventID] = ev
+			callsByID[ev.Identity.EventID] = ev
 		case string(schemas.EventTypeToolResultReturned), string(schemas.EventTypeToolResult):
 			resultEvents = append(resultEvents, ev)
 		}
@@ -3681,12 +3704,13 @@ func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
 	matchedCalls := make(map[string]bool)
 
 	for _, res := range resultEvents {
+		res = res.NormalizeDynamicEventV04()
 		parentID, _ := res.Payload["call_event_id"].(string)
 		if parentID == "" {
 			parentID, _ = res.Payload["parent_event_id"].(string)
 		}
 		if parentID == "" {
-			parentID = res.ParentEventID
+			parentID = res.Causality.ParentEventID
 		}
 		if call, ok := callsByID[parentID]; ok {
 			matchedCalls[parentID] = true
@@ -3694,7 +3718,7 @@ func (g *Gateway) handleToolState(w http.ResponseWriter, r *http.Request) {
 			result, _ := res.Payload["result"].(map[string]any)
 			completed = append(completed, completedCall{
 				CallEventID:   parentID,
-				ResultEventID: res.EventID,
+				ResultEventID: res.Identity.EventID,
 				Tool:          tool,
 				Result:        result,
 			})
@@ -3762,7 +3786,7 @@ func (g *Gateway) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 
 	// Update receiver agent RoleProfile if provided.
 	if req.RoleTo != "" {
@@ -3790,11 +3814,14 @@ func (g *Gateway) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 	evID := generateObjectID("handoff")
 	ev := schemas.Event{
-		EventID:   evID,
-		AgentID:   req.FromAgentID,
-		SessionID: req.SessionID,
-		EventType: string(schemas.EventTypeHandoffOccurred),
-		EventTime: now,
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity:      schemas.EventIdentity{EventID: evID},
+		Actor: schemas.EventActor{
+			AgentID:   req.FromAgentID,
+			SessionID: req.SessionID,
+		},
+		Time:      schemas.EventTime{EventTime: now.UnixMilli()},
+		EventInfo: schemas.EventDescriptor{EventType: string(schemas.EventTypeHandoffOccurred)},
 		Payload:   payload,
 	}
 	ack, err := g.runtime.SubmitIngest(ev)
@@ -3809,7 +3836,7 @@ func (g *Gateway) handleAgentHandoff(w http.ResponseWriter, r *http.Request) {
 		"to_agent_id":   req.ToAgentID,
 		"role_from":     req.RoleFrom,
 		"role_to":       req.RoleTo,
-		"timestamp":     now,
+		"timestamp":     now.Format(time.RFC3339),
 	})
 }
 
@@ -3898,7 +3925,8 @@ func (g *Gateway) handleSessionContext(w http.ResponseWriter, r *http.Request) {
 	}
 	var filtered []schemas.Event
 	for _, ev := range allEvents {
-		if relevantTypes[ev.EventType] {
+		ev = ev.NormalizeDynamicEventV04()
+		if relevantTypes[ev.EventInfo.EventType] {
 			filtered = append(filtered, ev)
 		}
 	}
