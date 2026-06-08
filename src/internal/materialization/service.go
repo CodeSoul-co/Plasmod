@@ -340,7 +340,21 @@ func buildAttributes(ev schemas.Event) map[string]string {
 	if ev.Data.PayloadHash != "" {
 		attrs["payload_hash"] = ev.Data.PayloadHash
 	}
+	addAttributeList(attrs, "hook_materializers", ev.MaterializerHooks())
+	addAttributeList(attrs, "hook_indexers", ev.IndexerHooks())
+	addAttributeList(attrs, "hook_query_ops", ev.QueryOpHooks())
+	addAttributeList(attrs, "hook_policy", ev.PolicyHooks())
+	addAttributeList(attrs, "hook_evidence", ev.EvidenceHooks())
+	addAttributeList(attrs, "hook_chains", ev.ChainHooks())
+	addAttributeList(attrs, "hook_custom", ev.CustomHooks())
 	return attrs
+}
+
+func addAttributeList(attrs map[string]string, key string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	attrs[key] = strings.Join(values, ",")
 }
 
 func parseEventUnixTS(ev schemas.Event) int64 {

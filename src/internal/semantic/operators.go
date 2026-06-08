@@ -40,6 +40,7 @@ type QueryPlan struct {
 	RuntimeVisibilityStatus string
 	ExtensionLabels         []string
 	QueryOps                []string
+	Hooks                   schemas.EventHooks
 }
 
 // ResponseMode selects the retrieval execution strategy (section 11).
@@ -111,8 +112,27 @@ func (p *DefaultQueryPlanner) Build(req schemas.QueryRequest) QueryPlan {
 		RuntimeWriteStatus:      req.RuntimeWriteStatus,
 		RuntimeVisibilityStatus: req.RuntimeVisibilityStatus,
 		ExtensionLabels:         req.ExtensionLabels,
-		QueryOps:                req.QueryOps,
+		QueryOps:                mergePlanStrings(req.QueryOps, req.Hooks.QueryOps),
+		Hooks:                   req.Hooks,
 	}
+}
+
+func mergePlanStrings(groups ...[]string) []string {
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, value := range group {
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // ─── Subgraph / Subtensor Retrieval (section 11.1) ───────────────────────────

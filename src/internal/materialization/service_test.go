@@ -46,6 +46,54 @@ func TestService_MaterializeEvent_Basic(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEvent_HookAttributes(t *testing.T) {
+	svc := NewService()
+	ev := schemas.Event{
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity:      schemas.EventIdentity{EventID: "evt_hooks", WorkspaceID: "ws_hooks"},
+		Actor:         schemas.EventActor{AgentID: "agent_hooks", SessionID: "sess_hooks"},
+		EventInfo:     schemas.EventDescriptor{EventType: "user_message"},
+		Materialization: schemas.EventMaterialization{
+			Hooks: schemas.EventHooks{Materializers: []string{"mat.custom"}},
+		},
+		Retrieval: schemas.EventRetrieval{
+			IndexText: "hooked event",
+			Hooks: schemas.EventHooks{
+				Indexers: []string{"idx.custom"},
+				QueryOps: []string{"query.custom"},
+			},
+		},
+		Access: schemas.EventAccess{
+			Hooks: schemas.EventHooks{Policy: []string{"policy.custom"}},
+		},
+		Causality: schemas.EventCausality{
+			Hooks: schemas.EventHooks{Evidence: []string{"evidence.custom"}},
+		},
+		Extensions: schemas.EventExtensions{
+			Hooks: schemas.EventHooks{
+				Chains: []string{"chain.custom"},
+				Custom: []string{"custom.hook"},
+			},
+		},
+	}
+
+	res := svc.MaterializeEvent(ev)
+	attrs := res.Record.Attributes
+	for key, want := range map[string]string{
+		"hook_materializers": "mat.custom",
+		"hook_indexers":      "idx.custom",
+		"hook_query_ops":     "query.custom",
+		"hook_policy":        "policy.custom",
+		"hook_evidence":      "evidence.custom",
+		"hook_chains":        "chain.custom",
+		"hook_custom":        "custom.hook",
+	} {
+		if got := attrs[key]; got != want {
+			t.Fatalf("attribute %s: want %q, got %q", key, want, got)
+		}
+	}
+}
+
 func TestService_MaterializeEvent_PayloadDatasetAndFileName(t *testing.T) {
 	svc := NewService()
 	ev := schemas.Event{

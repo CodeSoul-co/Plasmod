@@ -153,3 +153,67 @@ func TestEventUnmarshalAcceptsLegacyFlatJSON(t *testing.T) {
 		t.Fatalf("text helper failed: %q", ev.Text())
 	}
 }
+
+func TestEventHooksMergeModuleAndExtensionHooks(t *testing.T) {
+	ev := Event{
+		Materialization: EventMaterialization{
+			Hooks: EventHooks{Materializers: []string{"mat.custom", "shared"}},
+		},
+		Retrieval: EventRetrieval{
+			Hooks: EventHooks{
+				Indexers: []string{"idx.custom"},
+				QueryOps: []string{"query.rerank"},
+				Custom:   []string{"retrieval.custom"},
+			},
+		},
+		Access: EventAccess{
+			Hooks: EventHooks{
+				Policy: []string{"policy.custom"},
+				Custom: []string{"access.custom"},
+			},
+		},
+		Causality: EventCausality{
+			Hooks: EventHooks{Evidence: []string{"evidence.expand"}},
+		},
+		Extensions: EventExtensions{
+			Hooks: EventHooks{
+				Materializers: []string{"shared", "mat.global"},
+				Chains:        []string{"chain.reflect"},
+				Custom:        []string{"global.custom"},
+			},
+		},
+	}
+
+	if got := strings.Join(ev.MaterializerHooks(), ","); got != "mat.custom,shared,mat.global" {
+		t.Fatalf("materializer hooks not merged/deduped: %q", got)
+	}
+	if got := strings.Join(ev.IndexerHooks(), ","); got != "idx.custom" {
+		t.Fatalf("indexer hooks not read: %q", got)
+	}
+	if got := strings.Join(ev.QueryOpHooks(), ","); got != "query.rerank" {
+		t.Fatalf("query hooks not read: %q", got)
+	}
+	if got := strings.Join(ev.PolicyHooks(), ","); got != "policy.custom" {
+		t.Fatalf("policy hooks not read: %q", got)
+	}
+	if got := strings.Join(ev.EvidenceHooks(), ","); got != "evidence.expand" {
+		t.Fatalf("evidence hooks not read: %q", got)
+	}
+	if got := strings.Join(ev.ChainHooks(), ","); got != "chain.reflect" {
+		t.Fatalf("chain hooks not read: %q", got)
+	}
+	if got := strings.Join(ev.CustomHooks(), ","); got != "access.custom,retrieval.custom,global.custom" {
+		t.Fatalf("custom hooks not merged: %q", got)
+	}
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal hooks event: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{`"materialization"`, `"hooks"`, `"mat.custom"`, `"retrieval.custom"`, `"chain.reflect"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("canonical JSON missing hook marker %s: %s", want, body)
+		}
+	}
+}

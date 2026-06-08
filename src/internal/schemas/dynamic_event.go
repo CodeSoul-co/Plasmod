@@ -65,37 +65,40 @@ type EventObject struct {
 }
 
 type EventCausality struct {
-	ParentEventID   string   `json:"parent_event_id,omitempty"`
-	CausalRefs      []string `json:"causal_refs,omitempty"`
-	ProvenanceRefs  []string `json:"provenance_refs,omitempty"`
-	CallEventID     string   `json:"call_event_id,omitempty"`
-	SourceObjectID  string   `json:"source_object_id,omitempty"`
-	TargetObjectID  string   `json:"target_object_id,omitempty"`
-	SourceObjectIDs []string `json:"source_object_ids,omitempty"`
-	TargetObjectIDs []string `json:"target_object_ids,omitempty"`
-	EdgeKind        string   `json:"edge_kind,omitempty"`
-	EdgeWeight      *float64 `json:"edge_weight,omitempty"`
-	Reason          string   `json:"reason,omitempty"`
+	ParentEventID   string     `json:"parent_event_id,omitempty"`
+	CausalRefs      []string   `json:"causal_refs,omitempty"`
+	ProvenanceRefs  []string   `json:"provenance_refs,omitempty"`
+	CallEventID     string     `json:"call_event_id,omitempty"`
+	SourceObjectID  string     `json:"source_object_id,omitempty"`
+	TargetObjectID  string     `json:"target_object_id,omitempty"`
+	SourceObjectIDs []string   `json:"source_object_ids,omitempty"`
+	TargetObjectIDs []string   `json:"target_object_ids,omitempty"`
+	EdgeKind        string     `json:"edge_kind,omitempty"`
+	EdgeWeight      *float64   `json:"edge_weight,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	Hooks           EventHooks `json:"hooks,omitempty"`
 }
 
 type EventAccess struct {
-	Consistency     string   `json:"consistency,omitempty"`
-	Visibility      string   `json:"visibility,omitempty"`
-	VisibleToAgents []string `json:"visible_to_agents,omitempty"`
-	VisibleToRoles  []string `json:"visible_to_roles,omitempty"`
-	TTLMS           *int64   `json:"ttl_ms,omitempty"`
-	FreshnessSLAMS  *int64   `json:"freshness_sla_ms,omitempty"`
-	PolicyTags      []string `json:"policy_tags,omitempty"`
-	ShareContractID string   `json:"share_contract_id,omitempty"`
+	Consistency     string     `json:"consistency,omitempty"`
+	Visibility      string     `json:"visibility,omitempty"`
+	VisibleToAgents []string   `json:"visible_to_agents,omitempty"`
+	VisibleToRoles  []string   `json:"visible_to_roles,omitempty"`
+	TTLMS           *int64     `json:"ttl_ms,omitempty"`
+	FreshnessSLAMS  *int64     `json:"freshness_sla_ms,omitempty"`
+	PolicyTags      []string   `json:"policy_tags,omitempty"`
+	ShareContractID string     `json:"share_contract_id,omitempty"`
+	Hooks           EventHooks `json:"hooks,omitempty"`
 }
 
 type EventMaterialization struct {
-	Enabled          *bool    `json:"enabled,omitempty"`
-	Targets          []string `json:"targets,omitempty"`
-	Mode             string   `json:"mode,omitempty"`
-	PlannedObjectIDs []string `json:"planned_object_ids,omitempty"`
-	Status           string   `json:"status,omitempty"`
-	MaterializedAtMS *int64   `json:"materialized_at_ms,omitempty"`
+	Enabled          *bool      `json:"enabled,omitempty"`
+	Targets          []string   `json:"targets,omitempty"`
+	Mode             string     `json:"mode,omitempty"`
+	PlannedObjectIDs []string   `json:"planned_object_ids,omitempty"`
+	Status           string     `json:"status,omitempty"`
+	MaterializedAtMS *int64     `json:"materialized_at_ms,omitempty"`
+	Hooks            EventHooks `json:"hooks,omitempty"`
 }
 
 type EventRetrieval struct {
@@ -107,6 +110,7 @@ type EventRetrieval struct {
 	IndexFields        []string           `json:"index_fields,omitempty"`
 	RetrievalNamespace string             `json:"retrieval_namespace,omitempty"`
 	SparseTerms        map[string]float64 `json:"sparse_terms,omitempty"`
+	Hooks              EventHooks         `json:"hooks,omitempty"`
 }
 
 type EventData struct {
@@ -140,6 +144,7 @@ type EventHooks struct {
 	Policy        []string `json:"policy,omitempty"`
 	Evidence      []string `json:"evidence,omitempty"`
 	Chains        []string `json:"chains,omitempty"`
+	Custom        []string `json:"custom,omitempty"`
 }
 
 type EventExtensions struct {
@@ -549,6 +554,40 @@ func (e Event) EdgeKind() string {
 	return e.payloadString(PayloadKeyRelationType)
 }
 
+func (e Event) MaterializerHooks() []string {
+	return mergeHookNames(e.Materialization.Hooks.Materializers, e.Extensions.Hooks.Materializers)
+}
+
+func (e Event) IndexerHooks() []string {
+	return mergeHookNames(e.Retrieval.Hooks.Indexers, e.Extensions.Hooks.Indexers)
+}
+
+func (e Event) QueryOpHooks() []string {
+	return mergeHookNames(e.Retrieval.Hooks.QueryOps, e.Extensions.Hooks.QueryOps)
+}
+
+func (e Event) PolicyHooks() []string {
+	return mergeHookNames(e.Access.Hooks.Policy, e.Extensions.Hooks.Policy)
+}
+
+func (e Event) EvidenceHooks() []string {
+	return mergeHookNames(e.Causality.Hooks.Evidence, e.Extensions.Hooks.Evidence)
+}
+
+func (e Event) ChainHooks() []string {
+	return mergeHookNames(e.Extensions.Hooks.Chains)
+}
+
+func (e Event) CustomHooks() []string {
+	return mergeHookNames(
+		e.Access.Hooks.Custom,
+		e.Materialization.Hooks.Custom,
+		e.Retrieval.Hooks.Custom,
+		e.Causality.Hooks.Custom,
+		e.Extensions.Hooks.Custom,
+	)
+}
+
 func (e Event) RetrievalNamespaceOrDefault() string {
 	e = e.NormalizeDynamicEventV04()
 	if e.Retrieval.RetrievalNamespace != "" {
@@ -561,6 +600,25 @@ func (e Event) RetrievalNamespaceOrDefault() string {
 		return e.Actor.SessionID
 	}
 	return "default"
+}
+
+func mergeHookNames(groups ...[]string) []string {
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, value := range group {
+			key := strings.TrimSpace(value)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, key)
+		}
+	}
+	return out
 }
 
 func (e Event) payloadString(key string) string {
