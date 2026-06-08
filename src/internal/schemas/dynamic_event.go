@@ -37,7 +37,7 @@ type EventActor struct {
 type EventTime struct {
 	EventTime   int64 `json:"event_time,omitempty"`
 	LogicalTS   int64 `json:"logical_ts,omitempty"`
-	WALLSN      int64 `json:"wal_lsn,omitempty"`
+	WalLSN      int64 `json:"wal_lsn,omitempty"`
 	IngestTime  int64 `json:"ingest_time,omitempty"`
 	VisibleTime int64 `json:"visible_time,omitempty"`
 }
@@ -148,9 +148,44 @@ type EventExtensions struct {
 	Hooks  EventHooks     `json:"hooks,omitempty"`
 }
 
+type eventWire struct {
+	SchemaVersion   string               `json:"schema_version"`
+	Identity        EventIdentity        `json:"identity"`
+	Actor           EventActor           `json:"actor"`
+	Time            EventTime            `json:"time"`
+	Event           EventDescriptor      `json:"event"`
+	Object          EventObject          `json:"object"`
+	Causality       EventCausality       `json:"causality"`
+	Access          EventAccess          `json:"access"`
+	Materialization EventMaterialization `json:"materialization"`
+	Retrieval       EventRetrieval       `json:"retrieval"`
+	Payload         map[string]any       `json:"payload"`
+	Data            EventData            `json:"data"`
+	Runtime         EventRuntime         `json:"runtime"`
+	Extensions      EventExtensions      `json:"extensions"`
+}
+
+type eventAlias Event
+
+func (e Event) MarshalJSON() ([]byte, error) {
+	normalized := e.NormalizeDynamicEventV04()
+	return json.Marshal(normalized.toWire())
+}
+
+func (e *Event) UnmarshalJSON(data []byte) error {
+	var legacy eventAlias
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	out := Event(legacy)
+	out = out.NormalizeDynamicEventV04()
+	*e = out
+	return nil
+}
+
 func (e Event) NormalizeDynamicEventV04() Event {
-	if e.SchemaVersion == "" && e.Identity.EventID == "" && e.EventInfo.EventType == "" {
-		return e
+	if e.SchemaVersion == "" && hasOnlyLegacyEventFields(e) {
+		e = e.promoteLegacyToDynamic()
 	}
 	if e.SchemaVersion == "" {
 		e.SchemaVersion = DynamicEventSchemaV04
@@ -208,6 +243,84 @@ func (e Event) NormalizeDynamicEventV04() Event {
 	e.copyObjectPayloadHints()
 	e.ensureDataAccounting()
 	return e
+}
+
+func (e Event) toWire() eventWire {
+	return eventWire{
+		SchemaVersion:   firstString(e.SchemaVersion, DynamicEventSchemaV04),
+		Identity:        e.Identity,
+		Actor:           e.Actor,
+		Time:            e.Time,
+		Event:           e.EventInfo,
+		Object:          e.Object,
+		Causality:       e.Causality,
+		Access:          e.Access,
+		Materialization: e.Materialization,
+		Retrieval:       e.Retrieval,
+		Payload:         e.Payload,
+		Data:            e.Data,
+		Runtime:         e.Runtime,
+		Extensions:      e.Extensions,
+	}
+}
+
+func (e Event) promoteLegacyToDynamic() Event {
+	e.SchemaVersion = DynamicEventSchemaV04
+	e.Identity.EventID = e.EventID
+	e.Identity.TenantID = e.TenantID
+	e.Identity.WorkspaceID = e.WorkspaceID
+	e.Identity.Source = e.Source
+	e.Actor.AgentID = e.AgentID
+	e.Actor.SessionID = e.SessionID
+	e.EventInfo.EventType = e.EventType
+	if e.Importance != 0 {
+		e.EventInfo.Importance = &e.Importance
+	}
+	e.Time.LogicalTS = e.LogicalTS
+	e.Time.EventTime = rfc3339ToMillis(e.EventTime)
+	e.Time.IngestTime = rfc3339ToMillis(e.IngestTime)
+	e.Time.VisibleTime = rfc3339ToMillis(e.VisibleTime)
+	e.Causality.ParentEventID = e.ParentEventID
+	e.Causality.CausalRefs = append([]string(nil), e.CausalRefs...)
+	e.Access.Visibility = e.Visibility
+	e.Retrieval.EmbeddingVector = append([]float32(nil), e.EmbeddingVector...)
+	return e
+}
+
+func hasOnlyLegacyEventFields(e Event) bool {
+	return e.Identity.EventID == "" &&
+		e.Actor.AgentID == "" &&
+		e.Time.LogicalTS == 0 &&
+		e.EventInfo.EventType == "" &&
+		e.Object.ObjectType == "" &&
+		e.Causality.ParentEventID == "" &&
+		len(e.Causality.CausalRefs) == 0 &&
+		e.Access.Visibility == "" &&
+		e.Retrieval.IndexText == "" &&
+		e.Data.PayloadSizeBytes == 0 &&
+		e.Runtime.TEventCreatedMS == 0 &&
+		len(e.Extensions.Labels) == 0 &&
+		len(e.Extensions.Custom) == 0
+}
+
+func firstString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func rfc3339ToMillis(value string) int64 {
+	if strings.TrimSpace(value) == "" {
+		return 0
+	}
+	ts, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return 0
+	}
+	return ts.UnixMilli()
 }
 
 func (e *Event) NormalizeInPlace() {

@@ -114,6 +114,11 @@ type State struct {
 	Version            int64  `json:"version"`
 }
 
+// AgentState is the v0.4 canonical name for runtime state objects. State is
+// kept as the storage-compatible legacy type name while object_type values use
+// "agent_state".
+type AgentState = State
+
 type Artifact struct {
 	ArtifactID        string         `json:"artifact_id"`
 	SessionID         string         `json:"session_id"`

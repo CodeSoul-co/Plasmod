@@ -250,7 +250,7 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_event",
 			SrcObjectID:   st.StateID,
-			SrcType:       string(schemas.ObjectTypeState),
+			SrcType:       string(schemas.ObjectTypeAgentState),
 			EdgeType:      string(schemas.EdgeTypeDerivedFrom),
 			DstObjectID:   ev.EventID,
 			DstType:       string(schemas.ObjectTypeEvent),
@@ -261,7 +261,7 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_memory",
 			SrcObjectID:   st.StateID,
-			SrcType:       string(schemas.ObjectTypeState),
+			SrcType:       string(schemas.ObjectTypeAgentState),
 			EdgeType:      string(schemas.EdgeTypeProjectedFrom),
 			DstObjectID:   memoryID,
 			DstType:       string(schemas.ObjectTypeMemory),
@@ -378,7 +378,7 @@ func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*sche
 	}
 	ver := &schemas.ObjectVersion{
 		ObjectID:        stateID,
-		ObjectType:      "state",
+		ObjectType:      string(schemas.ObjectTypeAgentState),
 		Version:         ev.LogicalTS,
 		MutationEventID: ev.EventID,
 		ValidFrom:       nowRFC3339,

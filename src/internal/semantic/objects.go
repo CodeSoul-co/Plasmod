@@ -39,9 +39,6 @@ func (r *ObjectModelRegistry) registerDefaults() {
 	r.types[schemas.ObjectTypeAgentState] = objectMeta{
 		Name: "agent_state", PKField: "state_id", Versionable: true, Indexable: false,
 	}
-	r.types[schemas.ObjectTypeState] = objectMeta{
-		Name: "state", PKField: "state_id", Versionable: true, Indexable: false,
-	}
 	r.types[schemas.ObjectTypeArtifact] = objectMeta{
 		Name: "artifact", PKField: "artifact_id", Versionable: true, Indexable: true,
 	}

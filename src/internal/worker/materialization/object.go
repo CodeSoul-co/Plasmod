@@ -64,7 +64,7 @@ func objectTypeFromEvent(ev schemas.Event) (objectType, objectID string) {
 	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
 		return string(schemas.ObjectTypeArtifact), schemas.IDPrefixArtifact + ev.EventID
 	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
-		return string(schemas.ObjectTypeState), schemas.IDPrefixState + ev.EventID
+		return string(schemas.ObjectTypeAgentState), schemas.IDPrefixState + ev.EventID
 	default:
 		return string(schemas.ObjectTypeMemory), schemas.IDPrefixMemory + ev.EventID
 	}

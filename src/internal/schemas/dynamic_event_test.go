@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +98,58 @@ func TestNormalizeObjectTypeName(t *testing.T) {
 	}
 	if got := NormalizeObjectTypeName("artifact"); got != "artifact" {
 		t.Fatalf("artifact should stay artifact, got %q", got)
+	}
+}
+
+func TestEventMarshalEmitsCanonicalV04Only(t *testing.T) {
+	ev := Event{
+		EventID:   "evt_legacy",
+		AgentID:   "agent_legacy",
+		SessionID: "session_legacy",
+		EventType: "observation",
+		Payload:   map[string]any{PayloadKeyText: "legacy text"},
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{`"schema_version"`, `"identity"`, `"actor"`, `"event"`, `"payload"`, `"data"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("canonical event JSON missing %s: %s", want, body)
+		}
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal marshaled event: %v", err)
+	}
+	if _, ok := doc["event_id"]; ok {
+		t.Fatalf("legacy event_id should not be emitted at top-level: %s", body)
+	}
+	if !strings.Contains(body, `"identity":{"event_id":"evt_legacy"`) {
+		t.Fatalf("event_id should be emitted inside identity: %s", body)
+	}
+}
+
+func TestEventUnmarshalAcceptsLegacyFlatJSON(t *testing.T) {
+	raw := []byte(`{
+		"event_id": "evt_flat",
+		"agent_id": "agent_flat",
+		"session_id": "session_flat",
+		"event_type": "observation",
+		"payload": {"text": "flat text"}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("unmarshal flat event: %v", err)
+	}
+	if ev.SchemaVersion != DynamicEventSchemaV04 {
+		t.Fatalf("legacy event should normalize to v0.4, got %q", ev.SchemaVersion)
+	}
+	if ev.Identity.EventID != "evt_flat" || ev.Actor.AgentID != "agent_flat" || ev.EventInfo.EventType != "observation" {
+		t.Fatalf("legacy fields not promoted: %+v", ev)
+	}
+	if ev.Text() != "flat text" {
+		t.Fatalf("text helper failed: %q", ev.Text())
 	}
 }

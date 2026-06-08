@@ -7,7 +7,7 @@ import (
 )
 
 // defaultQueryableObjectTypes is used when the client omits object_types or
-// sends an empty list: retrieval should consider memory, state, and artifact
+// sends an empty list: retrieval should consider memory, agent_state, and artifact
 // — never interpret "empty" as "match nothing".
 var defaultQueryableObjectTypes = []string{
 	string(schemas.ObjectTypeMemory),
@@ -25,9 +25,9 @@ var knownQueryableTypes = map[string]struct{}{
 
 // EffectiveObjectTypes returns the object-type filter to apply for a query.
 // If the request omits object_types or sends an empty slice, it returns the
-// full default set (memory, state, artifact). If the request lists only unknown
-// values after normalization, it falls back to the same default so the query
-// cannot accidentally return zero hits solely due to a bad filter.
+// full default set. If the request lists only unknown values after
+// normalization, it falls back to the same default so the query cannot
+// accidentally return zero hits solely due to a bad filter.
 func EffectiveObjectTypes(requested []string) []string {
 	if len(requested) == 0 {
 		return append([]string(nil), defaultQueryableObjectTypes...)

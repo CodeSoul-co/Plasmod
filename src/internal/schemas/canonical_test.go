@@ -58,7 +58,7 @@ func TestObjectTypeConstants(t *testing.T) {
 		{"session", ObjectTypeSession},
 		{"event", ObjectTypeEvent},
 		{"memory", ObjectTypeMemory},
-		{"state", ObjectTypeState},
+		{"agent_state", ObjectTypeAgentState},
 		{"artifact", ObjectTypeArtifact},
 		{"edge", ObjectTypeEdge},
 	}
@@ -94,12 +94,17 @@ func TestCanonicalSchemas_JSONTags(t *testing.T) {
 			},
 		},
 		{
-			name:  "Event",
-			value: Event{},
+			name: "Event",
+			value: Event{
+				EventID:   "evt_json",
+				AgentID:   "agent_json",
+				SessionID: "session_json",
+				EventType: "observation",
+				Payload:   map[string]any{"text": "hello"},
+			},
 			expected: []string{
-				`"event_id"`, `"tenant_id"`, `"workspace_id"`,
-				`"agent_id"`, `"session_id"`, `"event_type"`,
-				`"payload"`, `"logical_ts"`,
+				`"schema_version"`, `"identity"`, `"actor"`,
+				`"time"`, `"event"`, `"payload"`, `"data"`,
 			},
 		},
 		{
@@ -214,5 +219,3 @@ outer:
 	}
 	return -1
 }
-
-

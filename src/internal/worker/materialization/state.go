@@ -113,7 +113,7 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 		Version:            version,
 	})
 	if w.derivLog != nil {
-		w.derivLog.Append(ev.EventID, "event", stateID, "state", "state_apply")
+		w.derivLog.Append(ev.EventID, "event", stateID, string(schemas.ObjectTypeAgentState), "state_apply")
 	}
 	return nil
 }
@@ -124,7 +124,7 @@ func (w *InMemoryStateMaterializationWorker) Checkpoint(agentID, sessionID strin
 	for _, s := range states {
 		w.verStore.PutVersion(schemas.ObjectVersion{
 			ObjectID:    s.StateID,
-			ObjectType:  "state",
+			ObjectType:  string(schemas.ObjectTypeAgentState),
 			Version:     s.Version,
 			ValidFrom:   now,
 			SnapshotTag: fmt.Sprintf("checkpoint_%s", now),
