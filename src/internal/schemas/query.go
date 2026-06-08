@@ -39,8 +39,23 @@ type QueryRequest struct {
 	SourceFileName      string     `json:"source_file_name,omitempty"`
 	ImportBatchID       string     `json:"import_batch_id,omitempty"`
 	LatestBatchOnly     bool       `json:"latest_batch_only,omitempty"`
+	// Dynamic Event v0.4 query operator descriptors. These are core query
+	// filters/operators, not benchmark-only fields.
+	AccessConsistency       string   `json:"access_consistency,omitempty"`
+	AccessVisibility        string   `json:"access_visibility,omitempty"`
+	VisibleToAgents         []string `json:"visible_to_agents,omitempty"`
+	VisibleToRoles          []string `json:"visible_to_roles,omitempty"`
+	PolicyTags              []string `json:"policy_tags,omitempty"`
+	ShareContractID         string   `json:"share_contract_id,omitempty"`
+	MaterializationTargets  []string `json:"materialization_targets,omitempty"`
+	MaterializationStatus   string   `json:"materialization_status,omitempty"`
+	RetrievalNamespace      string   `json:"retrieval_namespace,omitempty"`
+	RuntimeWriteStatus      string   `json:"runtime_write_status,omitempty"`
+	RuntimeVisibilityStatus string   `json:"runtime_visibility_status,omitempty"`
+	ExtensionLabels         []string `json:"extension_labels,omitempty"`
+	QueryOps                []string `json:"query_ops,omitempty"`
 	// WarmSegmentID enables direct ANN query against a prebuilt warm segment.
-	WarmSegmentID       string     `json:"warm_segment_id,omitempty"`
+	WarmSegmentID string `json:"warm_segment_id,omitempty"`
 	// IncludeCold extends retrieval to the cold/archived tier (S3 or in-memory cold store).
 	IncludeCold bool `json:"include_cold,omitempty"`
 	// EmbeddingVector is a precomputed search vector. When non-nil, the

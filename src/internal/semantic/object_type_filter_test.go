@@ -22,6 +22,17 @@ func TestEffectiveObjectTypes_explicitSubset(t *testing.T) {
 	}
 }
 
+func TestEffectiveObjectTypes_stateAliasNormalizesToAgentState(t *testing.T) {
+	got := EffectiveObjectTypes([]string{"state"})
+	if len(got) != 1 || got[0] != "agent_state" {
+		t.Fatalf("want [agent_state], got %v", got)
+	}
+	out := FilterObjectIDsByTypes([]string{"state_1", "mem_1"}, got)
+	if len(out) != 1 || out[0] != "state_1" {
+		t.Fatalf("state_ IDs should match agent_state filter, got %v", out)
+	}
+}
+
 func TestEffectiveObjectTypes_unknownOnlyFallsBackToAll(t *testing.T) {
 	got := EffectiveObjectTypes([]string{"unknown", "also_bad"})
 	if len(got) != 3 {

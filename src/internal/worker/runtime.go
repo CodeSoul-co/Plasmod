@@ -290,6 +290,7 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
+	ev = ev.NormalizeDynamicEventV04()
 	t0Ingest := time.Now()
 	if strings.TrimSpace(ev.EventID) == "" {
 		return nil, errors.New("event_id is required")
@@ -857,7 +858,7 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 				}
 			}
 
-		case "state":
+		case "state", "agent_state":
 			if r.storage != nil {
 				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {
 					ids = append(ids, s.StateID)

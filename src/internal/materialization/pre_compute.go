@@ -18,7 +18,7 @@ import (
 // Use NewPreComputeService (defaults) or NewPreComputeServiceWithConfig (custom).
 type PreComputeService struct {
 	cache *evidence.Cache
-	cfg    schemas.AlgorithmConfig
+	cfg   schemas.AlgorithmConfig
 }
 
 var defaultPreComputeCfg = schemas.DefaultAlgorithmConfig()
@@ -45,6 +45,7 @@ func NewPreComputeServiceWithConfig(cache *evidence.Cache, cfg schemas.Algorithm
 // It is called immediately after materialization so the fragment is available for
 // the first query that touches this object.
 func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord) evidence.EvidenceFragment {
+	ev = ev.NormalizeDynamicEventV04()
 	tokens := tokenize(rec.Text)
 	related := collectRelated(ev)
 	filters := deriveFilters(ev)

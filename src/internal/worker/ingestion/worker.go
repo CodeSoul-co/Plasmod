@@ -42,6 +42,7 @@ func (w *InMemoryIngestWorker) Run(input schemas.WorkerInput) (schemas.WorkerOut
 }
 
 func (w *InMemoryIngestWorker) Process(ev schemas.Event) error {
+	ev = ev.NormalizeDynamicEventV04()
 	if strings.TrimSpace(ev.EventID) == "" {
 		return fmt.Errorf("ingest: event_id is required")
 	}

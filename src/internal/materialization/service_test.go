@@ -74,6 +74,94 @@ func TestService_MaterializeEvent_PayloadDatasetAndFileName(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEvent_DynamicEventV04(t *testing.T) {
+	svc := NewService()
+	confidence := 0.91
+	ttl := int64(60_000)
+	ev := schemas.Event{
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity: schemas.EventIdentity{
+			EventID:       "evt_v04",
+			TenantID:      "tenant_1",
+			WorkspaceID:   "workspace_1",
+			Source:        "synthetic_stream",
+			Dataset:       "dataset_1",
+			ImportBatchID: "batch_1",
+			FileName:      "trace.jsonl",
+		},
+		Actor: schemas.EventActor{
+			AgentID:   "agent_1",
+			SessionID: "session_1",
+		},
+		Time: schemas.EventTime{LogicalTS: 99},
+		EventInfo: schemas.EventDescriptor{
+			EventType:  string(schemas.EventTypeToolResult),
+			Confidence: &confidence,
+		},
+		Object: schemas.EventObject{
+			ObjectType:   string(schemas.ObjectTypeArtifact),
+			ArtifactName: "result.json",
+		},
+		Causality: schemas.EventCausality{
+			SourceObjectID: "mem_source",
+			TargetObjectID: "mem_target",
+			EdgeKind:       string(schemas.EdgeTypeSupports),
+			Reason:         "tool evidence",
+		},
+		Access: schemas.EventAccess{
+			Consistency: "bounded",
+			Visibility:  "workspace",
+			TTLMS:       &ttl,
+			PolicyTags:  []string{"synthetic"},
+		},
+		Retrieval: schemas.EventRetrieval{
+			IndexText:          "tool result text",
+			EmbeddingRef:       "embedding://evt_v04",
+			RetrievalNamespace: "workspace_1/session_1",
+		},
+		Payload: map[string]any{
+			"artifact": map[string]any{
+				"uri":       "s3://bucket/result.json",
+				"mime_type": "application/json",
+			},
+		},
+	}
+	res := svc.MaterializeEvent(ev)
+	if res.Record.ObjectID != "mem_evt_v04" || res.Record.Text != "tool result text" {
+		t.Fatalf("unexpected record: %+v", res.Record)
+	}
+	if res.Record.Namespace != "workspace_1/session_1" {
+		t.Fatalf("namespace should use retrieval namespace, got %q", res.Record.Namespace)
+	}
+	if res.Memory.DatasetName != "dataset_1" || res.Memory.ImportBatchID != "batch_1" || res.Memory.SourceFileName != "trace.jsonl" {
+		t.Fatalf("identity fields not copied to memory: %+v", res.Memory)
+	}
+	if res.Memory.Confidence != confidence {
+		t.Fatalf("confidence: got %f want %f", res.Memory.Confidence, confidence)
+	}
+	if len(res.Memory.PolicyTags) != 1 || res.Memory.PolicyTags[0] != "synthetic" {
+		t.Fatalf("policy tags not copied: %+v", res.Memory.PolicyTags)
+	}
+	if res.Memory.EmbeddingRef != "embedding://evt_v04" {
+		t.Fatalf("embedding ref not copied: %q", res.Memory.EmbeddingRef)
+	}
+	if res.Artifact == nil || res.Artifact.URI != "s3://bucket/result.json" || res.Artifact.MimeType != "application/json" {
+		t.Fatalf("artifact not derived from v0.4 payload: %+v", res.Artifact)
+	}
+	if res.Record.Attributes["payload_size_bytes"] == "" || res.Record.Attributes["payload_hash"] == "" {
+		t.Fatalf("data accounting attributes missing: %+v", res.Record.Attributes)
+	}
+	foundExplicitEdge := false
+	for _, edge := range res.Edges {
+		if edge.SrcObjectID == "mem_source" && edge.DstObjectID == "mem_target" && edge.EdgeType == string(schemas.EdgeTypeSupports) {
+			foundExplicitEdge = true
+		}
+	}
+	if !foundExplicitEdge {
+		t.Fatalf("explicit causality edge not materialized: %+v", res.Edges)
+	}
+}
+
 func TestService_MaterializeEvent_EdgeDerivation(t *testing.T) {
 	svc := NewService()
 	ev := schemas.Event{

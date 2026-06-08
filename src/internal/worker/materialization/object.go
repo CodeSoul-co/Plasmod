@@ -56,6 +56,10 @@ func (w *InMemoryObjectMaterializationWorker) Run(input schemas.WorkerInput) (sc
 // objectTypeFromEvent mirrors the routing logic in Materialize to compute
 // the canonical object type and deterministic ID for a given event.
 func objectTypeFromEvent(ev schemas.Event) (objectType, objectID string) {
+	ev = ev.NormalizeDynamicEventV04()
+	if ev.Object.ObjectType != "" && ev.Object.ObjectID != "" {
+		return schemas.NormalizeObjectTypeName(ev.Object.ObjectType), ev.Object.ObjectID
+	}
 	switch ev.EventType {
 	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
 		return string(schemas.ObjectTypeArtifact), schemas.IDPrefixArtifact + ev.EventID
@@ -88,6 +92,7 @@ func (w *InMemoryObjectMaterializationWorker) Info() nodes.NodeInfo {
 //     State creates duplicate State objects with different field values for the same
 //     event, so State is excluded from this worker.
 func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) error {
+	ev = ev.NormalizeDynamicEventV04()
 	now := time.Now().UTC().Format(time.RFC3339)
 	switch ev.EventType {
 	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
@@ -100,10 +105,10 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			Version:           ev.Version,
 		}
 		if ev.Payload != nil {
-			if uri, ok := ev.Payload[schemas.PayloadKeyURI].(string); ok {
+			if uri := ev.ArtifactURI(); uri != "" {
 				artifact.URI = uri
 			}
-			if mime, ok := ev.Payload[schemas.PayloadKeyMimeType].(string); ok {
+			if mime := ev.ArtifactMimeType(); mime != "" {
 				artifact.MimeType = mime
 			}
 		}

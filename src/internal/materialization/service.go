@@ -21,14 +21,14 @@ import (
 // The Runtime writes Memory + Version + Edges to their respective stores so
 // the canonical object layer stays consistent with what the retrieval plane sees.
 type MaterializationResult struct {
-	Record           dataplane.IngestRecord
-	Memory           schemas.Memory
-	Version          schemas.ObjectVersion
-	Edges            []schemas.Edge
-	State            *schemas.State
-	StateVersion     *schemas.ObjectVersion
-	Artifact         *schemas.Artifact
-	ArtifactVersion  *schemas.ObjectVersion
+	Record          dataplane.IngestRecord
+	Memory          schemas.Memory
+	Version         schemas.ObjectVersion
+	Edges           []schemas.Edge
+	State           *schemas.State
+	StateVersion    *schemas.ObjectVersion
+	Artifact        *schemas.Artifact
+	ArtifactVersion *schemas.ObjectVersion
 }
 
 // Service converts events into canonical object mutations and retrieval-ready
@@ -44,6 +44,7 @@ func NewService() *Service {
 // MaterializationResult so the Runtime can persist the canonical objects in the
 // same transaction as the retrieval ingest.
 func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
+	ev = ev.NormalizeDynamicEventV04()
 	text := extractText(ev)
 	namespace := resolveNamespace(ev)
 	memoryID := schemas.IDPrefixMemory + ev.EventID
@@ -68,7 +69,7 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		Content:        text,
 		Summary:        text,
 		SourceEventIDs: []string{ev.EventID},
-		Confidence:     1.0,
+		Confidence:     resolveConfidence(ev),
 		Importance:     ev.Importance,
 		FreshnessScore: 1.0,
 		ValidFrom:      now,
@@ -92,6 +93,15 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 				mem.ImportBatchID = strings.TrimSpace(s)
 			}
 		}
+	}
+	if len(ev.Access.PolicyTags) > 0 {
+		mem.PolicyTags = append([]string(nil), ev.Access.PolicyTags...)
+	}
+	if ev.Object.LifecycleState != "" {
+		mem.LifecycleState = ev.Object.LifecycleState
+	}
+	if ev.Retrieval.EmbeddingRef != "" {
+		mem.EmbeddingRef = ev.Retrieval.EmbeddingRef
 	}
 
 	version := schemas.ObjectVersion{
@@ -126,19 +136,18 @@ func (s *Service) ProjectEvent(ev schemas.Event) dataplane.IngestRecord {
 }
 
 func extractText(ev schemas.Event) string {
-	if msg, ok := ev.Payload[schemas.PayloadKeyText]; ok {
-		if value, ok := msg.(string); ok {
-			return value
-		}
+	return ev.Text()
+}
+
+func resolveConfidence(ev schemas.Event) float64 {
+	if ev.EventInfo.Confidence != nil {
+		return *ev.EventInfo.Confidence
 	}
-	return ""
+	return 1.0
 }
 
 func resolveNamespace(ev schemas.Event) string {
-	if ev.WorkspaceID != "" {
-		return ev.WorkspaceID
-	}
-	return "default"
+	return ev.RetrievalNamespaceOrDefault()
 }
 
 func resolveMemoryType(ev schemas.Event) string {
@@ -216,6 +225,27 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 			CreatedTS:     now,
 		})
 	}
+	if ev.Causality.SourceObjectID != "" && ev.Causality.TargetObjectID != "" && ev.EdgeKind() != "" {
+		weight := schemas.DefaultEdgeWeight
+		if ev.Causality.EdgeWeight != nil {
+			weight = *ev.Causality.EdgeWeight
+		}
+		edges = append(edges, schemas.Edge{
+			EdgeID:        fmt.Sprintf("%s%s_%s_%s", schemas.IDPrefixEdge, ev.Causality.SourceObjectID, ev.EdgeKind(), ev.Causality.TargetObjectID),
+			SrcObjectID:   ev.Causality.SourceObjectID,
+			SrcType:       string(schemas.ObjectTypeMemory),
+			EdgeType:      ev.EdgeKind(),
+			DstObjectID:   ev.Causality.TargetObjectID,
+			DstType:       string(schemas.ObjectTypeMemory),
+			Weight:        weight,
+			ProvenanceRef: ev.EventID,
+			CreatedTS:     now,
+			Properties: map[string]any{
+				"reason":          ev.Causality.Reason,
+				"provenance_refs": ev.Causality.ProvenanceRefs,
+			},
+		})
+	}
 	if st != nil {
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_event",
@@ -268,18 +298,42 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 }
 
 func buildAttributes(ev schemas.Event) map[string]string {
-	return map[string]string{
-		"tenant_id":    ev.TenantID,
-		"workspace_id": ev.WorkspaceID,
-		"agent_id":     ev.AgentID,
-		"session_id":   ev.SessionID,
-		"event_type":   ev.EventType,
+	attrs := map[string]string{
+		"tenant_id":     ev.TenantID,
+		"workspace_id":  ev.WorkspaceID,
+		"agent_id":      ev.AgentID,
+		"session_id":    ev.SessionID,
+		"event_type":    ev.EventType,
+		"event_subtype": ev.EventInfo.EventSubtype,
+		"action":        ev.EventInfo.Action,
 		// Retrieval path constrains by object/memory type for /v1/internal/memory/recall.
 		// Persist these attributes at ingest time so type filtering can match.
-		"object_type":  string(schemas.ObjectTypeMemory),
-		"memory_type":  resolveMemoryType(ev),
-		"visibility":   ev.Visibility,
+		"object_type":               string(schemas.ObjectTypeMemory),
+		"memory_type":               resolveMemoryType(ev),
+		"visibility":                ev.Visibility,
+		"access_consistency":        ev.Access.Consistency,
+		"access_visibility":         ev.Access.Visibility,
+		"retrieval_namespace":       ev.Retrieval.RetrievalNamespace,
+		"materialization_status":    ev.Materialization.Status,
+		"runtime_write_status":      ev.Runtime.WriteStatus,
+		"runtime_visibility_status": ev.Runtime.VisibilityStatus,
 	}
+	if ev.Identity.Dataset != "" {
+		attrs["dataset"] = ev.Identity.Dataset
+	}
+	if ev.Identity.ImportBatchID != "" {
+		attrs["import_batch_id"] = ev.Identity.ImportBatchID
+	}
+	if ev.Identity.FileName != "" {
+		attrs["file_name"] = ev.Identity.FileName
+	}
+	if ev.Data.PayloadSizeBytes > 0 {
+		attrs["payload_size_bytes"] = fmt.Sprintf("%d", ev.Data.PayloadSizeBytes)
+	}
+	if ev.Data.PayloadHash != "" {
+		attrs["payload_hash"] = ev.Data.PayloadHash
+	}
+	return attrs
 }
 
 func parseEventUnixTS(ev schemas.Event) int64 {
@@ -337,30 +391,12 @@ func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*sche
 // external URI (week-2 minimal hook). Optional keys: "artifact_uri", nested
 // "artifact" map with "uri", or event_type artifact_attached / tool_result_returned with uri.
 func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Artifact, *schemas.ObjectVersion) {
-	uri := ""
-	if v, ok := ev.Payload["artifact_uri"].(string); ok && v != "" {
-		uri = v
-	}
-	if uri == "" {
-		if m, ok := ev.Payload["artifact"].(map[string]any); ok {
-			if u, ok := m["uri"].(string); ok {
-				uri = u
-			}
-		}
-	}
-	if uri == "" {
-		if u, ok := ev.Payload["uri"].(string); ok && ev.EventType == "artifact_attached" {
-			uri = u
-		}
-	}
+	uri := ev.ArtifactURI()
 	if uri == "" {
 		return nil, nil
 	}
 	artID := fmt.Sprintf("art_%s", ev.EventID)
-	mime := ""
-	if m, ok := ev.Payload["mime_type"].(string); ok {
-		mime = m
-	}
+	mime := ev.ArtifactMimeType()
 	art := &schemas.Artifact{
 		ArtifactID:        artID,
 		SessionID:         ev.SessionID,
@@ -371,7 +407,7 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		ProducedByEventID: ev.EventID,
 		Version:           ev.LogicalTS,
 	}
-	if name, ok := ev.Payload["artifact_name"].(string); ok && name != "" {
+	if name := ev.ArtifactName(); name != "" {
 		if art.Metadata == nil {
 			art.Metadata = map[string]any{}
 		}

@@ -28,27 +28,40 @@ type Session struct {
 }
 
 type Event struct {
-	EventID       string         `json:"event_id"`
-	TenantID      string         `json:"tenant_id"`
-	WorkspaceID   string         `json:"workspace_id"`
-	AgentID       string         `json:"agent_id"`
-	SessionID     string         `json:"session_id"`
-	EventType     string         `json:"event_type"`
-	EventTime     string         `json:"event_time"`
-	IngestTime    string         `json:"ingest_time"`
-	VisibleTime   string         `json:"visible_time"`
-	LogicalTS     int64          `json:"logical_ts"`
-	ParentEventID string         `json:"parent_event_id"`
-	CausalRefs    []string       `json:"causal_refs"`
-	Payload       map[string]any `json:"payload"`
+	SchemaVersion   string               `json:"schema_version,omitempty"`
+	Identity        EventIdentity        `json:"identity,omitempty"`
+	Actor           EventActor           `json:"actor,omitempty"`
+	Time            EventTime            `json:"time,omitempty"`
+	EventInfo       EventDescriptor      `json:"event,omitempty"`
+	Object          EventObject          `json:"object,omitempty"`
+	Causality       EventCausality       `json:"causality,omitempty"`
+	Access          EventAccess          `json:"access,omitempty"`
+	Materialization EventMaterialization `json:"materialization,omitempty"`
+	Retrieval       EventRetrieval       `json:"retrieval,omitempty"`
+	EventID         string               `json:"event_id"`
+	TenantID        string               `json:"tenant_id"`
+	WorkspaceID     string               `json:"workspace_id"`
+	AgentID         string               `json:"agent_id"`
+	SessionID       string               `json:"session_id"`
+	EventType       string               `json:"event_type"`
+	EventTime       string               `json:"event_time"`
+	IngestTime      string               `json:"ingest_time"`
+	VisibleTime     string               `json:"visible_time"`
+	LogicalTS       int64                `json:"logical_ts"`
+	ParentEventID   string               `json:"parent_event_id"`
+	CausalRefs      []string             `json:"causal_refs"`
+	Payload         map[string]any       `json:"payload"`
 	// EmbeddingVector bypasses Payload["embedding"] dimension validation.
 	// When set, the materializer uses it directly instead of calling the ONNX embedder.
 	// JSON tag "embedding_vector" lets callers pass precomputed embeddings of any dim.
-	EmbeddingVector []float32      `json:"embedding_vector"`
-	Source        string         `json:"source"`
-	Importance    float64        `json:"importance"`
-	Visibility    string         `json:"visibility"`
-	Version       int64          `json:"version"`
+	EmbeddingVector []float32       `json:"embedding_vector"`
+	Source          string          `json:"source"`
+	Importance      float64         `json:"importance"`
+	Visibility      string          `json:"visibility"`
+	Version         int64           `json:"version"`
+	Data            EventData       `json:"data,omitempty"`
+	Runtime         EventRuntime    `json:"runtime,omitempty"`
+	Extensions      EventExtensions `json:"extensions,omitempty"`
 }
 
 type Memory struct {

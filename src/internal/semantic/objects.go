@@ -36,6 +36,9 @@ func (r *ObjectModelRegistry) registerDefaults() {
 	r.types[schemas.ObjectTypeMemory] = objectMeta{
 		Name: "memory", PKField: "memory_id", Versionable: true, Indexable: true,
 	}
+	r.types[schemas.ObjectTypeAgentState] = objectMeta{
+		Name: "agent_state", PKField: "state_id", Versionable: true, Indexable: false,
+	}
 	r.types[schemas.ObjectTypeState] = objectMeta{
 		Name: "state", PKField: "state_id", Versionable: true, Indexable: false,
 	}

@@ -58,6 +58,7 @@ func (w *InMemoryToolTraceWorker) Info() nodes.NodeInfo {
 }
 
 func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
+	ev = ev.NormalizeDynamicEventV04()
 	if ev.EventType != string(schemas.EventTypeToolCall) && ev.EventType != string(schemas.EventTypeToolResult) {
 		return nil
 	}
@@ -69,6 +70,8 @@ func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
 	}
 	meta[schemas.EventIDKey] = ev.EventID
 	meta[schemas.AgentIDKey] = ev.AgentID
+	meta["schema_version"] = ev.SchemaVersion
+	meta["tool_call_event_id"] = ev.Causality.CallEventID
 
 	artifactID := fmt.Sprintf("%s%s", schemas.IDPrefixToolTrace, ev.EventID)
 	w.objStore.PutArtifact(schemas.Artifact{

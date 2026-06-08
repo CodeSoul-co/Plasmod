@@ -41,11 +41,12 @@ func CreateInMemoryStateMaterializationWorker(
 func (w *InMemoryStateMaterializationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
 	switch in := input.(type) {
 	case schemas.StateApplyInput:
+		in.Event = in.Event.NormalizeDynamicEventV04()
 		err := w.Apply(in.Event)
 		if err != nil {
 			return schemas.StateApplyOutput{}, err
 		}
-		stateKey, _ := in.Event.Payload[schemas.PayloadKeyStateKey].(string)
+		stateKey := in.Event.StateKey()
 		stateID := schemas.IDPrefixState + in.Event.AgentID + "_" + stateKey
 		var ver int64
 		if s, ok := w.objStore.GetState(stateID); ok {
@@ -76,11 +77,12 @@ func (w *InMemoryStateMaterializationWorker) Info() nodes.NodeInfo {
 }
 
 func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
+	ev = ev.NormalizeDynamicEventV04()
 	if ev.Payload == nil {
 		return nil
 	}
-	stateKey, _ := ev.Payload[schemas.PayloadKeyStateKey].(string)
-	stateVal, _ := ev.Payload[schemas.PayloadKeyStateValue].(string)
+	stateKey := ev.StateKey()
+	stateVal := ev.StateValueString()
 	if stateKey == "" {
 		return nil
 	}
