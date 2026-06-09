@@ -83,7 +83,7 @@ ENV GOSUMDB=${GOSUMDB}
 COPY . .
 
 # C++ warm-segment ANN (POST /v1/ingest/vectors, HNSW). Required for Milvus-style vector ingest.
-RUN cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release \
+RUN cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DANDB_KNOWHERE_FAISS=ON \
     && cmake --build cpp/build --parallel "$(nproc)" \
     && mkdir -p /src/out/lib \
     && cp cpp/build/libplasmod_retrieval.so /src/out/lib/ \
