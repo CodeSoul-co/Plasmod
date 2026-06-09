@@ -21,14 +21,14 @@ import (
 // The Runtime writes Memory + Version + Edges to their respective stores so
 // the canonical object layer stays consistent with what the retrieval plane sees.
 type MaterializationResult struct {
-	Record           dataplane.IngestRecord
-	Memory           schemas.Memory
-	Version          schemas.ObjectVersion
-	Edges            []schemas.Edge
-	State            *schemas.State
-	StateVersion     *schemas.ObjectVersion
-	Artifact         *schemas.Artifact
-	ArtifactVersion  *schemas.ObjectVersion
+	Record          dataplane.IngestRecord
+	Memory          schemas.Memory
+	Version         schemas.ObjectVersion
+	Edges           []schemas.Edge
+	State           *schemas.State
+	StateVersion    *schemas.ObjectVersion
+	Artifact        *schemas.Artifact
+	ArtifactVersion *schemas.ObjectVersion
 }
 
 // Service converts events into canonical object mutations and retrieval-ready
@@ -44,9 +44,10 @@ func NewService() *Service {
 // MaterializationResult so the Runtime can persist the canonical objects in the
 // same transaction as the retrieval ingest.
 func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
+	ev = ev.NormalizeDynamicEventV04()
 	text := extractText(ev)
 	namespace := resolveNamespace(ev)
-	memoryID := schemas.IDPrefixMemory + ev.EventID
+	memoryID := schemas.IDPrefixMemory + ev.Identity.EventID
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	record := dataplane.IngestRecord{
@@ -55,25 +56,25 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		Namespace:   namespace,
 		Attributes:  buildAttributes(ev),
 		EventUnixTS: parseEventUnixTS(ev),
-		Embedding:   ev.EmbeddingVector,
+		Embedding:   ev.Retrieval.EmbeddingVector,
 	}
 
 	mem := schemas.Memory{
 		MemoryID:       memoryID,
 		MemoryType:     resolveMemoryType(ev),
-		AgentID:        ev.AgentID,
-		SessionID:      ev.SessionID,
+		AgentID:        ev.Actor.AgentID,
+		SessionID:      ev.Actor.SessionID,
 		Scope:          namespace,
 		Level:          0,
 		Content:        text,
 		Summary:        text,
-		SourceEventIDs: []string{ev.EventID},
-		Confidence:     1.0,
-		Importance:     ev.Importance,
+		SourceEventIDs: []string{ev.Identity.EventID},
+		Confidence:     resolveConfidence(ev),
+		Importance:     resolveImportance(ev),
 		FreshnessScore: 1.0,
 		ValidFrom:      now,
-		ProvenanceRef:  ev.EventID,
-		Version:        ev.LogicalTS,
+		ProvenanceRef:  ev.Identity.EventID,
+		Version:        ev.Time.LogicalTS,
 		IsActive:       true,
 	}
 	if ev.Payload != nil {
@@ -93,14 +94,23 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 			}
 		}
 	}
+	if len(ev.Access.PolicyTags) > 0 {
+		mem.PolicyTags = append([]string(nil), ev.Access.PolicyTags...)
+	}
+	if ev.Object.LifecycleState != "" {
+		mem.LifecycleState = ev.Object.LifecycleState
+	}
+	if ev.Retrieval.EmbeddingRef != "" {
+		mem.EmbeddingRef = ev.Retrieval.EmbeddingRef
+	}
 
 	version := schemas.ObjectVersion{
 		ObjectID:        memoryID,
 		ObjectType:      string(schemas.ObjectTypeMemory),
-		Version:         ev.LogicalTS,
-		MutationEventID: ev.EventID,
+		Version:         ev.Time.LogicalTS,
+		MutationEventID: ev.Identity.EventID,
 		ValidFrom:       now,
-		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventType),
+		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
 	}
 
 	st, stVer := deriveStateAndVersion(ev, memoryID, now)
@@ -126,23 +136,29 @@ func (s *Service) ProjectEvent(ev schemas.Event) dataplane.IngestRecord {
 }
 
 func extractText(ev schemas.Event) string {
-	if msg, ok := ev.Payload[schemas.PayloadKeyText]; ok {
-		if value, ok := msg.(string); ok {
-			return value
-		}
+	return ev.Text()
+}
+
+func resolveConfidence(ev schemas.Event) float64 {
+	if ev.EventInfo.Confidence != nil {
+		return *ev.EventInfo.Confidence
 	}
-	return ""
+	return 1.0
+}
+
+func resolveImportance(ev schemas.Event) float64 {
+	if ev.EventInfo.Importance != nil {
+		return *ev.EventInfo.Importance
+	}
+	return 0
 }
 
 func resolveNamespace(ev schemas.Event) string {
-	if ev.WorkspaceID != "" {
-		return ev.WorkspaceID
-	}
-	return "default"
+	return ev.RetrievalNamespaceOrDefault()
 }
 
 func resolveMemoryType(ev schemas.Event) string {
-	switch ev.EventType {
+	switch ev.EventInfo.EventType {
 	case string(schemas.EventTypeUserMessage), string(schemas.EventTypeAssistantMessage):
 		return string(schemas.MemoryTypeEpisodic)
 	case string(schemas.EventTypeCritiqueGenerated), string(schemas.EventTypeReflection):
@@ -170,40 +186,40 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 		SrcObjectID:   memoryID,
 		SrcType:       string(schemas.ObjectTypeMemory),
 		EdgeType:      string(schemas.EdgeTypeCausedBy),
-		DstObjectID:   ev.EventID,
+		DstObjectID:   ev.Identity.EventID,
 		DstType:       string(schemas.ObjectTypeEvent),
 		Weight:        schemas.DefaultEdgeWeight,
-		ProvenanceRef: ev.EventID,
+		ProvenanceRef: ev.Identity.EventID,
 		CreatedTS:     now,
 	})
 
-	if ev.SessionID != "" {
+	if ev.Actor.SessionID != "" {
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + memoryID + "_session",
 			SrcObjectID:   memoryID,
 			SrcType:       string(schemas.ObjectTypeMemory),
 			EdgeType:      string(schemas.EdgeTypeBelongsToSession),
-			DstObjectID:   ev.SessionID,
+			DstObjectID:   ev.Actor.SessionID,
 			DstType:       string(schemas.ObjectTypeSession),
 			Weight:        schemas.DefaultEdgeWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
 		})
 	}
-	if ev.AgentID != "" {
+	if ev.Actor.AgentID != "" {
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + memoryID + "_agent",
 			SrcObjectID:   memoryID,
 			SrcType:       string(schemas.ObjectTypeMemory),
 			EdgeType:      string(schemas.EdgeTypeOwnedByAgent),
-			DstObjectID:   ev.AgentID,
+			DstObjectID:   ev.Actor.AgentID,
 			DstType:       string(schemas.ObjectTypeAgent),
 			Weight:        schemas.DefaultEdgeWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
 		})
 	}
-	for i, ref := range ev.CausalRefs {
+	for i, ref := range ev.Causality.CausalRefs {
 		edges = append(edges, schemas.Edge{
 			EdgeID:        fmt.Sprintf("%s%s_causal_%d", schemas.IDPrefixEdge, memoryID, i),
 			SrcObjectID:   memoryID,
@@ -212,31 +228,52 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 			DstObjectID:   ref,
 			DstType:       string(schemas.ObjectTypeEvent),
 			Weight:        schemas.DefaultCausalWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
+		})
+	}
+	if ev.Causality.SourceObjectID != "" && ev.Causality.TargetObjectID != "" && ev.EdgeKind() != "" {
+		weight := schemas.DefaultEdgeWeight
+		if ev.Causality.EdgeWeight != nil {
+			weight = *ev.Causality.EdgeWeight
+		}
+		edges = append(edges, schemas.Edge{
+			EdgeID:        fmt.Sprintf("%s%s_%s_%s", schemas.IDPrefixEdge, ev.Causality.SourceObjectID, ev.EdgeKind(), ev.Causality.TargetObjectID),
+			SrcObjectID:   ev.Causality.SourceObjectID,
+			SrcType:       string(schemas.ObjectTypeMemory),
+			EdgeType:      ev.EdgeKind(),
+			DstObjectID:   ev.Causality.TargetObjectID,
+			DstType:       string(schemas.ObjectTypeMemory),
+			Weight:        weight,
+			ProvenanceRef: ev.Identity.EventID,
+			CreatedTS:     now,
+			Properties: map[string]any{
+				"reason":          ev.Causality.Reason,
+				"provenance_refs": ev.Causality.ProvenanceRefs,
+			},
 		})
 	}
 	if st != nil {
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_event",
 			SrcObjectID:   st.StateID,
-			SrcType:       string(schemas.ObjectTypeState),
+			SrcType:       string(schemas.ObjectTypeAgentState),
 			EdgeType:      string(schemas.EdgeTypeDerivedFrom),
-			DstObjectID:   ev.EventID,
+			DstObjectID:   ev.Identity.EventID,
 			DstType:       string(schemas.ObjectTypeEvent),
 			Weight:        schemas.DefaultEdgeWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
 		})
 		edges = append(edges, schemas.Edge{
 			EdgeID:        schemas.IDPrefixEdge + st.StateID + "_memory",
 			SrcObjectID:   st.StateID,
-			SrcType:       string(schemas.ObjectTypeState),
+			SrcType:       string(schemas.ObjectTypeAgentState),
 			EdgeType:      string(schemas.EdgeTypeProjectedFrom),
 			DstObjectID:   memoryID,
 			DstType:       string(schemas.ObjectTypeMemory),
 			Weight:        schemas.DefaultEdgeWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
 		})
 	}
@@ -246,10 +283,10 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 			SrcObjectID:   art.ArtifactID,
 			SrcType:       string(schemas.ObjectTypeArtifact),
 			EdgeType:      string(schemas.EdgeTypeCreatedBy),
-			DstObjectID:   ev.EventID,
+			DstObjectID:   ev.Identity.EventID,
 			DstType:       string(schemas.ObjectTypeEvent),
 			Weight:        schemas.DefaultEdgeWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
 		})
 		edges = append(edges, schemas.Edge{
@@ -260,7 +297,7 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 			DstObjectID:   art.ArtifactID,
 			DstType:       string(schemas.ObjectTypeArtifact),
 			Weight:        schemas.DefaultEdgeWeight,
-			ProvenanceRef: ev.EventID,
+			ProvenanceRef: ev.Identity.EventID,
 			CreatedTS:     now,
 		})
 	}
@@ -268,67 +305,94 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 }
 
 func buildAttributes(ev schemas.Event) map[string]string {
-	return map[string]string{
-		"tenant_id":    ev.TenantID,
-		"workspace_id": ev.WorkspaceID,
-		"agent_id":     ev.AgentID,
-		"session_id":   ev.SessionID,
-		"event_type":   ev.EventType,
+	attrs := map[string]string{
+		"tenant_id":     ev.Identity.TenantID,
+		"workspace_id":  ev.Identity.WorkspaceID,
+		"agent_id":      ev.Actor.AgentID,
+		"session_id":    ev.Actor.SessionID,
+		"event_type":    ev.EventInfo.EventType,
+		"event_subtype": ev.EventInfo.EventSubtype,
+		"action":        ev.EventInfo.Action,
 		// Retrieval path constrains by object/memory type for /v1/internal/memory/recall.
 		// Persist these attributes at ingest time so type filtering can match.
-		"object_type":  string(schemas.ObjectTypeMemory),
-		"memory_type":  resolveMemoryType(ev),
-		"visibility":   ev.Visibility,
+		"object_type":               string(schemas.ObjectTypeMemory),
+		"memory_type":               resolveMemoryType(ev),
+		"visibility":                ev.Access.Visibility,
+		"access_consistency":        ev.Access.Consistency,
+		"access_visibility":         ev.Access.Visibility,
+		"retrieval_namespace":       ev.Retrieval.RetrievalNamespace,
+		"materialization_status":    ev.Materialization.Status,
+		"runtime_write_status":      ev.Runtime.WriteStatus,
+		"runtime_visibility_status": ev.Runtime.VisibilityStatus,
 	}
+	if ev.Identity.Dataset != "" {
+		attrs["dataset"] = ev.Identity.Dataset
+	}
+	if ev.Identity.ImportBatchID != "" {
+		attrs["import_batch_id"] = ev.Identity.ImportBatchID
+	}
+	if ev.Identity.FileName != "" {
+		attrs["file_name"] = ev.Identity.FileName
+	}
+	if ev.Data.PayloadSizeBytes > 0 {
+		attrs["payload_size_bytes"] = fmt.Sprintf("%d", ev.Data.PayloadSizeBytes)
+	}
+	if ev.Data.PayloadHash != "" {
+		attrs["payload_hash"] = ev.Data.PayloadHash
+	}
+	addAttributeList(attrs, "hook_materializers", ev.MaterializerHooks())
+	addAttributeList(attrs, "hook_indexers", ev.IndexerHooks())
+	addAttributeList(attrs, "hook_query_ops", ev.QueryOpHooks())
+	addAttributeList(attrs, "hook_policy", ev.PolicyHooks())
+	addAttributeList(attrs, "hook_evidence", ev.EvidenceHooks())
+	addAttributeList(attrs, "hook_chains", ev.ChainHooks())
+	addAttributeList(attrs, "hook_custom", ev.CustomHooks())
+	return attrs
+}
+
+func addAttributeList(attrs map[string]string, key string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	attrs[key] = strings.Join(values, ",")
 }
 
 func parseEventUnixTS(ev schemas.Event) int64 {
-	if ts, ok := parseRFC3339ToUnix(ev.EventTime); ok {
-		return ts
+	if ev.Time.EventTime > 0 {
+		return ev.Time.EventTime / 1000
 	}
-	if ts, ok := parseRFC3339ToUnix(ev.IngestTime); ok {
-		return ts
+	if ev.Time.IngestTime > 0 {
+		return ev.Time.IngestTime / 1000
 	}
 	return time.Now().Unix()
-}
-
-func parseRFC3339ToUnix(value string) (int64, bool) {
-	if value == "" {
-		return 0, false
-	}
-	ts, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return 0, false
-	}
-	return ts.Unix(), true
 }
 
 // deriveStateAndVersion builds a minimal session-scoped State so week-2
 // "event → memory/state/artifact" is satisfied: one checkpoint row per ingest.
 func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*schemas.State, *schemas.ObjectVersion) {
-	sid := ev.SessionID
+	sid := ev.Actor.SessionID
 	if sid == "" {
 		sid = "default_session"
 	}
-	stateID := fmt.Sprintf("state_%s_%s", sid, ev.EventID)
+	stateID := fmt.Sprintf("state_%s_%s", sid, ev.Identity.EventID)
 	st := &schemas.State{
 		StateID:            stateID,
-		AgentID:            ev.AgentID,
-		SessionID:          ev.SessionID,
+		AgentID:            ev.Actor.AgentID,
+		SessionID:          ev.Actor.SessionID,
 		StateType:          "ingest_checkpoint",
 		StateKey:           "last_memory_id",
 		StateValue:         memoryID,
-		DerivedFromEventID: ev.EventID,
+		DerivedFromEventID: ev.Identity.EventID,
 		CheckpointTS:       nowRFC3339,
-		Version:            ev.LogicalTS,
+		Version:            ev.Time.LogicalTS,
 	}
 	ver := &schemas.ObjectVersion{
 		ObjectID:        stateID,
-		ObjectType:      "state",
-		Version:         ev.LogicalTS,
-		MutationEventID: ev.EventID,
+		ObjectType:      string(schemas.ObjectTypeAgentState),
+		Version:         ev.Time.LogicalTS,
+		MutationEventID: ev.Identity.EventID,
 		ValidFrom:       nowRFC3339,
-		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventType),
+		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
 	}
 	return st, ver
 }
@@ -337,41 +401,23 @@ func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*sche
 // external URI (week-2 minimal hook). Optional keys: "artifact_uri", nested
 // "artifact" map with "uri", or event_type artifact_attached / tool_result_returned with uri.
 func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Artifact, *schemas.ObjectVersion) {
-	uri := ""
-	if v, ok := ev.Payload["artifact_uri"].(string); ok && v != "" {
-		uri = v
-	}
-	if uri == "" {
-		if m, ok := ev.Payload["artifact"].(map[string]any); ok {
-			if u, ok := m["uri"].(string); ok {
-				uri = u
-			}
-		}
-	}
-	if uri == "" {
-		if u, ok := ev.Payload["uri"].(string); ok && ev.EventType == "artifact_attached" {
-			uri = u
-		}
-	}
+	uri := ev.ArtifactURI()
 	if uri == "" {
 		return nil, nil
 	}
-	artID := fmt.Sprintf("art_%s", ev.EventID)
-	mime := ""
-	if m, ok := ev.Payload["mime_type"].(string); ok {
-		mime = m
-	}
+	artID := fmt.Sprintf("art_%s", ev.Identity.EventID)
+	mime := ev.ArtifactMimeType()
 	art := &schemas.Artifact{
 		ArtifactID:        artID,
-		SessionID:         ev.SessionID,
-		OwnerAgentID:      ev.AgentID,
+		SessionID:         ev.Actor.SessionID,
+		OwnerAgentID:      ev.Actor.AgentID,
 		ArtifactType:      "external_ref",
 		URI:               uri,
 		MimeType:          mime,
-		ProducedByEventID: ev.EventID,
-		Version:           ev.LogicalTS,
+		ProducedByEventID: ev.Identity.EventID,
+		Version:           ev.Time.LogicalTS,
 	}
-	if name, ok := ev.Payload["artifact_name"].(string); ok && name != "" {
+	if name := ev.ArtifactName(); name != "" {
 		if art.Metadata == nil {
 			art.Metadata = map[string]any{}
 		}
@@ -380,10 +426,10 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 	ver := &schemas.ObjectVersion{
 		ObjectID:        artID,
 		ObjectType:      "artifact",
-		Version:         ev.LogicalTS,
-		MutationEventID: ev.EventID,
+		Version:         ev.Time.LogicalTS,
+		MutationEventID: ev.Identity.EventID,
 		ValidFrom:       nowRFC3339,
-		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventType),
+		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
 	}
 	return art, ver
 }

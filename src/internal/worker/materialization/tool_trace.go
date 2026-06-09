@@ -35,15 +35,16 @@ func (w *InMemoryToolTraceWorker) Run(input schemas.WorkerInput) (schemas.Worker
 	if !ok {
 		return schemas.ToolTraceOutput{}, fmt.Errorf("tool_trace: unexpected input type %T", input)
 	}
+	in.Event = in.Event.NormalizeDynamicEventV04()
 	err := w.TraceToolCall(in.Event)
 	if err != nil {
 		return schemas.ToolTraceOutput{}, err
 	}
-	if in.Event.EventType != string(schemas.EventTypeToolCall) && in.Event.EventType != string(schemas.EventTypeToolResult) {
+	if in.Event.EventInfo.EventType != string(schemas.EventTypeToolCall) && in.Event.EventInfo.EventType != string(schemas.EventTypeToolResult) {
 		return schemas.ToolTraceOutput{}, nil
 	}
 	return schemas.ToolTraceOutput{
-		ArtifactID:       schemas.IDPrefixToolTrace + in.Event.EventID,
+		ArtifactID:       schemas.IDPrefixToolTrace + in.Event.Identity.EventID,
 		DerivationLogged: w.derivLog != nil,
 	}, nil
 }
@@ -58,7 +59,8 @@ func (w *InMemoryToolTraceWorker) Info() nodes.NodeInfo {
 }
 
 func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
-	if ev.EventType != string(schemas.EventTypeToolCall) && ev.EventType != string(schemas.EventTypeToolResult) {
+	ev = ev.NormalizeDynamicEventV04()
+	if ev.EventInfo.EventType != string(schemas.EventTypeToolCall) && ev.EventInfo.EventType != string(schemas.EventTypeToolResult) {
 		return nil
 	}
 	meta := map[string]any{}
@@ -67,18 +69,20 @@ func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
 			meta[k] = v
 		}
 	}
-	meta[schemas.EventIDKey] = ev.EventID
-	meta[schemas.AgentIDKey] = ev.AgentID
+	meta[schemas.EventIDKey] = ev.Identity.EventID
+	meta[schemas.AgentIDKey] = ev.Actor.AgentID
+	meta["schema_version"] = ev.SchemaVersion
+	meta["tool_call_event_id"] = ev.Causality.CallEventID
 
-	artifactID := fmt.Sprintf("%s%s", schemas.IDPrefixToolTrace, ev.EventID)
+	artifactID := fmt.Sprintf("%s%s", schemas.IDPrefixToolTrace, ev.Identity.EventID)
 	w.objStore.PutArtifact(schemas.Artifact{
 		ArtifactID:        artifactID,
-		SessionID:         ev.SessionID,
-		OwnerAgentID:      ev.AgentID,
+		SessionID:         ev.Actor.SessionID,
+		OwnerAgentID:      ev.Actor.AgentID,
 		ArtifactType:      string(schemas.ArtifactTypeToolTrace),
 		MimeType:          schemas.MimeTypeJSON,
 		Metadata:          meta,
-		ProducedByEventID: ev.EventID,
+		ProducedByEventID: ev.Identity.EventID,
 		Version:           1,
 	})
 
@@ -86,7 +90,7 @@ func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
 	// This allows ProofTraceWorker.AssembleTrace to follow the full
 	// tool_call → artifact derivation path during multi-hop BFS.
 	if w.derivLog != nil {
-		w.derivLog.Append(ev.EventID, "event", artifactID, "artifact", ev.EventType)
+		w.derivLog.Append(ev.Identity.EventID, "event", artifactID, "artifact", ev.EventInfo.EventType)
 	}
 	return nil
 }

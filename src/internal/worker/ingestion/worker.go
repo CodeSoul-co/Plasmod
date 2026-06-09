@@ -42,13 +42,14 @@ func (w *InMemoryIngestWorker) Run(input schemas.WorkerInput) (schemas.WorkerOut
 }
 
 func (w *InMemoryIngestWorker) Process(ev schemas.Event) error {
-	if strings.TrimSpace(ev.EventID) == "" {
+	ev = ev.NormalizeDynamicEventV04()
+	if strings.TrimSpace(ev.Identity.EventID) == "" {
 		return fmt.Errorf("ingest: event_id is required")
 	}
-	if strings.TrimSpace(ev.AgentID) == "" {
+	if strings.TrimSpace(ev.Actor.AgentID) == "" {
 		return fmt.Errorf("ingest: agent_id is required")
 	}
-	if strings.TrimSpace(ev.EventType) == "" {
+	if strings.TrimSpace(ev.EventInfo.EventType) == "" {
 		return fmt.Errorf("ingest: event_type is required")
 	}
 	return nil

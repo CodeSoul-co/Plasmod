@@ -22,6 +22,29 @@ func TestIngestWorker_Process_ValidEvent(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_Process_ValidDynamicEventV04(t *testing.T) {
+	w := CreateInMemoryIngestWorker("test-ingest")
+
+	err := w.Process(schemas.Event{
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity: schemas.EventIdentity{
+			EventID:     "evt_dynamic",
+			TenantID:    "tenant",
+			WorkspaceID: "workspace",
+		},
+		Actor: schemas.EventActor{
+			AgentID:   "agent_dynamic",
+			SessionID: "session_dynamic",
+		},
+		EventInfo: schemas.EventDescriptor{
+			EventType: string(schemas.EventTypeStateUpdate),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Process failed for dynamic event v0.4: %v", err)
+	}
+}
+
 func TestIngestWorker_Process_MissingEventID(t *testing.T) {
 	w := CreateInMemoryIngestWorker("test-ingest")
 

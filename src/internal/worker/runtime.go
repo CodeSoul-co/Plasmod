@@ -290,8 +290,9 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 }
 
 func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
+	ev = ev.NormalizeDynamicEventV04()
 	t0Ingest := time.Now()
-	if strings.TrimSpace(ev.EventID) == "" {
+	if strings.TrimSpace(ev.Identity.EventID) == "" {
 		return nil, errors.New("event_id is required")
 	}
 	if err := validateEmbeddingIngestPayload(ev); err != nil {
@@ -306,9 +307,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ev.LogicalTS == 0 {
-		ev.LogicalTS = entry.LSN
-	}
+	ev = entry.Event
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 
@@ -341,14 +340,14 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	// handles the same events (creating a second State record with a different
 	// version number), which is intentional — the VersionStore accumulates
 	// snapshots rather than overwriting.
-	isStateEvent := ev.EventType == string(schemas.EventTypeStateUpdate) ||
-		ev.EventType == string(schemas.EventTypeStateChange) ||
-		ev.EventType == string(schemas.EventTypeCheckpoint)
-	if isStateEvent && ev.AgentID != "" && ev.SessionID != "" {
+	isStateEvent := ev.EventInfo.EventType == string(schemas.EventTypeStateUpdate) ||
+		ev.EventInfo.EventType == string(schemas.EventTypeStateChange) ||
+		ev.EventInfo.EventType == string(schemas.EventTypeCheckpoint)
+	if isStateEvent && ev.Actor.AgentID != "" && ev.Actor.SessionID != "" {
 		r.nodeManager.DispatchStateMaterialization(ev)
 		// checkpoint events additionally snapshot all current states.
-		if ev.EventType == string(schemas.EventTypeCheckpoint) {
-			r.nodeManager.DispatchStateCheckpoint(ev.AgentID, ev.SessionID)
+		if ev.EventInfo.EventType == string(schemas.EventTypeCheckpoint) {
+			r.nodeManager.DispatchStateCheckpoint(ev.Actor.AgentID, ev.Actor.SessionID)
 		}
 	}
 
@@ -406,7 +405,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if r.preCompute != nil {
 		frag := r.preCompute.Compute(ev, record)
 		if frag.SalienceScore >= 0.5 {
-			r.storage.HotCache().Put(record.ObjectID, ev.EventType, record, frag.SalienceScore)
+			r.storage.HotCache().Put(record.ObjectID, ev.EventInfo.EventType, record, frag.SalienceScore)
 		}
 	}
 
@@ -418,15 +417,15 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		return nil, err
 	}
 	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
-	if ev.SessionID != "" {
-		metrics.Global().Session(ev.SessionID).AddStep()
+	if ev.Actor.SessionID != "" {
+		metrics.Global().Session(ev.Actor.SessionID).AddStep()
 		metrics.Global().StorageMemoryCount.Add(1)
 		metrics.Global().StorageEventCount.Add(1)
 	}
 	return map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
-		"event_id":  ev.EventID,
+		"event_id":  ev.Identity.EventID,
 		"memory_id": mat.Memory.MemoryID,
 		"edges":     len(mat.Edges),
 	}, nil
@@ -853,11 +852,12 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 		case "event":
 			if r.storage != nil {
 				for _, e := range r.storage.Objects().ListEvents(agentID, sessionID) {
-					ids = append(ids, e.EventID)
+					ev := e.NormalizeDynamicEventV04()
+					ids = append(ids, ev.Identity.EventID)
 				}
 			}
 
-		case "state":
+		case "state", "agent_state":
 			if r.storage != nil {
 				for _, s := range r.storage.Objects().ListStates(agentID, sessionID) {
 					ids = append(ids, s.StateID)
@@ -1503,8 +1503,9 @@ func (r *Runtime) AdminReplayPreview(fromLSN int64, limit int) (map[string]any, 
 	counts := make(map[string]int)
 	sampleIDs := make([]string, 0, len(sampled))
 	for _, e := range sampled {
-		counts[e.Event.EventType]++
-		sampleIDs = append(sampleIDs, e.Event.EventID)
+		ev := e.Event.NormalizeDynamicEventV04()
+		counts[ev.EventInfo.EventType]++
+		sampleIDs = append(sampleIDs, ev.Identity.EventID)
 	}
 	return map[string]any{
 		"status":               "ok",
@@ -1553,15 +1554,15 @@ func (r *Runtime) AdminReplayApply(fromLSN int64, limit int) (map[string]any, er
 	failed := 0
 	failedIDs := make([]string, 0)
 	for _, entry := range target {
-		ev := entry.Event
-		if strings.TrimSpace(ev.EventID) == "" {
+		ev := entry.Event.NormalizeDynamicEventV04()
+		if strings.TrimSpace(ev.Identity.EventID) == "" {
 			failed++
 			failedIDs = append(failedIDs, "")
 			continue
 		}
 		if _, err := r.SubmitIngest(ev); err != nil {
 			failed++
-			failedIDs = append(failedIDs, ev.EventID)
+			failedIDs = append(failedIDs, ev.Identity.EventID)
 			continue
 		}
 		applied++

@@ -61,7 +61,7 @@ func (ObjectMaterializationInput) WorkerKind() WorkerKind { return WorkerKindObj
 // ObjectMaterializationOutput identifies the produced canonical object.
 type ObjectMaterializationOutput struct {
 	ObjectID   string `json:"object_id,omitempty"`
-	ObjectType string `json:"object_type,omitempty"` // "memory" | "state" | "artifact"
+	ObjectType string `json:"object_type,omitempty"` // "memory" | "agent_state" | "artifact"
 }
 
 func (o ObjectMaterializationOutput) IsEmpty() bool { return o.ObjectID == "" }
@@ -335,6 +335,7 @@ func (ProofTraceInput) WorkerKind() WorkerKind { return WorkerKindProofTrace }
 //
 //	"[d=N] {src} -[{edgeType}]-> {dst} (w={weight:.2f})"
 //	"derivation: {srcID}({srcType}) -[{op}]-> {derivedID}({derivedType})"
+//
 // ProofTraceOutput carries assembled structured proof steps and the BFS hop count.
 type ProofTraceOutput struct {
 	Steps    []ProofStep `json:"steps"`

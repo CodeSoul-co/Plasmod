@@ -64,8 +64,9 @@ func (g *Gateway) ServiceIngestEvent(ev schemas.Event) (any, error) {
 	}
 	defer g.releaseWriteSlot()
 
-	if strings.TrimSpace(ev.EventID) == "" {
-		ev.EventID = generateObjectID("evt")
+	ev = ev.NormalizeDynamicEventV04()
+	if strings.TrimSpace(ev.Identity.EventID) == "" {
+		ev.Identity.EventID = generateObjectID("evt")
 	}
 	ack, err := g.runtime.SubmitIngest(ev)
 	if err != nil {

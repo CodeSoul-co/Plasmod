@@ -29,18 +29,18 @@ type DeadLetterEntry struct {
 // same information as DeadLetterEntry plus a human-readable message so that
 // ops dashboards can alert on it without parsing unstructured log output.
 type SubscriberError struct {
-	Entry     eventbackbone.WALEntry `json:"entry"`
-	PanicValue any                   `json:"panic_value"`
-	Timestamp time.Time              `json:"timestamp"`
-	Reason    string                 `json:"reason"`
+	Entry      eventbackbone.WALEntry `json:"entry"`
+	PanicValue any                    `json:"panic_value"`
+	Timestamp  time.Time              `json:"timestamp"`
+	Reason     string                 `json:"reason"`
 }
 
 // DLQStats returns statistics about the dead-letter queue.
 type DLQStats struct {
-	PanicCount       int   `json:"panic_count"`
-	TotalProcessed   int64 `json:"total_processed"`
-	OverflowCount    int   `json:"overflow_count"`    // entries that bypassed the channel
-	OverflowCap      int   `json:"overflow_cap"`      // capacity of the in-memory overflow buffer
+	PanicCount     int   `json:"panic_count"`
+	TotalProcessed int64 `json:"total_processed"`
+	OverflowCount  int   `json:"overflow_count"` // entries that bypassed the channel
+	OverflowCap    int   `json:"overflow_cap"`   // capacity of the in-memory overflow buffer
 }
 
 // DispatchHandler is a pluggable function called for every new WAL entry.
@@ -131,10 +131,11 @@ func conflictMergeSkipDatasetLoaderEnabled() bool {
 }
 
 func shouldSkipConflictMergeForEvent(ev schemas.Event) bool {
+	ev = ev.NormalizeDynamicEventV04()
 	if !conflictMergeSkipDatasetLoaderEnabled() {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(ev.Source), "dataset_loader") {
+	if strings.EqualFold(strings.TrimSpace(ev.Identity.Source), "dataset_loader") {
 		return true
 	}
 	if ev.Payload == nil {
@@ -165,7 +166,7 @@ func (s *EventSubscriber) DLQStats() DLQStats {
 		PanicCount:     int(s.panicCount.Load()),
 		TotalProcessed: s.processedCount.Load(),
 		OverflowCount:  int(s.overflowCount.Load()),
-		OverflowCap:     s.overflowCap,
+		OverflowCap:    s.overflowCap,
 	}
 }
 
@@ -266,16 +267,16 @@ func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WA
 			// alert without parsing unstructured log output.
 			select {
 			case s.ErrorCh <- SubscriberError{
-				Entry:     entry.Entry,
+				Entry:      entry.Entry,
 				PanicValue: r,
-				Timestamp: time.Now(),
-				Reason:    "DLQ and overflow buffer both full",
+				Timestamp:  time.Now(),
+				Reason:     "DLQ and overflow buffer both full",
 			}:
 			default:
 				// ErrorCh consumer also slow; drop rather than block.
 			}
 			log.Printf("subscriber: DLQ and overflow buffer full; panic reported via ErrorCh (lsn=%d event=%s): %v",
-				entry.Entry.LSN, entry.Entry.Event.EventID, r)
+				entry.Entry.LSN, entry.Entry.Event.NormalizeDynamicEventV04().Identity.EventID, r)
 		}
 	}()
 	s.processedCount.Add(1)
@@ -297,8 +298,8 @@ func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WA
 func (s *EventSubscriber) addBuiltinHandlers() {
 	// ── 0. StateMaterialization ───────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
-		ev := entry.Event
-		switch ev.EventType {
+		ev := entry.Event.NormalizeDynamicEventV04()
+		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
 			s.manager.DispatchStateMaterialization(ev)
 		}
@@ -306,16 +307,16 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 
 	// ── 0b. ToolTrace ─────────────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
-		ev := entry.Event
-		switch ev.EventType {
+		ev := entry.Event.NormalizeDynamicEventV04()
+		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
 			s.manager.DispatchToolTrace(ev)
 		}
 	})
 	// ── 1. ReflectionPolicy ───────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
-		ev := entry.Event
-		memID := schemas.IDPrefixMemory + ev.EventID
+		ev := entry.Event.NormalizeDynamicEventV04()
+		memID := schemas.IDPrefixMemory + ev.Identity.EventID
 		s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
 	})
 
@@ -323,15 +324,15 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	// Track the last memory ID written per agent+session so we can compare
 	// new arrivals against the previous write.
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
-		ev := entry.Event
-		if ev.AgentID == "" {
+		ev := entry.Event.NormalizeDynamicEventV04()
+		if ev.Actor.AgentID == "" {
 			return
 		}
 		if shouldSkipConflictMergeForEvent(ev) {
 			return
 		}
-		key := ev.AgentID + ":" + ev.SessionID
-		newMemID := schemas.IDPrefixMemory + ev.EventID
+		key := ev.Actor.AgentID + ":" + ev.Actor.SessionID
+		newMemID := schemas.IDPrefixMemory + ev.Identity.EventID
 
 		s.mu.Lock()
 		prevMemID, hasPrev := s.agentLastMem[key]
@@ -345,11 +346,11 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 
 	// ── 3. MemoryConsolidation ────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
-		ev := entry.Event
-		if ev.AgentID == "" || s.consolidateEvery <= 0 {
+		ev := entry.Event.NormalizeDynamicEventV04()
+		if ev.Actor.AgentID == "" || s.consolidateEvery <= 0 {
 			return
 		}
-		key := ev.AgentID + ":" + ev.SessionID
+		key := ev.Actor.AgentID + ":" + ev.Actor.SessionID
 
 		s.mu.Lock()
 		s.agentEventCount[key]++
@@ -357,7 +358,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		s.mu.Unlock()
 
 		if count%s.consolidateEvery == 0 {
-			s.manager.DispatchMemoryConsolidation(ev.AgentID, ev.SessionID)
+			s.manager.DispatchMemoryConsolidation(ev.Actor.AgentID, ev.Actor.SessionID)
 		}
 	})
 }

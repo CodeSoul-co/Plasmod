@@ -14,7 +14,7 @@ func TestObjectModelRegistry_DefaultTypes(t *testing.T) {
 		schemas.ObjectTypeSession,
 		schemas.ObjectTypeEvent,
 		schemas.ObjectTypeMemory,
-		schemas.ObjectTypeState,
+		schemas.ObjectTypeAgentState,
 		schemas.ObjectTypeArtifact,
 		schemas.ObjectTypeEdge,
 	}
@@ -22,6 +22,9 @@ func TestObjectModelRegistry_DefaultTypes(t *testing.T) {
 		if !r.IsKnown(ot) {
 			t.Errorf("ObjectType %q should be registered by default", ot)
 		}
+	}
+	if r.IsKnown(schemas.ObjectTypeState) {
+		t.Errorf("legacy ObjectType %q should not be registered as canonical", schemas.ObjectTypeState)
 	}
 }
 

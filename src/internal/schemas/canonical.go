@@ -28,27 +28,41 @@ type Session struct {
 }
 
 type Event struct {
-	EventID       string         `json:"event_id"`
-	TenantID      string         `json:"tenant_id"`
-	WorkspaceID   string         `json:"workspace_id"`
-	AgentID       string         `json:"agent_id"`
-	SessionID     string         `json:"session_id"`
-	EventType     string         `json:"event_type"`
-	EventTime     string         `json:"event_time"`
-	IngestTime    string         `json:"ingest_time"`
-	VisibleTime   string         `json:"visible_time"`
-	LogicalTS     int64          `json:"logical_ts"`
-	ParentEventID string         `json:"parent_event_id"`
-	CausalRefs    []string       `json:"causal_refs"`
-	Payload       map[string]any `json:"payload"`
+	SchemaVersion   string               `json:"schema_version,omitempty"`
+	Identity        EventIdentity        `json:"identity,omitempty"`
+	Actor           EventActor           `json:"actor,omitempty"`
+	Time            EventTime            `json:"time,omitempty"`
+	EventInfo       EventDescriptor      `json:"event,omitempty"`
+	Object          EventObject          `json:"object,omitempty"`
+	Causality       EventCausality       `json:"causality,omitempty"`
+	Access          EventAccess          `json:"access,omitempty"`
+	Materialization EventMaterialization `json:"materialization,omitempty"`
+	Retrieval       EventRetrieval       `json:"retrieval,omitempty"`
+	EventID         string               `json:"-"`
+	TenantID        string               `json:"-"`
+	WorkspaceID     string               `json:"-"`
+	AgentID         string               `json:"-"`
+	SessionID       string               `json:"-"`
+	EventType       string               `json:"-"`
+	EventTime       string               `json:"-"`
+	IngestTime      string               `json:"-"`
+	VisibleTime     string               `json:"-"`
+	LogicalTS       int64                `json:"-"`
+	ParentEventID   string               `json:"-"`
+	CausalRefs      []string             `json:"-"`
+	Payload         map[string]any       `json:"payload"`
 	// EmbeddingVector bypasses Payload["embedding"] dimension validation.
 	// When set, the materializer uses it directly instead of calling the ONNX embedder.
-	// JSON tag "embedding_vector" lets callers pass precomputed embeddings of any dim.
-	EmbeddingVector []float32      `json:"embedding_vector"`
-	Source        string         `json:"source"`
-	Importance    float64        `json:"importance"`
-	Visibility    string         `json:"visibility"`
-	Version       int64          `json:"version"`
+	// Legacy JSON input still accepts top-level "embedding_vector", but canonical
+	// events store it under retrieval.embedding_vector.
+	EmbeddingVector []float32       `json:"-"`
+	Source          string          `json:"-"`
+	Importance      float64         `json:"-"`
+	Visibility      string          `json:"-"`
+	Version         int64           `json:"-"`
+	Data            EventData       `json:"data,omitempty"`
+	Runtime         EventRuntime    `json:"runtime,omitempty"`
+	Extensions      EventExtensions `json:"extensions,omitempty"`
 }
 
 type Memory struct {
@@ -100,6 +114,11 @@ type State struct {
 	CheckpointTS       string `json:"checkpoint_ts"`
 	Version            int64  `json:"version"`
 }
+
+// AgentState is the v0.4 canonical name for runtime state objects. State is
+// kept as the storage-compatible legacy type name while object_type values use
+// "agent_state".
+type AgentState = State
 
 type Artifact struct {
 	ArtifactID        string         `json:"artifact_id"`

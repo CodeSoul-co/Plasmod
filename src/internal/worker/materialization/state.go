@@ -41,12 +41,13 @@ func CreateInMemoryStateMaterializationWorker(
 func (w *InMemoryStateMaterializationWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
 	switch in := input.(type) {
 	case schemas.StateApplyInput:
+		in.Event = in.Event.NormalizeDynamicEventV04()
 		err := w.Apply(in.Event)
 		if err != nil {
 			return schemas.StateApplyOutput{}, err
 		}
-		stateKey, _ := in.Event.Payload[schemas.PayloadKeyStateKey].(string)
-		stateID := schemas.IDPrefixState + in.Event.AgentID + "_" + stateKey
+		stateKey := in.Event.StateKey()
+		stateID := schemas.IDPrefixState + in.Event.Actor.AgentID + "_" + stateKey
 		var ver int64
 		if s, ok := w.objStore.GetState(stateID); ok {
 			ver = s.Version
@@ -76,20 +77,21 @@ func (w *InMemoryStateMaterializationWorker) Info() nodes.NodeInfo {
 }
 
 func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
+	ev = ev.NormalizeDynamicEventV04()
 	if ev.Payload == nil {
 		return nil
 	}
-	stateKey, _ := ev.Payload[schemas.PayloadKeyStateKey].(string)
-	stateVal, _ := ev.Payload[schemas.PayloadKeyStateValue].(string)
+	stateKey := ev.StateKey()
+	stateVal := ev.StateValueString()
 	if stateKey == "" {
 		return nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	lookupKey := ev.AgentID + ":" + ev.SessionID + ":" + stateKey
+	lookupKey := ev.Actor.AgentID + ":" + ev.Actor.SessionID + ":" + stateKey
 
 	w.mu.Lock()
 	existingID, exists := w.stateKeys[lookupKey]
-	stateID := schemas.IDPrefixState + ev.AgentID + "_" + stateKey
+	stateID := schemas.IDPrefixState + ev.Actor.AgentID + "_" + stateKey
 	w.stateKeys[lookupKey] = stateID
 	w.mu.Unlock()
 
@@ -101,17 +103,17 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 	}
 	w.objStore.PutState(schemas.State{
 		StateID:            stateID,
-		AgentID:            ev.AgentID,
-		SessionID:          ev.SessionID,
-		StateType:          ev.EventType,
+		AgentID:            ev.Actor.AgentID,
+		SessionID:          ev.Actor.SessionID,
+		StateType:          ev.EventInfo.EventType,
 		StateKey:           stateKey,
 		StateValue:         stateVal,
-		DerivedFromEventID: ev.EventID,
+		DerivedFromEventID: ev.Identity.EventID,
 		CheckpointTS:       now,
 		Version:            version,
 	})
 	if w.derivLog != nil {
-		w.derivLog.Append(ev.EventID, "event", stateID, "state", "state_apply")
+		w.derivLog.Append(ev.Identity.EventID, "event", stateID, string(schemas.ObjectTypeAgentState), "state_apply")
 	}
 	return nil
 }
@@ -122,7 +124,7 @@ func (w *InMemoryStateMaterializationWorker) Checkpoint(agentID, sessionID strin
 	for _, s := range states {
 		w.verStore.PutVersion(schemas.ObjectVersion{
 			ObjectID:    s.StateID,
-			ObjectType:  "state",
+			ObjectType:  string(schemas.ObjectTypeAgentState),
 			Version:     s.Version,
 			ValidFrom:   now,
 			SnapshotTag: fmt.Sprintf("checkpoint_%s", now),

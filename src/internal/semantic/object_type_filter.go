@@ -7,25 +7,27 @@ import (
 )
 
 // defaultQueryableObjectTypes is used when the client omits object_types or
-// sends an empty list: retrieval should consider memory, state, and artifact
+// sends an empty list: retrieval should consider memory, agent_state, and artifact
 // — never interpret "empty" as "match nothing".
 var defaultQueryableObjectTypes = []string{
 	string(schemas.ObjectTypeMemory),
-	string(schemas.ObjectTypeState),
+	string(schemas.ObjectTypeAgentState),
 	string(schemas.ObjectTypeArtifact),
 }
 
 var knownQueryableTypes = map[string]struct{}{
-	"memory":   {},
-	"state":    {},
-	"artifact": {},
+	"memory":      {},
+	"agent_state": {},
+	"state":       {},
+	"artifact":    {},
+	"event":       {},
 }
 
 // EffectiveObjectTypes returns the object-type filter to apply for a query.
 // If the request omits object_types or sends an empty slice, it returns the
-// full default set (memory, state, artifact). If the request lists only unknown
-// values after normalization, it falls back to the same default so the query
-// cannot accidentally return zero hits solely due to a bad filter.
+// full default set. If the request lists only unknown values after
+// normalization, it falls back to the same default so the query cannot
+// accidentally return zero hits solely due to a bad filter.
 func EffectiveObjectTypes(requested []string) []string {
 	if len(requested) == 0 {
 		return append([]string(nil), defaultQueryableObjectTypes...)
@@ -33,7 +35,7 @@ func EffectiveObjectTypes(requested []string) []string {
 	out := make([]string, 0, len(requested))
 	seen := make(map[string]struct{})
 	for _, t := range requested {
-		k := strings.ToLower(strings.TrimSpace(t))
+		k := schemas.NormalizeObjectTypeName(t)
 		if _, ok := knownQueryableTypes[k]; !ok {
 			continue
 		}
@@ -56,7 +58,7 @@ func CanonicalObjectKindFromID(objectID string) string {
 	case strings.HasPrefix(objectID, schemas.IDPrefixMemory):
 		return "memory"
 	case strings.HasPrefix(objectID, schemas.IDPrefixState):
-		return "state"
+		return string(schemas.ObjectTypeAgentState)
 	case strings.HasPrefix(objectID, schemas.IDPrefixArtifact):
 		return "artifact"
 	default:
@@ -73,11 +75,11 @@ func FilterObjectIDsByTypes(ids []string, allowed []string) []string {
 	}
 	allow := make(map[string]struct{}, len(allowed))
 	for _, a := range allowed {
-		allow[strings.ToLower(strings.TrimSpace(a))] = struct{}{}
+		allow[schemas.NormalizeObjectTypeName(a)] = struct{}{}
 	}
 	if len(allow) >= 3 {
 		_, m := allow["memory"]
-		_, s := allow["state"]
+		_, s := allow[string(schemas.ObjectTypeAgentState)]
 		_, a := allow["artifact"]
 		if m && s && a {
 			return ids

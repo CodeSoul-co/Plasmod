@@ -51,10 +51,13 @@ const (
 type ObjectType string
 
 const (
-	ObjectTypeAgent         ObjectType = "agent"
-	ObjectTypeSession       ObjectType = "session"
-	ObjectTypeEvent         ObjectType = "event"
-	ObjectTypeMemory        ObjectType = "memory"
+	ObjectTypeAgent      ObjectType = "agent"
+	ObjectTypeSession    ObjectType = "session"
+	ObjectTypeEvent      ObjectType = "event"
+	ObjectTypeMemory     ObjectType = "memory"
+	ObjectTypeAgentState ObjectType = "agent_state"
+	// ObjectTypeState is kept as a legacy alias. New dynamic events should use
+	// ObjectTypeAgentState / "agent_state".
 	ObjectTypeState         ObjectType = "state"
 	ObjectTypeArtifact      ObjectType = "artifact"
 	ObjectTypeEdge          ObjectType = "edge"
@@ -80,10 +83,45 @@ type VisibilityScope string
 
 const (
 	VisibilityPrivate   VisibilityScope = "private"
+	VisibilityShared    VisibilityScope = "shared"
 	VisibilitySession   VisibilityScope = "session"
+	VisibilityTeam      VisibilityScope = "team"
 	VisibilityWorkspace VisibilityScope = "workspace"
 	VisibilityTenant    VisibilityScope = "tenant"
 	VisibilityPublic    VisibilityScope = "public"
+)
+
+type AccessConsistency string
+
+const (
+	AccessConsistencyStrict   AccessConsistency = "strict"
+	AccessConsistencyBounded  AccessConsistency = "bounded"
+	AccessConsistencyEventual AccessConsistency = "eventual"
+)
+
+type QueryOperator string
+
+const (
+	QueryOperatorDefault               QueryOperator = "default"
+	QueryOperatorSubgraph              QueryOperator = "subgraph"
+	QueryOperatorMultiHop              QueryOperator = "multi_hop"
+	QueryOperatorSlice                 QueryOperator = "slice"
+	QueryOperatorAggregate             QueryOperator = "aggregate"
+	QueryOperatorProofTrace            QueryOperator = "proof_trace"
+	QueryOperatorAccessFilter          QueryOperator = "access_filter"
+	QueryOperatorMaterializationFilter QueryOperator = "materialization_filter"
+	QueryOperatorRuntimeStatusFilter   QueryOperator = "runtime_status_filter"
+	QueryOperatorExtensionHook         QueryOperator = "extension_hook"
+)
+
+type MaterializationTarget string
+
+const (
+	MaterializationTargetMemory        MaterializationTarget = "memory"
+	MaterializationTargetAgentState    MaterializationTarget = "agent_state"
+	MaterializationTargetArtifact      MaterializationTarget = "artifact"
+	MaterializationTargetEdge          MaterializationTarget = "edge"
+	MaterializationTargetObjectVersion MaterializationTarget = "object_version"
 )
 
 // Tier classifies storage hotness for retrieval segments.
@@ -231,11 +269,14 @@ const (
 
 // PayloadKey constants for well-known fields embedded in Event.Payload.
 const (
-	PayloadKeyText       = "text"
-	PayloadKeyStateKey   = "state_key"
-	PayloadKeyStateValue = "state_value"
-	PayloadKeyURI        = "uri"
-	PayloadKeyMimeType   = "mime_type"
+	PayloadKeyText         = "text"
+	PayloadKeyStateKey     = "state_key"
+	PayloadKeyStateValue   = "state_value"
+	PayloadKeyURI          = "uri"
+	PayloadKeyMimeType     = "mime_type"
+	PayloadKeyArtifactName = "artifact_name"
+	PayloadKeyArtifactURI  = "artifact_uri"
+	PayloadKeyRelationType = "relation_type"
 	// PayloadKeyDataset is the stable dataset label (e.g. import_dataset --dataset).
 	PayloadKeyDataset = "dataset"
 	// PayloadKeyFileName is the originating file basename when ingesting file-backed rows.

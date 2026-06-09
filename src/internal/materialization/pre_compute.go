@@ -18,7 +18,7 @@ import (
 // Use NewPreComputeService (defaults) or NewPreComputeServiceWithConfig (custom).
 type PreComputeService struct {
 	cache *evidence.Cache
-	cfg    schemas.AlgorithmConfig
+	cfg   schemas.AlgorithmConfig
 }
 
 var defaultPreComputeCfg = schemas.DefaultAlgorithmConfig()
@@ -45,6 +45,7 @@ func NewPreComputeServiceWithConfig(cache *evidence.Cache, cfg schemas.Algorithm
 // It is called immediately after materialization so the fragment is available for
 // the first query that touches this object.
 func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord) evidence.EvidenceFragment {
+	ev = ev.NormalizeDynamicEventV04()
 	tokens := tokenize(rec.Text)
 	related := collectRelated(ev)
 	filters := deriveFilters(ev)
@@ -53,7 +54,7 @@ func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord
 
 	frag := evidence.EvidenceFragment{
 		ObjectID:      rec.ObjectID,
-		ObjectType:    ev.EventType,
+		ObjectType:    ev.EventInfo.EventType,
 		Namespace:     rec.Namespace,
 		TextTokens:    tokens,
 		RelatedIDs:    related,
@@ -62,7 +63,7 @@ func (s *PreComputeService) Compute(ev schemas.Event, rec dataplane.IngestRecord
 		SalienceScore: salience,
 		Level:         0,
 		ComputedAt:    time.Now().UTC(),
-		LogicalTS:     ev.LogicalTS,
+		LogicalTS:     ev.Time.LogicalTS,
 	}
 
 	if s.cache != nil {
@@ -102,27 +103,27 @@ func tokenize(text string) []string {
 
 func collectRelated(ev schemas.Event) []string {
 	ids := []string{}
-	if ev.AgentID != "" {
-		ids = append(ids, ev.AgentID)
+	if ev.Actor.AgentID != "" {
+		ids = append(ids, ev.Actor.AgentID)
 	}
-	if ev.SessionID != "" {
-		ids = append(ids, ev.SessionID)
+	if ev.Actor.SessionID != "" {
+		ids = append(ids, ev.Actor.SessionID)
 	}
 	// CausalRefs is a slice; include all referenced events.
-	ids = append(ids, ev.CausalRefs...)
+	ids = append(ids, ev.Causality.CausalRefs...)
 	return ids
 }
 
 func deriveFilters(ev schemas.Event) []string {
 	filters := []string{}
-	if ev.AgentID != "" {
-		filters = append(filters, "agent_id:"+ev.AgentID)
+	if ev.Actor.AgentID != "" {
+		filters = append(filters, "agent_id:"+ev.Actor.AgentID)
 	}
-	if ev.Visibility != "" {
-		filters = append(filters, "visibility:"+ev.Visibility)
+	if ev.Access.Visibility != "" {
+		filters = append(filters, "visibility:"+ev.Access.Visibility)
 	}
-	if ev.Source != "" {
-		filters = append(filters, "source:"+ev.Source)
+	if ev.Identity.Source != "" {
+		filters = append(filters, "source:"+ev.Identity.Source)
 	}
 	return filters
 }
@@ -131,17 +132,20 @@ func deriveFilters(ev schemas.Event) []string {
 // All thresholds and bonuses are sourced from s.cfg (schemas.AlgorithmConfig).
 func (s *PreComputeService) computeSalience(ev schemas.Event, tokens []string) float64 {
 	cfg := s.cfg
-	base := ev.Importance
+	base := 0.0
+	if ev.EventInfo.Importance != nil {
+		base = *ev.EventInfo.Importance
+	}
 	if base == 0 {
 		base = cfg.DefaultImportance
 	}
 	if len(tokens) > cfg.TokenCountThreshold {
 		base += cfg.TokenBonus
 	}
-	if len(ev.CausalRefs) > 0 {
+	if len(ev.Causality.CausalRefs) > 0 {
 		base += cfg.CausalRefBonus
 	}
-	if ev.Visibility == "global" {
+	if ev.Access.Visibility == "global" {
 		base += cfg.GlobalVisibilityBonus
 	}
 	if base > cfg.SalienceCap {

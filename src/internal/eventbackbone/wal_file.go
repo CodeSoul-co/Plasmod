@@ -37,6 +37,11 @@ func NewFileWAL(path string, bus Bus, clock *HybridClock) *FileWAL {
 
 func (w *FileWAL) Append(event schemas.Event) (WALEntry, error) {
 	lsn := w.clock.Next()
+	event = event.NormalizeDynamicEventV04()
+	event.Time.WalLSN = lsn
+	if event.Time.LogicalTS == 0 {
+		event.Time.LogicalTS = lsn
+	}
 	entry := WALEntry{LSN: lsn, Event: event}
 
 	w.mu.Lock()
