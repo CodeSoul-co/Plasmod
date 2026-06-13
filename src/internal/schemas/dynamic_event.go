@@ -22,6 +22,7 @@ type EventIdentity struct {
 	ImportBatchID string `json:"import_batch_id,omitempty"`
 	IngestMode    string `json:"ingest_mode,omitempty"`
 	FileName      string `json:"file_name,omitempty"`
+	ReplayOrder   int64  `json:"replay_order,omitempty"`
 }
 
 type EventActor struct {
@@ -89,6 +90,94 @@ type EventAccess struct {
 	PolicyTags      []string   `json:"policy_tags,omitempty"`
 	ShareContractID string     `json:"share_contract_id,omitempty"`
 	Hooks           EventHooks `json:"hooks,omitempty"`
+}
+
+type eventActorWire struct {
+	SessionID       string `json:"session_id,omitempty"`
+	AgentID         string `json:"agent_id,omitempty"`
+	RoleProfile     string `json:"role_profile,omitempty"`
+	TeamID          string `json:"team_id,omitempty"`
+	ParentAgentID   string `json:"parent_agent_id,omitempty"`
+	AgentGeneration *int   `json:"agent_generation,omitempty"`
+	AgentType       string `json:"agent_type,omitempty"`
+	AgentKind       string `json:"agent_kind,omitempty"`
+}
+
+func (a *EventActor) UnmarshalJSON(data []byte) error {
+	var wire eventActorWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*a = EventActor{
+		SessionID:       wire.SessionID,
+		AgentID:         wire.AgentID,
+		RoleProfile:     wire.RoleProfile,
+		TeamID:          wire.TeamID,
+		ParentAgentID:   wire.ParentAgentID,
+		AgentGeneration: wire.AgentGeneration,
+		AgentType:       firstString(wire.AgentType, wire.AgentKind),
+	}
+	return nil
+}
+
+type eventTimeWire struct {
+	EventTime     int64 `json:"event_time,omitempty"`
+	EventTimeMS   int64 `json:"event_time_ms,omitempty"`
+	TimestampMS   int64 `json:"timestamp_ms,omitempty"`
+	LogicalTS     int64 `json:"logical_ts,omitempty"`
+	WalLSN        int64 `json:"wal_lsn,omitempty"`
+	IngestTime    int64 `json:"ingest_time,omitempty"`
+	IngestTimeMS  int64 `json:"ingest_time_ms,omitempty"`
+	VisibleTime   int64 `json:"visible_time,omitempty"`
+	VisibleTimeMS int64 `json:"visible_time_ms,omitempty"`
+}
+
+func (t *EventTime) UnmarshalJSON(data []byte) error {
+	var wire eventTimeWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*t = EventTime{
+		EventTime:   firstInt64(wire.EventTime, wire.EventTimeMS, wire.TimestampMS),
+		LogicalTS:   wire.LogicalTS,
+		WalLSN:      wire.WalLSN,
+		IngestTime:  firstInt64(wire.IngestTime, wire.IngestTimeMS),
+		VisibleTime: firstInt64(wire.VisibleTime, wire.VisibleTimeMS),
+	}
+	return nil
+}
+
+type eventAccessWire struct {
+	Consistency     string     `json:"consistency,omitempty"`
+	Visibility      string     `json:"visibility,omitempty"`
+	Sharing         string     `json:"sharing,omitempty"`
+	Scope           string     `json:"scope,omitempty"`
+	VisibleToAgents []string   `json:"visible_to_agents,omitempty"`
+	VisibleToRoles  []string   `json:"visible_to_roles,omitempty"`
+	TTLMS           *int64     `json:"ttl_ms,omitempty"`
+	FreshnessSLAMS  *int64     `json:"freshness_sla_ms,omitempty"`
+	PolicyTags      []string   `json:"policy_tags,omitempty"`
+	ShareContractID string     `json:"share_contract_id,omitempty"`
+	Hooks           EventHooks `json:"hooks,omitempty"`
+}
+
+func (a *EventAccess) UnmarshalJSON(data []byte) error {
+	var wire eventAccessWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*a = EventAccess{
+		Consistency:     wire.Consistency,
+		Visibility:      firstString(wire.Visibility, wire.Sharing, wire.Scope),
+		VisibleToAgents: append([]string(nil), wire.VisibleToAgents...),
+		VisibleToRoles:  append([]string(nil), wire.VisibleToRoles...),
+		TTLMS:           wire.TTLMS,
+		FreshnessSLAMS:  wire.FreshnessSLAMS,
+		PolicyTags:      append([]string(nil), wire.PolicyTags...),
+		ShareContractID: wire.ShareContractID,
+		Hooks:           wire.Hooks,
+	}
+	return nil
 }
 
 type EventMaterialization struct {
@@ -409,6 +498,15 @@ func firstString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func rfc3339ToMillis(value string) int64 {

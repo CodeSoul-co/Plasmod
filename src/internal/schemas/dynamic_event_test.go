@@ -154,6 +154,71 @@ func TestEventUnmarshalAcceptsLegacyFlatJSON(t *testing.T) {
 	}
 }
 
+func TestDynamicEventV04AcceptsProducerAliases(t *testing.T) {
+	raw := []byte(`{
+		"schema_version": "plasmod.dynamic_event.v0.4",
+		"identity": {
+			"trace_id": "trace_alias",
+			"event_id": "evt_alias",
+			"replay_order": 7
+		},
+		"actor": {
+			"session_id": "session_alias",
+			"agent_id": "agent_alias",
+			"agent_kind": "tool_agent"
+		},
+		"time": {
+			"event_time_ms": 1710000000123,
+			"ingest_time_ms": 1710000001123,
+			"visible_time_ms": 1710000002123,
+			"logical_ts": 99
+		},
+		"event": {
+			"event_type": "tool_result"
+		},
+		"access": {
+			"consistency": "bounded",
+			"sharing": "session"
+		},
+		"retrieval": {
+			"index_text": "alias event text"
+		},
+		"payload": {}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("unmarshal alias event: %v", err)
+	}
+	if ev.Identity.ReplayOrder != 7 {
+		t.Fatalf("replay_order not retained: %+v", ev.Identity)
+	}
+	if ev.Actor.AgentType != "tool_agent" {
+		t.Fatalf("agent_kind should normalize to agent_type, got %q", ev.Actor.AgentType)
+	}
+	if ev.Time.EventTime != 1710000000123 || ev.Time.IngestTime != 1710000001123 || ev.Time.VisibleTime != 1710000002123 {
+		t.Fatalf("millisecond time aliases not normalized: %+v", ev.Time)
+	}
+	if ev.Access.Visibility != "session" || ev.Visibility != "session" {
+		t.Fatalf("sharing should normalize to visibility, access=%q legacy=%q", ev.Access.Visibility, ev.Visibility)
+	}
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal alias event: %v", err)
+	}
+	body := string(data)
+	for _, forbidden := range []string{`"agent_kind"`, `"event_time_ms"`, `"ingest_time_ms"`, `"visible_time_ms"`, `"sharing"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("canonical JSON should not emit producer alias %s: %s", forbidden, body)
+		}
+	}
+	for _, want := range []string{`"agent_type":"tool_agent"`, `"event_time":1710000000123`, `"visibility":"session"`, `"replay_order":7`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("canonical JSON missing normalized field %s: %s", want, body)
+		}
+	}
+}
+
 func TestEventHooksMergeModuleAndExtensionHooks(t *testing.T) {
 	ev := Event{
 		Materialization: EventMaterialization{
