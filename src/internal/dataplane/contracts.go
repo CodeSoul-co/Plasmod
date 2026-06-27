@@ -11,6 +11,10 @@ type IngestRecord struct {
 	// Embedding is a precomputed vector. When non-nil, the SegmentDataPlane
 	// stores it directly instead of calling the embedder (bypassing ONNX/TF-IDF).
 	Embedding []float32
+	// SkipVectorIndex keeps object/lexical visibility while avoiding dense and
+	// sparse vector projection for events that explicitly do not need retrieval
+	// embeddings.
+	SkipVectorIndex bool
 }
 
 // SearchInput is the query descriptor passed from the semantic layer to the

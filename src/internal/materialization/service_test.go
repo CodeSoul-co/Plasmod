@@ -210,6 +210,47 @@ func TestService_MaterializeEvent_DynamicEventV04(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEvent_SkipVectorIndexWhenEmbeddingDisabled(t *testing.T) {
+	svc := NewService()
+	res := svc.MaterializeEvent(schemas.Event{
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity:      schemas.EventIdentity{EventID: "evt_no_embedding", WorkspaceID: "ws_1"},
+		Actor:         schemas.EventActor{AgentID: "agent_1", SessionID: "sess_1"},
+		EventInfo:     schemas.EventDescriptor{EventType: "observation"},
+		Retrieval: schemas.EventRetrieval{
+			IndexText:    "object-visible event without embedding",
+			HasEmbedding: false,
+		},
+	})
+	if !res.Record.SkipVectorIndex {
+		t.Fatal("expected vector index projection to be skipped")
+	}
+
+	res = svc.MaterializeEvent(schemas.Event{
+		EventID:   "evt_legacy",
+		AgentID:   "agent_1",
+		SessionID: "sess_1",
+		Payload:   map[string]any{"text": "legacy event should keep prior indexing behavior"},
+	})
+	if res.Record.SkipVectorIndex {
+		t.Fatal("legacy event without retrieval.index_text should not skip vector index")
+	}
+
+	res = svc.MaterializeEvent(schemas.Event{
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity:      schemas.EventIdentity{EventID: "evt_with_vector", WorkspaceID: "ws_1"},
+		Actor:         schemas.EventActor{AgentID: "agent_1", SessionID: "sess_1"},
+		EventInfo:     schemas.EventDescriptor{EventType: "observation"},
+		Retrieval: schemas.EventRetrieval{
+			IndexText:       "externally embedded event",
+			EmbeddingVector: []float32{0.1, 0.2, 0.3},
+		},
+	})
+	if res.Record.SkipVectorIndex {
+		t.Fatal("event with explicit embedding vector should not skip vector index")
+	}
+}
+
 func TestService_MaterializeEvent_EdgeDerivation(t *testing.T) {
 	svc := NewService()
 	ev := schemas.Event{

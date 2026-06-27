@@ -51,12 +51,13 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	record := dataplane.IngestRecord{
-		ObjectID:    memoryID,
-		Text:        text,
-		Namespace:   namespace,
-		Attributes:  buildAttributes(ev),
-		EventUnixTS: parseEventUnixTS(ev),
-		Embedding:   ev.Retrieval.EmbeddingVector,
+		ObjectID:        memoryID,
+		Text:            text,
+		Namespace:       namespace,
+		Attributes:      buildAttributes(ev),
+		EventUnixTS:     parseEventUnixTS(ev),
+		Embedding:       ev.Retrieval.EmbeddingVector,
+		SkipVectorIndex: skipVectorIndex(ev),
 	}
 
 	mem := schemas.Memory{
@@ -127,6 +128,13 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		Artifact:        art,
 		ArtifactVersion: artVer,
 	}
+}
+
+func skipVectorIndex(ev schemas.Event) bool {
+	if len(ev.Retrieval.EmbeddingVector) > 0 || len(ev.EmbeddingVector) > 0 {
+		return false
+	}
+	return strings.TrimSpace(ev.Retrieval.IndexText) != "" && !ev.Retrieval.HasEmbedding
 }
 
 // ProjectEvent is kept for backward-compatibility.  New code should call

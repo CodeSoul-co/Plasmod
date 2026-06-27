@@ -157,14 +157,14 @@ func (p *SegmentDataPlane) Ingest(record IngestRecord) error {
 	}
 	p.index.InsertObject(record.ObjectID, record.Text, record.Attributes, namespace, record.EventUnixTS)
 
-	if p.vecStore != nil {
+	if !record.SkipVectorIndex && p.vecStore != nil {
 		if len(record.Embedding) > 0 {
 			p.vecStore.AddVector(record.ObjectID, record.Embedding)
 		} else if p.embedder != nil {
 			p.vecStore.AddText(record.ObjectID, record.Text)
 		}
 	}
-	if p.sparseStore != nil {
+	if !record.SkipVectorIndex && p.sparseStore != nil {
 		p.sparseStore.AddText(record.ObjectID, record.Text)
 	}
 	return nil
