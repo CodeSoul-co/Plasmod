@@ -406,6 +406,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if mat.Memory.AgentID != "" &&
 		mat.Memory.SessionID != "" &&
 		mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) &&
+		!visibilityOnlyModeEnabled() &&
 		!shouldSkipConflictMergeForEvent(ev) {
 		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
 		r.lastMemMu.RLock()
@@ -420,7 +421,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
-	if r.preCompute != nil {
+	if r.preCompute != nil && !visibilityOnlyModeEnabled() {
 		frag := r.preCompute.Compute(ev, record)
 		if frag.SalienceScore >= 0.5 {
 			r.storage.HotCache().Put(record.ObjectID, ev.EventInfo.EventType, record, frag.SalienceScore)
@@ -428,7 +429,9 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 
 	// ── Retrieval plane ───────────────────────────────────────────────────
-	r.nodeManager.DispatchIngest(record)
+	if !visibilityOnlyModeEnabled() {
+		r.nodeManager.DispatchIngest(record)
+	}
 	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
 	if ev.Actor.SessionID != "" {
 		metrics.Global().Session(ev.Actor.SessionID).AddStep()
@@ -700,7 +703,15 @@ func (r *Runtime) detectContamination(requesterAgentID string, objectIDs []strin
 }
 
 func vectorOnlyModeEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_VECTOR_ONLY_MODE"))
+	return envBool("PLASMOD_VECTOR_ONLY_MODE")
+}
+
+func visibilityOnlyModeEnabled() bool {
+	return envBool("PLASMOD_VISIBILITY_ONLY")
+}
+
+func envBool(key string) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
 	switch strings.ToLower(raw) {
 	case "1", "true", "yes", "on":
 		return true
