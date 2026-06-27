@@ -202,6 +202,76 @@ type EventRetrieval struct {
 	Hooks              EventHooks         `json:"hooks,omitempty"`
 }
 
+func (r *EventRetrieval) UnmarshalJSON(data []byte) error {
+	type retrievalWire struct {
+		IndexText          any                `json:"index_text,omitempty"`
+		HasEmbedding       bool               `json:"has_embedding,omitempty"`
+		EmbeddingDim       *int               `json:"embedding_dim,omitempty"`
+		EmbeddingVector    []float32          `json:"embedding_vector,omitempty"`
+		EmbeddingVect      []float32          `json:"embedding_vect,omitempty"`
+		EmbeddingRef       string             `json:"embedding_ref,omitempty"`
+		IndexFields        []string           `json:"index_fields,omitempty"`
+		RetrievalNamespace string             `json:"retrieval_namespace,omitempty"`
+		RetrievalNamesp    string             `json:"retrieval_namesp,omitempty"`
+		SparseTerms        map[string]float64 `json:"sparse_terms,omitempty"`
+		Hooks              EventHooks         `json:"hooks,omitempty"`
+	}
+	var wire retrievalWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = EventRetrieval{
+		IndexText:          stringifyRetrievalIndexText(wire.IndexText),
+		HasEmbedding:       wire.HasEmbedding,
+		EmbeddingDim:       wire.EmbeddingDim,
+		EmbeddingVector:    firstFloat32Slice(wire.EmbeddingVector, wire.EmbeddingVect),
+		EmbeddingRef:       wire.EmbeddingRef,
+		IndexFields:        append([]string(nil), wire.IndexFields...),
+		RetrievalNamespace: firstString(wire.RetrievalNamespace, wire.RetrievalNamesp),
+		SparseTerms:        wire.SparseTerms,
+		Hooks:              wire.Hooks,
+	}
+	return nil
+}
+
+func stringifyRetrievalIndexText(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case map[string]any:
+		for _, key := range []string{"text", "body", "content", "summary"} {
+			if s, ok := v[key].(string); ok && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+		if raw, err := json.Marshal(v); err == nil {
+			return string(raw)
+		}
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(stringifyRetrievalIndexText(item)); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return fmt.Sprint(v)
+	}
+	return ""
+}
+
+func firstFloat32Slice(values ...[]float32) []float32 {
+	for _, value := range values {
+		if len(value) > 0 {
+			return append([]float32(nil), value...)
+		}
+	}
+	return nil
+}
+
 type EventData struct {
 	PayloadSizeBytes int64  `json:"payload_size_bytes,omitempty"`
 	RecordSizeBytes  *int64 `json:"record_size_bytes,omitempty"`

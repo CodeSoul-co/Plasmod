@@ -92,6 +92,41 @@ func TestDynamicEventV04Normalize(t *testing.T) {
 	}
 }
 
+func TestDynamicEventRetrievalAcceptsStructuredIndexText(t *testing.T) {
+	raw := []byte(`{
+		"schema_version": "plasmod.dynamic_event.v0.4",
+		"identity": {"event_id": "evt_structured_index"},
+		"actor": {"agent_id": "agent_1", "session_id": "sess_1"},
+		"event": {"event_type": "tool_result"},
+		"retrieval": {
+			"index_text": {
+				"kind": "environment_output",
+				"body": "",
+				"tool_name": "think",
+				"call_id": "call_1"
+			},
+			"has_embedding": false,
+			"embedding_vect": [0.1, 0.2],
+			"retrieval_namesp": "sess_1"
+		},
+		"payload": {"text": "payload fallback"}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("unmarshal structured retrieval index_text: %v", err)
+	}
+	ev = ev.NormalizeDynamicEventV04()
+	if ev.Retrieval.IndexText == "" || !strings.Contains(ev.Retrieval.IndexText, `"tool_name":"think"`) {
+		t.Fatalf("structured index_text should be JSON string, got %q", ev.Retrieval.IndexText)
+	}
+	if ev.Retrieval.RetrievalNamespace != "sess_1" {
+		t.Fatalf("retrieval_namesp alias not normalized: %q", ev.Retrieval.RetrievalNamespace)
+	}
+	if len(ev.Retrieval.EmbeddingVector) != 2 {
+		t.Fatalf("embedding_vect alias not normalized: %+v", ev.Retrieval.EmbeddingVector)
+	}
+}
+
 func TestNormalizeObjectTypeName(t *testing.T) {
 	if got := NormalizeObjectTypeName("state"); got != string(ObjectTypeAgentState) {
 		t.Fatalf("state should normalize to agent_state, got %q", got)
