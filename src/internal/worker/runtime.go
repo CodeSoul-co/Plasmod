@@ -510,7 +510,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// retrieval plane.  When query requests these types, fetch them from the
 	// canonical store so they appear in the response alongside memory results.
 	canonicalAddCount := 0
-	if !vectorOnlyMode {
+	if !vectorOnlyMode && len(req.TargetObjectIDs) == 0 {
 		canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
 		canonicalAddCount = len(canonicalIDs)
 		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
