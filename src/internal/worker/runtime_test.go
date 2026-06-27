@@ -1240,6 +1240,18 @@ func TestRuntime_QueryTargetObjectIDsExactVisibility(t *testing.T) {
 		}
 	}
 
+	objectsOnly := req
+	objectsOnly.ResponseMode = schemas.ResponseModeObjectsOnly
+	fast := r.ExecuteQuery(objectsOnly)
+	for _, id := range []string{"mem_target_exact", "state_target_exact", "art_target_exact", "edge_target_exact"} {
+		if !containsString(fast.Objects, id) {
+			t.Fatalf("expected objects-only target object %s in response, got %v", id, fast.Objects)
+		}
+	}
+	if len(fast.ChainTraces.Query) == 0 || fast.ChainTraces.Query[0] != "query_chain skipped=objects_only" {
+		t.Fatalf("expected objects-only query chain skip trace, got %v", fast.ChainTraces.Query)
+	}
+
 	miss := r.ExecuteQuery(schemas.QueryRequest{
 		QueryText:       "unrelated text should not matter",
 		AgentID:         "agent_target",

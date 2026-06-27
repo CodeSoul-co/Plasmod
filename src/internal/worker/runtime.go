@@ -539,6 +539,29 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		return resp
 	}
 
+	if req.ResponseMode == schemas.ResponseModeObjectsOnly {
+		resp := schemas.QueryResponse{
+			Objects: result.ObjectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:               result.Tier,
+				ColdSearchMode:     result.ColdSearchMode,
+				ColdCandidateCount: result.ColdCandidateCount,
+				ColdTierRequested:  result.ColdTierRequested,
+				ColdUsedFallback:   result.ColdUsedFallback,
+				RetrievalHits:      retrievalHitCount,
+				CanonicalAdds:      canonicalAddCount,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           formatQueryPathMainChainLines(req, result),
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs),
+				Query:          []string{"query_chain skipped=objects_only"},
+				Collaboration:  []string{"collaboration_chain skipped=objects_only"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, retrievalHitCount)
+		return resp
+	}
+
 	var filters []string
 	if !r.MinimalMode {
 		filters = r.policy.ApplyQueryFilters(req)
