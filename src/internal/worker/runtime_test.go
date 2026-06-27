@@ -1251,6 +1251,9 @@ func TestRuntime_QueryTargetObjectIDsExactVisibility(t *testing.T) {
 	if len(fast.ChainTraces.Query) == 0 || fast.ChainTraces.Query[0] != "query_chain skipped=objects_only" {
 		t.Fatalf("expected objects-only query chain skip trace, got %v", fast.ChainTraces.Query)
 	}
+	if len(fast.ChainTraces.Main) == 0 || fast.ChainTraces.Main[0] != "target_object_ids fast_path=objects_only" {
+		t.Fatalf("expected target-object fast path trace, got %v", fast.ChainTraces.Main)
+	}
 
 	miss := r.ExecuteQuery(schemas.QueryRequest{
 		QueryText:       "unrelated text should not matter",

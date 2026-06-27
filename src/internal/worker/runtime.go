@@ -466,6 +466,26 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		metrics.Global().ConcurrentQueries.Add(-1)
 		metrics.Global().RecordQueryLatency(time.Since(t0Query))
 	}()
+	if req.ResponseMode == schemas.ResponseModeObjectsOnly && len(req.TargetObjectIDs) > 0 {
+		objectIDs := r.fetchTargetObjectIDs(req)
+		objectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), objectIDs, nil)
+		resp := schemas.QueryResponse{
+			Objects: objectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:          "target_object",
+				RetrievalHits: len(objectIDs),
+				CanonicalAdds: 0,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           []string{"target_object_ids fast_path=objects_only"},
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, objectIDs),
+				Query:          []string{"query_chain skipped=objects_only"},
+				Collaboration:  []string{"collaboration_chain skipped=objects_only"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, len(objectIDs))
+		return resp
+	}
 	plan := r.planner.Build(req)
 	vectorOnlyMode := vectorOnlyModeEnabled()
 	searchInput := dataplane.SearchInput{
