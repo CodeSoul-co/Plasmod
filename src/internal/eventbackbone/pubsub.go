@@ -1,10 +1,6 @@
 package eventbackbone
 
-import (
-	"log"
-	"sync"
-	"time"
-)
+import "sync"
 
 type Message struct {
 	Channel string
@@ -28,17 +24,16 @@ func (b *InMemoryBus) Subscribe(channel string) <-chan Message {
 	return ch
 }
 
-// Publish sends a message to all subscribers, blocking up to 5s per subscriber.
-// Silently drops only after the timeout expires (backpressure applied upstream
-// by the gateway write semaphore makes this path rare in practice).
+// Publish sends a best-effort notification to all subscribers without blocking
+// the caller. Durable consumers must use the WAL scan/replay path rather than
+// relying on this in-memory notification channel for correctness.
 func (b *InMemoryBus) Publish(msg Message) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, ch := range b.subs[msg.Channel] {
 		select {
 		case ch <- msg:
-		case <-time.After(5 * time.Second):
-			log.Printf("[pubsub] publish timeout after 5s for channel=%q; message dropped", msg.Channel)
+		default:
 		}
 	}
 }

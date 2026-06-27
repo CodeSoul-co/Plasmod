@@ -402,16 +402,19 @@ func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*sche
 // "artifact" map with "uri", or event_type artifact_attached / tool_result_returned with uri.
 func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Artifact, *schemas.ObjectVersion) {
 	uri := ev.ArtifactURI()
-	if uri == "" {
+	if uri == "" && !ev.IsArtifactLike() {
 		return nil, nil
 	}
-	artID := fmt.Sprintf("art_%s", ev.Identity.EventID)
+	artID := ev.ArtifactIDOrDefault()
 	mime := ev.ArtifactMimeType()
+	if mime == "" && uri == "" {
+		mime = "text/plain"
+	}
 	art := &schemas.Artifact{
 		ArtifactID:        artID,
 		SessionID:         ev.Actor.SessionID,
 		OwnerAgentID:      ev.Actor.AgentID,
-		ArtifactType:      "external_ref",
+		ArtifactType:      firstNonEmpty(ev.Object.ObjectSubtype, ev.EventInfo.EventType, "artifact"),
 		URI:               uri,
 		MimeType:          mime,
 		ProducedByEventID: ev.Identity.EventID,
@@ -423,6 +426,13 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		}
 		art.Metadata["name"] = name
 	}
+	if body := ev.ArtifactBodyString(); body != "" {
+		if art.Metadata == nil {
+			art.Metadata = map[string]any{}
+		}
+		art.Metadata["body"] = body
+		art.ContentRef = "inline"
+	}
 	ver := &schemas.ObjectVersion{
 		ObjectID:        artID,
 		ObjectType:      "artifact",
@@ -432,4 +442,13 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
 	}
 	return art, ver
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

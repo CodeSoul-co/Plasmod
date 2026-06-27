@@ -670,6 +670,38 @@ func (e Event) ArtifactMimeType() string {
 	return e.payloadString(PayloadKeyMimeType)
 }
 
+func (e Event) IsArtifactLike() bool {
+	e = e.NormalizeDynamicEventV04()
+	if strings.EqualFold(strings.TrimSpace(e.EventInfo.EventType), string(ObjectTypeArtifact)) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(NormalizeObjectTypeName(e.Object.ObjectType)), string(ObjectTypeArtifact)) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(e.Object.ObjectSubtype), string(ObjectTypeArtifact)) {
+		return true
+	}
+	if e.ArtifactURI() != "" || e.ArtifactName() != "" || e.ArtifactBodyString() != "" {
+		return true
+	}
+	return false
+}
+
+func (e Event) ArtifactIDOrDefault() string {
+	e = e.NormalizeDynamicEventV04()
+	if e.IsArtifactLike() && strings.TrimSpace(e.Object.ObjectID) != "" {
+		return strings.TrimSpace(e.Object.ObjectID)
+	}
+	return IDPrefixArtifact + e.Identity.EventID
+}
+
+func (e Event) ArtifactBodyString() string {
+	if s := e.payloadNestedString("artifact", "body"); s != "" {
+		return s
+	}
+	return e.payloadString("artifact_body")
+}
+
 func (e Event) EdgeKind() string {
 	if e.Causality.EdgeKind != "" {
 		return e.Causality.EdgeKind

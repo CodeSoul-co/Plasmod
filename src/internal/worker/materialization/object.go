@@ -60,9 +60,12 @@ func objectTypeFromEvent(ev schemas.Event) (objectType, objectID string) {
 	if ev.Object.ObjectType != "" && ev.Object.ObjectID != "" {
 		return schemas.NormalizeObjectTypeName(ev.Object.ObjectType), ev.Object.ObjectID
 	}
+	if ev.IsArtifactLike() ||
+		ev.EventInfo.EventType == string(schemas.EventTypeToolCall) ||
+		ev.EventInfo.EventType == string(schemas.EventTypeToolResult) {
+		return string(schemas.ObjectTypeArtifact), ev.ArtifactIDOrDefault()
+	}
 	switch ev.EventInfo.EventType {
-	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
-		return string(schemas.ObjectTypeArtifact), schemas.IDPrefixArtifact + ev.Identity.EventID
 	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
 		return string(schemas.ObjectTypeAgentState), schemas.IDPrefixState + ev.Identity.EventID
 	default:
@@ -94,13 +97,14 @@ func (w *InMemoryObjectMaterializationWorker) Info() nodes.NodeInfo {
 func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) error {
 	ev = ev.NormalizeDynamicEventV04()
 	now := time.Now().UTC().Format(time.RFC3339)
-	switch ev.EventInfo.EventType {
-	case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
+	if ev.IsArtifactLike() ||
+		ev.EventInfo.EventType == string(schemas.EventTypeToolCall) ||
+		ev.EventInfo.EventType == string(schemas.EventTypeToolResult) {
 		artifact := schemas.Artifact{
-			ArtifactID:        schemas.IDPrefixArtifact + ev.Identity.EventID,
+			ArtifactID:        ev.ArtifactIDOrDefault(),
 			SessionID:         ev.Actor.SessionID,
 			OwnerAgentID:      ev.Actor.AgentID,
-			ArtifactType:      ev.EventInfo.EventType,
+			ArtifactType:      firstNonEmpty(ev.Object.ObjectSubtype, ev.EventInfo.EventType, string(schemas.ObjectTypeArtifact)),
 			ProducedByEventID: ev.Identity.EventID,
 			Version:           ev.Time.LogicalTS,
 		}
@@ -111,6 +115,22 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 			if mime := ev.ArtifactMimeType(); mime != "" {
 				artifact.MimeType = mime
 			}
+		}
+		if artifact.MimeType == "" && artifact.URI == "" {
+			artifact.MimeType = "text/plain"
+		}
+		if name := ev.ArtifactName(); name != "" {
+			if artifact.Metadata == nil {
+				artifact.Metadata = map[string]any{}
+			}
+			artifact.Metadata["name"] = name
+		}
+		if body := ev.ArtifactBodyString(); body != "" {
+			if artifact.Metadata == nil {
+				artifact.Metadata = map[string]any{}
+			}
+			artifact.Metadata["body"] = body
+			artifact.ContentRef = "inline"
 		}
 		w.objStore.PutArtifact(artifact)
 		for _, e := range schemas.BuildArtifactBaseEdges(artifact) {
@@ -132,4 +152,13 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 		// See Runtime.SubmitIngest for the synchronous call site.
 	}
 	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

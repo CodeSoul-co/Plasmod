@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 
 	"plasmod/src/internal/coordinator"
@@ -70,6 +71,7 @@ type Runtime struct {
 	flushStopCh   chan struct{}
 	flushInterval time.Duration
 	flushLoopOnce sync.Once
+	flushDirty    atomic.Bool
 }
 
 func CreateRuntime(
@@ -112,7 +114,9 @@ func CreateRuntime(
 }
 
 func (r *Runtime) RegisterDefaults() {
-	_ = r.bus.Subscribe("wal.events")
+	// EventSubscriber consumes the WAL via Scan polling. Creating an unread
+	// pubsub subscription here would eventually fill its buffer and push
+	// backpressure into WAL append latency.
 }
 
 // TieredObjects returns the tiered object store used on the ingest path, or nil.
@@ -248,6 +252,9 @@ func resolveFlushInterval() time.Duration {
 	if raw == "" {
 		return defaultInterval
 	}
+	if raw == "0" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") {
+		return 0
+	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d <= 0 {
 		return defaultInterval
@@ -278,7 +285,11 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case <-r.flushTicker.C:
+					if !r.flushDirty.CompareAndSwap(true, false) {
+						continue
+					}
 					if err := r.plane.Flush(); err != nil {
+						r.flushDirty.Store(true)
 						log.Printf("[flush-loop] periodic flush failed: %v", err)
 					}
 				case <-r.flushStopCh:
@@ -317,6 +328,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.plane.Ingest(record); err != nil {
 		return nil, err
 	}
+	r.flushDirty.Store(true)
 
 	// ── Synchronous object materialization ─────────────────────────────────
 	// State and Artifact objects are needed immediately for query correctness.
@@ -370,6 +382,12 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if !r.MinimalMode {
 		r.storage.Versions().PutVersion(mat.Version)
 	}
+	if mat.Artifact != nil {
+		r.storage.Objects().PutArtifact(*mat.Artifact)
+		if !r.MinimalMode && mat.ArtifactVersion != nil {
+			r.storage.Versions().PutVersion(*mat.ArtifactVersion)
+		}
+	}
 	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
 		if err := r.memoryBackend.WriteShadow(context.Background(), mat.Memory, ev); err != nil {
 			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
@@ -411,24 +429,34 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 
 	// ── Retrieval plane ───────────────────────────────────────────────────
 	r.nodeManager.DispatchIngest(record)
-	// Build vector index after ingest so VectorStore.Ready() returns true.
-	// This enables vector search on subsequent queries.
-	if err := r.plane.Flush(); err != nil {
-		return nil, err
-	}
 	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
 	if ev.Actor.SessionID != "" {
 		metrics.Global().Session(ev.Actor.SessionID).AddStep()
 		metrics.Global().StorageMemoryCount.Add(1)
 		metrics.Global().StorageEventCount.Add(1)
 	}
-	return map[string]any{
+	ack := map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
 		"event_id":  ev.Identity.EventID,
 		"memory_id": mat.Memory.MemoryID,
 		"edges":     len(mat.Edges),
-	}, nil
+	}
+	if len(mat.Edges) > 0 {
+		edgeIDs := make([]string, 0, len(mat.Edges))
+		for _, edge := range mat.Edges {
+			if strings.TrimSpace(edge.EdgeID) != "" {
+				edgeIDs = append(edgeIDs, edge.EdgeID)
+			}
+		}
+		if len(edgeIDs) > 0 {
+			ack["edge_ids"] = edgeIDs
+		}
+	}
+	if mat.Artifact != nil {
+		ack["artifact_id"] = mat.Artifact.ArtifactID
+	}
+	return ack, nil
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
@@ -867,6 +895,12 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 			if r.storage != nil {
 				for _, a := range r.storage.Objects().ListArtifacts(sessionID) {
 					ids = append(ids, a.ArtifactID)
+				}
+			}
+		case "edge", "relation":
+			if r.storage != nil && r.storage.Edges() != nil {
+				for _, e := range r.storage.Edges().ListEdges() {
+					ids = append(ids, e.EdgeID)
 				}
 			}
 		}

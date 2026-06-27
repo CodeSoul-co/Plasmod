@@ -21,6 +21,8 @@ var knownQueryableTypes = map[string]struct{}{
 	"state":       {},
 	"artifact":    {},
 	"event":       {},
+	"edge":        {},
+	"relation":    {},
 }
 
 // EffectiveObjectTypes returns the object-type filter to apply for a query.
@@ -52,7 +54,7 @@ func EffectiveObjectTypes(requested []string) []string {
 }
 
 // CanonicalObjectKindFromID infers the query object kind from a canonical object ID
-// prefix (mem_, state_, art_). Returns empty string when the prefix is unknown.
+// prefix (mem_, state_, art_, edge_). Returns empty string when the prefix is unknown.
 func CanonicalObjectKindFromID(objectID string) string {
 	switch {
 	case strings.HasPrefix(objectID, schemas.IDPrefixMemory):
@@ -61,6 +63,8 @@ func CanonicalObjectKindFromID(objectID string) string {
 		return string(schemas.ObjectTypeAgentState)
 	case strings.HasPrefix(objectID, schemas.IDPrefixArtifact):
 		return "artifact"
+	case strings.HasPrefix(objectID, schemas.IDPrefixEdge):
+		return "edge"
 	default:
 		return ""
 	}
