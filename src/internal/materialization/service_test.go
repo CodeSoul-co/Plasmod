@@ -251,6 +251,25 @@ func TestService_MaterializeEvent_SkipVectorIndexWhenEmbeddingDisabled(t *testin
 	}
 }
 
+func TestService_MaterializeEvent_SkipVectorIndexEnvOverride(t *testing.T) {
+	t.Setenv("PLASMOD_SKIP_VECTOR_INDEX", "1")
+	svc := NewService()
+	res := svc.MaterializeEvent(schemas.Event{
+		SchemaVersion: schemas.DynamicEventSchemaV04,
+		Identity:      schemas.EventIdentity{EventID: "evt_skip_env", WorkspaceID: "ws_1"},
+		Actor:         schemas.EventActor{AgentID: "agent_1", SessionID: "sess_1"},
+		EventInfo:     schemas.EventDescriptor{EventType: "memory"},
+		Retrieval: schemas.EventRetrieval{
+			IndexText:       "event with explicit vector but global indexing disabled",
+			HasEmbedding:    true,
+			EmbeddingVector: []float32{0.1, 0.2, 0.3},
+		},
+	})
+	if !res.Record.SkipVectorIndex {
+		t.Fatal("PLASMOD_SKIP_VECTOR_INDEX should override per-event embedding settings")
+	}
+}
+
 func TestService_MaterializeEvent_EdgeDerivation(t *testing.T) {
 	svc := NewService()
 	ev := schemas.Event{
