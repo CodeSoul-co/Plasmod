@@ -317,6 +317,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 }
 
 func (e Event) NormalizeDynamicEventV04() Event {
+	e = e.cloneDynamicFields()
 	if hasOnlyLegacyEventFields(e) {
 		e = e.promoteLegacyToDynamic()
 	}
@@ -375,6 +376,33 @@ func (e Event) NormalizeDynamicEventV04() Event {
 	e.copyIdentityPayloadHints()
 	e.copyObjectPayloadHints()
 	e.ensureDataAccounting()
+	return e
+}
+
+func (e Event) cloneDynamicFields() Event {
+	e.Object.Version = cloneJSONValue(e.Object.Version)
+	e.Causality.CausalRefs = cloneStringSlice(e.Causality.CausalRefs)
+	e.Causality.ProvenanceRefs = cloneStringSlice(e.Causality.ProvenanceRefs)
+	e.Causality.SourceObjectIDs = cloneStringSlice(e.Causality.SourceObjectIDs)
+	e.Causality.TargetObjectIDs = cloneStringSlice(e.Causality.TargetObjectIDs)
+	e.Causality.Hooks = cloneEventHooks(e.Causality.Hooks)
+	e.Access.VisibleToAgents = cloneStringSlice(e.Access.VisibleToAgents)
+	e.Access.VisibleToRoles = cloneStringSlice(e.Access.VisibleToRoles)
+	e.Access.PolicyTags = cloneStringSlice(e.Access.PolicyTags)
+	e.Access.Hooks = cloneEventHooks(e.Access.Hooks)
+	e.Materialization.Targets = cloneStringSlice(e.Materialization.Targets)
+	e.Materialization.PlannedObjectIDs = cloneStringSlice(e.Materialization.PlannedObjectIDs)
+	e.Materialization.Hooks = cloneEventHooks(e.Materialization.Hooks)
+	e.Retrieval.EmbeddingVector = append([]float32(nil), e.Retrieval.EmbeddingVector...)
+	e.Retrieval.IndexFields = cloneStringSlice(e.Retrieval.IndexFields)
+	e.Retrieval.SparseTerms = cloneFloatMap(e.Retrieval.SparseTerms)
+	e.Retrieval.Hooks = cloneEventHooks(e.Retrieval.Hooks)
+	e.Extensions.Custom = cloneAnyMap(e.Extensions.Custom)
+	e.Extensions.Labels = cloneStringSlice(e.Extensions.Labels)
+	e.Extensions.Hooks = cloneEventHooks(e.Extensions.Hooks)
+	e.Payload = cloneAnyMap(e.Payload)
+	e.CausalRefs = cloneStringSlice(e.CausalRefs)
+	e.EmbeddingVector = append([]float32(nil), e.EmbeddingVector...)
 	return e
 }
 
@@ -717,6 +745,80 @@ func mergeHookNames(groups ...[]string) []string {
 		}
 	}
 	return out
+}
+
+func cloneEventHooks(in EventHooks) EventHooks {
+	return EventHooks{
+		Materializers: cloneStringSlice(in.Materializers),
+		Indexers:      cloneStringSlice(in.Indexers),
+		QueryOps:      cloneStringSlice(in.QueryOps),
+		Policy:        cloneStringSlice(in.Policy),
+		Evidence:      cloneStringSlice(in.Evidence),
+		Chains:        cloneStringSlice(in.Chains),
+		Custom:        cloneStringSlice(in.Custom),
+	}
+}
+
+func cloneStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]string(nil), in...)
+}
+
+func cloneFloatMap(in map[string]float64) map[string]float64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneJSONValue(value)
+	}
+	return out
+}
+
+func cloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, value := range typed {
+			out[key] = value
+		}
+		return out
+	case map[string]float64:
+		return cloneFloatMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	case []string:
+		return cloneStringSlice(typed)
+	case []float64:
+		return append([]float64(nil), typed...)
+	case []float32:
+		return append([]float32(nil), typed...)
+	case []int:
+		return append([]int(nil), typed...)
+	case []int64:
+		return append([]int64(nil), typed...)
+	default:
+		return value
+	}
 }
 
 func (e Event) payloadString(key string) string {

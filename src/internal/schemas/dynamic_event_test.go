@@ -219,6 +219,83 @@ func TestDynamicEventV04AcceptsProducerAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeDynamicEventClonesMutableFields(t *testing.T) {
+	ev := Event{
+		SchemaVersion: DynamicEventSchemaV04,
+		Identity: EventIdentity{
+			EventID: "evt_clone",
+			Dataset: "dataset_a",
+		},
+		Actor: EventActor{
+			SessionID: "sess_clone",
+			AgentID:   "agent_clone",
+		},
+		EventInfo: EventDescriptor{EventType: "memory"},
+		Object: EventObject{
+			ObjectID: "obj_clone",
+			Version:  map[string]any{"nested": "v1"},
+		},
+		Causality: EventCausality{
+			CausalRefs: []string{"evt_parent"},
+		},
+		Access: EventAccess{
+			VisibleToAgents: []string{"agent_clone"},
+		},
+		Retrieval: EventRetrieval{
+			IndexFields: []string{"payload.text"},
+			SparseTerms: map[string]float64{"alpha": 1},
+		},
+		Extensions: EventExtensions{
+			Custom: map[string]any{"nested": map[string]any{"k": "v1"}},
+			Labels: []string{"label_a"},
+		},
+		Payload: map[string]any{
+			"text":   "hello",
+			"nested": map[string]any{"k": "v1"},
+			"list":   []any{map[string]any{"k": "v1"}},
+		},
+	}
+
+	normalized := ev.NormalizeDynamicEventV04()
+	ev.Payload["text"] = "changed"
+	ev.Payload["dataset"] = "changed_dataset"
+	ev.Payload["nested"].(map[string]any)["k"] = "changed"
+	ev.Payload["list"].([]any)[0].(map[string]any)["k"] = "changed"
+	ev.Extensions.Custom["nested"].(map[string]any)["k"] = "changed"
+	ev.Causality.CausalRefs[0] = "changed_parent"
+	ev.Access.VisibleToAgents[0] = "changed_agent"
+	ev.Retrieval.IndexFields[0] = "changed_field"
+	ev.Retrieval.SparseTerms["alpha"] = 2
+
+	if got := normalized.Payload["text"]; got != "hello" {
+		t.Fatalf("payload text shared with source event, got %v", got)
+	}
+	if got := normalized.Payload["dataset"]; got != "dataset_a" {
+		t.Fatalf("payload dataset should be copied before mutation, got %v", got)
+	}
+	if got := normalized.Payload["nested"].(map[string]any)["k"]; got != "v1" {
+		t.Fatalf("nested payload map shared with source event, got %v", got)
+	}
+	if got := normalized.Payload["list"].([]any)[0].(map[string]any)["k"]; got != "v1" {
+		t.Fatalf("nested payload list map shared with source event, got %v", got)
+	}
+	if got := normalized.Extensions.Custom["nested"].(map[string]any)["k"]; got != "v1" {
+		t.Fatalf("extensions custom map shared with source event, got %v", got)
+	}
+	if got := normalized.Causality.CausalRefs[0]; got != "evt_parent" {
+		t.Fatalf("causal refs shared with source event, got %v", got)
+	}
+	if got := normalized.Access.VisibleToAgents[0]; got != "agent_clone" {
+		t.Fatalf("visible agents shared with source event, got %v", got)
+	}
+	if got := normalized.Retrieval.IndexFields[0]; got != "payload.text" {
+		t.Fatalf("index fields shared with source event, got %v", got)
+	}
+	if got := normalized.Retrieval.SparseTerms["alpha"]; got != 1 {
+		t.Fatalf("sparse terms shared with source event, got %v", got)
+	}
+}
+
 func TestEventHooksMergeModuleAndExtensionHooks(t *testing.T) {
 	ev := Event{
 		Materialization: EventMaterialization{
