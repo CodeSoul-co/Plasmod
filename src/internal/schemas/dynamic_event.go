@@ -907,6 +907,8 @@ func NormalizeObjectTypeName(value string) string {
 	switch v {
 	case "agent_state", "state":
 		return string(ObjectTypeAgentState)
+	case "relation":
+		return "edge"
 	default:
 		return v
 	}

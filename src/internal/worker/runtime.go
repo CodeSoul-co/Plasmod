@@ -501,6 +501,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 			result.ObjectIDs = appendMissing(result.ObjectIDs, selectorIDs)
 		}
 	}
+	result.ObjectIDs = appendMissing(result.ObjectIDs, r.fetchTargetObjectIDs(req))
 	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs, result.ColdObjectIDs)
 	retrievalHitCount := len(result.ObjectIDs)
 
@@ -815,6 +816,45 @@ func (r *Runtime) fetchMemoryIDsByStructuredSelectors(req schemas.QueryRequest) 
 	return ids
 }
 
+func (r *Runtime) fetchTargetObjectIDs(req schemas.QueryRequest) []string {
+	if r.storage == nil || len(req.TargetObjectIDs) == 0 {
+		return nil
+	}
+	objects := r.storage.Objects()
+	edges := r.storage.Edges()
+	out := make([]string, 0, len(req.TargetObjectIDs))
+	for _, raw := range req.TargetObjectIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if objects != nil {
+			if mem, ok := objects.GetMemory(id); ok && memoryMatchesStructuredSelectorsBase(mem, req) {
+				out = append(out, id)
+				continue
+			}
+			if st, ok := objects.GetState(id); ok && stateMatchesQuerySelectors(st, req) {
+				out = append(out, id)
+				continue
+			}
+			if art, ok := objects.GetArtifact(id); ok && artifactMatchesQuerySelectors(art, req) {
+				out = append(out, id)
+				continue
+			}
+			if ev, ok := objects.GetEvent(id); ok && eventMatchesQuerySelectors(ev.NormalizeDynamicEventV04(), req) {
+				out = append(out, id)
+				continue
+			}
+		}
+		if edges != nil {
+			if edge, ok := edges.GetEdge(id); ok && edgeMatchesQuerySelectors(edge, req) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
 func memoryMatchesStructuredSelectorsBase(mem schemas.Memory, req schemas.QueryRequest) bool {
 	workspaceID := strings.TrimSpace(req.WorkspaceID)
 	if workspaceID != "" && mem.Scope != workspaceID {
@@ -836,6 +876,50 @@ func memoryMatchesStructuredSelectorsBase(mem schemas.Memory, req schemas.QueryR
 	if sourceFile != "" && mem.SourceFileName != sourceFile {
 		return false
 	}
+	return true
+}
+
+func stateMatchesQuerySelectors(st schemas.State, req schemas.QueryRequest) bool {
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && st.AgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && st.SessionID != sessionID {
+		return false
+	}
+	return true
+}
+
+func artifactMatchesQuerySelectors(art schemas.Artifact, req schemas.QueryRequest) bool {
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && art.OwnerAgentID != "" && art.OwnerAgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && art.SessionID != sessionID {
+		return false
+	}
+	return true
+}
+
+func eventMatchesQuerySelectors(ev schemas.Event, req schemas.QueryRequest) bool {
+	workspaceID := strings.TrimSpace(req.WorkspaceID)
+	if workspaceID != "" && ev.Identity.WorkspaceID != "" && ev.Identity.WorkspaceID != workspaceID {
+		return false
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && ev.Actor.AgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && ev.Actor.SessionID != sessionID {
+		return false
+	}
+	return true
+}
+
+func edgeMatchesQuerySelectors(edge schemas.Edge, req schemas.QueryRequest) bool {
 	return true
 }
 
@@ -1322,7 +1406,11 @@ func (r *Runtime) attachEmbeddingProvenance(
 		candidateLists = append(candidateLists, currentIDs)
 	}
 	if len(candidateLists) > 0 {
-		fused := rrfFuseStringLists(candidateLists, 60, req.TopK)
+		topK := req.TopK
+		if len(req.TargetObjectIDs) > topK {
+			topK = len(req.TargetObjectIDs)
+		}
+		fused := rrfFuseStringLists(candidateLists, 60, topK)
 		if len(fused) > 0 {
 			resp.Objects = fused
 		}

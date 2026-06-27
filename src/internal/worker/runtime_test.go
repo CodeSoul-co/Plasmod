@@ -70,6 +70,15 @@ func buildTestRuntime(t *testing.T) *Runtime {
 	return CreateRuntime(wal, bus, plane, coord, policy, planner, materializer, preCompute, assembler, evCache, nil, nil, nodeManager, store, tieredObjs)
 }
 
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRuntime_IngestAndQuery(t *testing.T) {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
@@ -1147,12 +1156,12 @@ func TestRuntime_VectorOnlyMode_SkipsGraphAndProvenance(t *testing.T) {
 
 	r := buildTestRuntime(t)
 	_, err := r.SubmitIngest(schemas.Event{
-		EventID:   "evt_vector_only_mode_1",
-		TenantID:  "tenant_vector_only",
+		EventID:     "evt_vector_only_mode_1",
+		TenantID:    "tenant_vector_only",
 		WorkspaceID: "ws_vector_only",
-		AgentID:   "agent_vector_only",
-		SessionID: "sess_vector_only",
-		Payload:   map[string]any{"text": "hello andb vector only"},
+		AgentID:     "agent_vector_only",
+		SessionID:   "sess_vector_only",
+		Payload:     map[string]any{"text": "hello andb vector only"},
 	})
 	if err != nil {
 		t.Fatalf("SubmitIngest failed: %v", err)
@@ -1178,5 +1187,70 @@ func TestRuntime_VectorOnlyMode_SkipsGraphAndProvenance(t *testing.T) {
 	}
 	if resp.Retrieval.CanonicalAdds != 0 {
 		t.Fatalf("expected canonical adds to be disabled in vector-only mode, got %d", resp.Retrieval.CanonicalAdds)
+	}
+}
+
+func TestRuntime_QueryTargetObjectIDsExactVisibility(t *testing.T) {
+	r := buildTestRuntime(t)
+	r.storage.Objects().PutMemory(schemas.Memory{
+		MemoryID:  "mem_target_exact",
+		AgentID:   "agent_target",
+		SessionID: "sess_target",
+		Scope:     "ws_target",
+		Content:   "exact target memory",
+		IsActive:  true,
+	})
+	r.storage.Objects().PutState(schemas.State{
+		StateID:   "state_target_exact",
+		AgentID:   "agent_target",
+		SessionID: "sess_target",
+		StateKey:  "phase",
+	})
+	r.storage.Objects().PutArtifact(schemas.Artifact{
+		ArtifactID:   "art_target_exact",
+		SessionID:    "sess_target",
+		OwnerAgentID: "agent_target",
+	})
+	r.storage.Edges().PutEdge(schemas.Edge{
+		EdgeID:      "edge_target_exact",
+		SrcObjectID: "mem_target_exact",
+		EdgeType:    "derived_from",
+		DstObjectID: "art_target_exact",
+	})
+
+	req := schemas.QueryRequest{
+		QueryText:       "unrelated text should not matter",
+		AgentID:         "agent_target",
+		SessionID:       "sess_target",
+		WorkspaceID:     "ws_target",
+		TopK:            1,
+		ObjectTypes:     []string{"memory", "agent_state", "artifact", "relation"},
+		TargetObjectIDs: []string{"mem_target_exact", "state_target_exact", "art_target_exact", "edge_target_exact"},
+	}
+	targetIDs := r.fetchTargetObjectIDs(req)
+	for _, id := range []string{"mem_target_exact", "state_target_exact", "art_target_exact", "edge_target_exact"} {
+		if !containsString(targetIDs, id) {
+			t.Fatalf("expected target lookup to include %s, got %v", id, targetIDs)
+		}
+	}
+	resp := r.ExecuteQuery(req)
+	for _, id := range []string{"mem_target_exact", "state_target_exact", "art_target_exact", "edge_target_exact"} {
+		if !containsString(resp.Objects, id) {
+			t.Fatalf("expected target object %s in response, got %v", id, resp.Objects)
+		}
+	}
+
+	miss := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:       "unrelated text should not matter",
+		AgentID:         "agent_target",
+		SessionID:       "other_session",
+		WorkspaceID:     "ws_target",
+		ObjectTypes:     []string{"memory", "agent_state", "artifact"},
+		TargetObjectIDs: []string{"mem_target_exact", "state_target_exact", "art_target_exact"},
+	})
+	for _, id := range []string{"mem_target_exact", "state_target_exact", "art_target_exact"} {
+		if containsString(miss.Objects, id) {
+			t.Fatalf("did not expect scoped target object %s in response, got %v", id, miss.Objects)
+		}
 	}
 }
