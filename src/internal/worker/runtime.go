@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 
 	"plasmod/src/internal/coordinator"
@@ -70,6 +71,7 @@ type Runtime struct {
 	flushStopCh   chan struct{}
 	flushInterval time.Duration
 	flushLoopOnce sync.Once
+	flushDirty    atomic.Bool
 }
 
 func CreateRuntime(
@@ -112,7 +114,9 @@ func CreateRuntime(
 }
 
 func (r *Runtime) RegisterDefaults() {
-	_ = r.bus.Subscribe("wal.events")
+	// EventSubscriber consumes the WAL via Scan polling. Creating an unread
+	// pubsub subscription here would eventually fill its buffer and push
+	// backpressure into WAL append latency.
 }
 
 // TieredObjects returns the tiered object store used on the ingest path, or nil.
@@ -248,6 +252,9 @@ func resolveFlushInterval() time.Duration {
 	if raw == "" {
 		return defaultInterval
 	}
+	if raw == "0" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") {
+		return 0
+	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d <= 0 {
 		return defaultInterval
@@ -278,7 +285,11 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case <-r.flushTicker.C:
+					if !r.flushDirty.CompareAndSwap(true, false) {
+						continue
+					}
 					if err := r.plane.Flush(); err != nil {
+						r.flushDirty.Store(true)
 						log.Printf("[flush-loop] periodic flush failed: %v", err)
 					}
 				case <-r.flushStopCh:
@@ -317,6 +328,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if err := r.plane.Ingest(record); err != nil {
 		return nil, err
 	}
+	r.flushDirty.Store(true)
 
 	// ── Synchronous object materialization ─────────────────────────────────
 	// State and Artifact objects are needed immediately for query correctness.
@@ -370,6 +382,12 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if !r.MinimalMode {
 		r.storage.Versions().PutVersion(mat.Version)
 	}
+	if mat.Artifact != nil {
+		r.storage.Objects().PutArtifact(*mat.Artifact)
+		if !r.MinimalMode && mat.ArtifactVersion != nil {
+			r.storage.Versions().PutVersion(*mat.ArtifactVersion)
+		}
+	}
 	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
 		if err := r.memoryBackend.WriteShadow(context.Background(), mat.Memory, ev); err != nil {
 			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
@@ -388,6 +406,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if mat.Memory.AgentID != "" &&
 		mat.Memory.SessionID != "" &&
 		mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) &&
+		!visibilityOnlyModeEnabled() &&
 		!shouldSkipConflictMergeForEvent(ev) {
 		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
 		r.lastMemMu.RLock()
@@ -402,7 +421,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
-	if r.preCompute != nil {
+	if r.preCompute != nil && !visibilityOnlyModeEnabled() {
 		frag := r.preCompute.Compute(ev, record)
 		if frag.SalienceScore >= 0.5 {
 			r.storage.HotCache().Put(record.ObjectID, ev.EventInfo.EventType, record, frag.SalienceScore)
@@ -410,11 +429,8 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	}
 
 	// ── Retrieval plane ───────────────────────────────────────────────────
-	r.nodeManager.DispatchIngest(record)
-	// Build vector index after ingest so VectorStore.Ready() returns true.
-	// This enables vector search on subsequent queries.
-	if err := r.plane.Flush(); err != nil {
-		return nil, err
+	if !visibilityOnlyModeEnabled() {
+		r.nodeManager.DispatchIngest(record)
 	}
 	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
 	if ev.Actor.SessionID != "" {
@@ -422,13 +438,28 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		metrics.Global().StorageMemoryCount.Add(1)
 		metrics.Global().StorageEventCount.Add(1)
 	}
-	return map[string]any{
+	ack := map[string]any{
 		"status":    "accepted",
 		"lsn":       entry.LSN,
 		"event_id":  ev.Identity.EventID,
 		"memory_id": mat.Memory.MemoryID,
 		"edges":     len(mat.Edges),
-	}, nil
+	}
+	if len(mat.Edges) > 0 {
+		edgeIDs := make([]string, 0, len(mat.Edges))
+		for _, edge := range mat.Edges {
+			if strings.TrimSpace(edge.EdgeID) != "" {
+				edgeIDs = append(edgeIDs, edge.EdgeID)
+			}
+		}
+		if len(edgeIDs) > 0 {
+			ack["edge_ids"] = edgeIDs
+		}
+	}
+	if mat.Artifact != nil {
+		ack["artifact_id"] = mat.Artifact.ArtifactID
+	}
+	return ack, nil
 }
 
 func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
@@ -438,6 +469,26 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		metrics.Global().ConcurrentQueries.Add(-1)
 		metrics.Global().RecordQueryLatency(time.Since(t0Query))
 	}()
+	if req.ResponseMode == schemas.ResponseModeObjectsOnly && len(req.TargetObjectIDs) > 0 {
+		objectIDs := r.fetchTargetObjectIDs(req)
+		objectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), objectIDs, nil)
+		resp := schemas.QueryResponse{
+			Objects: objectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:          "target_object",
+				RetrievalHits: len(objectIDs),
+				CanonicalAdds: 0,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           []string{"target_object_ids fast_path=objects_only"},
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, objectIDs),
+				Query:          []string{"query_chain skipped=objects_only"},
+				Collaboration:  []string{"collaboration_chain skipped=objects_only"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, len(objectIDs))
+		return resp
+	}
 	plan := r.planner.Build(req)
 	vectorOnlyMode := vectorOnlyModeEnabled()
 	searchInput := dataplane.SearchInput{
@@ -473,6 +524,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 			result.ObjectIDs = appendMissing(result.ObjectIDs, selectorIDs)
 		}
 	}
+	result.ObjectIDs = appendMissing(result.ObjectIDs, r.fetchTargetObjectIDs(req))
 	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs, result.ColdObjectIDs)
 	retrievalHitCount := len(result.ObjectIDs)
 
@@ -481,7 +533,7 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	// retrieval plane.  When query requests these types, fetch them from the
 	// canonical store so they appear in the response alongside memory results.
 	canonicalAddCount := 0
-	if !vectorOnlyMode {
+	if !vectorOnlyMode && len(req.TargetObjectIDs) == 0 {
 		canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
 		canonicalAddCount = len(canonicalIDs)
 		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
@@ -504,6 +556,29 @@ func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
 				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs),
 				Query:          []string{"query_chain skipped=vector_only_mode"},
 				Collaboration:  []string{"collaboration_chain skipped=vector_only_mode"},
+			},
+		}
+		applyQueryOutcomeHint(&resp, retrievalHitCount)
+		return resp
+	}
+
+	if req.ResponseMode == schemas.ResponseModeObjectsOnly {
+		resp := schemas.QueryResponse{
+			Objects: result.ObjectIDs,
+			Retrieval: &schemas.RetrievalSummary{
+				Tier:               result.Tier,
+				ColdSearchMode:     result.ColdSearchMode,
+				ColdCandidateCount: result.ColdCandidateCount,
+				ColdTierRequested:  result.ColdTierRequested,
+				ColdUsedFallback:   result.ColdUsedFallback,
+				RetrievalHits:      retrievalHitCount,
+				CanonicalAdds:      canonicalAddCount,
+			},
+			ChainTraces: schemas.ChainTraceSlots{
+				Main:           formatQueryPathMainChainLines(req, result),
+				MemoryPipeline: formatQueryPathMemoryPipelineLines(r.storage, result.ObjectIDs),
+				Query:          []string{"query_chain skipped=objects_only"},
+				Collaboration:  []string{"collaboration_chain skipped=objects_only"},
 			},
 		}
 		applyQueryOutcomeHint(&resp, retrievalHitCount)
@@ -628,7 +703,15 @@ func (r *Runtime) detectContamination(requesterAgentID string, objectIDs []strin
 }
 
 func vectorOnlyModeEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv("PLASMOD_VECTOR_ONLY_MODE"))
+	return envBool("PLASMOD_VECTOR_ONLY_MODE")
+}
+
+func visibilityOnlyModeEnabled() bool {
+	return envBool("PLASMOD_VISIBILITY_ONLY")
+}
+
+func envBool(key string) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
 	switch strings.ToLower(raw) {
 	case "1", "true", "yes", "on":
 		return true
@@ -787,6 +870,45 @@ func (r *Runtime) fetchMemoryIDsByStructuredSelectors(req schemas.QueryRequest) 
 	return ids
 }
 
+func (r *Runtime) fetchTargetObjectIDs(req schemas.QueryRequest) []string {
+	if r.storage == nil || len(req.TargetObjectIDs) == 0 {
+		return nil
+	}
+	objects := r.storage.Objects()
+	edges := r.storage.Edges()
+	out := make([]string, 0, len(req.TargetObjectIDs))
+	for _, raw := range req.TargetObjectIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if objects != nil {
+			if mem, ok := objects.GetMemory(id); ok && memoryMatchesStructuredSelectorsBase(mem, req) {
+				out = append(out, id)
+				continue
+			}
+			if st, ok := objects.GetState(id); ok && stateMatchesQuerySelectors(st, req) {
+				out = append(out, id)
+				continue
+			}
+			if art, ok := objects.GetArtifact(id); ok && artifactMatchesQuerySelectors(art, req) {
+				out = append(out, id)
+				continue
+			}
+			if ev, ok := objects.GetEvent(id); ok && eventMatchesQuerySelectors(ev.NormalizeDynamicEventV04(), req) {
+				out = append(out, id)
+				continue
+			}
+		}
+		if edges != nil {
+			if edge, ok := edges.GetEdge(id); ok && edgeMatchesQuerySelectors(edge, req) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
 func memoryMatchesStructuredSelectorsBase(mem schemas.Memory, req schemas.QueryRequest) bool {
 	workspaceID := strings.TrimSpace(req.WorkspaceID)
 	if workspaceID != "" && mem.Scope != workspaceID {
@@ -808,6 +930,50 @@ func memoryMatchesStructuredSelectorsBase(mem schemas.Memory, req schemas.QueryR
 	if sourceFile != "" && mem.SourceFileName != sourceFile {
 		return false
 	}
+	return true
+}
+
+func stateMatchesQuerySelectors(st schemas.State, req schemas.QueryRequest) bool {
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && st.AgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && st.SessionID != sessionID {
+		return false
+	}
+	return true
+}
+
+func artifactMatchesQuerySelectors(art schemas.Artifact, req schemas.QueryRequest) bool {
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && art.OwnerAgentID != "" && art.OwnerAgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && art.SessionID != sessionID {
+		return false
+	}
+	return true
+}
+
+func eventMatchesQuerySelectors(ev schemas.Event, req schemas.QueryRequest) bool {
+	workspaceID := strings.TrimSpace(req.WorkspaceID)
+	if workspaceID != "" && ev.Identity.WorkspaceID != "" && ev.Identity.WorkspaceID != workspaceID {
+		return false
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && ev.Actor.AgentID != agentID {
+		return false
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID != "" && ev.Actor.SessionID != sessionID {
+		return false
+	}
+	return true
+}
+
+func edgeMatchesQuerySelectors(edge schemas.Edge, req schemas.QueryRequest) bool {
 	return true
 }
 
@@ -867,6 +1033,12 @@ func (r *Runtime) fetchCanonicalObjects(objectTypes []string, agentID, sessionID
 			if r.storage != nil {
 				for _, a := range r.storage.Objects().ListArtifacts(sessionID) {
 					ids = append(ids, a.ArtifactID)
+				}
+			}
+		case "edge", "relation":
+			if r.storage != nil && r.storage.Edges() != nil {
+				for _, e := range r.storage.Edges().ListEdges() {
+					ids = append(ids, e.EdgeID)
 				}
 			}
 		}
@@ -1288,7 +1460,11 @@ func (r *Runtime) attachEmbeddingProvenance(
 		candidateLists = append(candidateLists, currentIDs)
 	}
 	if len(candidateLists) > 0 {
-		fused := rrfFuseStringLists(candidateLists, 60, req.TopK)
+		topK := req.TopK
+		if len(req.TargetObjectIDs) > topK {
+			topK = len(req.TargetObjectIDs)
+		}
+		fused := rrfFuseStringLists(candidateLists, 60, topK)
 		if len(fused) > 0 {
 			resp.Objects = fused
 		}

@@ -2,6 +2,7 @@ package materialization
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -51,12 +52,13 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	record := dataplane.IngestRecord{
-		ObjectID:    memoryID,
-		Text:        text,
-		Namespace:   namespace,
-		Attributes:  buildAttributes(ev),
-		EventUnixTS: parseEventUnixTS(ev),
-		Embedding:   ev.Retrieval.EmbeddingVector,
+		ObjectID:        memoryID,
+		Text:            text,
+		Namespace:       namespace,
+		Attributes:      buildAttributes(ev),
+		EventUnixTS:     parseEventUnixTS(ev),
+		Embedding:       ev.Retrieval.EmbeddingVector,
+		SkipVectorIndex: skipVectorIndex(ev),
 	}
 
 	mem := schemas.Memory{
@@ -127,6 +129,21 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		Artifact:        art,
 		ArtifactVersion: artVer,
 	}
+}
+
+func skipVectorIndex(ev schemas.Event) bool {
+	if envEnabled("PLASMOD_SKIP_VECTOR_INDEX") {
+		return true
+	}
+	if len(ev.Retrieval.EmbeddingVector) > 0 || len(ev.EmbeddingVector) > 0 {
+		return false
+	}
+	return strings.TrimSpace(ev.Retrieval.IndexText) != "" && !ev.Retrieval.HasEmbedding
+}
+
+func envEnabled(key string) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes") || strings.EqualFold(value, "on")
 }
 
 // ProjectEvent is kept for backward-compatibility.  New code should call
@@ -402,16 +419,19 @@ func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*sche
 // "artifact" map with "uri", or event_type artifact_attached / tool_result_returned with uri.
 func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Artifact, *schemas.ObjectVersion) {
 	uri := ev.ArtifactURI()
-	if uri == "" {
+	if uri == "" && !ev.IsArtifactLike() {
 		return nil, nil
 	}
-	artID := fmt.Sprintf("art_%s", ev.Identity.EventID)
+	artID := ev.ArtifactIDOrDefault()
 	mime := ev.ArtifactMimeType()
+	if mime == "" && uri == "" {
+		mime = "text/plain"
+	}
 	art := &schemas.Artifact{
 		ArtifactID:        artID,
 		SessionID:         ev.Actor.SessionID,
 		OwnerAgentID:      ev.Actor.AgentID,
-		ArtifactType:      "external_ref",
+		ArtifactType:      firstNonEmpty(ev.Object.ObjectSubtype, ev.EventInfo.EventType, "artifact"),
 		URI:               uri,
 		MimeType:          mime,
 		ProducedByEventID: ev.Identity.EventID,
@@ -423,6 +443,13 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		}
 		art.Metadata["name"] = name
 	}
+	if body := ev.ArtifactBodyString(); body != "" {
+		if art.Metadata == nil {
+			art.Metadata = map[string]any{}
+		}
+		art.Metadata["body"] = body
+		art.ContentRef = "inline"
+	}
 	ver := &schemas.ObjectVersion{
 		ObjectID:        artID,
 		ObjectType:      "artifact",
@@ -432,4 +459,13 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
 	}
 	return art, ver
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

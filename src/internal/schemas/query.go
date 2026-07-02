@@ -31,6 +31,7 @@ type QueryRequest struct {
 	TopK                int        `json:"top_k"`
 	TimeWindow          TimeWindow `json:"time_window"`
 	ObjectTypes         []string   `json:"object_types,omitempty"`
+	TargetObjectIDs     []string   `json:"target_object_ids,omitempty"`
 	MemoryTypes         []string   `json:"memory_types,omitempty"`
 	EdgeTypes           []string   `json:"edge_types,omitempty"`
 	RelationConstraints []string   `json:"relation_constraints"`

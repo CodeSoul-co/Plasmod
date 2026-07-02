@@ -92,6 +92,41 @@ func TestDynamicEventV04Normalize(t *testing.T) {
 	}
 }
 
+func TestDynamicEventRetrievalAcceptsStructuredIndexText(t *testing.T) {
+	raw := []byte(`{
+		"schema_version": "plasmod.dynamic_event.v0.4",
+		"identity": {"event_id": "evt_structured_index"},
+		"actor": {"agent_id": "agent_1", "session_id": "sess_1"},
+		"event": {"event_type": "tool_result"},
+		"retrieval": {
+			"index_text": {
+				"kind": "environment_output",
+				"body": "",
+				"tool_name": "think",
+				"call_id": "call_1"
+			},
+			"has_embedding": false,
+			"embedding_vect": [0.1, 0.2],
+			"retrieval_namesp": "sess_1"
+		},
+		"payload": {"text": "payload fallback"}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("unmarshal structured retrieval index_text: %v", err)
+	}
+	ev = ev.NormalizeDynamicEventV04()
+	if ev.Retrieval.IndexText == "" || !strings.Contains(ev.Retrieval.IndexText, `"tool_name":"think"`) {
+		t.Fatalf("structured index_text should be JSON string, got %q", ev.Retrieval.IndexText)
+	}
+	if ev.Retrieval.RetrievalNamespace != "sess_1" {
+		t.Fatalf("retrieval_namesp alias not normalized: %q", ev.Retrieval.RetrievalNamespace)
+	}
+	if len(ev.Retrieval.EmbeddingVector) != 2 {
+		t.Fatalf("embedding_vect alias not normalized: %+v", ev.Retrieval.EmbeddingVector)
+	}
+}
+
 func TestNormalizeObjectTypeName(t *testing.T) {
 	if got := NormalizeObjectTypeName("state"); got != string(ObjectTypeAgentState) {
 		t.Fatalf("state should normalize to agent_state, got %q", got)
@@ -151,6 +186,148 @@ func TestEventUnmarshalAcceptsLegacyFlatJSON(t *testing.T) {
 	}
 	if ev.Text() != "flat text" {
 		t.Fatalf("text helper failed: %q", ev.Text())
+	}
+}
+
+func TestDynamicEventV04AcceptsProducerAliases(t *testing.T) {
+	raw := []byte(`{
+		"schema_version": "plasmod.dynamic_event.v0.4",
+		"identity": {
+			"trace_id": "trace_alias",
+			"event_id": "evt_alias",
+			"replay_order": 7
+		},
+		"actor": {
+			"session_id": "session_alias",
+			"agent_id": "agent_alias",
+			"agent_kind": "tool_agent"
+		},
+		"time": {
+			"event_time_ms": 1710000000123,
+			"ingest_time_ms": 1710000001123,
+			"visible_time_ms": 1710000002123,
+			"logical_ts": 99
+		},
+		"event": {
+			"event_type": "tool_result"
+		},
+		"access": {
+			"consistency": "bounded",
+			"sharing": "session"
+		},
+		"retrieval": {
+			"index_text": "alias event text"
+		},
+		"payload": {}
+	}`)
+	var ev Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("unmarshal alias event: %v", err)
+	}
+	if ev.Identity.ReplayOrder != 7 {
+		t.Fatalf("replay_order not retained: %+v", ev.Identity)
+	}
+	if ev.Actor.AgentType != "tool_agent" {
+		t.Fatalf("agent_kind should normalize to agent_type, got %q", ev.Actor.AgentType)
+	}
+	if ev.Time.EventTime != 1710000000123 || ev.Time.IngestTime != 1710000001123 || ev.Time.VisibleTime != 1710000002123 {
+		t.Fatalf("millisecond time aliases not normalized: %+v", ev.Time)
+	}
+	if ev.Access.Visibility != "session" || ev.Visibility != "session" {
+		t.Fatalf("sharing should normalize to visibility, access=%q legacy=%q", ev.Access.Visibility, ev.Visibility)
+	}
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal alias event: %v", err)
+	}
+	body := string(data)
+	for _, forbidden := range []string{`"agent_kind"`, `"event_time_ms"`, `"ingest_time_ms"`, `"visible_time_ms"`, `"sharing"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("canonical JSON should not emit producer alias %s: %s", forbidden, body)
+		}
+	}
+	for _, want := range []string{`"agent_type":"tool_agent"`, `"event_time":1710000000123`, `"visibility":"session"`, `"replay_order":7`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("canonical JSON missing normalized field %s: %s", want, body)
+		}
+	}
+}
+
+func TestNormalizeDynamicEventClonesMutableFields(t *testing.T) {
+	ev := Event{
+		SchemaVersion: DynamicEventSchemaV04,
+		Identity: EventIdentity{
+			EventID: "evt_clone",
+			Dataset: "dataset_a",
+		},
+		Actor: EventActor{
+			SessionID: "sess_clone",
+			AgentID:   "agent_clone",
+		},
+		EventInfo: EventDescriptor{EventType: "memory"},
+		Object: EventObject{
+			ObjectID: "obj_clone",
+			Version:  map[string]any{"nested": "v1"},
+		},
+		Causality: EventCausality{
+			CausalRefs: []string{"evt_parent"},
+		},
+		Access: EventAccess{
+			VisibleToAgents: []string{"agent_clone"},
+		},
+		Retrieval: EventRetrieval{
+			IndexFields: []string{"payload.text"},
+			SparseTerms: map[string]float64{"alpha": 1},
+		},
+		Extensions: EventExtensions{
+			Custom: map[string]any{"nested": map[string]any{"k": "v1"}},
+			Labels: []string{"label_a"},
+		},
+		Payload: map[string]any{
+			"text":   "hello",
+			"nested": map[string]any{"k": "v1"},
+			"list":   []any{map[string]any{"k": "v1"}},
+		},
+	}
+
+	normalized := ev.NormalizeDynamicEventV04()
+	ev.Payload["text"] = "changed"
+	ev.Payload["dataset"] = "changed_dataset"
+	ev.Payload["nested"].(map[string]any)["k"] = "changed"
+	ev.Payload["list"].([]any)[0].(map[string]any)["k"] = "changed"
+	ev.Extensions.Custom["nested"].(map[string]any)["k"] = "changed"
+	ev.Causality.CausalRefs[0] = "changed_parent"
+	ev.Access.VisibleToAgents[0] = "changed_agent"
+	ev.Retrieval.IndexFields[0] = "changed_field"
+	ev.Retrieval.SparseTerms["alpha"] = 2
+
+	if got := normalized.Payload["text"]; got != "hello" {
+		t.Fatalf("payload text shared with source event, got %v", got)
+	}
+	if got := normalized.Payload["dataset"]; got != "dataset_a" {
+		t.Fatalf("payload dataset should be copied before mutation, got %v", got)
+	}
+	if got := normalized.Payload["nested"].(map[string]any)["k"]; got != "v1" {
+		t.Fatalf("nested payload map shared with source event, got %v", got)
+	}
+	if got := normalized.Payload["list"].([]any)[0].(map[string]any)["k"]; got != "v1" {
+		t.Fatalf("nested payload list map shared with source event, got %v", got)
+	}
+	if got := normalized.Extensions.Custom["nested"].(map[string]any)["k"]; got != "v1" {
+		t.Fatalf("extensions custom map shared with source event, got %v", got)
+	}
+	if got := normalized.Causality.CausalRefs[0]; got != "evt_parent" {
+		t.Fatalf("causal refs shared with source event, got %v", got)
+	}
+	if got := normalized.Access.VisibleToAgents[0]; got != "agent_clone" {
+		t.Fatalf("visible agents shared with source event, got %v", got)
+	}
+	if got := normalized.Retrieval.IndexFields[0]; got != "payload.text" {
+		t.Fatalf("index fields shared with source event, got %v", got)
+	}
+	if got := normalized.Retrieval.SparseTerms["alpha"]; got != 1 {
+		t.Fatalf("sparse terms shared with source event, got %v", got)
 	}
 }
 

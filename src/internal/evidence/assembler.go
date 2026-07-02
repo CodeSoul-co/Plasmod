@@ -236,7 +236,7 @@ func (a *Assembler) filterByObjectTypes(ids []string, allowedTypes []string, all
 	}
 	typeSet := make(map[string]bool, len(allowedTypes))
 	for _, t := range allowedTypes {
-		typeSet[t] = true
+		typeSet[schemas.NormalizeObjectTypeName(t)] = true
 	}
 	memTypeSet := make(map[string]bool, len(allowedMemTypes))
 	for _, t := range allowedMemTypes {
@@ -269,9 +269,11 @@ func inferObjectTypeFromID(id string) string {
 	case strings.HasPrefix(id, "evt_"):
 		return "event"
 	case strings.HasPrefix(id, "state_"):
-		return "state"
+		return "agent_state"
 	case strings.HasPrefix(id, "art_") || strings.HasPrefix(id, "tool_trace_"):
 		return "artifact"
+	case strings.HasPrefix(id, "edge_"):
+		return "edge"
 	default:
 		return "memory" // default: treat unknown IDs as memory
 	}
