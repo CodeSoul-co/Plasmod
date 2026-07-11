@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${LLAMA_DIR:-/tmp/go-llama-cpp}"
+LLAMA_REF="${LLAMA_REF:-6a8041ef6b46d4712afc3ae791d1c2d73da0ad1c}"
 BUILD_TYPE="${BUILD_TYPE:-cublas}"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 CUDA_LIB="${CUDA_LIB:-/usr/lib/x86_64-linux-gnu}"
@@ -35,17 +36,21 @@ if [ ! -d "$LLAMA_DIR" ]; then
     echo "Cloning go-llama.cpp ..."
     git clone --depth=1 --recurse-submodules \
         https://github.com/go-skynet/go-llama.cpp "$LLAMA_DIR"
-    # Pin to the commit referenced in go.mod
-    cd "$LLAMA_DIR"
-    git fetch --depth=1 origin 6a8041ef6b46
-    git checkout 6a8041ef6b46
-    git submodule update --init --recursive
 else
     echo "Using existing repository at $LLAMA_DIR"
     cd "$LLAMA_DIR"
 fi
 
 cd "$LLAMA_DIR"
+
+# The Go module is pinned to this source revision. A shallow clone of the
+# current upstream default branch is acceptable only when it resolves exactly
+# to that commit; otherwise fail rather than building mismatched Go and C APIs.
+if [ "$(git rev-parse HEAD)" != "$LLAMA_REF" ]; then
+    echo "ERROR: expected go-llama.cpp revision $LLAMA_REF, got $(git rev-parse HEAD)"
+    echo "       Use LLAMA_DIR with the pinned checkout or set LLAMA_REF explicitly."
+    exit 1
+fi
 
 # ── 2. Apply CUDA patch exactly once ──────────────────────────────────────
 # The Makefile's `prepare` target runs `patch -p1 < patches/1902-cuda.patch`.
