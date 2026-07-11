@@ -298,8 +298,7 @@ This starts Plasmod with MinIO for S3-compatible cold storage.
 
 ## Contributing
 
-<<<<<<< HEAD
-The Plasmod open-source project welcomes contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting patches and the development workflow.
+The Plasmod open-source project welcomes contributions. Open an [issue](https://github.com/CodeSoul-co/Plasmod/issues) for bugs or feature proposals, or start a [discussion](https://github.com/CodeSoul-co/Plasmod/discussions) before larger changes.
 
 ### Build Plasmod from Source
 
@@ -345,9 +344,3 @@ Plasmod is licensed under the [MIT License](LICENSE).
 **[GitHub](https://github.com/CodeSoul-co/Plasmod)** · **[Python SDK](https://github.com/CodeSoul-co/pyplasmod)** · **[Docker Hub](https://hub.docker.com/r/oneflybird/plasmod)** · **[Issues](https://github.com/CodeSoul-co/Plasmod/issues)**
 
 </div>
-=======
-See [`docs/contributing.md`](docs/contributing.md) for contribution guidelines, module ownership, and interface contracts.
-
-## TBD
-Please contact us for more details.
->>>>>>> dev
