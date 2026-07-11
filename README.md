@@ -130,6 +130,12 @@ curl -X POST http://127.0.0.1:19530/v1/query \
 
 Query responses include not just matching content, but also provenance information, proof traces, and related graph edges.
 
+## Public Data Assets
+
+The [Plasmod Agent Event Data](https://huggingface.co/datasets/CodeSoulco/plasmod-agent-event-data-release) dataset provides sanitized JSONL assets derived from real agent-system workflows and normalized by a benchmark-generation pipeline. It contains a compressed sharded mixed event stream and an ordered replay trace, covering event identity, actors, timestamps, state transitions, object lineage, causality, visibility, materialization, retrieval metadata, and runtime timing.
+
+The dataset is maintained separately from this core repository so that data assets can be versioned and consumed independently. See its dataset card for the schema, release manifest, provenance notes, and loading examples.
+
 ## Why Plasmod?
 
 Plasmod is designed to solve the memory problem for AI agents. Here's why developers choose Plasmod over traditional approaches:
