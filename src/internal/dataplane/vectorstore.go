@@ -37,6 +37,7 @@ type VectorStore struct {
 	// Parallel arrays aligned by index: idArray[i] ↔ vectors[i*dim:(i+1)*dim]
 	idArray []string
 	vectors []float32
+	idIndex map[string]int
 
 	mu sync.RWMutex
 
@@ -76,6 +77,7 @@ func NewVectorStore(embedder EmbeddingGenerator, cfg VectorStoreConfig) (*Vector
 	vs := &VectorStore{
 		embedder: embedder,
 		dim:      dim,
+		idIndex:  map[string]int{},
 	}
 
 	hnswM := cfg.HNSWM
@@ -134,8 +136,7 @@ func (vs *VectorStore) AddText(id, text string) {
 	}
 
 	vs.mu.Lock()
-	vs.idArray = append(vs.idArray, id)
-	vs.vectors = append(vs.vectors, vec...)
+	vs.upsertVectorLocked(id, vec)
 	vs.mu.Unlock()
 }
 
@@ -171,8 +172,7 @@ func (vs *VectorStore) AddTexts(ids, texts []string) {
 		if id == "" || len(vecs[i]) == 0 {
 			continue
 		}
-		vs.idArray = append(vs.idArray, id)
-		vs.vectors = append(vs.vectors, vecs[i]...)
+		vs.upsertVectorLocked(id, vecs[i])
 	}
 	vs.mu.Unlock()
 }
@@ -186,9 +186,25 @@ func (vs *VectorStore) AddVector(id string, vec []float32) {
 	}
 
 	vs.mu.Lock()
+	vs.upsertVectorLocked(id, vec)
+	vs.mu.Unlock()
+}
+
+func (vs *VectorStore) upsertVectorLocked(id string, vec []float32) {
+	if id == "" || len(vec) != vs.dim {
+		return
+	}
+	if vs.idIndex == nil {
+		vs.idIndex = map[string]int{}
+	}
+	if idx, ok := vs.idIndex[id]; ok {
+		start := idx * vs.dim
+		copy(vs.vectors[start:start+vs.dim], vec)
+		return
+	}
+	vs.idIndex[id] = len(vs.idArray)
 	vs.idArray = append(vs.idArray, id)
 	vs.vectors = append(vs.vectors, vec...)
-	vs.mu.Unlock()
 }
 
 // Build sends the accumulated float32 matrix to the CGO retriever.
@@ -220,7 +236,6 @@ func (vs *VectorStore) Build() error {
 	vs.indexGen.Add(1)
 	return nil
 }
-
 
 // Snapshot returns copies of buffered ids/vectors for prebuild workflows.
 func (vs *VectorStore) Snapshot() (ids []string, vectors []float32, dim int) {

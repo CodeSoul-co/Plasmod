@@ -3,6 +3,7 @@ package grpcapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -11,6 +12,7 @@ import (
 	"plasmod/src/internal/access"
 	plasmodv1 "plasmod/src/internal/api/grpc/pb/plasmod/v1"
 	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/worker/consistency"
 )
 
 // APIServer implements plasmod.v1.PlasmodAPIService over the shared Gateway service layer.
@@ -23,7 +25,7 @@ func (s *APIServer) Health(context.Context, *plasmodv1.HealthRequest) (*plasmodv
 	return &plasmodv1.HealthResponse{Status: "ok", Transport: "grpc"}, nil
 }
 
-func (s *APIServer) IngestEvent(_ context.Context, req *plasmodv1.IngestEventRequest) (*plasmodv1.IngestEventResponse, error) {
+func (s *APIServer) IngestEvent(ctx context.Context, req *plasmodv1.IngestEventRequest) (*plasmodv1.IngestEventResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetEventJson()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "event_json is required")
 	}
@@ -31,7 +33,7 @@ func (s *APIServer) IngestEvent(_ context.Context, req *plasmodv1.IngestEventReq
 	if err := json.Unmarshal([]byte(req.GetEventJson()), &ev); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid event_json: %v", err)
 	}
-	ack, err := s.Gateway.ServiceIngestEvent(ev)
+	ack, err := s.Gateway.ServiceIngestEventContext(ctx, ev)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -113,7 +115,7 @@ func (s *APIServer) IngestVectorsFlat(_ context.Context, req *plasmodv1.IngestVe
 	}, nil
 }
 
-func (s *APIServer) Query(_ context.Context, req *plasmodv1.QueryRequest) (*plasmodv1.QueryResponse, error) {
+func (s *APIServer) Query(ctx context.Context, req *plasmodv1.QueryRequest) (*plasmodv1.QueryResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetQueryJson()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "query_json is required")
 	}
@@ -121,7 +123,7 @@ func (s *APIServer) Query(_ context.Context, req *plasmodv1.QueryRequest) (*plas
 	if err := json.Unmarshal([]byte(req.GetQueryJson()), &q); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid query_json: %v", err)
 	}
-	resp, err := s.Gateway.ServiceQuery(q)
+	resp, err := s.Gateway.ServiceQueryContext(ctx, q)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -226,7 +228,20 @@ func mapServiceError(err error) error {
 		return nil
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "too many concurrent writes") {
+	if errors.Is(err, context.Canceled) {
+		return status.Error(codes.Canceled, msg)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return status.Error(codes.DeadlineExceeded, msg)
+	}
+	var acceptedNotVisible *consistency.AcceptedNotVisibleError
+	var projectionFailure *consistency.ProjectionFailureError
+	if errors.Is(err, consistency.ErrBackpressure) ||
+		errors.Is(err, consistency.ErrPaused) ||
+		errors.Is(err, consistency.ErrNotStarted) ||
+		errors.As(err, &acceptedNotVisible) ||
+		errors.As(err, &projectionFailure) ||
+		strings.Contains(msg, "too many concurrent writes") {
 		return status.Error(codes.Unavailable, msg)
 	}
 	return status.Error(codes.InvalidArgument, msg)

@@ -31,6 +31,7 @@ import (
 	baseline "plasmod/src/internal/worker/cognitive/baseline"
 	"plasmod/src/internal/worker/cognitive/memorybank"
 	"plasmod/src/internal/worker/cognitive/zep"
+	"plasmod/src/internal/worker/consistency"
 	"plasmod/src/internal/worker/coordination"
 	"plasmod/src/internal/worker/indexing"
 	"plasmod/src/internal/worker/ingestion"
@@ -576,6 +577,15 @@ func BuildServer() (*ServerBundle, error) {
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
 	runtime.VectorOnlyMode = vectorOnlyMode
+	consistencyCfg := consistency.ConfigFromEnv(storageCfg.DataDir, storageCfg.WALPersistence)
+	if err := runtime.ConfigureConsistency(consistencyCfg, watermark); err != nil {
+		_ = bundle.Close()
+		return nil, fmt.Errorf("configure consistency controller: %w", err)
+	}
+	if err := runtime.StartConsistency(context.Background()); err != nil {
+		_ = bundle.Close()
+		return nil, fmt.Errorf("start consistency controller: %w", err)
+	}
 	runtime.RegisterDefaults()
 	if err := runtime.AdminWarmPrebuild(); err != nil {
 		log.Printf("[bootstrap] warm prebuild skipped: %v", err)
@@ -660,7 +670,18 @@ func BuildServer() (*ServerBundle, error) {
 
 	shutdown := func() error {
 		cancel()
-		return bundle.Close()
+		gateway.Shutdown()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), consistencyCfg.ShutdownTimeout)
+		defer cancelShutdown()
+		consistencyErr := runtime.ShutdownConsistency(shutdownCtx)
+		storageErr := bundle.Close()
+		if consistencyErr != nil {
+			if storageErr != nil {
+				return fmt.Errorf("consistency shutdown: %v; storage close: %w", consistencyErr, storageErr)
+			}
+			return consistencyErr
+		}
+		return storageErr
 	}
 
 	grpcCfg := ResolveGRPCConfig()

@@ -1,0 +1,605 @@
+package consistency
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"sync"
+	"time"
+
+	"plasmod/src/internal/eventbackbone"
+	"plasmod/src/internal/schemas"
+)
+
+var (
+	ErrBackpressure  = errors.New("consistency projection queue is full")
+	ErrPaused        = errors.New("consistency controller is paused")
+	ErrNotStarted    = errors.New("consistency controller is not started")
+	errOldGeneration = errors.New("projection belongs to an old runtime generation")
+)
+
+// ProjectFunc applies one accepted WAL entry to canonical and retrieval state.
+type ProjectFunc func(context.Context, eventbackbone.WALEntry) (map[string]any, error)
+
+// AcceptedNotVisibleError reports a durable WAL acceptance whose strict
+// projection did not become visible before the synchronous attempts ended.
+type AcceptedNotVisibleError struct {
+	LSN     int64
+	EventID string
+	Err     error
+}
+
+func (e *AcceptedNotVisibleError) Error() string {
+	return fmt.Sprintf("event %s accepted at lsn %d but not visible: %v", e.EventID, e.LSN, e.Err)
+}
+
+func (e *AcceptedNotVisibleError) Unwrap() error { return e.Err }
+
+type projectionTask struct {
+	entry      eventbackbone.WALEntry
+	mode       Mode
+	lag        time.Duration
+	acceptedAt time.Time
+	deadline   time.Time
+	generation uint64
+	strictDone chan projectionResult
+}
+
+type projectionResult struct {
+	ack map[string]any
+	err error
+}
+
+// ControllerStatus combines mode, queue, and tracker health for operations APIs.
+type ControllerStatus struct {
+	DefaultMode    Mode     `json:"mode"`
+	SupportedModes []string `json:"supported_modes"`
+	DataPathActive bool     `json:"data_path_active"`
+	QueueDepth     int      `json:"queue_depth"`
+	QueueCapacity  int      `json:"queue_capacity"`
+	TrackerStatus
+}
+
+// Controller coordinates WAL acceptance, projection, and query visibility.
+type Controller struct {
+	wal        eventbackbone.WAL
+	project    ProjectFunc
+	cfg        Config
+	checkpoint CheckpointStore
+	tracker    *Tracker
+	initialLSN int64
+
+	modeMu      sync.RWMutex
+	defaultMode Mode
+
+	admissionMu sync.RWMutex
+	appendMu    sync.Mutex
+	slots       chan struct{}
+	queues      []chan projectionTask
+
+	stateMu    sync.RWMutex
+	started    bool
+	accepting  bool
+	generation uint64
+	rootCtx    context.Context
+	cancel     context.CancelFunc
+
+	activeMu      sync.Mutex
+	active        int
+	activeChanged chan struct{}
+	workers       sync.WaitGroup
+}
+
+func NewController(
+	wal eventbackbone.WAL,
+	watermark WatermarkAdvancer,
+	checkpoint CheckpointStore,
+	cfg Config,
+	project ProjectFunc,
+) (*Controller, error) {
+	if wal == nil {
+		return nil, errors.New("consistency controller requires WAL")
+	}
+	if project == nil {
+		return nil, errors.New("consistency controller requires projector")
+	}
+	if cfg.QueueSize <= 0 || cfg.Workers <= 0 || cfg.MaxRetries <= 0 {
+		return nil, fmt.Errorf("invalid consistency capacity: queue=%d workers=%d retries=%d", cfg.QueueSize, cfg.Workers, cfg.MaxRetries)
+	}
+	if cfg.BoundedMaxLag <= 0 || cfg.RetryBaseDelay <= 0 || cfg.RetryMaxDelay < cfg.RetryBaseDelay {
+		return nil, errors.New("invalid consistency duration configuration")
+	}
+	if _, err := ParseMode(string(cfg.DefaultMode)); err != nil {
+		return nil, err
+	}
+	if checkpoint == nil {
+		checkpoint = NewMemoryCheckpoint()
+	}
+	initialLSN, exists, err := checkpoint.Load()
+	if err != nil {
+		return nil, err
+	}
+	if !exists && cfg.BootstrapCheckpointAtLatest {
+		initialLSN = wal.LatestLSN()
+		if err := checkpoint.Save(initialLSN); err != nil {
+			return nil, err
+		}
+	} else if !exists {
+		initialLSN = 0
+	}
+
+	queues := make([]chan projectionTask, cfg.Workers)
+	for i := range queues {
+		queues[i] = make(chan projectionTask, cfg.QueueSize)
+	}
+	return &Controller{
+		wal:           wal,
+		project:       project,
+		cfg:           cfg,
+		checkpoint:    checkpoint,
+		tracker:       NewTracker(initialLSN, watermark, checkpoint),
+		initialLSN:    initialLSN,
+		defaultMode:   cfg.DefaultMode,
+		slots:         make(chan struct{}, cfg.QueueSize),
+		queues:        queues,
+		generation:    1,
+		activeChanged: make(chan struct{}),
+	}, nil
+}
+
+func (c *Controller) Start(ctx context.Context) error {
+	c.stateMu.Lock()
+	if c.started {
+		c.stateMu.Unlock()
+		return nil
+	}
+	c.rootCtx, c.cancel = context.WithCancel(ctx)
+	c.started = true
+	c.accepting = true
+	generation := c.generation
+	c.stateMu.Unlock()
+
+	for i := range c.queues {
+		queue := c.queues[i]
+		c.workers.Add(1)
+		go c.runWorker(queue)
+	}
+
+	return c.recoverFromWAL(generation)
+}
+
+func (c *Controller) recoverFromWAL(generation uint64) error {
+	for _, entry := range c.wal.Scan(c.initialLSN + 1) {
+		if entry.LSN <= c.initialLSN {
+			continue
+		}
+		mode, lag, normalized, err := ResolveWrite(c.currentDefaultMode(), entry.Event, c.cfg.BoundedMaxLag)
+		if err != nil {
+			return err
+		}
+		entry.Event = normalized
+		acceptedAt := acceptedTime(entry.Event)
+		deadline := time.Time{}
+		if mode == BoundedStaleness {
+			deadline = acceptedAt.Add(lag)
+		}
+		select {
+		case c.slots <- struct{}{}:
+		case <-c.rootCtx.Done():
+			return c.rootCtx.Err()
+		}
+		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
+		c.enqueue(projectionTask{
+			entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
+			deadline: deadline, generation: generation,
+		})
+	}
+	return nil
+}
+
+func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]any, error) {
+	c.admissionMu.RLock()
+	defer c.admissionMu.RUnlock()
+
+	c.stateMu.RLock()
+	started, accepting, generation := c.started, c.accepting, c.generation
+	c.stateMu.RUnlock()
+	if !started {
+		return nil, ErrNotStarted
+	}
+	if !accepting {
+		return nil, ErrPaused
+	}
+
+	mode, lag, normalized, err := ResolveWrite(c.currentDefaultMode(), ev, c.cfg.BoundedMaxLag)
+	if err != nil {
+		return nil, err
+	}
+	if mode == BoundedStaleness {
+		status := c.tracker.Status()
+		if status.OldestPendingAge > lag {
+			return nil, ErrBackpressure
+		}
+	}
+	select {
+	case c.slots <- struct{}{}:
+	default:
+		return nil, ErrBackpressure
+	}
+	releaseReservation := true
+	defer func() {
+		if releaseReservation {
+			c.releaseSlot()
+		}
+	}()
+
+	acceptedAt := time.Now()
+	if normalized.Time.IngestTime == 0 {
+		normalized.Time.IngestTime = acceptedAt.UnixMilli()
+	}
+	deadline := time.Time{}
+	if mode == BoundedStaleness {
+		deadline = acceptedAt.Add(lag)
+	}
+
+	c.appendMu.Lock()
+	entry, err := c.wal.Append(normalized)
+	if err == nil {
+		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
+	}
+	c.appendMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	task := projectionTask{
+		entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
+		deadline: deadline, generation: generation,
+	}
+	if mode == StrictVisible {
+		task.strictDone = make(chan projectionResult, 1)
+	}
+	c.enqueue(task)
+	releaseReservation = false
+	if mode == StrictVisible {
+		var result projectionResult
+		select {
+		case result = <-task.strictDone:
+		case <-ctx.Done():
+			result.err = ctx.Err()
+		}
+		if result.err != nil {
+			return nil, &AcceptedNotVisibleError{
+				LSN: entry.LSN, EventID: entry.Event.Identity.EventID, Err: result.err,
+			}
+		}
+		ack := baseAcknowledgement(task, "visible")
+		for key, value := range result.ack {
+			ack[key] = value
+		}
+		ack["consistency_mode"] = string(mode)
+		ack["visibility_status"] = "visible"
+		return ack, nil
+	}
+
+	return baseAcknowledgement(task, "pending"), nil
+}
+
+func (c *Controller) WaitForRead(ctx context.Context, req schemas.QueryRequest) error {
+	mode, err := ResolveRead(c.currentDefaultMode(), req)
+	if err != nil {
+		return err
+	}
+	if mode == EventualVisibility {
+		return nil
+	}
+	waitCtx, cancel := c.withWaitTimeout(ctx)
+	defer cancel()
+	if mode == BoundedStaleness {
+		return c.tracker.WaitWithinLag(waitCtx, c.cfg.BoundedMaxLag)
+	}
+	return c.tracker.WaitThrough(waitCtx, c.wal.LatestLSN())
+}
+
+func (c *Controller) SetDefaultMode(raw string) (Mode, error) {
+	mode, err := ParseMode(raw)
+	if err != nil {
+		return "", err
+	}
+	c.modeMu.Lock()
+	c.defaultMode = mode
+	c.modeMu.Unlock()
+	return mode, nil
+}
+
+func (c *Controller) Status() ControllerStatus {
+	c.stateMu.RLock()
+	active := c.started
+	c.stateMu.RUnlock()
+	return ControllerStatus{
+		DefaultMode:    c.currentDefaultMode(),
+		SupportedModes: []string{string(StrictVisible), string(BoundedStaleness), string(EventualVisibility)},
+		DataPathActive: active,
+		QueueDepth:     len(c.slots),
+		QueueCapacity:  cap(c.slots),
+		TrackerStatus:  c.tracker.Status(),
+	}
+}
+
+func (c *Controller) Pause(ctx context.Context) error {
+	c.admissionMu.Lock()
+	c.stateMu.Lock()
+	if !c.started {
+		c.stateMu.Unlock()
+		c.admissionMu.Unlock()
+		return ErrNotStarted
+	}
+	c.accepting = false
+	c.generation++
+	c.stateMu.Unlock()
+	c.drainQueues()
+	c.admissionMu.Unlock()
+	return c.waitForNoActive(ctx)
+}
+
+func (c *Controller) Reset() error {
+	c.stateMu.RLock()
+	accepting := c.accepting
+	c.stateMu.RUnlock()
+	if accepting {
+		return errors.New("consistency controller must be paused before reset")
+	}
+	if len(c.slots) != 0 {
+		return errors.New("consistency controller still has reserved projection slots")
+	}
+	c.initialLSN = 0
+	return c.tracker.Reset()
+}
+
+func (c *Controller) Resume() {
+	c.stateMu.Lock()
+	if c.started {
+		c.accepting = true
+	}
+	c.stateMu.Unlock()
+}
+
+func (c *Controller) Shutdown(ctx context.Context) error {
+	c.admissionMu.Lock()
+	c.stateMu.Lock()
+	if !c.started {
+		c.stateMu.Unlock()
+		c.admissionMu.Unlock()
+		return nil
+	}
+	c.accepting = false
+	c.stateMu.Unlock()
+	c.admissionMu.Unlock()
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for len(c.slots) > 0 {
+		select {
+		case <-ctx.Done():
+			c.cancel()
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	c.cancel()
+	done := make(chan struct{})
+	go func() {
+		c.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+	}
+	c.stateMu.Lock()
+	c.started = false
+	c.stateMu.Unlock()
+	return nil
+}
+
+func (c *Controller) runWorker(queue <-chan projectionTask) {
+	defer c.workers.Done()
+	for {
+		select {
+		case <-c.rootCtx.Done():
+			return
+		case task := <-queue:
+			if !c.isCurrentGeneration(task.generation) {
+				c.completeStrict(task, nil, errOldGeneration)
+				c.releaseSlot()
+				continue
+			}
+			c.beginActive()
+			if task.strictDone != nil {
+				ack, err := c.projectWithRetry(c.rootCtx, task, false)
+				c.completeStrict(task, ack, err)
+				if err != nil && c.isCurrentGeneration(task.generation) {
+					_, _ = c.projectWithRetry(c.rootCtx, task, true)
+				}
+			} else {
+				_, _ = c.projectWithRetry(c.rootCtx, task, true)
+			}
+			c.endActive()
+			c.releaseSlot()
+		}
+	}
+}
+
+func (c *Controller) completeStrict(task projectionTask, ack map[string]any, err error) {
+	if task.strictDone == nil {
+		return
+	}
+	task.strictDone <- projectionResult{ack: ack, err: err}
+}
+
+func (c *Controller) projectWithRetry(ctx context.Context, task projectionTask, terminal bool) (map[string]any, error) {
+	var lastErr error
+	for attempt := 1; attempt <= c.cfg.MaxRetries; attempt++ {
+		if !c.isCurrentGeneration(task.generation) {
+			return nil, errOldGeneration
+		}
+		_ = c.tracker.MarkProjecting(task.entry.LSN, attempt)
+		ack, err := c.project(ctx, task.entry)
+		if err == nil {
+			if !c.isCurrentGeneration(task.generation) {
+				return nil, errOldGeneration
+			}
+			if !task.deadline.IsZero() && time.Now().After(task.deadline) {
+				c.tracker.MarkSLABreach(task.entry.LSN)
+			}
+			if err := c.tracker.MarkVisible(task.entry.LSN); err != nil {
+				return nil, err
+			}
+			return ack, nil
+		}
+		lastErr = err
+		if attempt == c.cfg.MaxRetries {
+			if terminal {
+				_ = c.tracker.MarkFailed(task.entry.LSN, err)
+			} else {
+				_ = c.tracker.MarkRetrying(task.entry.LSN, attempt, err)
+			}
+			break
+		}
+		_ = c.tracker.MarkRetrying(task.entry.LSN, attempt, err)
+		delay := c.retryDelay(attempt)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Controller) enqueue(task projectionTask) {
+	idx := shardIndex(task.entry.Event, len(c.queues))
+	c.queues[idx] <- task
+}
+
+func (c *Controller) drainQueues() {
+	for _, queue := range c.queues {
+		for {
+			select {
+			case <-queue:
+				c.releaseSlot()
+			default:
+				goto nextQueue
+			}
+		}
+	nextQueue:
+	}
+}
+
+func (c *Controller) beginActive() {
+	c.activeMu.Lock()
+	c.active++
+	c.signalActiveLocked()
+	c.activeMu.Unlock()
+}
+
+func (c *Controller) endActive() {
+	c.activeMu.Lock()
+	c.active--
+	c.signalActiveLocked()
+	c.activeMu.Unlock()
+}
+
+func (c *Controller) waitForNoActive(ctx context.Context) error {
+	for {
+		c.activeMu.Lock()
+		if c.active == 0 {
+			c.activeMu.Unlock()
+			return nil
+		}
+		notify := c.activeChanged
+		c.activeMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-notify:
+		}
+	}
+}
+
+func (c *Controller) signalActiveLocked() {
+	close(c.activeChanged)
+	c.activeChanged = make(chan struct{})
+}
+
+func (c *Controller) isCurrentGeneration(generation uint64) bool {
+	c.stateMu.RLock()
+	current := c.generation
+	c.stateMu.RUnlock()
+	return generation == current
+}
+
+func (c *Controller) currentDefaultMode() Mode {
+	c.modeMu.RLock()
+	mode := c.defaultMode
+	c.modeMu.RUnlock()
+	return mode
+}
+
+func (c *Controller) releaseSlot() {
+	select {
+	case <-c.slots:
+	default:
+	}
+}
+
+func (c *Controller) retryDelay(attempt int) time.Duration {
+	delay := c.cfg.RetryBaseDelay
+	for i := 1; i < attempt && delay < c.cfg.RetryMaxDelay; i++ {
+		delay *= 2
+		if delay > c.cfg.RetryMaxDelay {
+			delay = c.cfg.RetryMaxDelay
+		}
+	}
+	return delay
+}
+
+func (c *Controller) withWaitTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, hasDeadline := ctx.Deadline(); hasDeadline || c.cfg.QueryWaitTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, c.cfg.QueryWaitTimeout)
+}
+
+func baseAcknowledgement(task projectionTask, visibility string) map[string]any {
+	ack := map[string]any{
+		"status":            "accepted",
+		"event_id":          task.entry.Event.Identity.EventID,
+		"memory_id":         schemas.IDPrefixMemory + task.entry.Event.Identity.EventID,
+		"lsn":               task.entry.LSN,
+		"consistency_mode":  string(task.mode),
+		"visibility_status": visibility,
+	}
+	if task.mode == BoundedStaleness {
+		ack["freshness_sla_ms"] = task.lag.Milliseconds()
+	}
+	return ack
+}
+
+func acceptedTime(ev schemas.Event) time.Time {
+	if ev.Time.IngestTime > 0 {
+		return time.UnixMilli(ev.Time.IngestTime)
+	}
+	return time.Now()
+}
+
+func shardIndex(ev schemas.Event, workers int) int {
+	key := ev.Identity.WorkspaceID + "\x00" + ev.Actor.SessionID
+	if key == "\x00" {
+		key = ev.Identity.EventID
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() % uint32(workers))
+}

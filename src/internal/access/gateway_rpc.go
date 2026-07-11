@@ -1,6 +1,7 @@
 package access
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -59,6 +60,10 @@ type WarmBatchFlatQueryResponse struct {
 
 // ServiceIngestEvent ingests a cognitive event (POST /v1/ingest/events semantics).
 func (g *Gateway) ServiceIngestEvent(ev schemas.Event) (any, error) {
+	return g.ServiceIngestEventContext(context.Background(), ev)
+}
+
+func (g *Gateway) ServiceIngestEventContext(ctx context.Context, ev schemas.Event) (any, error) {
 	if err := g.acquireWriteSlot(); err != nil {
 		return nil, err
 	}
@@ -68,7 +73,7 @@ func (g *Gateway) ServiceIngestEvent(ev schemas.Event) (any, error) {
 	if strings.TrimSpace(ev.Identity.EventID) == "" {
 		ev.Identity.EventID = generateObjectID("evt")
 	}
-	ack, err := g.runtime.SubmitIngest(ev)
+	ack, err := g.runtime.SubmitIngestContext(ctx, ev)
 	if err != nil {
 		metrics.Global().RecordRetrievalError()
 		return nil, err
@@ -186,6 +191,10 @@ func (g *Gateway) ServiceIngestVectorsFlat(req WarmFlatVectorsIngestRequest) (*W
 
 // ServiceQuery executes POST /v1/query semantics.
 func (g *Gateway) ServiceQuery(req schemas.QueryRequest) (any, error) {
+	return g.ServiceQueryContext(context.Background(), req)
+}
+
+func (g *Gateway) ServiceQueryContext(ctx context.Context, req schemas.QueryRequest) (any, error) {
 	if strings.TrimSpace(req.WarmSegmentID) != "" {
 		ids, err := g.runtime.SearchWarmSegment(req.WarmSegmentID, req.QueryText, req.TopK, req.EmbeddingVector)
 		if err != nil {
@@ -209,8 +218,7 @@ func (g *Gateway) ServiceQuery(req schemas.QueryRequest) (any, error) {
 			return nil, fmt.Errorf("latest_batch_only requires dataset_name or source_file_name")
 		}
 	}
-	resp := g.runtime.ExecuteQuery(req)
-	return resp, nil
+	return g.runtime.ExecuteQueryContext(ctx, req)
 }
 
 // ServiceQueryBatch executes POST /v1/query/batch warm-segment batch ANN.

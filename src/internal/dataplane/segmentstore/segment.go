@@ -60,12 +60,40 @@ func NewGrowingShard(id string, namespace string) *Shard {
 	}
 }
 
-func (s *Shard) Insert(rec ObjectRecord) {
+func (s *Shard) Insert(rec ObjectRecord) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.Records = append(s.Records, rec)
+	recordIndex := len(s.Records) - 1
 	if rec.EventUnixTS > 0 {
+		if s.MinTS == 0 || rec.EventUnixTS < s.MinTS {
+			s.MinTS = rec.EventUnixTS
+		}
+		if rec.EventUnixTS > s.MaxTS {
+			s.MaxTS = rec.EventUnixTS
+		}
+	}
+	return recordIndex
+}
+
+func (s *Shard) Replace(recordIndex int, rec ObjectRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if recordIndex < 0 || recordIndex >= len(s.Records) {
+		return
+	}
+	s.Records[recordIndex] = rec
+	s.recomputeTimeRange()
+}
+
+func (s *Shard) recomputeTimeRange() {
+	s.MinTS = 0
+	s.MaxTS = 0
+	for _, rec := range s.Records {
+		if rec.EventUnixTS <= 0 {
+			continue
+		}
 		if s.MinTS == 0 || rec.EventUnixTS < s.MinTS {
 			s.MinTS = rec.EventUnixTS
 		}

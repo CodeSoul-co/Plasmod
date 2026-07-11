@@ -77,6 +77,56 @@ func TestEventSubscriber_DrainWAL(t *testing.T) {
 	}
 }
 
+func TestEventSubscriber_VisibilityBoundaryBlocksUnprojectedEntries(t *testing.T) {
+	wal, mgr, _, _ := buildSubscriberRuntime(t)
+	entry, err := wal.Append(schemas.Event{EventID: "evt-pending", AgentID: "a", SessionID: "s"})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	visibleLSN := int64(0)
+	called := 0
+	sub := CreateEventSubscriber(wal, mgr)
+	sub.SetVisibilityBoundary(func() int64 { return visibleLSN })
+	sub.AddHandler(func(eventbackbone.WALEntry) { called++ })
+
+	sub.drainWAL()
+	if called != 0 || sub.lastLSN.Load() != 0 {
+		t.Fatalf("subscriber crossed visibility boundary: called=%d last_lsn=%d", called, sub.lastLSN.Load())
+	}
+
+	visibleLSN = entry.LSN
+	sub.drainWAL()
+	if called != 1 || sub.lastLSN.Load() != entry.LSN {
+		t.Fatalf("subscriber did not resume at visible boundary: called=%d last_lsn=%d", called, sub.lastLSN.Load())
+	}
+}
+
+func TestRuntime_StartSubscriberDisabledInVisibilityOnlyMode(t *testing.T) {
+	t.Setenv("PLASMOD_VISIBILITY_ONLY", "1")
+	runtime := buildTestRuntime(t)
+	subscriber := CreateEventSubscriber(runtime.wal, runtime.nodeManager)
+	subscriber.SetPollInterval(time.Millisecond)
+	called := make(chan struct{}, 1)
+	subscriber.AddHandler(func(eventbackbone.WALEntry) { called <- struct{}{} })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime.StartSubscriber(ctx, subscriber)
+	if _, err := runtime.SubmitIngest(schemas.Event{
+		EventID: "visibility-only", AgentID: "agent", SessionID: "session",
+		Payload: map[string]any{"text": "visibility only"},
+	}); err != nil {
+		t.Fatalf("SubmitIngest: %v", err)
+	}
+
+	select {
+	case <-called:
+		t.Fatal("subscriber ran while PLASMOD_VISIBILITY_ONLY was enabled")
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
 // TestEventSubscriber_MemoryConsolidationTriggered verifies that consolidation
 // fires after consolidateEvery events for the same agent+session.
 // Level-0 memories are pre-seeded to simulate what Runtime.SubmitIngest

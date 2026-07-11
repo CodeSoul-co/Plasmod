@@ -23,6 +23,7 @@ import (
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker/chain"
+	"plasmod/src/internal/worker/consistency"
 	"plasmod/src/internal/worker/nodes"
 	"time"
 )
@@ -49,6 +50,13 @@ type Runtime struct {
 	lastMem   map[string]string
 	lastMemMu sync.RWMutex
 	wipeMu    sync.Mutex
+
+	consistencyMu         sync.Mutex
+	consistencyController *consistency.Controller
+	consistencyConfig     consistency.Config
+	consistencyWatermark  consistency.WatermarkAdvancer
+	subscriberMu          sync.Mutex
+	subscribers           []*EventSubscriber
 
 	// VectorOnlyMode disables graph expansion, policy enforcement, and provenance
 	// tracking to create a pure vector-search baseline (Baseline 1).
@@ -110,6 +118,7 @@ func CreateRuntime(
 		queryChain:        chain.CreateQueryChain(nodeManager),
 		lastMem:           make(map[string]string),
 		memoryBackend:     newMemoryBackendRouterFromEnv(),
+		consistencyConfig: consistency.DefaultConfig(),
 	}
 }
 
@@ -238,7 +247,38 @@ func (r *Runtime) QueryChain() *chain.QueryChain {
 // StartSubscriber launches the EventSubscriber's poll loop as a background
 // goroutine tied to ctx.  The goroutine exits cleanly when ctx is cancelled.
 func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
+	if sub == nil || visibilityOnlyModeEnabled() {
+		return
+	}
+	sub.SetVisibilityBoundary(func() int64 {
+		return r.ConsistencyStatus().VisibleWatermark
+	})
+	r.subscriberMu.Lock()
+	r.subscribers = append(r.subscribers, sub)
+	r.subscriberMu.Unlock()
 	go sub.Run(ctx)
+}
+
+func (r *Runtime) pauseSubscribers() []*EventSubscriber {
+	r.subscriberMu.Lock()
+	subscribers := append([]*EventSubscriber(nil), r.subscribers...)
+	r.subscriberMu.Unlock()
+	for _, subscriber := range subscribers {
+		subscriber.Pause()
+	}
+	return subscribers
+}
+
+func resetSubscribers(subscribers []*EventSubscriber) {
+	for _, subscriber := range subscribers {
+		subscriber.Reset()
+	}
+}
+
+func resumeSubscribers(subscribers []*EventSubscriber) {
+	for _, subscriber := range subscribers {
+		subscriber.Resume()
+	}
 }
 
 // StartMemoryDeleteOutbox is a no-op (deleteOutbox removed)
@@ -300,25 +340,8 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 	})
 }
 
-func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
-	ev = ev.NormalizeDynamicEventV04()
-	t0Ingest := time.Now()
-	if strings.TrimSpace(ev.Identity.EventID) == "" {
-		return nil, errors.New("event_id is required")
-	}
-	if err := validateEmbeddingIngestPayload(ev); err != nil {
-		return nil, err
-	}
-	// IngestWorker validation: runs all registered IngestWorkers before WAL
-	// append so malformed events are rejected before touching durable state.
-	if err := r.nodeManager.DispatchIngestValidation(ev); err != nil {
-		return nil, err
-	}
-	entry, err := r.wal.Append(ev)
-	if err != nil {
-		return nil, err
-	}
-	ev = entry.Event
+func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+	ev := entry.Event.NormalizeDynamicEventV04()
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 
@@ -389,7 +412,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 		}
 	}
 	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
-		if err := r.memoryBackend.WriteShadow(context.Background(), mat.Memory, ev); err != nil {
+		if err := r.memoryBackend.WriteShadow(ctx, mat.Memory, ev); err != nil {
 			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
 		}
 	}
@@ -432,7 +455,9 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	if !visibilityOnlyModeEnabled() {
 		r.nodeManager.DispatchIngest(record)
 	}
-	metrics.Global().RecordWriteLatency(time.Since(t0Ingest))
+	if ev.Time.IngestTime > 0 {
+		metrics.Global().RecordWriteToVisible(time.Since(time.UnixMilli(ev.Time.IngestTime)))
+	}
 	if ev.Actor.SessionID != "" {
 		metrics.Global().Session(ev.Actor.SessionID).AddStep()
 		metrics.Global().StorageMemoryCount.Add(1)
@@ -462,7 +487,7 @@ func (r *Runtime) SubmitIngest(ev schemas.Event) (map[string]any, error) {
 	return ack, nil
 }
 
-func (r *Runtime) ExecuteQuery(req schemas.QueryRequest) schemas.QueryResponse {
+func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	t0Query := time.Now()
 	metrics.Global().ConcurrentQueries.Add(1)
 	defer func() {
@@ -1576,6 +1601,24 @@ func (r *Runtime) AdminWipeAll(bundle *storage.RuntimeBundle, algoCfg schemas.Al
 	r.wipeMu.Lock()
 	defer r.wipeMu.Unlock()
 
+	r.consistencyMu.Lock()
+	pauseTimeout := r.consistencyConfig.ShutdownTimeout
+	r.consistencyMu.Unlock()
+	if pauseTimeout <= 0 {
+		pauseTimeout = 30 * time.Second
+	}
+	pauseCtx, cancelPause := context.WithTimeout(context.Background(), pauseTimeout)
+	defer cancelPause()
+	wasActive, err := r.pauseConsistencyForReset(pauseCtx)
+	if err != nil {
+		return nil, fmt.Errorf("pause consistency projection: %w", err)
+	}
+	if wasActive {
+		defer r.resumeConsistency()
+	}
+	pausedSubscribers := r.pauseSubscribers()
+	defer resumeSubscribers(pausedSubscribers)
+
 	out := map[string]any{"status": "ok"}
 	if bundle != nil && bundle.Badger != nil {
 		if err := bundle.Badger.DropAll(); err != nil {
@@ -1604,6 +1647,11 @@ func (r *Runtime) AdminWipeAll(bundle *storage.RuntimeBundle, algoCfg schemas.Al
 	}
 
 	out["wal"] = r.adminWipeWAL()
+	resetSubscribers(pausedSubscribers)
+	if err := r.resetConsistency(); err != nil {
+		return nil, fmt.Errorf("reset consistency projection: %w", err)
+	}
+	out["consistency_projection"] = "reset"
 
 	if r.derivationLog != nil {
 		if err := r.derivationLog.Wipe(); err != nil {

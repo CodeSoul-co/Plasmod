@@ -2,7 +2,9 @@ package access
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker"
+	"plasmod/src/internal/worker/consistency"
 	"plasmod/src/internal/worker/nodes"
 )
 
@@ -129,6 +132,79 @@ func TestGateway_Healthz(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("/healthz: want 200, got %d", w.Code)
+	}
+}
+
+func TestGateway_AdminConsistencyModeDelegatesToRuntime(t *testing.T) {
+	deps := buildTestGatewayWithDeps()
+	if err := deps.runtime.StartConsistency(context.Background()); err != nil {
+		t.Fatalf("StartConsistency: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = deps.runtime.ShutdownConsistency(ctx)
+	}()
+	mux := http.NewServeMux()
+	deps.gw.RegisterRoutes(mux)
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/admin/consistency-mode", nil)
+	getRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(getRecorder, get)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var initial map[string]any
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &initial); err != nil {
+		t.Fatalf("decode GET: %v", err)
+	}
+	if initial["mode"] != string(consistency.StrictVisible) || initial["data_path_active"] != true {
+		t.Fatalf("GET did not expose active runtime state: %+v", initial)
+	}
+
+	body, _ := json.Marshal(map[string]string{"mode": "bounded"})
+	post := httptest.NewRequest(http.MethodPost, "/v1/admin/consistency-mode", bytes.NewReader(body))
+	postRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(postRecorder, post)
+	if postRecorder.Code != http.StatusOK {
+		t.Fatalf("POST status=%d body=%s", postRecorder.Code, postRecorder.Body.String())
+	}
+	if got := deps.runtime.ConsistencyStatus().DefaultMode; got != consistency.BoundedStaleness {
+		t.Fatalf("runtime mode=%q, want bounded", got)
+	}
+
+	badBody, _ := json.Marshal(map[string]string{"mode": "not-a-mode"})
+	bad := httptest.NewRequest(http.MethodPost, "/v1/admin/consistency-mode", bytes.NewReader(badBody))
+	badRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(badRecorder, bad)
+	if badRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid POST status=%d body=%s", badRecorder.Code, badRecorder.Body.String())
+	}
+	if got := deps.runtime.ConsistencyStatus().DefaultMode; got != consistency.BoundedStaleness {
+		t.Fatalf("invalid mode changed runtime state to %q", got)
+	}
+}
+
+func TestServiceHTTPStatusMapsConsistencyFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "invalid request", err: errors.New("invalid"), want: http.StatusBadRequest},
+		{name: "backpressure", err: consistency.ErrBackpressure, want: http.StatusServiceUnavailable},
+		{name: "paused", err: consistency.ErrPaused, want: http.StatusServiceUnavailable},
+		{name: "accepted not visible", err: &consistency.AcceptedNotVisibleError{LSN: 1, EventID: "event", Err: errors.New("retrying")}, want: http.StatusServiceUnavailable},
+		{name: "projection failed", err: &consistency.ProjectionFailureError{LSN: 1, Err: errors.New("failed")}, want: http.StatusServiceUnavailable},
+		{name: "deadline", err: context.DeadlineExceeded, want: http.StatusGatewayTimeout},
+		{name: "canceled", err: context.Canceled, want: http.StatusRequestTimeout},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := serviceHTTPStatus(tt.err); got != tt.want {
+				t.Fatalf("status=%d want=%d", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -172,6 +172,16 @@ class PlasmodClient:
         resp.raise_for_status()
         return resp.json()
 
+    # ── Consistency controls ─────────────────────────────────────────────────
+
+    def get_consistency_mode(self) -> dict:
+        """Return the active consistency mode and projection health."""
+        return self.get("/v1/admin/consistency-mode")
+
+    def set_consistency_mode(self, mode: str) -> dict:
+        """Set the runtime default consistency mode and return its status."""
+        return self.post("/v1/admin/consistency-mode", {"mode": mode})
+
     # ── Canonical CRUD helpers ────────────────────────────────────────────────
 
     def get(self, path: str) -> dict:

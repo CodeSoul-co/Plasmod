@@ -46,6 +46,26 @@ func TestService_MaterializeEvent_Basic(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEventSeparatesRetrievalNamespaceFromMemoryScope(t *testing.T) {
+	svc := NewService()
+	ev := schemas.Event{
+		Identity:  schemas.EventIdentity{EventID: "evt_scope", WorkspaceID: "workspace"},
+		Actor:     schemas.EventActor{AgentID: "agent", SessionID: "session"},
+		EventInfo: schemas.EventDescriptor{EventType: "observation"},
+		Retrieval: schemas.EventRetrieval{RetrievalNamespace: "session-index"},
+		Payload:   map[string]any{"text": "scope test"},
+	}
+
+	result := svc.MaterializeEvent(ev)
+
+	if result.Record.Namespace != "session-index" {
+		t.Fatalf("retrieval namespace = %q, want session-index", result.Record.Namespace)
+	}
+	if result.Memory.Scope != "workspace" {
+		t.Fatalf("memory scope = %q, want workspace", result.Memory.Scope)
+	}
+}
+
 func TestService_MaterializeEvent_HookAttributes(t *testing.T) {
 	svc := NewService()
 	ev := schemas.Event{

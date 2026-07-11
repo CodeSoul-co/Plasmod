@@ -45,6 +45,29 @@ func TestBuildRuntime_diskAllBadger(t *testing.T) {
 	}
 }
 
+func TestBadgerSnapshotVersionStore_PutVersionIsIdempotent(t *testing.T) {
+	t.Setenv(EnvStorage, "disk")
+	t.Setenv(EnvDataDir, t.TempDir())
+	t.Setenv(EnvBadgerInMemory, "true")
+	bundle, err := buildRuntime(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bundle.Close() }()
+
+	store := bundle.RuntimeStorage.Versions()
+	version := schemas.ObjectVersion{
+		ObjectID: "mem-1", Version: 2, MutationEventID: "evt-1", ValidFrom: "first",
+	}
+	store.PutVersion(version)
+	store.PutVersion(version)
+
+	got := store.GetVersions(version.ObjectID)
+	if len(got) != 1 {
+		t.Fatalf("versions after retry = %d, want 1: %+v", len(got), got)
+	}
+}
+
 func TestBuildRuntime_hybridObjectsDiskRestMemory(t *testing.T) {
 	t.Setenv(EnvStorage, "hybrid")
 	t.Setenv(EnvDataDir, t.TempDir())
