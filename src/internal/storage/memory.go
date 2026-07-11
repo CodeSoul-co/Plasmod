@@ -465,7 +465,19 @@ func newMemorySnapshotVersionStore() *memorySnapshotVersionStore {
 func (s *memorySnapshotVersionStore) PutVersion(v schemas.ObjectVersion) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for idx, existing := range s.versions[v.ObjectID] {
+		if sameObjectVersion(existing, v) {
+			s.versions[v.ObjectID][idx] = v
+			return
+		}
+	}
 	s.versions[v.ObjectID] = append(s.versions[v.ObjectID], v)
+}
+
+func sameObjectVersion(a, b schemas.ObjectVersion) bool {
+	return a.ObjectID == b.ObjectID &&
+		a.Version == b.Version &&
+		a.MutationEventID == b.MutationEventID
 }
 func (s *memorySnapshotVersionStore) GetVersions(objectID string) []schemas.ObjectVersion {
 	s.mu.RLock()

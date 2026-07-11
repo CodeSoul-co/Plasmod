@@ -31,6 +31,7 @@ type SparseStore struct {
 	// Parallel arrays aligned by index: idArray[i] ↔ docs[i]
 	idArray []string
 	docs    []retrievalplane.SparseVector
+	idIndex map[string]int
 
 	mu sync.RWMutex
 }
@@ -50,7 +51,7 @@ func NewSparseStore(cfg SparseStoreConfig) (*SparseStore, error) {
 		itype = retrievalplane.SparseInvertedIndex
 	}
 
-	ss := &SparseStore{indexType: itype}
+	ss := &SparseStore{indexType: itype, idIndex: map[string]int{}}
 
 	r, err := retrievalplane.NewSparseRetriever(itype)
 	if err != nil {
@@ -100,8 +101,7 @@ func (s *SparseStore) AddText(id, text string) {
 		return
 	}
 	s.mu.Lock()
-	s.idArray = append(s.idArray, id)
-	s.docs = append(s.docs, sv)
+	s.upsertLocked(id, sv)
 	s.mu.Unlock()
 }
 
@@ -130,9 +130,26 @@ func (s *SparseStore) AddTexts(ids, texts []string) {
 		return
 	}
 	s.mu.Lock()
-	s.idArray = append(s.idArray, keepIDs...)
-	s.docs = append(s.docs, pairs...)
+	for i, id := range keepIDs {
+		s.upsertLocked(id, pairs[i])
+	}
 	s.mu.Unlock()
+}
+
+func (s *SparseStore) upsertLocked(id string, doc retrievalplane.SparseVector) {
+	if id == "" {
+		return
+	}
+	if s.idIndex == nil {
+		s.idIndex = map[string]int{}
+	}
+	if idx, ok := s.idIndex[id]; ok {
+		s.docs[idx] = doc
+		return
+	}
+	s.idIndex[id] = len(s.idArray)
+	s.idArray = append(s.idArray, id)
+	s.docs = append(s.docs, doc)
 }
 
 // Build sends the accumulated documents to the C++ inverted index.

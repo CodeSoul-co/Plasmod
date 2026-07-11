@@ -3,7 +3,7 @@
 #   docker build -t oneflybird/plasmod:1.21 .
 #
 # Notes:
-# - go.mod replaces github.com/go-skynet/go-llama.cpp with /tmp/go-llama-cpp.
+# - GGUF builds use a pinned go-llama.cpp checkout only for its C binding.
 # - Go is installed from the official tarball in the Debian builder (no golang:* base image).
 
 # Build-time source switches for air-gapped/intranet environments.
@@ -23,6 +23,8 @@ FROM ${BASE_REGISTRY}${DEBIAN_IMAGE} AS builder
 
 ARG APT_MIRROR=
 ARG GO_LLAMACPP_REPO=https://github.com/go-skynet/go-llama.cpp.git
+ARG GO_LLAMACPP_REF=6a8041ef6b46d4712afc3ae791d1c2d73da0ad1c
+ARG TARGETARCH
 ARG GO_VERSION=1.25.0
 # China mirror example: --build-arg GO_DOWNLOAD_BASE=https://mirrors.aliyun.com/golang
 ARG GO_DOWNLOAD_BASE=https://go.dev/dl
@@ -45,45 +47,47 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ONNX Runtime shared library (CPU) for embedding inference.
-RUN curl -fsSL \
-    "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz" \
+# Install the architecture-matched ONNX Runtime shared library for embedding inference.
+RUN target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$target_arch" in amd64) onnx_arch=x64 ;; arm64) onnx_arch=aarch64 ;; *) echo "unsupported ONNX Runtime architecture: $target_arch" >&2; exit 1 ;; esac; \
+    curl -fsSL \
+    "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-${onnx_arch}-${ONNXRUNTIME_VERSION}.tgz" \
     | tar xz -C /tmp && \
-    cp /tmp/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} \
+    cp "/tmp/onnxruntime-linux-${onnx_arch}-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION}" \
        /usr/local/lib/libonnxruntime.so && \
     ldconfig
 
-# go.mod needs >= 1.25.0; install a fixed SDK tarball (GOTOOLCHAIN=local).
-RUN curl -fsSL "${GO_DOWNLOAD_BASE}/go${GO_VERSION}.linux-amd64.tar.gz" \
+# go.mod needs >= 1.25.0. BuildKit supplies TARGETARCH for multi-architecture
+# builds; fall back to Debian's architecture when it is not set.
+RUN go_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$go_arch" in amd64|arm64) ;; *) echo "unsupported Go architecture: $go_arch" >&2; exit 1 ;; esac; \
+    curl -fsSL "${GO_DOWNLOAD_BASE}/go${GO_VERSION}.linux-${go_arch}.tar.gz" \
     | tar -C /usr/local -xzf -
 ENV PATH=/usr/local/go/bin:${PATH}
 ENV GOTOOLCHAIN=local
 
-# Satisfy go.mod local replace for go-llama.cpp.
+# Build the C binding used by the optional GGUF embedder. The Go module itself
+# is resolved from the pinned dependency in go.mod.
 RUN git clone --depth 1 --recurse-submodules "${GO_LLAMACPP_REPO}" /tmp/go-llama-cpp \
     && cd /tmp/go-llama-cpp \
+    && test "$(git rev-parse HEAD)" = "${GO_LLAMACPP_REF}" \
     && make -j"$(nproc)" libbinding.a
 
 WORKDIR /src
 
-# go.mod replace: andb/retrievalplane => ./src/internal/dataplane/retrievalplane
-# go.mod also replaces github.com/go-skynet/go-llama.cpp => ./libs/go-llama.cpp.
-# Prepare that local path inside the build container before `go mod download`.
-RUN mkdir -p /src/libs \
-    && cp -a /tmp/go-llama-cpp /src/libs/go-llama.cpp
-
-COPY go.mod go.sum ./
-COPY vendor ./vendor
 COPY src ./src
+COPY go.mod go.sum ./
 
-# -mod=vendor: no module downloads during go build. GOPROXY/GOSUMDB optional.
+# The repository intentionally does not vendor Go modules. Download after the
+# local retrievalplane replacement is present in the build context.
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
+RUN go mod download
 
 COPY . .
 
 # C++ warm-segment ANN (POST /v1/ingest/vectors, HNSW). Required for Milvus-style vector ingest.
-RUN cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release \
+RUN cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DANDB_KNOWHERE_FAISS=ON \
     && cmake --build cpp/build --parallel "$(nproc)" \
     && mkdir -p /src/out/lib \
     && cp cpp/build/libplasmod_retrieval.so /src/out/lib/ \
@@ -97,7 +101,7 @@ ENV CGO_LDFLAGS="-L/src/cpp/build -lplasmod_retrieval -Wl,-rpath,/usr/local/lib"
 
 RUN mkdir -p /src/bin \
     && go version \
-    && go build -buildvcs=false -mod=vendor -trimpath -tags retrieval \
+    && go build -buildvcs=false -mod=readonly -trimpath -tags retrieval \
         -ldflags="-s -w" -o /src/bin/plasmod-server ./src/cmd/server
 
 # Stage 2: minimal runtime (no shell wrapper)

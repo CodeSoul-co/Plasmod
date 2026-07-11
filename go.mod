@@ -37,5 +37,3 @@ require (
 )
 
 replace plasmod/retrievalplane => ./src/internal/dataplane/retrievalplane
-
-replace github.com/go-skynet/go-llama.cpp => ./libs/go-llama.cpp

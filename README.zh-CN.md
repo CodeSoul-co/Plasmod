@@ -290,7 +290,7 @@ docker compose up -d
 
 ## 贡献
 
-Plasmod 开源项目欢迎贡献。请参阅 [CONTRIBUTING.md](CONTRIBUTING.md) 了解提交补丁和开发工作流的指南。
+Plasmod 开源项目欢迎贡献。提交 bug 或功能建议请使用 [Issues](https://github.com/CodeSoul-co/Plasmod/issues)；涉及较大改动时，请先在 [Discussions](https://github.com/CodeSoul-co/Plasmod/discussions) 中讨论。
 
 ### 从源码构建 Plasmod
 

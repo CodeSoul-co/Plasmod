@@ -59,6 +59,20 @@ func TestMemoryObjectStore_PutAndGet(t *testing.T) {
 	}
 }
 
+func TestMemorySnapshotVersionStore_PutVersionIsIdempotent(t *testing.T) {
+	store := NewMemoryRuntimeStorage().Versions()
+	version := schemas.ObjectVersion{
+		ObjectID: "mem-1", Version: 2, MutationEventID: "evt-1", ValidFrom: "first",
+	}
+	store.PutVersion(version)
+	store.PutVersion(version)
+
+	got := store.GetVersions(version.ObjectID)
+	if len(got) != 1 {
+		t.Fatalf("versions after retry = %d, want 1: %+v", len(got), got)
+	}
+}
+
 func TestMemoryGraphEdgeStore_BulkEdges(t *testing.T) {
 	store := NewMemoryRuntimeStorage()
 	es := store.Edges()

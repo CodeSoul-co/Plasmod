@@ -583,6 +583,16 @@ func (s *badgerSnapshotVersionStore) PutVersion(v schemas.ObjectVersion) {
 		} else if err != badger.ErrKeyNotFound {
 			return err
 		}
+		for idx, existing := range list {
+			if sameObjectVersion(existing, v) {
+				list[idx] = v
+				b, err := json.Marshal(list)
+				if err != nil {
+					return err
+				}
+				return txn.Set(key, b)
+			}
+		}
 		list = append(list, v)
 		b, err := json.Marshal(list)
 		if err != nil {

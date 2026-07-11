@@ -105,12 +105,15 @@ tensorrt-dev:
 	CGO_LDFLAGS="-L$(shell pwd)/cpp/build_trt -lplasmod_tensorrt -lcudart -lnvinfer -Wl,-rpath,$(shell pwd)/cpp/build_trt" \
 	go run -tags cuda,tensorrt,linux ./src/cmd/server'
 
+GO_LLAMACPP_DIR ?= /tmp/go-llama-cpp
+GGUF_BUILD_TYPE ?= openblas
+
 gguf:
-	$(MAKE) -C libs/go-llama.cpp -j$(NPROC)
-	go build -tags gguf ./src/...
+	LLAMA_DIR="$(GO_LLAMACPP_DIR)" BUILD_TYPE="$(GGUF_BUILD_TYPE)" NUM_JOBS="$(NPROC)" bash scripts/build_embeddings.sh
+	LIBRARY_PATH="$(GO_LLAMACPP_DIR)" C_INCLUDE_PATH="$(GO_LLAMACPP_DIR)" go build -tags gguf ./src/...
 
 gguf-dev:
-	bash -c 'set -a; [ -f .env ] && source .env; set +a; CGO_LDFLAGS="$(CGO_LDFLAGS)" go run -tags gguf ./src/cmd/server'
+	bash -c 'set -a; [ -f .env ] && source .env; set +a; LIBRARY_PATH="$(GO_LLAMACPP_DIR)" C_INCLUDE_PATH="$(GO_LLAMACPP_DIR)" CGO_LDFLAGS="$(CGO_LDFLAGS)" go run -tags gguf ./src/cmd/server'
 
 # cpp-with-knowhere builds the full C++ stack including Knowhere HNSW.
 # Requires: libomp, folly, prometheus-cpp, opentelemetry-cpp installed via Homebrew.

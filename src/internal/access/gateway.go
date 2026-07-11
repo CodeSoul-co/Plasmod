@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker"
+	"plasmod/src/internal/worker/consistency"
 )
 
 func resolveMaxConcurrentWrites() int {
@@ -35,6 +37,29 @@ func resolveMaxConcurrentWrites() int {
 		return defaultMax
 	}
 	return n
+}
+
+func serviceHTTPStatus(err error) int {
+	var acceptedNotVisible *consistency.AcceptedNotVisibleError
+	var projectionFailure *consistency.ProjectionFailureError
+	if errors.Is(err, consistency.ErrBackpressure) ||
+		errors.Is(err, consistency.ErrPaused) ||
+		errors.Is(err, consistency.ErrNotStarted) ||
+		errors.As(err, &acceptedNotVisible) ||
+		errors.As(err, &projectionFailure) {
+		return http.StatusServiceUnavailable
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		return http.StatusRequestTimeout
+	}
+	return http.StatusBadRequest
+}
+
+func writeServiceHTTPError(w http.ResponseWriter, err error) {
+	http.Error(w, err.Error(), serviceHTTPStatus(err))
 }
 
 // normalizeAdminMemoryIDs trims, drops empties, and de-duplicates while preserving order.
@@ -59,15 +84,13 @@ func normalizeAdminMemoryIDs(ids []string) []string {
 }
 
 type Gateway struct {
-	coord           *coordinator.Hub
-	runtime         *worker.Runtime
-	store           storage.RuntimeStorage
-	storageCfg      *storage.ConfigSnapshot
-	bundle          *storage.RuntimeBundle // optional; used for admin Badger.DropAll
-	modeMu          sync.RWMutex
-	consistencyMode string
-	hardDeleteMgr   *hardDeleteManager
-	stopCh          chan struct{}
+	coord         *coordinator.Hub
+	runtime       *worker.Runtime
+	store         storage.RuntimeStorage
+	storageCfg    *storage.ConfigSnapshot
+	bundle        *storage.RuntimeBundle // optional; used for admin Badger.DropAll
+	hardDeleteMgr *hardDeleteManager
+	stopCh        chan struct{}
 
 	// Semaphore limits concurrent writes to prevent resource exhaustion.
 	writeSem       chan struct{}
@@ -346,15 +369,14 @@ func (g *Gateway) runPurgeIDBatches(
 func NewGateway(coord *coordinator.Hub, runtime *worker.Runtime, store storage.RuntimeStorage, storageCfg *storage.ConfigSnapshot, bundle *storage.RuntimeBundle) *Gateway {
 	maxWrites := resolveMaxConcurrentWrites()
 	g := &Gateway{
-		coord:           coord,
-		runtime:         runtime,
-		store:           store,
-		storageCfg:      storageCfg,
-		bundle:          bundle,
-		consistencyMode: "strict_visible",
-		stopCh:          make(chan struct{}),
-		writeSem:        make(chan struct{}, maxWrites),
-		docAssembler:    newDocumentSegmentAssembler(),
+		coord:        coord,
+		runtime:      runtime,
+		store:        store,
+		storageCfg:   storageCfg,
+		bundle:       bundle,
+		stopCh:       make(chan struct{}),
+		writeSem:     make(chan struct{}, maxWrites),
+		docAssembler: newDocumentSegmentAssembler(),
 	}
 	g.hardDeleteMgr = newHardDeleteManagerFromEnv()
 	go g.hardDeleteMgr.run(g.stopCh, context.Background(), g.processHardDeleteTaskBatch)
@@ -529,14 +551,12 @@ func (g *Gateway) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(ev.Identity.EventID) == "" {
 		ev.Identity.EventID = generateObjectID("evt")
 	}
-	t0Visible := time.Now()
-	ack, err := g.runtime.SubmitIngest(ev)
+	ack, err := g.runtime.SubmitIngestContext(r.Context(), ev)
 	if err != nil {
 		metrics.Global().RecordRetrievalError()
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeServiceHTTPError(w, err)
 		return
 	}
-	metrics.Global().RecordWriteToVisible(time.Since(t0Visible))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ack)
 }
@@ -551,9 +571,9 @@ func (g *Gateway) handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	resp, err := g.ServiceQuery(req)
+	resp, err := g.ServiceQueryContext(r.Context(), req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeServiceHTTPError(w, err)
 		return
 	}
 	writeJSON(w, resp)
@@ -1707,28 +1727,33 @@ func (g *Gateway) handleAdminDataWipe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-func isSupportedConsistencyMode(mode string) bool {
-	switch mode {
-	case "strict_visible", "bounded_staleness", "eventual_visibility":
-		return true
-	default:
-		return false
-	}
-}
-
 func (g *Gateway) handleAdminConsistencyMode(w http.ResponseWriter, r *http.Request) {
-	supported := []string{"strict_visible", "bounded_staleness", "eventual_visibility"}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	writeStatus := func() {
+		status := g.runtime.ConsistencyStatus()
+		writeJSON(w, map[string]any{
+			"status":            "ok",
+			"mode":              status.DefaultMode,
+			"supported_modes":   status.SupportedModes,
+			"data_path_active":  status.DataPathActive,
+			"queue_depth":       status.QueueDepth,
+			"queue_capacity":    status.QueueCapacity,
+			"latest_lsn":        status.LatestLSN,
+			"visible_watermark": status.VisibleWatermark,
+			"pending":           status.Pending,
+			"retrying":          status.Retrying,
+			"failed":            status.Failed,
+			"oldest_pending_ms": status.OldestPendingMS,
+			"sla_breaches":      status.SLABreaches,
+			"last_error":        status.LastError,
+		})
+	}
 	switch r.Method {
 	case http.MethodGet:
-		g.modeMu.RLock()
-		mode := g.consistencyMode
-		g.modeMu.RUnlock()
-		writeJSON(w, map[string]any{
-			"status":          "ok",
-			"mode":            mode,
-			"supported_modes": supported,
-			"note":            "control-plane mode exposed; query path currently remains single-mode",
-		})
+		writeStatus()
 	case http.MethodPost:
 		var req struct {
 			Mode string `json:"mode"`
@@ -1737,20 +1762,11 @@ func (g *Gateway) handleAdminConsistencyMode(w http.ResponseWriter, r *http.Requ
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		mode := strings.TrimSpace(req.Mode)
-		if !isSupportedConsistencyMode(mode) {
-			http.Error(w, "unsupported mode", http.StatusBadRequest)
+		if _, err := g.runtime.SetConsistencyMode(req.Mode); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		g.modeMu.Lock()
-		g.consistencyMode = mode
-		g.modeMu.Unlock()
-		writeJSON(w, map[string]any{
-			"status":          "ok",
-			"mode":            mode,
-			"supported_modes": supported,
-			"note":            "control-plane mode exposed; query path currently remains single-mode",
-		})
+		writeStatus()
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

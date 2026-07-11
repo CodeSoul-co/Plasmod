@@ -47,14 +47,15 @@ func NewService() *Service {
 func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	ev = ev.NormalizeDynamicEventV04()
 	text := extractText(ev)
-	namespace := resolveNamespace(ev)
+	retrievalNamespace := resolveNamespace(ev)
+	memoryScope := resolveMemoryScope(ev, retrievalNamespace)
 	memoryID := schemas.IDPrefixMemory + ev.Identity.EventID
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	record := dataplane.IngestRecord{
 		ObjectID:        memoryID,
 		Text:            text,
-		Namespace:       namespace,
+		Namespace:       retrievalNamespace,
 		Attributes:      buildAttributes(ev),
 		EventUnixTS:     parseEventUnixTS(ev),
 		Embedding:       ev.Retrieval.EmbeddingVector,
@@ -66,7 +67,7 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		MemoryType:     resolveMemoryType(ev),
 		AgentID:        ev.Actor.AgentID,
 		SessionID:      ev.Actor.SessionID,
-		Scope:          namespace,
+		Scope:          memoryScope,
 		Level:          0,
 		Content:        text,
 		Summary:        text,
@@ -172,6 +173,14 @@ func resolveImportance(ev schemas.Event) float64 {
 
 func resolveNamespace(ev schemas.Event) string {
 	return ev.RetrievalNamespaceOrDefault()
+}
+
+func resolveMemoryScope(ev schemas.Event, fallback string) string {
+	ev = ev.NormalizeDynamicEventV04()
+	if ev.Identity.WorkspaceID != "" {
+		return ev.Identity.WorkspaceID
+	}
+	return fallback
 }
 
 func resolveMemoryType(ev schemas.Event) string {

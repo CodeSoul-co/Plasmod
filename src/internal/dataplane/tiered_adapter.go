@@ -29,6 +29,7 @@ import (
 type TieredDataPlane struct {
 	hot              *segmentstore.Index
 	warm             *SegmentDataPlane
+	warmIngest       func(IngestRecord) error
 	embedder         EmbeddingGenerator
 	coldSearch       func(query string, topK int) []string
 	coldVectorSearch func(queryVec []float32, topK int) []string
@@ -55,10 +56,12 @@ func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg sch
 		tieredObjs = storage.NewTieredObjectStore(storage.NewHotObjectCache(0), nil, nil, nil)
 	}
 	objs := tieredObjs
+	warm := NewSegmentDataPlaneWithConfig(cfg)
 	return &TieredDataPlane{
-		hot:      segmentstore.NewIndex(),
-		warm:     NewSegmentDataPlaneWithConfig(cfg),
-		embedder: nil,
+		hot:        segmentstore.NewIndex(),
+		warm:       warm,
+		warmIngest: warm.Ingest,
+		embedder:   nil,
 		coldSearch: func(query string, topK int) []string {
 			return objs.ColdSearch(query, topK)
 		},
@@ -92,9 +95,10 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 		return nil, err
 	}
 	return &TieredDataPlane{
-		hot:      segmentstore.NewIndex(),
-		warm:     warm,
-		embedder: embedder,
+		hot:        segmentstore.NewIndex(),
+		warm:       warm,
+		warmIngest: warm.Ingest,
+		embedder:   embedder,
 		coldSearch: func(query string, topK int) []string {
 			return tieredObjs.ColdSearch(query, topK)
 		},
@@ -125,6 +129,7 @@ func (t *TieredDataPlane) AdminResetRetrieval(cfg schemas.AlgorithmConfig) error
 	t.rrfK = normalizeTieredRRFK(cfg)
 	if t.embedder == nil {
 		t.warm = NewSegmentDataPlaneWithConfig(cfg)
+		t.warmIngest = t.warm.Ingest
 		return nil
 	}
 	warm, err := NewSegmentDataPlaneWithEmbedderAndConfig(t.embedder, cfg)
@@ -132,6 +137,7 @@ func (t *TieredDataPlane) AdminResetRetrieval(cfg schemas.AlgorithmConfig) error
 		return err
 	}
 	t.warm = warm
+	t.warmIngest = warm.Ingest
 	return nil
 }
 
@@ -146,7 +152,16 @@ func (t *TieredDataPlane) Flush() error {
 // tier migration) via TieredObjectStore.ArchiveMemory; it is NOT written on
 // every ingest to avoid write amplification.
 func (t *TieredDataPlane) Ingest(record IngestRecord) error {
-	_ = t.warm.Ingest(record)
+	warmIngest := t.warmIngest
+	if warmIngest == nil && t.warm != nil {
+		warmIngest = t.warm.Ingest
+	}
+	if warmIngest == nil {
+		return fmt.Errorf("warm plane unavailable")
+	}
+	if err := warmIngest(record); err != nil {
+		return err
+	}
 	t.hot.InsertObject(
 		record.ObjectID,
 		record.Text,

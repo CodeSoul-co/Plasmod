@@ -3,6 +3,8 @@ package dataplane
 import (
 	"strings"
 	"testing"
+
+	"plasmod/retrievalplane"
 )
 
 // TestSparseStore_BasicLifecycle exercises Add → Build → Search round-trip.
@@ -85,6 +87,34 @@ func TestSparseStore_BatchAdd(t *testing.T) {
 	}
 	if len(hits) == 0 || hits[0] != "c" {
 		t.Errorf("expected top hit doc 'c' (saturated alpha), got %v", hits)
+	}
+}
+
+func TestSparseStore_UpsertByID(t *testing.T) {
+	ss, err := NewSparseStore(SparseStoreConfig{})
+	if err != nil {
+		t.Fatalf("NewSparseStore: %v", err)
+	}
+	defer ss.Close()
+
+	first := retrievalplane.SparseVector{Indices: []uint32{1}, Values: []float32{1}}
+	replacement := retrievalplane.SparseVector{Indices: []uint32{2}, Values: []float32{2}}
+	ss.mu.Lock()
+	ss.upsertLocked("same", first)
+	ss.upsertLocked("same", replacement)
+	ss.upsertLocked("other", first)
+	ss.upsertLocked("other", replacement)
+	ss.mu.Unlock()
+
+	ids, docs := ss.Snapshot()
+	if len(ids) != 2 || len(docs) != 2 {
+		t.Fatalf("snapshot retained duplicate ids: ids=%v docs=%d", ids, len(docs))
+	}
+	if ids[0] != "same" || ids[1] != "other" {
+		t.Fatalf("upsert changed stable id order: %v", ids)
+	}
+	if len(docs[0].Indices) != 1 || docs[0].Indices[0] != 2 {
+		t.Fatalf("upsert did not replace sparse document: %+v", docs[0])
 	}
 }
 

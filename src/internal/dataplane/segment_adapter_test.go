@@ -1,10 +1,58 @@
 package dataplane
 
 import (
+	"errors"
 	"testing"
 
+	"plasmod/src/internal/dataplane/segmentstore"
 	"plasmod/src/internal/storage"
 )
+
+func TestSegmentDataPlane_IngestUpsertsRetryableIndexes(t *testing.T) {
+	plane, err := NewSegmentDataPlaneWithEmbedder(NewTfidfEmbedder(32))
+	if err != nil {
+		t.Fatalf("NewSegmentDataPlaneWithEmbedder: %v", err)
+	}
+
+	first := IngestRecord{ObjectID: "mem-retry", Text: "obsolete content", Namespace: "ws"}
+	second := IngestRecord{ObjectID: "mem-retry", Text: "replacement content", Namespace: "ws"}
+	if err := plane.Ingest(first); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	if err := plane.Ingest(second); err != nil {
+		t.Fatalf("retry ingest: %v", err)
+	}
+
+	vectorIDs, vectors, dim := plane.vecStore.Snapshot()
+	if len(vectorIDs) != 1 || len(vectors) != dim {
+		t.Fatalf("dense index retained duplicates: ids=%v vectors=%d dim=%d", vectorIDs, len(vectors), dim)
+	}
+	sparseIDs, _ := plane.sparseStore.Snapshot()
+	if len(sparseIDs) > 1 {
+		t.Fatalf("sparse index retained duplicates: ids=%v", sparseIDs)
+	}
+	if got := plane.index.Search(segmentstore.SearchRequest{
+		Query: "obsolete", TopK: 5, Namespace: "ws", IncludeGrowing: true,
+	}); len(got.Hits) != 0 {
+		t.Fatalf("lexical index retained obsolete retry data: %+v", got.Hits)
+	}
+}
+
+func TestTieredDataPlane_IngestPropagatesWarmFailure(t *testing.T) {
+	want := errors.New("warm ingest failed")
+	plane := NewTieredDataPlane(nil)
+	plane.warmIngest = func(IngestRecord) error { return want }
+
+	err := plane.Ingest(IngestRecord{ObjectID: "mem", Text: "content", Namespace: "ws"})
+	if !errors.Is(err, want) {
+		t.Fatalf("Ingest error = %v, want %v", err, want)
+	}
+	if got := plane.hot.Search(segmentstore.SearchRequest{
+		Query: "content", TopK: 5, Namespace: "ws", IncludeGrowing: true,
+	}); len(got.Hits) != 0 {
+		t.Fatalf("hot tier mutated despite warm failure: %+v", got.Hits)
+	}
+}
 
 func TestSegmentDataPlane_IngestAndSearch(t *testing.T) {
 	plane := NewSegmentDataPlane()
@@ -113,13 +161,13 @@ func TestSegmentDataPlane_Search_HybridReturnsLexicalVectorTier(t *testing.T) {
 	// non-empty subset is acceptable; we only require that at least the
 	// lexical or vector channel contributed.
 	allowedTiers := map[string]bool{
-		"lexical":                true,
-		"vector":                 true,
-		"sparse":                 true,
-		"lexical+vector":         true,
-		"lexical+sparse":         true,
-		"vector+sparse":          true,
-		"lexical+vector+sparse":  true,
+		"lexical":               true,
+		"vector":                true,
+		"sparse":                true,
+		"lexical+vector":        true,
+		"lexical+sparse":        true,
+		"vector+sparse":         true,
+		"lexical+vector+sparse": true,
 	}
 	if !allowedTiers[result.Tier] {
 		t.Fatalf("Search: unexpected tier %q", result.Tier)

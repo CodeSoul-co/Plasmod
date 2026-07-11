@@ -12,15 +12,22 @@ const defaultSealRowThreshold = 1024
 type Index struct {
 	mu               sync.RWMutex
 	shards           []*Shard
+	objectLocations  map[string]objectLocation
 	exec             *Searcher
 	planner          *Planner
 	sealRowThreshold int
+}
+
+type objectLocation struct {
+	shard       *Shard
+	recordIndex int
 }
 
 func NewIndex() *Index {
 	shard := NewGrowingShard(fmt.Sprintf("shard_%d", time.Now().UnixNano()), "default")
 	return &Index{
 		shards:           []*Shard{shard},
+		objectLocations:  map[string]objectLocation{},
 		exec:             NewSearcher(),
 		planner:          NewPlanner(),
 		sealRowThreshold: defaultSealRowThreshold,
@@ -35,8 +42,16 @@ func (i *Index) InsertObject(objectID string, text string, attrs map[string]stri
 		namespace = "default"
 	}
 
+	record := ObjectRecord{ObjectID: objectID, Text: text, Attrs: attrs, EventUnixTS: eventUnixTS}
+	key := namespace + "\x00" + objectID
+	if location, ok := i.objectLocations[key]; ok {
+		location.shard.Replace(location.recordIndex, record)
+		return
+	}
+
 	shard := i.ensureGrowingShard(namespace)
-	shard.Insert(ObjectRecord{ObjectID: objectID, Text: text, Attrs: attrs, EventUnixTS: eventUnixTS})
+	recordIndex := shard.Insert(record)
+	i.objectLocations[key] = objectLocation{shard: shard, recordIndex: recordIndex}
 	if shard.Meta().RowCount >= i.sealRowThreshold {
 		shard.Seal()
 	}

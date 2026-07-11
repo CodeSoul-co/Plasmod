@@ -20,10 +20,23 @@ func NewWatermarkPublisher(clock *HybridClock, bus Bus) *WatermarkPublisher {
 // watermark, and broadcasts it on the "timetick" channel.
 func (w *WatermarkPublisher) Advance() TimeTick {
 	ts := w.clock.Next()
-	atomic.StoreInt64(&w.watermark, ts)
-	tick := TimeTick{LogicalTS: ts}
-	w.bus.Publish(Message{Channel: "timetick", Body: tick})
-	return tick
+	return w.AdvanceTo(ts)
+}
+
+// AdvanceTo moves the watermark to a caller-supplied visible WAL boundary.
+// Regressing or duplicate values are ignored.
+func (w *WatermarkPublisher) AdvanceTo(ts int64) TimeTick {
+	for {
+		current := atomic.LoadInt64(&w.watermark)
+		if ts <= current {
+			return TimeTick{LogicalTS: current}
+		}
+		if atomic.CompareAndSwapInt64(&w.watermark, current, ts) {
+			tick := TimeTick{LogicalTS: ts}
+			w.bus.Publish(Message{Channel: "timetick", Body: tick})
+			return tick
+		}
+	}
 }
 
 // Current returns the latest published watermark without advancing it.

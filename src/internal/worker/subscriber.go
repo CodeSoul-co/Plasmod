@@ -60,11 +60,15 @@ type DispatchHandler func(entry eventbackbone.WALEntry)
 //   - DLQ overflow-safe: panics are never silently dropped — they are either
 //     sent to the deadLetter channel or appended to an in-memory overflow buffer.
 type EventSubscriber struct {
-	wal          eventbackbone.WAL
-	manager      *nodes.Manager
-	handlers     []DispatchHandler
-	lastLSN      atomic.Int64
-	pollInterval time.Duration
+	wal            eventbackbone.WAL
+	manager        *nodes.Manager
+	handlers       []DispatchHandler
+	lastLSN        atomic.Int64
+	pollInterval   time.Duration
+	boundaryMu     sync.RWMutex
+	visibleThrough func() int64
+	drainMu        sync.Mutex
+	paused         atomic.Bool
 
 	// consolidateEvery controls how many events per agent+session trigger a
 	// MemoryConsolidation pass.  0 disables automatic consolidation.
@@ -112,6 +116,36 @@ func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *Event
 
 // SetPollInterval overrides the default 200 ms WAL poll cadence.
 func (s *EventSubscriber) SetPollInterval(d time.Duration) { s.pollInterval = d }
+
+// SetVisibilityBoundary limits dispatch to WAL entries already made visible by
+// the consistency controller. A nil boundary preserves standalone behavior.
+func (s *EventSubscriber) SetVisibilityBoundary(boundary func() int64) {
+	s.boundaryMu.Lock()
+	s.visibleThrough = boundary
+	s.boundaryMu.Unlock()
+}
+
+// Pause waits for an in-flight drain cycle and prevents new cycles from
+// starting until Resume is called.
+func (s *EventSubscriber) Pause() {
+	s.paused.Store(true)
+	s.drainMu.Lock()
+	s.drainMu.Unlock()
+}
+
+// Reset clears subscriber progress and per-session governance cursors. Call it
+// while paused after the backing WAL has been wiped.
+func (s *EventSubscriber) Reset() {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	s.lastLSN.Store(0)
+	s.mu.Lock()
+	s.agentEventCount = make(map[string]int)
+	s.agentLastMem = make(map[string]string)
+	s.mu.Unlock()
+}
+
+func (s *EventSubscriber) Resume() { s.paused.Store(false) }
 
 // SetConsolidateEvery sets how many events per agent+session trigger a
 // MemoryConsolidation pass.  Pass 0 to disable automatic consolidation.
@@ -217,15 +251,35 @@ func (s *EventSubscriber) Run(ctx context.Context) {
 // payloads enqueued by ConflictMergeWorker / CollaborationChain are drained on
 // every poll cycle rather than accumulating indefinitely.
 func (s *EventSubscriber) drainWAL() {
+	if s.paused.Load() {
+		return
+	}
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.paused.Load() {
+		return
+	}
 	fromLSN := s.lastLSN.Load() + 1
 	entries := s.wal.Scan(fromLSN)
+	s.boundaryMu.RLock()
+	visibleThrough := s.visibleThrough
+	s.boundaryMu.RUnlock()
+	visibleLSN := int64(0)
+	if visibleThrough != nil {
+		visibleLSN = visibleThrough()
+	}
+	processed := 0
 	for _, entry := range entries {
+		if visibleThrough != nil && entry.LSN > visibleLSN {
+			break
+		}
 		for _, h := range s.handlers {
 			s.safeDispatch(h, entry)
 		}
 		s.lastLSN.Store(entry.LSN)
+		processed++
 	}
-	if len(entries) > 0 {
+	if processed > 0 {
 		_ = s.manager.FlushMicroBatch()
 	}
 }
