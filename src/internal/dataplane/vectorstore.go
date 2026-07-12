@@ -144,9 +144,9 @@ func (vs *VectorStore) AddText(id, text string) {
 // them for the next Build call.  When the embedder satisfies
 // BatchEmbeddingGenerator, a single BatchGenerate RPC is issued; otherwise
 // individual Generate calls are made.  Thread-safe.
-func (vs *VectorStore) AddTexts(ids, texts []string) {
+func (vs *VectorStore) AddTexts(ids, texts []string) error {
 	if len(ids) == 0 || len(ids) != len(texts) {
-		return
+		return fmt.Errorf("ids/texts must be non-empty and have equal length")
 	}
 
 	var vecs [][]float32
@@ -154,14 +154,20 @@ func (vs *VectorStore) AddTexts(ids, texts []string) {
 		var err error
 		vecs, err = bg.BatchGenerate(context.Background(), texts)
 		if err != nil || len(vecs) != len(ids) {
-			return
+			if err != nil {
+				return fmt.Errorf("batch generate embeddings: %w", err)
+			}
+			return fmt.Errorf("batch generate embeddings: got %d vectors for %d texts", len(vecs), len(ids))
 		}
 	} else {
 		vecs = make([][]float32, len(texts))
 		for i, t := range texts {
 			v, err := vs.embedder.Generate(t)
 			if err != nil || len(v) == 0 {
-				continue
+				if err != nil {
+					return fmt.Errorf("generate embedding for %q: %w", ids[i], err)
+				}
+				return fmt.Errorf("generate embedding for %q returned an empty vector", ids[i])
 			}
 			vecs[i] = v
 		}
@@ -170,11 +176,17 @@ func (vs *VectorStore) AddTexts(ids, texts []string) {
 	vs.mu.Lock()
 	for i, id := range ids {
 		if id == "" || len(vecs[i]) == 0 {
-			continue
+			vs.mu.Unlock()
+			return fmt.Errorf("empty id or vector at batch index %d", i)
+		}
+		if len(vecs[i]) != vs.dim {
+			vs.mu.Unlock()
+			return fmt.Errorf("embedding dimension mismatch for %q: got %d want %d", id, len(vecs[i]), vs.dim)
 		}
 		vs.upsertVectorLocked(id, vecs[i])
 	}
 	vs.mu.Unlock()
+	return nil
 }
 
 // AddVector stores a precomputed embedding vector for the next Build call.

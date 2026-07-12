@@ -3,11 +3,13 @@ package dataplane
 // IngestRecord is the normalised unit of data written to the retrieval plane
 // after an Event has been processed by the Materializer.
 type IngestRecord struct {
-	ObjectID    string
-	Text        string
-	Namespace   string
-	Attributes  map[string]string
-	EventUnixTS int64
+	ObjectID        string
+	Text            string
+	Namespace       string
+	Attributes      map[string]string
+	EventUnixTS     int64
+	EmbeddingFamily string
+	EmbeddingDim    int
 	// Embedding is a precomputed vector. When non-nil, the SegmentDataPlane
 	// stores it directly instead of calling the embedder (bypassing ONNX/TF-IDF).
 	Embedding []float32

@@ -52,19 +52,23 @@ if [ "$(git rev-parse HEAD)" != "$LLAMA_REF" ]; then
     exit 1
 fi
 
-# ── 2. Apply CUDA patch exactly once ──────────────────────────────────────
-# The Makefile's `prepare` target runs `patch -p1 < patches/1902-cuda.patch`.
-# If we already applied it manually (or from a previous build run), skip it.
+# ── 2. Apply the legacy CUDA patch only when it matches ───────────────────
+# Older go-llama.cpp revisions need this patch. The pinned revision may carry
+# a newer llama.cpp submodule where the patch target no longer exists. Never
+# invoke interactive `patch` here: a non-matching patch must not hang CI or a
+# production build.
 if [ ! -f prepare ]; then
     echo ""
-    echo "Applying 1902-cuda.patch ..."
-    cd llama.cpp
-    patch -p1 < ../patches/1902-cuda.patch
-    cd ..
+    if [ "$BUILD_TYPE" = "cublas" ] && git -C llama.cpp apply --check ../patches/1902-cuda.patch; then
+        echo "Applying 1902-cuda.patch ..."
+        git -C llama.cpp apply ../patches/1902-cuda.patch
+        echo "Patch applied."
+    else
+        echo "Skipping legacy 1902-cuda.patch (not required or does not match pinned llama.cpp)."
+    fi
     touch prepare          # sentinel: tells make not to re-apply
-    echo "Patch applied."
 else
-    echo "Patch already applied (prepare sentinel exists), skipping."
+    echo "Patch already handled (prepare sentinel exists), skipping."
 fi
 
 # ── 3. Clean object files from previous runs ──────────────────────────────

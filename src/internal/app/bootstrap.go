@@ -255,6 +255,7 @@ func BuildServer() (*ServerBundle, error) {
 	//   openai           — OpenAI-compatible HTTP API (Ollama, local server, Azure OpenAI)
 	//   zhipuai          — ZhipuAI / 智谱AI (api-key auth, OpenAI-compatible schema)
 	//   cohere           — Cohere /v2/embed API
+	//   gguf             — local llama.cpp GGUF embedding model (build tag gguf/cuda required)
 	//
 	// When PLASMOD_EMBEDDER is "openai" or "zhipuai", also set:
 	//   PLASMOD_EMBEDDER_BASE_URL   (defaults per provider)
@@ -268,11 +269,15 @@ func BuildServer() (*ServerBundle, error) {
 	var embedder embedding.Generator
 	var embedderDim int
 	var embedderErr error
-	embedderType := os.Getenv("PLASMOD_EMBEDDER")
+	embedderType := strings.ToLower(strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER")))
 	if embedderType == "" {
 		embedderType = "tfidf"
 	}
 	switch embedderType {
+	case "tfidf":
+		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
+		embedderDim = dataplane.DefaultEmbeddingDim
+		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
 	case "openai", "zhipuai":
 		baseURL := os.Getenv("PLASMOD_EMBEDDER_BASE_URL")
 		model := os.Getenv("PLASMOD_EMBEDDER_MODEL")
@@ -405,10 +410,30 @@ func BuildServer() (*ServerBundle, error) {
 		}
 		log.Printf("[bootstrap] embedder: tensorrt engine=%s dim=%d",
 			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
+	case "gguf":
+		if dimStr := os.Getenv("PLASMOD_EMBEDDER_DIM"); dimStr != "" {
+			if n, parseErr := strconv.Atoi(dimStr); parseErr == nil && n > 0 {
+				embedderDim = n
+			}
+		}
+		ggufEmbedder, ggufErr := embedding.NewGGUFFromEnv(context.Background(), embedderDim)
+		if ggufErr != nil {
+			return nil, fmt.Errorf("failed to initialize GGUF embedder: %w", ggufErr)
+		}
+		embedder = ggufEmbedder
+		if embedderDim <= 0 {
+			embedderDim = ggufEmbedder.Dim()
+		}
+		log.Printf("[bootstrap] embedder: gguf model=%s dim=%d",
+			os.Getenv("PLASMOD_EMBEDDER_MODEL_PATH"), embedderDim)
 	default:
-		embedder = embedding.NewTfidf(dataplane.DefaultEmbeddingDim)
-		embedderDim = dataplane.DefaultEmbeddingDim
-		log.Printf("[bootstrap] embedder: tfidf (pure-Go, dim=%d)", embedderDim)
+		return nil, fmt.Errorf("unsupported PLASMOD_EMBEDDER %q", embedderType)
+	}
+	if embedderDim <= 0 {
+		embedderDim = embedder.Dim()
+	}
+	if embedderDim <= 0 {
+		return nil, fmt.Errorf("embedding provider %q did not resolve a positive dimension; set PLASMOD_EMBEDDER_DIM", embedderType)
 	}
 	// ── OpenMP thread pool warm-up ───────────────────────────────────────────
 	// OpenMP lazily initializes threads on first parallel region.
@@ -442,10 +467,19 @@ func BuildServer() (*ServerBundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	embeddingFamily := storage.ResolveEmbeddingFamily(nil)
+	embeddingSpec := storage.ResolveEmbeddingSpec(nil, "", embedderDim)
+	compatibility := storage.CheckEmbeddingCompatibility(store.Segments().List(""), embeddingSpec)
+	reindexEmbeddings := !compatibility.Compatible()
+	if reindexEmbeddings && os.Getenv("PLASMOD_EMBEDDING_REINDEX") != "1" {
+		return nil, compatibility.Error()
+	}
+	if reindexEmbeddings {
+		log.Printf("[bootstrap] embedding index mismatch detected target=%s records=%d incompatible=%d legacy=%d examples=%v; rebuilding",
+			embeddingSpec, compatibility.Checked, compatibility.Incompatible, compatibility.Legacy, compatibility.Examples)
+	}
 	log.Printf("[bootstrap] data plane: hybrid search enabled (provider=%s dim=%d)",
 		embedder.Provider(), embedderDim)
-	log.Printf("[bootstrap] embedding family: %s", embeddingFamily)
+	log.Printf("[bootstrap] embedding spec: %s", embeddingSpec)
 
 	// ── Coordinator Hub ──────────────────────────────────────────────────────
 	coord := coordinator.NewCoordinatorHub(
@@ -576,6 +610,18 @@ func BuildServer() (*ServerBundle, error) {
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
+	if err := runtime.ConfigureEmbeddingSpec(embeddingSpec); err != nil {
+		_ = bundle.Close()
+		return nil, fmt.Errorf("configure embedding spec: %w", err)
+	}
+	if reindexEmbeddings {
+		count, err := runtime.ReindexEmbeddings()
+		if err != nil {
+			_ = bundle.Close()
+			return nil, fmt.Errorf("reindex embeddings: %w", err)
+		}
+		log.Printf("[bootstrap] embedding reindex complete: records=%d spec=%s", count, embeddingSpec)
+	}
 	runtime.VectorOnlyMode = vectorOnlyMode
 	consistencyCfg := consistency.ConfigFromEnv(storageCfg.DataDir, storageCfg.WALPersistence)
 	if err := runtime.ConfigureConsistency(consistencyCfg, watermark); err != nil {

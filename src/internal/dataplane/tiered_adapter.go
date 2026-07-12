@@ -90,6 +90,10 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 	if embedder == nil {
 		return NewTieredDataPlaneWithConfig(tieredObjs, cfg), nil
 	}
+	// Keep archive-time and reindex-time cold embeddings in the same vector
+	// space as the warm data plane. Bootstrap also wires this explicitly for
+	// backwards compatibility, but construction must be correct on its own.
+	tieredObjs.SetEmbedder(embedder)
 	warm, err := NewSegmentDataPlaneWithEmbedderAndConfig(embedder, cfg)
 	if err != nil {
 		return nil, err
@@ -139,6 +143,16 @@ func (t *TieredDataPlane) AdminResetRetrieval(cfg schemas.AlgorithmConfig) error
 	t.warm = warm
 	t.warmIngest = warm.Ingest
 	return nil
+}
+
+// RebuildEmbeddingIndex discards the in-memory hot/warm retrieval state while
+// retaining the configured embedder. Callers must re-ingest canonical records
+// immediately after this returns.
+func (t *TieredDataPlane) RebuildEmbeddingIndex() error {
+	if t == nil {
+		return fmt.Errorf("tiered plane unavailable")
+	}
+	return t.AdminResetRetrieval(schemas.AlgorithmConfig{RRFK: t.rrfK})
 }
 
 // Flush flushes the hot-tier index state to the warm plane and builds the

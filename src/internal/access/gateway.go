@@ -411,6 +411,7 @@ func (g *Gateway) RegisterMgmtRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/s3/snapshot-export", g.handleS3SnapshotExport)
 	mux.HandleFunc("/v1/admin/s3/cold-purge", g.handleS3ColdPurge)
 	mux.HandleFunc("/v1/admin/warm/prebuild", g.handleAdminWarmPrebuild)
+	mux.HandleFunc("/v1/admin/embeddings/reindex", g.handleAdminEmbeddingReindex)
 	mux.HandleFunc("/v1/admin/dataset/delete", g.handleDatasetDelete)
 	mux.HandleFunc("/v1/admin/dataset/purge", g.handleDatasetPurge)
 	mux.HandleFunc("/v1/admin/dataset/purge/task", g.handleDatasetPurgeTask)
@@ -658,6 +659,29 @@ func (g *Gateway) handleAdminWarmPrebuild(w http.ResponseWriter, r *http.Request
 		"status":     "ok",
 		"prebuilt":   true,
 		"segment_id": "warm.default",
+	})
+}
+
+// handleAdminEmbeddingReindex rebuilds hot/warm retrieval vectors from the
+// canonical memory store using the embedding spec selected at server startup.
+func (g *Gateway) handleAdminEmbeddingReindex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	count, err := g.runtime.ReindexEmbeddings()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status":    "ok",
+		"reindexed": count,
+		"embedding": g.runtime.EmbeddingSpec(),
 	})
 }
 

@@ -184,17 +184,38 @@ func (p *SegmentDataPlane) BatchIngest(records []IngestRecord) error {
 		p.index.InsertObject(records[i].ObjectID, records[i].Text, records[i].Attributes, records[i].Namespace, records[i].EventUnixTS)
 	}
 
-	ids := make([]string, len(records))
-	texts := make([]string, len(records))
-	for i, r := range records {
-		ids[i] = r.ObjectID
-		texts[i] = r.Text
-	}
 	if p.vecStore != nil && p.embedder != nil {
-		p.vecStore.AddTexts(ids, texts)
+		ids := make([]string, 0, len(records))
+		texts := make([]string, 0, len(records))
+		for _, record := range records {
+			if record.SkipVectorIndex {
+				continue
+			}
+			if len(record.Embedding) > 0 {
+				p.vecStore.AddVector(record.ObjectID, record.Embedding)
+				continue
+			}
+			ids = append(ids, record.ObjectID)
+			texts = append(texts, record.Text)
+		}
+		if len(ids) > 0 {
+			if err := p.vecStore.AddTexts(ids, texts); err != nil {
+				return err
+			}
+		}
 	}
 	if p.sparseStore != nil {
-		p.sparseStore.AddTexts(ids, texts)
+		ids := make([]string, 0, len(records))
+		texts := make([]string, 0, len(records))
+		for _, record := range records {
+			if !record.SkipVectorIndex {
+				ids = append(ids, record.ObjectID)
+				texts = append(texts, record.Text)
+			}
+		}
+		if len(ids) > 0 {
+			p.sparseStore.AddTexts(ids, texts)
+		}
 	}
 	return nil
 }
