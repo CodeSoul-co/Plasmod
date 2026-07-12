@@ -192,6 +192,30 @@ func (s *S3ColdStore) GetMemory(id string) (schemas.Memory, bool) {
 	return getS3ObjectJSON[schemas.Memory](s.cfg, s.memoryKey(id), "memory", id)
 }
 
+// ListMemories loads all archived memory objects. This is intentionally a
+// maintenance API rather than a query path; reindex uses it to regenerate
+// vectors after the embedding space changes.
+func (s *S3ColdStore) ListMemories() []schemas.Memory {
+	keys, err := s.cachedListObjects(context.Background(), s.memoryPrefix())
+	if err != nil {
+		log.Printf("s3cold: list memories for reindex: %v", err)
+		return nil
+	}
+	out := make([]schemas.Memory, 0, len(keys))
+	for _, key := range keys {
+		data, err := GetBytes(context.Background(), nil, s.cfg, key)
+		if err != nil || data == nil {
+			continue
+		}
+		var memory schemas.Memory
+		if err := json.Unmarshal(data, &memory); err != nil || memory.MemoryID == "" {
+			continue
+		}
+		out = append(out, memory)
+	}
+	return out
+}
+
 func (s *S3ColdStore) DeleteMemory(id string) error {
 	err := DeleteObject(context.Background(), nil, s.cfg, s.memoryKey(id))
 	if err == nil {

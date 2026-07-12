@@ -12,6 +12,7 @@ type SegmentRecord struct {
 	Namespace       string    `json:"namespace"`
 	TimeBucket      string    `json:"time_bucket"`
 	EmbeddingFamily string    `json:"embedding_family"`
+	EmbeddingDim    int       `json:"embedding_dim"`
 	StorageRef      string    `json:"storage_ref"`
 	IndexRef        string    `json:"index_ref"`
 	RowCount        int       `json:"row_count"`

@@ -20,7 +20,7 @@ func ResolveEmbeddingFamily(attrs map[string]string) string {
 	if v := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDING_FAMILY")); v != "" {
 		return v
 	}
-	provider := strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER"))
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("PLASMOD_EMBEDDER")))
 	if provider == "" {
 		provider = "tfidf"
 	}

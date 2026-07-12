@@ -80,6 +80,9 @@ type Runtime struct {
 	flushInterval time.Duration
 	flushLoopOnce sync.Once
 	flushDirty    atomic.Bool
+
+	embeddingSpecMu sync.RWMutex
+	embeddingSpec   storage.EmbeddingSpec
 }
 
 func CreateRuntime(
@@ -238,6 +241,131 @@ func (r *Runtime) AdminWarmPrebuild() error {
 	return r.plane.Flush()
 }
 
+// ConfigureEmbeddingSpec records the actual vector space selected at bootstrap.
+// It is stamped onto every subsequently persisted retrieval segment.
+func (r *Runtime) ConfigureEmbeddingSpec(spec storage.EmbeddingSpec) error {
+	if !spec.Valid() {
+		return fmt.Errorf("invalid embedding spec %s", spec)
+	}
+	r.embeddingSpecMu.Lock()
+	r.embeddingSpec = spec
+	r.embeddingSpecMu.Unlock()
+	return nil
+}
+
+func (r *Runtime) EmbeddingSpec() storage.EmbeddingSpec {
+	if r == nil {
+		return storage.EmbeddingSpec{}
+	}
+	r.embeddingSpecMu.RLock()
+	defer r.embeddingSpecMu.RUnlock()
+	return r.embeddingSpec
+}
+
+func (r *Runtime) stampEmbeddingSpec(record *dataplane.IngestRecord) {
+	if record == nil {
+		return
+	}
+	spec := r.EmbeddingSpec()
+	if !spec.Valid() {
+		return
+	}
+	record.EmbeddingFamily = spec.Family
+	record.EmbeddingDim = spec.Dim
+}
+
+// ReindexEmbeddings rebuilds hot/warm retrieval state from canonical memories
+// using the configured embedding provider. It intentionally does not replay
+// the WAL or alter canonical objects.
+func (r *Runtime) ReindexEmbeddings() (int, error) {
+	if r == nil || r.storage == nil {
+		return 0, fmt.Errorf("runtime storage unavailable")
+	}
+	spec := r.EmbeddingSpec()
+	if !spec.Valid() {
+		return 0, fmt.Errorf("embedding spec is not configured")
+	}
+	tp, ok := r.plane.(*dataplane.TieredDataPlane)
+	if !ok {
+		return 0, fmt.Errorf("embedding reindex requires tiered data plane")
+	}
+
+	r.wipeMu.Lock()
+	defer r.wipeMu.Unlock()
+	if err := tp.RebuildEmbeddingIndex(); err != nil {
+		return 0, err
+	}
+
+	warmMemories := r.storage.Objects().ListMemories("", "")
+	warmByID := make(map[string]schemas.Memory, len(warmMemories))
+	for _, memory := range warmMemories {
+		warmByID[memory.MemoryID] = memory
+	}
+	coldByID := map[string]schemas.Memory{}
+	if r.tieredObjects != nil {
+		for _, memory := range r.tieredObjects.ListColdMemories() {
+			coldByID[memory.MemoryID] = memory
+		}
+	}
+	segments := r.storage.Segments().List("")
+	records := make([]dataplane.IngestRecord, 0, len(segments))
+	for _, segment := range segments {
+		memoryID := segment.StorageRef
+		if memoryID == "" {
+			memoryID = segment.SegmentID
+		}
+		memory, ok := warmByID[memoryID]
+		if !ok {
+			if _, archived := coldByID[memoryID]; archived {
+				// Archived memories are re-embedded in the cold tier below and
+				// must not be promoted back into the warm retrieval index.
+				continue
+			}
+			return 0, fmt.Errorf("cannot reindex segment %q: canonical memory %q is missing", segment.SegmentID, memoryID)
+		}
+		text := strings.TrimSpace(memory.Content)
+		if text == "" {
+			text = strings.TrimSpace(memory.Summary)
+		}
+		if text == "" {
+			return 0, fmt.Errorf("cannot reindex segment %q: canonical memory %q has no content", segment.SegmentID, memoryID)
+		}
+		namespace := segment.Namespace
+		if namespace == "" {
+			namespace = "default"
+		}
+		records = append(records, dataplane.IngestRecord{
+			ObjectID:        memoryID,
+			Text:            text,
+			Namespace:       namespace,
+			Attributes:      map[string]string{"embedding_family": spec.Family},
+			EmbeddingFamily: spec.Family,
+			EmbeddingDim:    spec.Dim,
+		})
+	}
+	if err := tp.BatchIngest(records); err != nil {
+		return 0, fmt.Errorf("reindex embeddings: %w", err)
+	}
+	if err := tp.Flush(); err != nil {
+		return 0, fmt.Errorf("build reindexed embedding index: %w", err)
+	}
+	coldCount := 0
+	if r.tieredObjects != nil {
+		var err error
+		coldCount, err = r.tieredObjects.ReindexColdEmbeddings()
+		if err != nil {
+			return 0, err
+		}
+	}
+	for _, segment := range segments {
+		segment.EmbeddingFamily = spec.Family
+		segment.EmbeddingDim = spec.Dim
+		r.storage.Segments().Upsert(segment)
+	}
+	r.flushDirty.Store(false)
+	return len(records) + coldCount, nil
+}
+
 // QueryChain returns the post-retrieval reasoning chain (ProofTrace + Subgraph).
 // It is nil if the Runtime was constructed without a nodeManager.
 func (r *Runtime) QueryChain() *chain.QueryChain {
@@ -344,6 +472,7 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	ev := entry.Event.NormalizeDynamicEventV04()
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
+	r.stampEmbeddingSpec(&record)
 
 	// Fail fast on retrieval-plane ingest before mutating canonical stores.
 	// This reduces partial-success windows (WAL only) where object writes succeed
@@ -1474,11 +1603,13 @@ func (r *Runtime) attachEmbeddingProvenance(
 	req schemas.QueryRequest,
 	currentIDs []string,
 ) schemas.QueryResponse {
-	currFamily := storage.ResolveEmbeddingFamily(nil)
-	currDim := currentEmbeddingDim()
+	spec := r.EmbeddingSpec()
+	if !spec.Valid() {
+		spec = storage.ResolveEmbeddingSpec(nil, "", currentEmbeddingDim())
+	}
 	resp.Provenance = append(resp.Provenance,
-		fmt.Sprintf("embedding_runtime_family=%s", currFamily),
-		fmt.Sprintf("embedding_runtime_dim=%d", currDim),
+		fmt.Sprintf("embedding_runtime_family=%s", spec.Family),
+		fmt.Sprintf("embedding_runtime_dim=%d", spec.Dim),
 	)
 	candidateLists := [][]string{}
 	if len(currentIDs) > 0 {

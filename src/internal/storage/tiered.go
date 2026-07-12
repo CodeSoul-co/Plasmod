@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -64,7 +65,7 @@ type HotObjectCache struct {
 	entries map[string]*HotEntry
 	maxSize int
 	// orderKey tracks insertion order for LRU eviction fallback
-	order []string
+	order  []string
 	policy HotCachePolicy
 }
 
@@ -335,6 +336,46 @@ func (t *TieredObjectStore) SetEmbedder(e MemoryEmbedder) {
 	}
 }
 
+// ReindexColdEmbeddings regenerates every archived memory vector with the
+// current embedder. It is used together with warm-index reindexing after an
+// embedding family or dimension change.
+func (t *TieredObjectStore) ReindexColdEmbeddings() (int, error) {
+	if t == nil || t.cold == nil || t.embedder == nil {
+		return 0, nil
+	}
+	count := 0
+	for _, memory := range t.cold.ListMemories() {
+		text := strings.TrimSpace(memory.Content)
+		if text == "" {
+			text = strings.TrimSpace(memory.Summary)
+		}
+		if text == "" {
+			return count, fmt.Errorf("cannot reindex cold memory %q: no content", memory.MemoryID)
+		}
+		vec, err := t.embedder.Generate(text)
+		if err != nil {
+			return count, fmt.Errorf("generate embedding for cold memory %q: %w", memory.MemoryID, err)
+		}
+		if len(vec) == 0 {
+			return count, fmt.Errorf("generate embedding for cold memory %q returned an empty vector", memory.MemoryID)
+		}
+		if err := t.cold.PutMemoryEmbedding(memory.MemoryID, vec); err != nil {
+			return count, fmt.Errorf("store embedding for cold memory %q: %w", memory.MemoryID, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+// ListColdMemories exposes archived source text to the controlled embedding
+// reindex workflow. It is not used on the request path.
+func (t *TieredObjectStore) ListColdMemories() []schemas.Memory {
+	if t == nil || t.cold == nil {
+		return nil
+	}
+	return t.cold.ListMemories()
+}
+
 // GetMemoryActivated returns a Memory with tier-aware activation.
 // Hot cache hit → immediate return.
 // Warm miss → warm store → promote to hot.
@@ -539,6 +580,9 @@ type ColdHNSWSearcher interface {
 type ColdObjectStore interface {
 	PutMemory(m schemas.Memory)
 	GetMemory(id string) (schemas.Memory, bool)
+	// ListMemories returns every archived memory for controlled maintenance such
+	// as embedding-space reindexing.
+	ListMemories() []schemas.Memory
 	// DeleteMemory removes the cold-tier memory record (best-effort).
 	DeleteMemory(id string) error
 	PutAgent(a schemas.Agent)
@@ -608,6 +652,16 @@ func (s *InMemoryColdStore) PutMemory(m schemas.Memory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.memories[m.MemoryID] = m
+}
+
+func (s *InMemoryColdStore) ListMemories() []schemas.Memory {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]schemas.Memory, 0, len(s.memories))
+	for _, memory := range s.memories {
+		out = append(out, memory)
+	}
+	return out
 }
 
 func (s *InMemoryColdStore) GetMemory(id string) (schemas.Memory, bool) {
