@@ -132,9 +132,11 @@ Query responses include not just matching content, but also provenance informati
 
 ## Public Data Assets
 
-The [Plasmod Agent Event Data](https://huggingface.co/datasets/CodeSoulco/plasmod-agent-event-data-release) dataset provides sanitized JSONL assets derived from real agent-system workflows and normalized by a benchmark-generation pipeline. It contains a compressed sharded mixed event stream and an ordered replay trace, covering event identity, actors, timestamps, state transitions, object lineage, causality, visibility, materialization, retrieval metadata, and runtime timing.
+The [Plasmod Agent Event Data](https://huggingface.co/datasets/CodeSoulco/plasmod-agent-event-data-release) dataset provides sanitized JSONL assets derived from re-collected agent trajectories and normalized by a common event-generation pipeline. It contains two complementary collections: agent-framework trajectories for code repair, text-to-SQL, tool use, open-ended assistance, and environment interaction; and research, API-tool, and multi-agent collaboration trajectories. Each record carries event identity, actor/session context, timestamps, state transitions, object lineage, causality, visibility, materialization, retrieval metadata, and runtime timing.
 
-The dataset is maintained separately from this core repository so that data assets can be versioned and consumed independently. See its dataset card for the schema, release manifest, provenance notes, and loading examples.
+The source catalog covers MetaGPT x SWE-bench, LangGraph x BIRD-SQL and tau-bench, LlamaIndex x GAIA, PydanticAI x MINT, AutoGen x AgentBench, GPT Researcher x MS MARCO/GAIA, OpenManus x ToolBench, and AutoGen x MS MARCO/GAIA. The dataset card lists the official reference links, collection counts, field schema, and source-specific provenance notes.
+
+The dataset is maintained separately from this core repository so that data assets can be versioned and consumed independently. It is a normalized trajectory release, not a redistribution of the upstream benchmark packages; upstream licenses and access terms continue to apply.
 
 ## Why Plasmod?
 
