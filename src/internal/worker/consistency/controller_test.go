@@ -281,7 +281,7 @@ func TestControllerPreservesPerSessionOrderAcrossConsistencyModes(t *testing.T) 
 	}
 }
 
-func TestControllerQueueFullRejectsBeforeWALAppend(t *testing.T) {
+func TestControllerQueueFullWaitsForCapacityBeforeWALAppend(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.QueueSize = 1
 	cfg.Workers = 1
@@ -302,13 +302,245 @@ func TestControllerQueueFullRejectsBeforeWALAppend(t *testing.T) {
 	}
 	<-started
 	before := wal.LatestLSN()
-	if _, err := controller.Submit(context.Background(), testEvent("two", "s2", "eventual")); !errors.Is(err, ErrBackpressure) {
-		t.Fatalf("second Submit error = %v, want ErrBackpressure", err)
+	type result struct {
+		ack map[string]any
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ack, err := controller.Submit(context.Background(), testEvent("two", "s2", "eventual"))
+		done <- result{ack: ack, err: err}
+	}()
+	select {
+	case got := <-done:
+		close(release)
+		t.Fatalf("second Submit returned before capacity was available: ack=%v err=%v", got.ack, got.err)
+	case <-time.After(25 * time.Millisecond):
 	}
 	if after := wal.LatestLSN(); after != before {
-		t.Fatalf("WAL advanced on rejected admission: before=%d after=%d", before, after)
+		close(release)
+		t.Fatalf("WAL advanced while admission waited: before=%d after=%d", before, after)
 	}
 	close(release)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("second Submit after capacity release: %v", got.err)
+	}
+	if got.ack["event_id"] != "two" {
+		t.Fatalf("second Submit ack = %v", got.ack)
+	}
+	if after := wal.LatestLSN(); after <= before {
+		t.Fatalf("WAL did not advance after capacity release: before=%d after=%d", before, after)
+	}
+}
+
+func TestControllerShutdownCancelsBlockedAdmission(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.QueueSize = 1
+	cfg.Workers = 1
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	controller, _ := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		started <- struct{}{}
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("one", "s1", "eventual")); err != nil {
+		t.Fatalf("first Submit: %v", err)
+	}
+	<-started
+	admissionDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Submit(context.Background(), testEvent("two", "s2", "eventual"))
+		admissionDone <- err
+	}()
+	select {
+	case err := <-admissionDone:
+		close(release)
+		t.Fatalf("second Submit returned before shutdown: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- controller.Shutdown(shutdownCtx)
+	}()
+
+	select {
+	case err := <-shutdownDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		t.Fatal("Shutdown did not cancel the blocked admission before waiting for projection drain")
+	}
+	select {
+	case err := <-admissionDone:
+		if !errors.Is(err, ErrPaused) && !errors.Is(err, ErrNotStarted) {
+			t.Fatalf("blocked Submit error = %v, want controller admission error", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		t.Fatal("blocked Submit did not return after shutdown began")
+	}
+}
+
+func TestControllerShutdownDoesNotWaitBehindStrictVisibility(t *testing.T) {
+	cfg := DefaultConfig()
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	controller, _ := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	strictDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Submit(context.Background(), testEvent("strict", "s1", "strict"))
+		strictDone <- err
+	}()
+	<-started
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- controller.Shutdown(shutdownCtx)
+	}()
+	select {
+	case err := <-shutdownDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		t.Fatal("Shutdown remained blocked behind a strict visibility wait")
+	}
+	select {
+	case err := <-strictDone:
+		var acceptedErr *AcceptedNotVisibleError
+		if !errors.As(err, &acceptedErr) {
+			t.Fatalf("strict Submit error = %v, want AcceptedNotVisibleError", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		t.Fatal("strict Submit did not return after shutdown cancelled the projector")
+	}
+}
+
+func TestControllerPauseDoesNotStrandQueuedStrictWrite(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Workers = 1
+	cfg.QueueSize = 2
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	controller, _ := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		if entry.Event.Identity.EventID == "active" {
+			started <- struct{}{}
+			select {
+			case <-release:
+				return nil, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return nil, nil
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("active", "same", "eventual")); err != nil {
+		t.Fatalf("Submit active: %v", err)
+	}
+	<-started
+	strictDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Submit(context.Background(), testEvent("queued-strict", "same", "strict"))
+		strictDone <- err
+	}()
+	time.Sleep(25 * time.Millisecond)
+
+	pauseCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	pauseDone := make(chan error, 1)
+	go func() {
+		pauseDone <- controller.Pause(pauseCtx)
+	}()
+	select {
+	case err := <-strictDone:
+		var acceptedErr *AcceptedNotVisibleError
+		if !errors.As(err, &acceptedErr) || !errors.Is(err, errOldGeneration) {
+			close(release)
+			t.Fatalf("queued strict Submit error = %v, want old-generation AcceptedNotVisibleError", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		t.Fatal("Pause drained a queued strict write without waking its caller")
+	}
+	close(release)
+	if err := <-pauseDone; err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+}
+
+func TestControllerBoundedAdmissionWaitsForLagRecovery(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BoundedMaxLag = 20 * time.Millisecond
+	cfg.QueueSize = 4
+	cfg.Workers = 1
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	controller, wal := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		started <- struct{}{}
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("lagged", "s1", "bounded")); err != nil {
+		t.Fatalf("first Submit: %v", err)
+	}
+	<-started
+	time.Sleep(30 * time.Millisecond)
+	before := wal.LatestLSN()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := controller.Submit(context.Background(), testEvent("after-lag", "s2", "bounded"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		close(release)
+		t.Fatalf("bounded Submit returned before lag recovered: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if after := wal.LatestLSN(); after != before {
+		close(release)
+		t.Fatalf("WAL advanced while bounded admission waited: before=%d after=%d", before, after)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("bounded Submit after lag recovery: %v", err)
+	}
 }
 
 func TestControllerRetriesThenAdvancesVisibility(t *testing.T) {

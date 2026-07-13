@@ -78,12 +78,14 @@ type Controller struct {
 	slots       chan struct{}
 	queues      []chan projectionTask
 
-	stateMu    sync.RWMutex
-	started    bool
-	accepting  bool
-	generation uint64
-	rootCtx    context.Context
-	cancel     context.CancelFunc
+	stateMu         sync.RWMutex
+	started         bool
+	accepting       bool
+	generation      uint64
+	rootCtx         context.Context
+	cancel          context.CancelFunc
+	admissionCtx    context.Context
+	cancelAdmission context.CancelFunc
 
 	activeMu      sync.Mutex
 	active        int
@@ -155,6 +157,7 @@ func (c *Controller) Start(ctx context.Context) error {
 		return nil
 	}
 	c.rootCtx, c.cancel = context.WithCancel(ctx)
+	c.admissionCtx, c.cancelAdmission = context.WithCancel(c.rootCtx)
 	c.started = true
 	c.accepting = true
 	generation := c.generation
@@ -200,10 +203,16 @@ func (c *Controller) recoverFromWAL(generation uint64) error {
 
 func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]any, error) {
 	c.admissionMu.RLock()
-	defer c.admissionMu.RUnlock()
+	admissionLocked := true
+	defer func() {
+		if admissionLocked {
+			c.admissionMu.RUnlock()
+		}
+	}()
 
 	c.stateMu.RLock()
 	started, accepting, generation := c.started, c.accepting, c.generation
+	rootCtx, admissionCtx := c.rootCtx, c.admissionCtx
 	c.stateMu.RUnlock()
 	if !started {
 		return nil, ErrNotStarted
@@ -217,15 +226,24 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 		return nil, err
 	}
 	if mode == BoundedStaleness {
-		status := c.tracker.Status()
-		if status.OldestPendingAge > lag {
-			return nil, ErrBackpressure
+		waitCtx, cancelWait := context.WithCancel(ctx)
+		stopAdmissionCancel := context.AfterFunc(admissionCtx, cancelWait)
+		err := c.tracker.WaitWithinLag(waitCtx, lag)
+		stopAdmissionCancel()
+		cancelWait()
+		if err != nil {
+			if admissionCtx.Err() != nil {
+				return nil, c.admissionError()
+			}
+			return nil, err
 		}
 	}
 	select {
 	case c.slots <- struct{}{}:
-	default:
-		return nil, ErrBackpressure
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-admissionCtx.Done():
+		return nil, c.admissionError()
 	}
 	releaseReservation := true
 	defer func() {
@@ -261,12 +279,20 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 	}
 	c.enqueue(task)
 	releaseReservation = false
+	c.admissionMu.RUnlock()
+	admissionLocked = false
 	if mode == StrictVisible {
 		var result projectionResult
 		select {
 		case result = <-task.strictDone:
 		case <-ctx.Done():
 			result.err = ctx.Err()
+		case <-rootCtx.Done():
+			select {
+			case result = <-task.strictDone:
+			default:
+				result.err = rootCtx.Err()
+			}
 		}
 		if result.err != nil {
 			return nil, &AcceptedNotVisibleError{
@@ -327,14 +353,20 @@ func (c *Controller) Status() ControllerStatus {
 }
 
 func (c *Controller) Pause(ctx context.Context) error {
-	c.admissionMu.Lock()
 	c.stateMu.Lock()
 	if !c.started {
 		c.stateMu.Unlock()
-		c.admissionMu.Unlock()
 		return ErrNotStarted
 	}
 	c.accepting = false
+	cancelAdmission := c.cancelAdmission
+	c.stateMu.Unlock()
+	if cancelAdmission != nil {
+		cancelAdmission()
+	}
+
+	c.admissionMu.Lock()
+	c.stateMu.Lock()
 	c.generation++
 	c.stateMu.Unlock()
 	c.drainQueues()
@@ -358,22 +390,27 @@ func (c *Controller) Reset() error {
 
 func (c *Controller) Resume() {
 	c.stateMu.Lock()
-	if c.started {
+	if c.started && !c.accepting && c.rootCtx.Err() == nil {
+		c.admissionCtx, c.cancelAdmission = context.WithCancel(c.rootCtx)
 		c.accepting = true
 	}
 	c.stateMu.Unlock()
 }
 
 func (c *Controller) Shutdown(ctx context.Context) error {
-	c.admissionMu.Lock()
 	c.stateMu.Lock()
 	if !c.started {
 		c.stateMu.Unlock()
-		c.admissionMu.Unlock()
 		return nil
 	}
 	c.accepting = false
+	cancelAdmission := c.cancelAdmission
 	c.stateMu.Unlock()
+	if cancelAdmission != nil {
+		cancelAdmission()
+	}
+
+	c.admissionMu.Lock()
 	c.admissionMu.Unlock()
 
 	ticker := time.NewTicker(5 * time.Millisecond)
@@ -401,6 +438,18 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	c.started = false
 	c.stateMu.Unlock()
 	return nil
+}
+
+func (c *Controller) admissionError() error {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if !c.started || c.rootCtx == nil || c.rootCtx.Err() != nil {
+		return ErrNotStarted
+	}
+	if !c.accepting {
+		return ErrPaused
+	}
+	return context.Canceled
 }
 
 func (c *Controller) runWorker(queue <-chan projectionTask) {
@@ -487,7 +536,8 @@ func (c *Controller) drainQueues() {
 	for _, queue := range c.queues {
 		for {
 			select {
-			case <-queue:
+			case task := <-queue:
+				c.completeStrict(task, nil, errOldGeneration)
 				c.releaseSlot()
 			default:
 				goto nextQueue
