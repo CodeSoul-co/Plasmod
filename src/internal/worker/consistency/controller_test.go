@@ -543,6 +543,106 @@ func TestControllerBoundedAdmissionWaitsForLagRecovery(t *testing.T) {
 	}
 }
 
+func TestControllerBoundedAdmissionDoesNotOversubscribeSLA(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BoundedMaxLag = 45 * time.Millisecond
+	cfg.QueueSize = 16
+	cfg.Workers = 1
+	controller, _ := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		select {
+		case <-time.After(30 * time.Millisecond):
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	for i := 0; i < 4; i++ {
+		ack, err := controller.Submit(
+			context.Background(),
+			testEvent(fmt.Sprintf("bounded-%d", i), "same-session", "bounded"),
+		)
+		if err != nil {
+			t.Fatalf("Submit(%d): %v", i, err)
+		}
+		if ack["visibility_status"] != "pending" {
+			t.Fatalf("Submit(%d) ack = %+v, want pending", i, ack)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := controller.WaitForRead(ctx, schemas.QueryRequest{AccessConsistency: "strict"}); err != nil {
+		t.Fatalf("WaitForRead: %v", err)
+	}
+	if status := controller.Status(); status.SLABreaches != 0 {
+		t.Fatalf("bounded admission oversubscribed its SLA: %+v", status)
+	}
+}
+
+func TestControllerBoundedAdmissionExcludesMixedModeInsertions(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BoundedMaxLag = 100 * time.Millisecond
+	cfg.QueueSize = 16
+	cfg.Workers = 3
+	existingStarted := make(chan struct{})
+	releaseExisting := make(chan struct{})
+	releaseInterloper := make(chan struct{})
+	controller, _ := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		switch entry.Event.Identity.EventID {
+		case "existing":
+			close(existingStarted)
+			select {
+			case <-releaseExisting:
+				return nil, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		case "interloper":
+			select {
+			case <-releaseInterloper:
+				return nil, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		default:
+			return nil, nil
+		}
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("existing", "existing-session", "eventual")); err != nil {
+		t.Fatalf("Submit(existing): %v", err)
+	}
+	<-existingStarted
+
+	boundedDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Submit(context.Background(), testEvent("bounded", "bounded-session", "bounded"))
+		boundedDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	interloperDone := make(chan error, 1)
+	go func() {
+		_, err := controller.Submit(context.Background(), testEvent("interloper", "interloper-session", "eventual"))
+		interloperDone <- err
+	}()
+	select {
+	case err := <-interloperDone:
+		t.Fatalf("mixed-mode write entered bounded drain-to-append window: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseExisting)
+	if err := <-boundedDone; err != nil {
+		t.Fatalf("Submit(bounded): %v", err)
+	}
+	if err := <-interloperDone; err != nil {
+		t.Fatalf("Submit(interloper): %v", err)
+	}
+	close(releaseInterloper)
+}
+
 func TestControllerRetriesThenAdvancesVisibility(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxRetries = 3

@@ -37,13 +37,15 @@ func (e *AcceptedNotVisibleError) Error() string {
 func (e *AcceptedNotVisibleError) Unwrap() error { return e.Err }
 
 type projectionTask struct {
-	entry      eventbackbone.WALEntry
-	mode       Mode
-	lag        time.Duration
-	acceptedAt time.Time
-	deadline   time.Time
-	generation uint64
-	strictDone chan projectionResult
+	entry           eventbackbone.WALEntry
+	mode            Mode
+	lag             time.Duration
+	acceptedAt      time.Time
+	deadline        time.Time
+	generation      uint64
+	strictDone      chan projectionResult
+	boundedShard    int
+	boundedReserved bool
 }
 
 type projectionResult struct {
@@ -74,9 +76,12 @@ type Controller struct {
 	defaultMode Mode
 
 	admissionMu sync.RWMutex
-	appendMu    sync.Mutex
-	slots       chan struct{}
-	queues      []chan projectionTask
+	// modeGate keeps mixed-mode writes out of a bounded drain-to-append window.
+	modeGate     sync.RWMutex
+	appendMu     sync.Mutex
+	slots        chan struct{}
+	queues       []chan projectionTask
+	boundedSlots []chan struct{}
 
 	stateMu         sync.RWMutex
 	started         bool
@@ -132,8 +137,10 @@ func NewController(
 	}
 
 	queues := make([]chan projectionTask, cfg.Workers)
+	boundedSlots := make([]chan struct{}, cfg.Workers)
 	for i := range queues {
 		queues[i] = make(chan projectionTask, cfg.QueueSize)
+		boundedSlots[i] = make(chan struct{}, 1)
 	}
 	return &Controller{
 		wal:           wal,
@@ -145,6 +152,7 @@ func NewController(
 		defaultMode:   cfg.DefaultMode,
 		slots:         make(chan struct{}, cfg.QueueSize),
 		queues:        queues,
+		boundedSlots:  boundedSlots,
 		generation:    1,
 		activeChanged: make(chan struct{}),
 	}, nil
@@ -187,15 +195,30 @@ func (c *Controller) recoverFromWAL(generation uint64) error {
 		if mode == BoundedStaleness {
 			deadline = acceptedAt.Add(lag)
 		}
+		boundedShard := 0
+		boundedReserved := false
+		if mode == BoundedStaleness {
+			boundedShard = shardIndex(entry.Event, len(c.queues))
+			select {
+			case c.boundedSlots[boundedShard] <- struct{}{}:
+				boundedReserved = true
+			case <-c.rootCtx.Done():
+				return c.rootCtx.Err()
+			}
+		}
 		select {
 		case c.slots <- struct{}{}:
 		case <-c.rootCtx.Done():
+			if boundedReserved {
+				c.releaseBoundedSlot(boundedShard)
+			}
 			return c.rootCtx.Err()
 		}
 		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
 		c.enqueue(projectionTask{
 			entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
 			deadline: deadline, generation: generation,
+			boundedShard: boundedShard, boundedReserved: boundedReserved,
 		})
 	}
 	return nil
@@ -225,18 +248,23 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	boundedShard := 0
+	boundedReserved := false
 	if mode == BoundedStaleness {
-		waitCtx, cancelWait := context.WithCancel(ctx)
-		stopAdmissionCancel := context.AfterFunc(admissionCtx, cancelWait)
-		err := c.tracker.WaitWithinLag(waitCtx, lag)
-		stopAdmissionCancel()
-		cancelWait()
-		if err != nil {
-			if admissionCtx.Err() != nil {
-				return nil, c.admissionError()
-			}
-			return nil, err
+		boundedShard = shardIndex(normalized, len(c.queues))
+		select {
+		case c.boundedSlots[boundedShard] <- struct{}{}:
+			boundedReserved = true
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-admissionCtx.Done():
+			return nil, c.admissionError()
 		}
+		defer func() {
+			if boundedReserved {
+				c.releaseBoundedSlot(boundedShard)
+			}
+		}()
 	}
 	select {
 	case c.slots <- struct{}{}:
@@ -251,6 +279,35 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 			c.releaseSlot()
 		}
 	}()
+
+	gateReadLocked := false
+	gateWriteLocked := false
+	defer func() {
+		if gateReadLocked {
+			c.modeGate.RUnlock()
+		}
+		if gateWriteLocked {
+			c.modeGate.Unlock()
+		}
+	}()
+	if mode == BoundedStaleness {
+		c.modeGate.RLock()
+		gateReadLocked = true
+		waitCtx, cancelWait := context.WithCancel(ctx)
+		stopAdmissionCancel := context.AfterFunc(admissionCtx, cancelWait)
+		err := c.tracker.WaitThrough(waitCtx, c.wal.LatestLSN())
+		stopAdmissionCancel()
+		cancelWait()
+		if err != nil {
+			if admissionCtx.Err() != nil {
+				return nil, c.admissionError()
+			}
+			return nil, err
+		}
+	} else {
+		c.modeGate.Lock()
+		gateWriteLocked = true
+	}
 
 	acceptedAt := time.Now()
 	if normalized.Time.IngestTime == 0 {
@@ -270,15 +327,25 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	if gateReadLocked {
+		c.modeGate.RUnlock()
+		gateReadLocked = false
+	}
+	if gateWriteLocked {
+		c.modeGate.Unlock()
+		gateWriteLocked = false
+	}
 	task := projectionTask{
 		entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
 		deadline: deadline, generation: generation,
+		boundedShard: boundedShard, boundedReserved: boundedReserved,
 	}
 	if mode == StrictVisible {
 		task.strictDone = make(chan projectionResult, 1)
 	}
 	c.enqueue(task)
 	releaseReservation = false
+	boundedReserved = false
 	c.admissionMu.RUnlock()
 	admissionLocked = false
 	if mode == StrictVisible {
@@ -461,7 +528,7 @@ func (c *Controller) runWorker(queue <-chan projectionTask) {
 		case task := <-queue:
 			if !c.isCurrentGeneration(task.generation) {
 				c.completeStrict(task, nil, errOldGeneration)
-				c.releaseSlot()
+				c.releaseTask(task)
 				continue
 			}
 			c.beginActive()
@@ -475,7 +542,7 @@ func (c *Controller) runWorker(queue <-chan projectionTask) {
 				_, _ = c.projectWithRetry(c.rootCtx, task, true)
 			}
 			c.endActive()
-			c.releaseSlot()
+			c.releaseTask(task)
 		}
 	}
 }
@@ -538,7 +605,7 @@ func (c *Controller) drainQueues() {
 			select {
 			case task := <-queue:
 				c.completeStrict(task, nil, errOldGeneration)
-				c.releaseSlot()
+				c.releaseTask(task)
 			default:
 				goto nextQueue
 			}
@@ -600,6 +667,23 @@ func (c *Controller) currentDefaultMode() Mode {
 func (c *Controller) releaseSlot() {
 	select {
 	case <-c.slots:
+	default:
+	}
+}
+
+func (c *Controller) releaseTask(task projectionTask) {
+	if task.boundedReserved {
+		c.releaseBoundedSlot(task.boundedShard)
+	}
+	c.releaseSlot()
+}
+
+func (c *Controller) releaseBoundedSlot(shard int) {
+	if shard < 0 || shard >= len(c.boundedSlots) {
+		return
+	}
+	select {
+	case <-c.boundedSlots[shard]:
 	default:
 	}
 }
