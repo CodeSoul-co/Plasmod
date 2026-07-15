@@ -44,6 +44,8 @@ type TrackerStatus struct {
 	OldestPendingAge time.Duration `json:"-"`
 	OldestPendingMS  int64         `json:"oldest_pending_ms"`
 	SLABreaches      int64         `json:"sla_breaches"`
+	LastSLABreachMS  int64         `json:"last_sla_breach_ms"`
+	MaxSLABreachMS   int64         `json:"max_sla_breach_ms"`
 	LastError        string        `json:"last_error,omitempty"`
 }
 
@@ -68,6 +70,8 @@ type Tracker struct {
 	latestLSN        int64
 	visibleWatermark int64
 	slaBreaches      int64
+	lastSLABreachMS  int64
+	maxSLABreachMS   int64
 	lastError        string
 	notify           chan struct{}
 	watermark        WatermarkAdvancer
@@ -155,12 +159,16 @@ func (t *Tracker) MarkVisible(lsn int64) error {
 	entry.state = stateVisible
 	entry.err = nil
 
+	now := time.Now()
 	advanced := t.visibleWatermark
 	for t.nextVisibleIndex < len(t.order) {
 		nextLSN := t.order[t.nextVisibleIndex]
 		next := t.entries[nextLSN]
 		if next == nil || next.state != stateVisible {
 			break
+		}
+		if !next.deadline.IsZero() && now.After(next.deadline) {
+			t.markSLABreachLocked(next, now)
 		}
 		advanced = nextLSN
 		t.nextVisibleIndex++
@@ -182,12 +190,24 @@ func (t *Tracker) MarkSLABreach(lsn int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	entry := t.entries[lsn]
+	t.markSLABreachLocked(entry, time.Now())
+	t.signalLocked()
+}
+
+func (t *Tracker) markSLABreachLocked(entry *trackedProjection, now time.Time) {
 	if entry == nil || entry.breached {
 		return
 	}
 	entry.breached = true
 	t.slaBreaches++
-	t.signalLocked()
+	lagMS := now.Sub(entry.acceptedAt).Milliseconds()
+	if lagMS < 0 {
+		lagMS = 0
+	}
+	t.lastSLABreachMS = lagMS
+	if lagMS > t.maxSLABreachMS {
+		t.maxSLABreachMS = lagMS
+	}
 }
 
 func (t *Tracker) WaitThrough(ctx context.Context, targetLSN int64) error {
@@ -244,6 +264,8 @@ func (t *Tracker) Status() TrackerStatus {
 		LatestLSN:        t.latestLSN,
 		VisibleWatermark: t.visibleWatermark,
 		SLABreaches:      t.slaBreaches,
+		LastSLABreachMS:  t.lastSLABreachMS,
+		MaxSLABreachMS:   t.maxSLABreachMS,
 		LastError:        t.lastError,
 	}
 	oldest := t.oldestUnresolvedLocked()
@@ -276,6 +298,8 @@ func (t *Tracker) Reset() error {
 	t.latestLSN = 0
 	t.visibleWatermark = 0
 	t.slaBreaches = 0
+	t.lastSLABreachMS = 0
+	t.maxSLABreachMS = 0
 	t.lastError = ""
 	t.signalLocked()
 	return nil

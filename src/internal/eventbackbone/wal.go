@@ -2,13 +2,15 @@ package eventbackbone
 
 import (
 	"sync"
+	"time"
 
 	"plasmod/src/internal/schemas"
 )
 
 type WALEntry struct {
-	LSN   int64
-	Event schemas.Event
+	LSN                int64
+	AcceptedAtUnixNano int64 `json:",omitempty"`
+	Event              schemas.Event
 }
 
 type InMemoryWAL struct {
@@ -29,7 +31,7 @@ func (w *InMemoryWAL) Append(event schemas.Event) (WALEntry, error) {
 	if event.Time.LogicalTS == 0 {
 		event.Time.LogicalTS = lsn
 	}
-	entry := WALEntry{LSN: lsn, Event: event}
+	entry := WALEntry{LSN: lsn, AcceptedAtUnixNano: time.Now().UnixNano(), Event: event}
 	w.mu.Lock()
 	w.entries = append(w.entries, entry)
 	w.mu.Unlock()

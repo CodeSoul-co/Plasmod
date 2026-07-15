@@ -126,8 +126,34 @@ func TestTrackerStatusCountsStatesAndSLABreaches(t *testing.T) {
 	if status.SLABreaches != 1 || status.LastError == "" {
 		t.Fatalf("missing breach/error status: %+v", status)
 	}
+	if status.LastSLABreachMS < 900 || status.MaxSLABreachMS < status.LastSLABreachMS {
+		t.Fatalf("missing breach latency diagnostics: %+v", status)
+	}
 	if status.LatestLSN != 2 || status.OldestPendingAge <= 0 {
 		t.Fatalf("missing LSN/age status: %+v", status)
+	}
+}
+
+func TestTrackerCountsVisibilityBlockedPastDeadline(t *testing.T) {
+	tracker := NewTracker(0, nil, NewMemoryCheckpoint())
+	acceptedAt := time.Now()
+	deadline := acceptedAt.Add(20 * time.Millisecond)
+	tracker.Accept(1, acceptedAt, deadline)
+	tracker.Accept(2, acceptedAt, deadline)
+
+	if err := tracker.MarkVisible(2); err != nil {
+		t.Fatalf("MarkVisible(2): %v", err)
+	}
+	if status := tracker.Status(); status.SLABreaches != 0 || status.VisibleWatermark != 0 {
+		t.Fatalf("later projection became externally visible too early: %+v", status)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if err := tracker.MarkVisible(1); err != nil {
+		t.Fatalf("MarkVisible(1): %v", err)
+	}
+	status := tracker.Status()
+	if status.VisibleWatermark != 2 || status.SLABreaches != 2 {
+		t.Fatalf("visibility-frontier breaches not counted: %+v", status)
 	}
 }
 

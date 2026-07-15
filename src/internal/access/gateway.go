@@ -1759,20 +1759,22 @@ func (g *Gateway) handleAdminConsistencyMode(w http.ResponseWriter, r *http.Requ
 	writeStatus := func() {
 		status := g.runtime.ConsistencyStatus()
 		writeJSON(w, map[string]any{
-			"status":            "ok",
-			"mode":              status.DefaultMode,
-			"supported_modes":   status.SupportedModes,
-			"data_path_active":  status.DataPathActive,
-			"queue_depth":       status.QueueDepth,
-			"queue_capacity":    status.QueueCapacity,
-			"latest_lsn":        status.LatestLSN,
-			"visible_watermark": status.VisibleWatermark,
-			"pending":           status.Pending,
-			"retrying":          status.Retrying,
-			"failed":            status.Failed,
-			"oldest_pending_ms": status.OldestPendingMS,
-			"sla_breaches":      status.SLABreaches,
-			"last_error":        status.LastError,
+			"status":             "ok",
+			"mode":               status.DefaultMode,
+			"supported_modes":    status.SupportedModes,
+			"data_path_active":   status.DataPathActive,
+			"queue_depth":        status.QueueDepth,
+			"queue_capacity":     status.QueueCapacity,
+			"latest_lsn":         status.LatestLSN,
+			"visible_watermark":  status.VisibleWatermark,
+			"pending":            status.Pending,
+			"retrying":           status.Retrying,
+			"failed":             status.Failed,
+			"oldest_pending_ms":  status.OldestPendingMS,
+			"sla_breaches":       status.SLABreaches,
+			"last_sla_breach_ms": status.LastSLABreachMS,
+			"max_sla_breach_ms":  status.MaxSLABreachMS,
+			"last_error":         status.LastError,
 		})
 	}
 	switch r.Method {

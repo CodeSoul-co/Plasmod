@@ -177,7 +177,18 @@ func (c *Controller) Start(ctx context.Context) error {
 		go c.runWorker(queue)
 	}
 
-	return c.recoverFromWAL(generation)
+	if err := c.recoverFromWAL(generation); err != nil {
+		c.cancelAdmission()
+		c.cancel()
+		c.workers.Wait()
+		c.drainQueues()
+		c.stateMu.Lock()
+		c.started = false
+		c.accepting = false
+		c.stateMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (c *Controller) recoverFromWAL(generation uint64) error {
@@ -190,7 +201,7 @@ func (c *Controller) recoverFromWAL(generation uint64) error {
 			return err
 		}
 		entry.Event = normalized
-		acceptedAt := acceptedTime(entry.Event)
+		acceptedAt := acceptedTime(entry)
 		deadline := time.Time{}
 		if mode == BoundedStaleness {
 			deadline = acceptedAt.Add(lag)
@@ -309,18 +320,20 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 		gateWriteLocked = true
 	}
 
-	acceptedAt := time.Now()
+	ingestStartedAt := time.Now()
 	if normalized.Time.IngestTime == 0 {
-		normalized.Time.IngestTime = acceptedAt.UnixMilli()
+		normalized.Time.IngestTime = ingestStartedAt.UnixMilli()
 	}
+	acceptedAt := time.Time{}
 	deadline := time.Time{}
-	if mode == BoundedStaleness {
-		deadline = acceptedAt.Add(lag)
-	}
 
 	c.appendMu.Lock()
 	entry, err := c.wal.Append(normalized)
 	if err == nil {
+		acceptedAt = acceptedTime(entry)
+		if mode == BoundedStaleness {
+			deadline = acceptedAt.Add(lag)
+		}
 		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
 	}
 	c.appendMu.Unlock()
@@ -721,9 +734,9 @@ func baseAcknowledgement(task projectionTask, visibility string) map[string]any 
 	return ack
 }
 
-func acceptedTime(ev schemas.Event) time.Time {
-	if ev.Time.IngestTime > 0 {
-		return time.UnixMilli(ev.Time.IngestTime)
+func acceptedTime(entry eventbackbone.WALEntry) time.Time {
+	if entry.AcceptedAtUnixNano > 0 {
+		return time.Unix(0, entry.AcceptedAtUnixNano)
 	}
 	return time.Now()
 }

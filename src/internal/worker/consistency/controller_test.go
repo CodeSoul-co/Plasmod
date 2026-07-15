@@ -47,6 +47,16 @@ func startTestController(
 	return controller, wal
 }
 
+type delayedWAL struct {
+	eventbackbone.WAL
+	delay time.Duration
+}
+
+func (w delayedWAL) Append(event schemas.Event) (eventbackbone.WALEntry, error) {
+	time.Sleep(w.delay)
+	return w.WAL.Append(event)
+}
+
 func TestControllerStrictAcknowledgementWaitsForVisibility(t *testing.T) {
 	release := make(chan struct{})
 	controller, _ := startTestController(t, DefaultConfig(), func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
@@ -577,6 +587,81 @@ func TestControllerBoundedAdmissionDoesNotOversubscribeSLA(t *testing.T) {
 	}
 	if status := controller.Status(); status.SLABreaches != 0 {
 		t.Fatalf("bounded admission oversubscribed its SLA: %+v", status)
+	}
+}
+
+func TestControllerBoundedSLAStartsAfterWALAcceptance(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BoundedMaxLag = 20 * time.Millisecond
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	innerWAL := eventbackbone.NewInMemoryWAL(bus, clock)
+	wal := delayedWAL{WAL: innerWAL, delay: 30 * time.Millisecond}
+	controller, err := NewController(
+		wal,
+		eventbackbone.NewWatermarkPublisher(clock, bus),
+		NewMemoryCheckpoint(),
+		cfg,
+		func(context.Context, eventbackbone.WALEntry) (map[string]any, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = controller.Shutdown(ctx)
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("slow-wal", "session", "bounded")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := controller.WaitForRead(ctx, schemas.QueryRequest{AccessConsistency: "strict"}); err != nil {
+		t.Fatalf("WaitForRead: %v", err)
+	}
+	if status := controller.Status(); status.SLABreaches != 0 {
+		t.Fatalf("WAL persistence time counted against post-acceptance SLA: %+v", status)
+	}
+}
+
+func TestControllerStartRollsBackAfterRecoveryError(t *testing.T) {
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	wal := eventbackbone.NewInMemoryWAL(bus, clock)
+	if _, err := wal.Append(testEvent("invalid-recovery", "session", "invalid-mode")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	controller, err := NewController(
+		wal,
+		eventbackbone.NewWatermarkPublisher(clock, bus),
+		NewMemoryCheckpoint(),
+		DefaultConfig(),
+		func(context.Context, eventbackbone.WALEntry) (map[string]any, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	if err := controller.Start(context.Background()); err == nil {
+		t.Fatal("Start accepted invalid recovered consistency mode")
+	}
+
+	controller.stateMu.Lock()
+	started := controller.started
+	accepting := controller.accepting
+	rootCtx := controller.rootCtx
+	controller.stateMu.Unlock()
+	if started || accepting {
+		t.Fatalf("failed start left controller active: started=%v accepting=%v", started, accepting)
+	}
+	select {
+	case <-rootCtx.Done():
+	default:
+		t.Fatal("failed start left recovery workers running")
 	}
 }
 
