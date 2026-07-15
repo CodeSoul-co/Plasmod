@@ -30,6 +30,17 @@ type AcceptedNotVisibleError struct {
 	Err     error
 }
 
+type checkpointVisibilityError struct {
+	lsn int64
+	err error
+}
+
+func (e *checkpointVisibilityError) Error() string {
+	return fmt.Sprintf("persist visibility checkpoint for LSN %d: %v", e.lsn, e.err)
+}
+
+func (e *checkpointVisibilityError) Unwrap() error { return e.err }
+
 func (e *AcceptedNotVisibleError) Error() string {
 	return fmt.Sprintf("event %s accepted at lsn %d but not visible: %v", e.EventID, e.LSN, e.Err)
 }
@@ -549,7 +560,12 @@ func (c *Controller) runWorker(queue <-chan projectionTask) {
 				ack, err := c.projectWithRetry(c.rootCtx, task, false)
 				c.completeStrict(task, ack, err)
 				if err != nil && c.isCurrentGeneration(task.generation) {
-					_, _ = c.projectWithRetry(c.rootCtx, task, true)
+					var checkpointErr *checkpointVisibilityError
+					if errors.As(err, &checkpointErr) {
+						_ = c.persistVisibilityWithRetry(c.rootCtx, task, true)
+					} else {
+						_, _ = c.projectWithRetry(c.rootCtx, task, true)
+					}
 				}
 			} else {
 				_, _ = c.projectWithRetry(c.rootCtx, task, true)
@@ -582,8 +598,8 @@ func (c *Controller) projectWithRetry(ctx context.Context, task projectionTask, 
 			if !task.deadline.IsZero() && time.Now().After(task.deadline) {
 				c.tracker.MarkSLABreach(task.entry.LSN)
 			}
-			if err := c.tracker.MarkVisible(task.entry.LSN); err != nil {
-				return nil, err
+			if err := c.persistVisibilityWithRetry(ctx, task, terminal); err != nil {
+				return ack, err
 			}
 			return ack, nil
 		}
@@ -605,6 +621,40 @@ func (c *Controller) projectWithRetry(ctx context.Context, task projectionTask, 
 		}
 	}
 	return nil, lastErr
+}
+
+func (c *Controller) persistVisibilityWithRetry(
+	ctx context.Context,
+	task projectionTask,
+	terminal bool,
+) error {
+	var lastErr error
+	for attempt := 1; attempt <= c.cfg.MaxRetries; attempt++ {
+		if !c.isCurrentGeneration(task.generation) {
+			return errOldGeneration
+		}
+		if err := c.tracker.MarkVisible(task.entry.LSN); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == c.cfg.MaxRetries {
+			break
+		}
+		delay := c.retryDelay(attempt)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	err := &checkpointVisibilityError{lsn: task.entry.LSN, err: lastErr}
+	if terminal {
+		_ = c.tracker.MarkFailed(task.entry.LSN, err)
+	} else {
+		_ = c.tracker.MarkRetrying(task.entry.LSN, c.cfg.MaxRetries, err)
+	}
+	return err
 }
 
 func (c *Controller) enqueue(task projectionTask) {

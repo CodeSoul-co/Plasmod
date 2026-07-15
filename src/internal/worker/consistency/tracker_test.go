@@ -13,6 +13,20 @@ type recordingWatermark struct {
 	values []int64
 }
 
+type failOnceCheckpoint struct {
+	CheckpointStore
+	err error
+}
+
+func (s *failOnceCheckpoint) Save(lsn int64) error {
+	if s.err != nil {
+		err := s.err
+		s.err = nil
+		return err
+	}
+	return s.CheckpointStore.Save(lsn)
+}
+
 func (w *recordingWatermark) AdvanceTo(lsn int64) eventbackbone.TimeTick {
 	w.values = append(w.values, lsn)
 	return eventbackbone.TimeTick{LogicalTS: lsn}
@@ -42,6 +56,29 @@ func TestTrackerAdvancesAcrossAcceptedLSNGapsOnlyWhenContiguous(t *testing.T) {
 	}
 	if len(watermark.values) != 1 || watermark.values[0] != 30 {
 		t.Fatalf("published watermarks = %v, want [30]", watermark.values)
+	}
+}
+
+func TestTrackerCheckpointFailureDoesNotConsumeVisibilityFrontier(t *testing.T) {
+	t.Parallel()
+
+	checkpoint := &failOnceCheckpoint{
+		CheckpointStore: NewMemoryCheckpoint(),
+		err:             errors.New("checkpoint unavailable"),
+	}
+	tracker := NewTracker(0, nil, checkpoint)
+	tracker.Accept(5, time.Now(), time.Time{})
+	if err := tracker.MarkVisible(5); err == nil {
+		t.Fatal("expected checkpoint failure")
+	}
+	if got := tracker.Status().VisibleWatermark; got != 0 {
+		t.Fatalf("watermark advanced after checkpoint failure: %d", got)
+	}
+	if err := tracker.MarkVisible(5); err != nil {
+		t.Fatalf("retry MarkVisible: %v", err)
+	}
+	if got := tracker.Status().VisibleWatermark; got != 5 {
+		t.Fatalf("watermark after retry = %d, want 5", got)
 	}
 }
 

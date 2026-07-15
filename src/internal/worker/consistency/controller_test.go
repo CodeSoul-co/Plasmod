@@ -978,6 +978,56 @@ func TestControllerStartReplaysOnlyEntriesAfterCheckpoint(t *testing.T) {
 	}
 }
 
+func TestControllerRetriesCheckpointWithoutReprojectingEntry(t *testing.T) {
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	checkpoint := &failOnceCheckpoint{
+		CheckpointStore: NewMemoryCheckpoint(),
+		err:             errors.New("checkpoint unavailable"),
+	}
+	cfg := DefaultConfig()
+	cfg.RetryBaseDelay = time.Millisecond
+	cfg.RetryMaxDelay = time.Millisecond
+	var projected atomic.Int32
+	controller, err := NewController(
+		eventbackbone.NewInMemoryWAL(bus, clock),
+		eventbackbone.NewWatermarkPublisher(clock, bus),
+		checkpoint,
+		cfg,
+		func(context.Context, eventbackbone.WALEntry) (map[string]any, error) {
+			projected.Add(1)
+			return map[string]any{"status": "ok"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = controller.Shutdown(ctx)
+	}()
+
+	ack, err := controller.Submit(context.Background(), testEvent("checkpoint-retry", "s1", "eventual"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if ack["lsn"].(int64) <= 0 {
+		t.Fatalf("invalid acknowledgement: %+v", ack)
+	}
+	if err := controller.WaitForRead(ctx, schemas.QueryRequest{AccessConsistency: "strict"}); err != nil {
+		t.Fatalf("WaitForRead: %v", err)
+	}
+	if got := projected.Load(); got != 1 {
+		t.Fatalf("projector calls = %d, want 1", got)
+	}
+}
+
 func TestControllerBootstrapsMissingPersistentCheckpointAtLegacyWALTail(t *testing.T) {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()

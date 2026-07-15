@@ -161,8 +161,9 @@ func (t *Tracker) MarkVisible(lsn int64) error {
 
 	now := time.Now()
 	advanced := t.visibleWatermark
-	for t.nextVisibleIndex < len(t.order) {
-		nextLSN := t.order[t.nextVisibleIndex]
+	nextVisibleIndex := t.nextVisibleIndex
+	for nextVisibleIndex < len(t.order) {
+		nextLSN := t.order[nextVisibleIndex]
 		next := t.entries[nextLSN]
 		if next == nil || next.state != stateVisible {
 			break
@@ -171,12 +172,13 @@ func (t *Tracker) MarkVisible(lsn int64) error {
 			t.markSLABreachLocked(next, now)
 		}
 		advanced = nextLSN
-		t.nextVisibleIndex++
+		nextVisibleIndex++
 	}
 	if advanced > t.visibleWatermark {
 		if err := t.checkpoint.Save(advanced); err != nil {
 			return err
 		}
+		t.nextVisibleIndex = nextVisibleIndex
 		t.visibleWatermark = advanced
 		if t.watermark != nil {
 			t.watermark.AdvanceTo(advanced)
