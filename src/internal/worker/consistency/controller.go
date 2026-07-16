@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,17 @@ type AcceptedNotVisibleError struct {
 	Err     error
 }
 
+type checkpointVisibilityError struct {
+	lsn int64
+	err error
+}
+
+func (e *checkpointVisibilityError) Error() string {
+	return fmt.Sprintf("persist visibility checkpoint for LSN %d: %v", e.lsn, e.err)
+}
+
+func (e *checkpointVisibilityError) Unwrap() error { return e.err }
+
 func (e *AcceptedNotVisibleError) Error() string {
 	return fmt.Sprintf("event %s accepted at lsn %d but not visible: %v", e.EventID, e.LSN, e.Err)
 }
@@ -37,13 +49,15 @@ func (e *AcceptedNotVisibleError) Error() string {
 func (e *AcceptedNotVisibleError) Unwrap() error { return e.Err }
 
 type projectionTask struct {
-	entry      eventbackbone.WALEntry
-	mode       Mode
-	lag        time.Duration
-	acceptedAt time.Time
-	deadline   time.Time
-	generation uint64
-	strictDone chan projectionResult
+	entry           eventbackbone.WALEntry
+	mode            Mode
+	lag             time.Duration
+	acceptedAt      time.Time
+	deadline        time.Time
+	generation      uint64
+	strictDone      chan projectionResult
+	boundedShard    int
+	boundedReserved bool
 }
 
 type projectionResult struct {
@@ -74,16 +88,21 @@ type Controller struct {
 	defaultMode Mode
 
 	admissionMu sync.RWMutex
-	appendMu    sync.Mutex
-	slots       chan struct{}
-	queues      []chan projectionTask
+	// modeGate keeps mixed-mode writes out of a bounded drain-to-append window.
+	modeGate     sync.RWMutex
+	appendMu     sync.Mutex
+	slots        chan struct{}
+	queues       []chan projectionTask
+	boundedSlots []chan struct{}
 
-	stateMu    sync.RWMutex
-	started    bool
-	accepting  bool
-	generation uint64
-	rootCtx    context.Context
-	cancel     context.CancelFunc
+	stateMu         sync.RWMutex
+	started         bool
+	accepting       bool
+	generation      uint64
+	rootCtx         context.Context
+	cancel          context.CancelFunc
+	admissionCtx    context.Context
+	cancelAdmission context.CancelFunc
 
 	activeMu      sync.Mutex
 	active        int
@@ -107,7 +126,7 @@ func NewController(
 	if cfg.QueueSize <= 0 || cfg.Workers <= 0 || cfg.MaxRetries <= 0 {
 		return nil, fmt.Errorf("invalid consistency capacity: queue=%d workers=%d retries=%d", cfg.QueueSize, cfg.Workers, cfg.MaxRetries)
 	}
-	if cfg.BoundedMaxLag <= 0 || cfg.RetryBaseDelay <= 0 || cfg.RetryMaxDelay < cfg.RetryBaseDelay {
+	if cfg.BoundedMaxLag <= 0 || cfg.RetryBaseDelay <= 0 || cfg.RetryMaxDelay < cfg.RetryBaseDelay || cfg.CheckpointFlushInterval < 0 {
 		return nil, errors.New("invalid consistency duration configuration")
 	}
 	if _, err := ParseMode(string(cfg.DefaultMode)); err != nil {
@@ -130,19 +149,26 @@ func NewController(
 	}
 
 	queues := make([]chan projectionTask, cfg.Workers)
+	boundedSlots := make([]chan struct{}, cfg.Workers)
 	for i := range queues {
 		queues[i] = make(chan projectionTask, cfg.QueueSize)
+		boundedSlots[i] = make(chan struct{}, 1)
+	}
+	effectiveCheckpoint := checkpoint
+	if cfg.CheckpointFlushInterval > 0 && strings.TrimSpace(cfg.CheckpointPath) != "" {
+		effectiveCheckpoint = NewBufferedCheckpoint(checkpoint, cfg.CheckpointFlushInterval)
 	}
 	return &Controller{
 		wal:           wal,
 		project:       project,
 		cfg:           cfg,
-		checkpoint:    checkpoint,
-		tracker:       NewTracker(initialLSN, watermark, checkpoint),
+		checkpoint:    effectiveCheckpoint,
+		tracker:       NewTracker(initialLSN, watermark, effectiveCheckpoint),
 		initialLSN:    initialLSN,
 		defaultMode:   cfg.DefaultMode,
 		slots:         make(chan struct{}, cfg.QueueSize),
 		queues:        queues,
+		boundedSlots:  boundedSlots,
 		generation:    1,
 		activeChanged: make(chan struct{}),
 	}, nil
@@ -155,6 +181,7 @@ func (c *Controller) Start(ctx context.Context) error {
 		return nil
 	}
 	c.rootCtx, c.cancel = context.WithCancel(ctx)
+	c.admissionCtx, c.cancelAdmission = context.WithCancel(c.rootCtx)
 	c.started = true
 	c.accepting = true
 	generation := c.generation
@@ -166,7 +193,24 @@ func (c *Controller) Start(ctx context.Context) error {
 		go c.runWorker(queue)
 	}
 
-	return c.recoverFromWAL(generation)
+	if err := c.recoverFromWAL(generation); err != nil {
+		c.cancelAdmission()
+		c.cancel()
+		c.workers.Wait()
+		c.drainQueues()
+		c.stateMu.Lock()
+		c.started = false
+		c.accepting = false
+		c.stateMu.Unlock()
+		if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+			closeCtx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+			closeErr := checkpoint.Close(closeCtx)
+			cancel()
+			return errors.Join(err, closeErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *Controller) recoverFromWAL(generation uint64) error {
@@ -179,20 +223,35 @@ func (c *Controller) recoverFromWAL(generation uint64) error {
 			return err
 		}
 		entry.Event = normalized
-		acceptedAt := acceptedTime(entry.Event)
+		acceptedAt := acceptedTime(entry)
 		deadline := time.Time{}
 		if mode == BoundedStaleness {
 			deadline = acceptedAt.Add(lag)
 		}
+		boundedShard := 0
+		boundedReserved := false
+		if mode == BoundedStaleness {
+			boundedShard = shardIndex(entry.Event, len(c.queues))
+			select {
+			case c.boundedSlots[boundedShard] <- struct{}{}:
+				boundedReserved = true
+			case <-c.rootCtx.Done():
+				return c.rootCtx.Err()
+			}
+		}
 		select {
 		case c.slots <- struct{}{}:
 		case <-c.rootCtx.Done():
+			if boundedReserved {
+				c.releaseBoundedSlot(boundedShard)
+			}
 			return c.rootCtx.Err()
 		}
 		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
 		c.enqueue(projectionTask{
 			entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
 			deadline: deadline, generation: generation,
+			boundedShard: boundedShard, boundedReserved: boundedReserved,
 		})
 	}
 	return nil
@@ -200,10 +259,16 @@ func (c *Controller) recoverFromWAL(generation uint64) error {
 
 func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]any, error) {
 	c.admissionMu.RLock()
-	defer c.admissionMu.RUnlock()
+	admissionLocked := true
+	defer func() {
+		if admissionLocked {
+			c.admissionMu.RUnlock()
+		}
+	}()
 
 	c.stateMu.RLock()
 	started, accepting, generation := c.started, c.accepting, c.generation
+	rootCtx, admissionCtx := c.rootCtx, c.admissionCtx
 	c.stateMu.RUnlock()
 	if !started {
 		return nil, ErrNotStarted
@@ -216,16 +281,30 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	boundedShard := 0
+	boundedReserved := false
 	if mode == BoundedStaleness {
-		status := c.tracker.Status()
-		if status.OldestPendingAge > lag {
-			return nil, ErrBackpressure
+		boundedShard = shardIndex(normalized, len(c.queues))
+		select {
+		case c.boundedSlots[boundedShard] <- struct{}{}:
+			boundedReserved = true
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-admissionCtx.Done():
+			return nil, c.admissionError()
 		}
+		defer func() {
+			if boundedReserved {
+				c.releaseBoundedSlot(boundedShard)
+			}
+		}()
 	}
 	select {
 	case c.slots <- struct{}{}:
-	default:
-		return nil, ErrBackpressure
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-admissionCtx.Done():
+		return nil, c.admissionError()
 	}
 	releaseReservation := true
 	defer func() {
@@ -234,39 +313,88 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 		}
 	}()
 
-	acceptedAt := time.Now()
-	if normalized.Time.IngestTime == 0 {
-		normalized.Time.IngestTime = acceptedAt.UnixMilli()
-	}
-	deadline := time.Time{}
+	gateReadLocked := false
+	gateWriteLocked := false
+	defer func() {
+		if gateReadLocked {
+			c.modeGate.RUnlock()
+		}
+		if gateWriteLocked {
+			c.modeGate.Unlock()
+		}
+	}()
 	if mode == BoundedStaleness {
-		deadline = acceptedAt.Add(lag)
+		c.modeGate.RLock()
+		gateReadLocked = true
+		waitCtx, cancelWait := context.WithCancel(ctx)
+		stopAdmissionCancel := context.AfterFunc(admissionCtx, cancelWait)
+		err := c.tracker.WaitThrough(waitCtx, c.wal.LatestLSN())
+		stopAdmissionCancel()
+		cancelWait()
+		if err != nil {
+			if admissionCtx.Err() != nil {
+				return nil, c.admissionError()
+			}
+			return nil, err
+		}
+	} else {
+		c.modeGate.Lock()
+		gateWriteLocked = true
 	}
+
+	ingestStartedAt := time.Now()
+	if normalized.Time.IngestTime == 0 {
+		normalized.Time.IngestTime = ingestStartedAt.UnixMilli()
+	}
+	acceptedAt := time.Time{}
+	deadline := time.Time{}
 
 	c.appendMu.Lock()
 	entry, err := c.wal.Append(normalized)
 	if err == nil {
+		acceptedAt = acceptedTime(entry)
+		if mode == BoundedStaleness {
+			deadline = acceptedAt.Add(lag)
+		}
 		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
 	}
 	c.appendMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
+	if gateReadLocked {
+		c.modeGate.RUnlock()
+		gateReadLocked = false
+	}
+	if gateWriteLocked {
+		c.modeGate.Unlock()
+		gateWriteLocked = false
+	}
 	task := projectionTask{
 		entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
 		deadline: deadline, generation: generation,
+		boundedShard: boundedShard, boundedReserved: boundedReserved,
 	}
 	if mode == StrictVisible {
 		task.strictDone = make(chan projectionResult, 1)
 	}
 	c.enqueue(task)
 	releaseReservation = false
+	boundedReserved = false
+	c.admissionMu.RUnlock()
+	admissionLocked = false
 	if mode == StrictVisible {
 		var result projectionResult
 		select {
 		case result = <-task.strictDone:
 		case <-ctx.Done():
 			result.err = ctx.Err()
+		case <-rootCtx.Done():
+			select {
+			case result = <-task.strictDone:
+			default:
+				result.err = rootCtx.Err()
+			}
 		}
 		if result.err != nil {
 			return nil, &AcceptedNotVisibleError{
@@ -316,25 +444,42 @@ func (c *Controller) Status() ControllerStatus {
 	c.stateMu.RLock()
 	active := c.started
 	c.stateMu.RUnlock()
+	trackerStatus := c.tracker.Status()
+	if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+		if err := checkpoint.LastError(); err != nil {
+			checkpointError := "checkpoint: " + err.Error()
+			if trackerStatus.LastError == "" {
+				trackerStatus.LastError = checkpointError
+			} else {
+				trackerStatus.LastError += "; " + checkpointError
+			}
+		}
+	}
 	return ControllerStatus{
 		DefaultMode:    c.currentDefaultMode(),
 		SupportedModes: []string{string(StrictVisible), string(BoundedStaleness), string(EventualVisibility)},
 		DataPathActive: active,
 		QueueDepth:     len(c.slots),
 		QueueCapacity:  cap(c.slots),
-		TrackerStatus:  c.tracker.Status(),
+		TrackerStatus:  trackerStatus,
 	}
 }
 
 func (c *Controller) Pause(ctx context.Context) error {
-	c.admissionMu.Lock()
 	c.stateMu.Lock()
 	if !c.started {
 		c.stateMu.Unlock()
-		c.admissionMu.Unlock()
 		return ErrNotStarted
 	}
 	c.accepting = false
+	cancelAdmission := c.cancelAdmission
+	c.stateMu.Unlock()
+	if cancelAdmission != nil {
+		cancelAdmission()
+	}
+
+	c.admissionMu.Lock()
+	c.stateMu.Lock()
 	c.generation++
 	c.stateMu.Unlock()
 	c.drainQueues()
@@ -358,22 +503,30 @@ func (c *Controller) Reset() error {
 
 func (c *Controller) Resume() {
 	c.stateMu.Lock()
-	if c.started {
+	if c.started && !c.accepting && c.rootCtx.Err() == nil {
+		c.admissionCtx, c.cancelAdmission = context.WithCancel(c.rootCtx)
 		c.accepting = true
 	}
 	c.stateMu.Unlock()
 }
 
 func (c *Controller) Shutdown(ctx context.Context) error {
-	c.admissionMu.Lock()
 	c.stateMu.Lock()
 	if !c.started {
 		c.stateMu.Unlock()
-		c.admissionMu.Unlock()
+		if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+			return checkpoint.Close(ctx)
+		}
 		return nil
 	}
 	c.accepting = false
+	cancelAdmission := c.cancelAdmission
 	c.stateMu.Unlock()
+	if cancelAdmission != nil {
+		cancelAdmission()
+	}
+
+	c.admissionMu.Lock()
 	c.admissionMu.Unlock()
 
 	ticker := time.NewTicker(5 * time.Millisecond)
@@ -400,7 +553,22 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	c.stateMu.Lock()
 	c.started = false
 	c.stateMu.Unlock()
+	if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+		return checkpoint.Close(ctx)
+	}
 	return nil
+}
+
+func (c *Controller) admissionError() error {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if !c.started || c.rootCtx == nil || c.rootCtx.Err() != nil {
+		return ErrNotStarted
+	}
+	if !c.accepting {
+		return ErrPaused
+	}
+	return context.Canceled
 }
 
 func (c *Controller) runWorker(queue <-chan projectionTask) {
@@ -412,7 +580,7 @@ func (c *Controller) runWorker(queue <-chan projectionTask) {
 		case task := <-queue:
 			if !c.isCurrentGeneration(task.generation) {
 				c.completeStrict(task, nil, errOldGeneration)
-				c.releaseSlot()
+				c.releaseTask(task)
 				continue
 			}
 			c.beginActive()
@@ -420,13 +588,18 @@ func (c *Controller) runWorker(queue <-chan projectionTask) {
 				ack, err := c.projectWithRetry(c.rootCtx, task, false)
 				c.completeStrict(task, ack, err)
 				if err != nil && c.isCurrentGeneration(task.generation) {
-					_, _ = c.projectWithRetry(c.rootCtx, task, true)
+					var checkpointErr *checkpointVisibilityError
+					if errors.As(err, &checkpointErr) {
+						_ = c.persistVisibilityWithRetry(c.rootCtx, task, true)
+					} else {
+						_, _ = c.projectWithRetry(c.rootCtx, task, true)
+					}
 				}
 			} else {
 				_, _ = c.projectWithRetry(c.rootCtx, task, true)
 			}
 			c.endActive()
-			c.releaseSlot()
+			c.releaseTask(task)
 		}
 	}
 }
@@ -453,8 +626,8 @@ func (c *Controller) projectWithRetry(ctx context.Context, task projectionTask, 
 			if !task.deadline.IsZero() && time.Now().After(task.deadline) {
 				c.tracker.MarkSLABreach(task.entry.LSN)
 			}
-			if err := c.tracker.MarkVisible(task.entry.LSN); err != nil {
-				return nil, err
+			if err := c.persistVisibilityWithRetry(ctx, task, terminal); err != nil {
+				return ack, err
 			}
 			return ack, nil
 		}
@@ -478,6 +651,40 @@ func (c *Controller) projectWithRetry(ctx context.Context, task projectionTask, 
 	return nil, lastErr
 }
 
+func (c *Controller) persistVisibilityWithRetry(
+	ctx context.Context,
+	task projectionTask,
+	terminal bool,
+) error {
+	var lastErr error
+	for attempt := 1; attempt <= c.cfg.MaxRetries; attempt++ {
+		if !c.isCurrentGeneration(task.generation) {
+			return errOldGeneration
+		}
+		if err := c.tracker.MarkVisible(task.entry.LSN); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == c.cfg.MaxRetries {
+			break
+		}
+		delay := c.retryDelay(attempt)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	err := &checkpointVisibilityError{lsn: task.entry.LSN, err: lastErr}
+	if terminal {
+		_ = c.tracker.MarkFailed(task.entry.LSN, err)
+	} else {
+		_ = c.tracker.MarkRetrying(task.entry.LSN, c.cfg.MaxRetries, err)
+	}
+	return err
+}
+
 func (c *Controller) enqueue(task projectionTask) {
 	idx := shardIndex(task.entry.Event, len(c.queues))
 	c.queues[idx] <- task
@@ -487,8 +694,9 @@ func (c *Controller) drainQueues() {
 	for _, queue := range c.queues {
 		for {
 			select {
-			case <-queue:
-				c.releaseSlot()
+			case task := <-queue:
+				c.completeStrict(task, nil, errOldGeneration)
+				c.releaseTask(task)
 			default:
 				goto nextQueue
 			}
@@ -554,6 +762,23 @@ func (c *Controller) releaseSlot() {
 	}
 }
 
+func (c *Controller) releaseTask(task projectionTask) {
+	if task.boundedReserved {
+		c.releaseBoundedSlot(task.boundedShard)
+	}
+	c.releaseSlot()
+}
+
+func (c *Controller) releaseBoundedSlot(shard int) {
+	if shard < 0 || shard >= len(c.boundedSlots) {
+		return
+	}
+	select {
+	case <-c.boundedSlots[shard]:
+	default:
+	}
+}
+
 func (c *Controller) retryDelay(attempt int) time.Duration {
 	delay := c.cfg.RetryBaseDelay
 	for i := 1; i < attempt && delay < c.cfg.RetryMaxDelay; i++ {
@@ -587,9 +812,9 @@ func baseAcknowledgement(task projectionTask, visibility string) map[string]any 
 	return ack
 }
 
-func acceptedTime(ev schemas.Event) time.Time {
-	if ev.Time.IngestTime > 0 {
-		return time.UnixMilli(ev.Time.IngestTime)
+func acceptedTime(entry eventbackbone.WALEntry) time.Time {
+	if entry.AcceptedAtUnixNano > 0 {
+		return time.Unix(0, entry.AcceptedAtUnixNano)
 	}
 	return time.Now()
 }

@@ -105,11 +105,20 @@ func BuildServer() (*ServerBundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	bundleOwned := true
+	defer func() {
+		if bundleOwned {
+			_ = bundle.Close()
+		}
+	}()
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
 	var wal eventbackbone.WAL
 	if storageCfg != nil && storageCfg.WALPersistence {
-		wal = eventbackbone.NewFileWAL(filepath.Join(storageCfg.DataDir, "wal.log"), bus, clock)
+		wal, err = eventbackbone.NewFileWAL(filepath.Join(storageCfg.DataDir, "wal.log"), bus, clock)
+		if err != nil {
+			return nil, fmt.Errorf("open write-ahead log: %w", err)
+		}
 		log.Printf("[bootstrap] wal: file-backed (%s)", filepath.Join(storageCfg.DataDir, "wal.log"))
 	} else {
 		wal = eventbackbone.NewInMemoryWAL(bus, clock)
@@ -611,13 +620,11 @@ func BuildServer() (*ServerBundle, error) {
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
 	if err := runtime.ConfigureEmbeddingSpec(embeddingSpec); err != nil {
-		_ = bundle.Close()
 		return nil, fmt.Errorf("configure embedding spec: %w", err)
 	}
 	if reindexEmbeddings {
 		count, err := runtime.ReindexEmbeddings()
 		if err != nil {
-			_ = bundle.Close()
 			return nil, fmt.Errorf("reindex embeddings: %w", err)
 		}
 		log.Printf("[bootstrap] embedding reindex complete: records=%d spec=%s", count, embeddingSpec)
@@ -625,11 +632,9 @@ func BuildServer() (*ServerBundle, error) {
 	runtime.VectorOnlyMode = vectorOnlyMode
 	consistencyCfg := consistency.ConfigFromEnv(storageCfg.DataDir, storageCfg.WALPersistence)
 	if err := runtime.ConfigureConsistency(consistencyCfg, watermark); err != nil {
-		_ = bundle.Close()
 		return nil, fmt.Errorf("configure consistency controller: %w", err)
 	}
 	if err := runtime.StartConsistency(context.Background()); err != nil {
-		_ = bundle.Close()
 		return nil, fmt.Errorf("start consistency controller: %w", err)
 	}
 	runtime.RegisterDefaults()
@@ -739,6 +744,7 @@ func BuildServer() (*ServerBundle, error) {
 		log.Printf("[bootstrap] gRPC disabled (PLASMOD_GRPC_ENABLED=0)")
 	}
 
+	bundleOwned = false
 	return &ServerBundle{
 		HTTPServers: servers,
 		GRPCServer:  grpcSrv,

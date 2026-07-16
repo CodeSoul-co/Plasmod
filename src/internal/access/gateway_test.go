@@ -161,6 +161,11 @@ func TestGateway_AdminConsistencyModeDelegatesToRuntime(t *testing.T) {
 	if initial["mode"] != string(consistency.StrictVisible) || initial["data_path_active"] != true {
 		t.Fatalf("GET did not expose active runtime state: %+v", initial)
 	}
+	for _, key := range []string{"sla_breaches", "last_sla_breach_ms", "max_sla_breach_ms"} {
+		if _, ok := initial[key]; !ok {
+			t.Fatalf("GET missing %q diagnostic: %+v", key, initial)
+		}
+	}
 
 	body, _ := json.Marshal(map[string]string{"mode": "bounded"})
 	post := httptest.NewRequest(http.MethodPost, "/v1/admin/consistency-mode", bytes.NewReader(body))

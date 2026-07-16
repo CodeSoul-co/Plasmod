@@ -10,25 +10,27 @@ import (
 )
 
 const (
-	envDefaultMode      = "PLASMOD_CONSISTENCY_DEFAULT_MODE"
-	envBoundedMaxLag    = "PLASMOD_CONSISTENCY_BOUNDED_MAX_LAG"
-	envQueueSize        = "PLASMOD_CONSISTENCY_QUEUE_SIZE"
-	envWorkers          = "PLASMOD_CONSISTENCY_WORKERS"
-	envMaxRetries       = "PLASMOD_CONSISTENCY_MAX_RETRIES"
-	envRetryBase        = "PLASMOD_CONSISTENCY_RETRY_BASE"
-	envRetryMax         = "PLASMOD_CONSISTENCY_RETRY_MAX"
-	envQueryTimeout     = "PLASMOD_CONSISTENCY_QUERY_TIMEOUT"
-	envShutdownTimeout  = "PLASMOD_CONSISTENCY_SHUTDOWN_TIMEOUT"
-	envCheckpointPath   = "PLASMOD_CONSISTENCY_CHECKPOINT_PATH"
-	checkpointFileName  = "consistency_checkpoint.json"
-	defaultQueueSize    = 4096
-	defaultWorkers      = 4
-	defaultMaxRetries   = 8
-	defaultBoundedLag   = time.Second
-	defaultRetryBase    = 25 * time.Millisecond
-	defaultRetryMax     = 2 * time.Second
-	defaultQueryTimeout = 30 * time.Second
-	defaultShutdown     = 30 * time.Second
+	envDefaultMode                 = "PLASMOD_CONSISTENCY_DEFAULT_MODE"
+	envBoundedMaxLag               = "PLASMOD_CONSISTENCY_BOUNDED_MAX_LAG"
+	envQueueSize                   = "PLASMOD_CONSISTENCY_QUEUE_SIZE"
+	envWorkers                     = "PLASMOD_CONSISTENCY_WORKERS"
+	envMaxRetries                  = "PLASMOD_CONSISTENCY_MAX_RETRIES"
+	envRetryBase                   = "PLASMOD_CONSISTENCY_RETRY_BASE"
+	envRetryMax                    = "PLASMOD_CONSISTENCY_RETRY_MAX"
+	envQueryTimeout                = "PLASMOD_CONSISTENCY_QUERY_TIMEOUT"
+	envShutdownTimeout             = "PLASMOD_CONSISTENCY_SHUTDOWN_TIMEOUT"
+	envCheckpointPath              = "PLASMOD_CONSISTENCY_CHECKPOINT_PATH"
+	envCheckpointFlush             = "PLASMOD_CONSISTENCY_CHECKPOINT_FLUSH_INTERVAL"
+	checkpointFileName             = "consistency_checkpoint.json"
+	defaultQueueSize               = 4096
+	defaultWorkers                 = 4
+	defaultMaxRetries              = 8
+	defaultBoundedLag              = time.Second
+	defaultRetryBase               = 25 * time.Millisecond
+	defaultRetryMax                = 2 * time.Second
+	defaultQueryTimeout            = 30 * time.Second
+	defaultShutdown                = 30 * time.Second
+	defaultCheckpointFlushInterval = 50 * time.Millisecond
 )
 
 // Config controls consistency admission, projection, retries, and lifecycle.
@@ -43,21 +45,23 @@ type Config struct {
 	QueryWaitTimeout            time.Duration
 	ShutdownTimeout             time.Duration
 	CheckpointPath              string
+	CheckpointFlushInterval     time.Duration
 	BootstrapCheckpointAtLatest bool
 }
 
 // DefaultConfig returns safe compatibility defaults for an in-memory runtime.
 func DefaultConfig() Config {
 	return Config{
-		DefaultMode:      StrictVisible,
-		BoundedMaxLag:    defaultBoundedLag,
-		QueueSize:        defaultQueueSize,
-		Workers:          defaultWorkers,
-		MaxRetries:       defaultMaxRetries,
-		RetryBaseDelay:   defaultRetryBase,
-		RetryMaxDelay:    defaultRetryMax,
-		QueryWaitTimeout: defaultQueryTimeout,
-		ShutdownTimeout:  defaultShutdown,
+		DefaultMode:             StrictVisible,
+		BoundedMaxLag:           defaultBoundedLag,
+		QueueSize:               defaultQueueSize,
+		Workers:                 defaultWorkers,
+		MaxRetries:              defaultMaxRetries,
+		RetryBaseDelay:          defaultRetryBase,
+		RetryMaxDelay:           defaultRetryMax,
+		QueryWaitTimeout:        defaultQueryTimeout,
+		ShutdownTimeout:         defaultShutdown,
+		CheckpointFlushInterval: defaultCheckpointFlushInterval,
 	}
 }
 
@@ -82,6 +86,7 @@ func ConfigFromEnv(dataDir string, persistent bool) Config {
 	}
 	cfg.QueryWaitTimeout = durationFromEnv(envQueryTimeout, cfg.QueryWaitTimeout)
 	cfg.ShutdownTimeout = durationFromEnv(envShutdownTimeout, cfg.ShutdownTimeout)
+	cfg.CheckpointFlushInterval = optionalDurationFromEnv(envCheckpointFlush, cfg.CheckpointFlushInterval)
 
 	dataDir = strings.TrimSpace(dataDir)
 	if persistent && dataDir != "" && dataDir != ":memory:" {
@@ -92,6 +97,22 @@ func ConfigFromEnv(dataDir string, persistent bool) Config {
 		cfg.BootstrapCheckpointAtLatest = true
 	}
 	return cfg
+}
+
+func optionalDurationFromEnv(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	if raw == "0" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") {
+		return 0
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		log.Printf("[consistency] invalid %s=%q; using %s", key, raw, fallback)
+		return fallback
+	}
+	return value
 }
 
 func positiveIntFromEnv(key string, fallback int) int {
