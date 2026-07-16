@@ -352,7 +352,10 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 	c.appendMu.Lock()
 	entry, err := c.wal.Append(normalized)
 	if err == nil {
-		acceptedAt = acceptedTime(entry)
+		// WAL implementations may perform commit bookkeeping after stamping
+		// persisted metadata. Online freshness starts only after Append returns
+		// successfully and the controller has actually accepted the write.
+		acceptedAt = time.Now()
 		if mode == BoundedStaleness {
 			deadline = acceptedAt.Add(lag)
 		}
