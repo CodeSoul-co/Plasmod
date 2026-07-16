@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,7 +126,7 @@ func NewController(
 	if cfg.QueueSize <= 0 || cfg.Workers <= 0 || cfg.MaxRetries <= 0 {
 		return nil, fmt.Errorf("invalid consistency capacity: queue=%d workers=%d retries=%d", cfg.QueueSize, cfg.Workers, cfg.MaxRetries)
 	}
-	if cfg.BoundedMaxLag <= 0 || cfg.RetryBaseDelay <= 0 || cfg.RetryMaxDelay < cfg.RetryBaseDelay {
+	if cfg.BoundedMaxLag <= 0 || cfg.RetryBaseDelay <= 0 || cfg.RetryMaxDelay < cfg.RetryBaseDelay || cfg.CheckpointFlushInterval < 0 {
 		return nil, errors.New("invalid consistency duration configuration")
 	}
 	if _, err := ParseMode(string(cfg.DefaultMode)); err != nil {
@@ -153,12 +154,16 @@ func NewController(
 		queues[i] = make(chan projectionTask, cfg.QueueSize)
 		boundedSlots[i] = make(chan struct{}, 1)
 	}
+	effectiveCheckpoint := checkpoint
+	if cfg.CheckpointFlushInterval > 0 && strings.TrimSpace(cfg.CheckpointPath) != "" {
+		effectiveCheckpoint = NewBufferedCheckpoint(checkpoint, cfg.CheckpointFlushInterval)
+	}
 	return &Controller{
 		wal:           wal,
 		project:       project,
 		cfg:           cfg,
-		checkpoint:    checkpoint,
-		tracker:       NewTracker(initialLSN, watermark, checkpoint),
+		checkpoint:    effectiveCheckpoint,
+		tracker:       NewTracker(initialLSN, watermark, effectiveCheckpoint),
 		initialLSN:    initialLSN,
 		defaultMode:   cfg.DefaultMode,
 		slots:         make(chan struct{}, cfg.QueueSize),
@@ -197,6 +202,12 @@ func (c *Controller) Start(ctx context.Context) error {
 		c.started = false
 		c.accepting = false
 		c.stateMu.Unlock()
+		if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+			closeCtx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+			closeErr := checkpoint.Close(closeCtx)
+			cancel()
+			return errors.Join(err, closeErr)
+		}
 		return err
 	}
 	return nil
@@ -433,13 +444,24 @@ func (c *Controller) Status() ControllerStatus {
 	c.stateMu.RLock()
 	active := c.started
 	c.stateMu.RUnlock()
+	trackerStatus := c.tracker.Status()
+	if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+		if err := checkpoint.LastError(); err != nil {
+			checkpointError := "checkpoint: " + err.Error()
+			if trackerStatus.LastError == "" {
+				trackerStatus.LastError = checkpointError
+			} else {
+				trackerStatus.LastError += "; " + checkpointError
+			}
+		}
+	}
 	return ControllerStatus{
 		DefaultMode:    c.currentDefaultMode(),
 		SupportedModes: []string{string(StrictVisible), string(BoundedStaleness), string(EventualVisibility)},
 		DataPathActive: active,
 		QueueDepth:     len(c.slots),
 		QueueCapacity:  cap(c.slots),
-		TrackerStatus:  c.tracker.Status(),
+		TrackerStatus:  trackerStatus,
 	}
 }
 
@@ -492,6 +514,9 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	c.stateMu.Lock()
 	if !c.started {
 		c.stateMu.Unlock()
+		if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+			return checkpoint.Close(ctx)
+		}
 		return nil
 	}
 	c.accepting = false
@@ -528,6 +553,9 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	c.stateMu.Lock()
 	c.started = false
 	c.stateMu.Unlock()
+	if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+		return checkpoint.Close(ctx)
+	}
 	return nil
 }
 

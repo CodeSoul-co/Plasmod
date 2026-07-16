@@ -141,6 +141,9 @@ func TestConfigFromEnvUsesDefaultsAndPersistentCheckpoint(t *testing.T) {
 	if !cfg.BootstrapCheckpointAtLatest {
 		t.Fatal("persistent runtime should bootstrap legacy checkpoint at WAL tail")
 	}
+	if cfg.CheckpointFlushInterval != 50*time.Millisecond {
+		t.Fatalf("checkpoint flush interval = %v, want 50ms", cfg.CheckpointFlushInterval)
+	}
 }
 
 func TestConfigFromEnvAppliesValidOverridesAndRejectsInvalidOnes(t *testing.T) {
@@ -154,6 +157,7 @@ func TestConfigFromEnvAppliesValidOverridesAndRejectsInvalidOnes(t *testing.T) {
 	t.Setenv("PLASMOD_CONSISTENCY_QUERY_TIMEOUT", "4s")
 	t.Setenv("PLASMOD_CONSISTENCY_SHUTDOWN_TIMEOUT", "6s")
 	t.Setenv("PLASMOD_CONSISTENCY_CHECKPOINT_PATH", "/tmp/custom-consistency-checkpoint.json")
+	t.Setenv("PLASMOD_CONSISTENCY_CHECKPOINT_FLUSH_INTERVAL", "25ms")
 
 	cfg := ConfigFromEnv(t.TempDir(), true)
 	if cfg.DefaultMode != EventualVisibility || cfg.BoundedMaxLag != 750*time.Millisecond {
@@ -171,6 +175,9 @@ func TestConfigFromEnvAppliesValidOverridesAndRejectsInvalidOnes(t *testing.T) {
 	if cfg.CheckpointPath != "/tmp/custom-consistency-checkpoint.json" {
 		t.Fatalf("checkpoint override = %q", cfg.CheckpointPath)
 	}
+	if cfg.CheckpointFlushInterval != 25*time.Millisecond {
+		t.Fatalf("checkpoint flush override = %v", cfg.CheckpointFlushInterval)
+	}
 
 	t.Setenv("PLASMOD_CONSISTENCY_DEFAULT_MODE", "not-a-mode")
 	t.Setenv("PLASMOD_CONSISTENCY_QUEUE_SIZE", "0")
@@ -184,5 +191,12 @@ func TestConfigFromEnvAppliesValidOverridesAndRejectsInvalidOnes(t *testing.T) {
 	}
 	if fallback.CheckpointPath != "" || fallback.BootstrapCheckpointAtLatest {
 		t.Fatalf("memory runtime must not persist checkpoints: %+v", fallback)
+	}
+}
+
+func TestConfigFromEnvCanDisableBufferedCheckpoint(t *testing.T) {
+	t.Setenv("PLASMOD_CONSISTENCY_CHECKPOINT_FLUSH_INTERVAL", "0")
+	if got := ConfigFromEnv(t.TempDir(), true).CheckpointFlushInterval; got != 0 {
+		t.Fatalf("checkpoint flush interval = %v, want disabled", got)
 	}
 }
