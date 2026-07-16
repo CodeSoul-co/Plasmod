@@ -57,6 +57,19 @@ func (w delayedWAL) Append(event schemas.Event) (eventbackbone.WALEntry, error) 
 	return w.WAL.Append(event)
 }
 
+type postAcceptanceDelayedWAL struct {
+	eventbackbone.WAL
+	delay time.Duration
+}
+
+func (w postAcceptanceDelayedWAL) Append(event schemas.Event) (eventbackbone.WALEntry, error) {
+	entry, err := w.WAL.Append(event)
+	if err == nil {
+		time.Sleep(w.delay)
+	}
+	return entry, err
+}
+
 func TestControllerStrictAcknowledgementWaitsForVisibility(t *testing.T) {
 	release := make(chan struct{})
 	controller, _ := startTestController(t, DefaultConfig(), func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
@@ -626,6 +639,70 @@ func TestControllerBoundedSLAStartsAfterWALAcceptance(t *testing.T) {
 	}
 	if status := controller.Status(); status.SLABreaches != 0 {
 		t.Fatalf("WAL persistence time counted against post-acceptance SLA: %+v", status)
+	}
+}
+
+func TestControllerBoundedSLAStartsWhenWALAppendReturns(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BoundedMaxLag = 100 * time.Millisecond
+	clock := eventbackbone.NewHybridClock()
+	bus := eventbackbone.NewInMemoryBus()
+	innerWAL := eventbackbone.NewInMemoryWAL(bus, clock)
+	wal := postAcceptanceDelayedWAL{WAL: innerWAL, delay: 150 * time.Millisecond}
+	controller, err := NewController(
+		wal,
+		eventbackbone.NewWatermarkPublisher(clock, bus),
+		NewMemoryCheckpoint(),
+		cfg,
+		func(context.Context, eventbackbone.WALEntry) (map[string]any, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = controller.Shutdown(ctx)
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("post-acceptance-delay", "session", "bounded")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := controller.WaitForRead(ctx, schemas.QueryRequest{AccessConsistency: "strict"}); err != nil {
+		t.Fatalf("WaitForRead: %v", err)
+	}
+	if status := controller.Status(); status.SLABreaches != 0 {
+		t.Fatalf("WAL completion time counted against post-acceptance SLA: %+v", status)
+	}
+}
+
+func TestControllerBoundedSLAStillIncludesProjectionDelay(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BoundedMaxLag = 50 * time.Millisecond
+	controller, _ := startTestController(t, cfg, func(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+
+	if _, err := controller.Submit(context.Background(), testEvent("slow-projection", "session", "bounded")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := controller.WaitForRead(ctx, schemas.QueryRequest{AccessConsistency: "strict"}); err != nil {
+		t.Fatalf("WaitForRead: %v", err)
+	}
+	if status := controller.Status(); status.SLABreaches != 1 {
+		t.Fatalf("projection delay SLA breaches = %d, want 1: %+v", status.SLABreaches, status)
 	}
 }
 
