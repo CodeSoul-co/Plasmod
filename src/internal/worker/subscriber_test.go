@@ -13,6 +13,7 @@ import (
 	baseline "plasmod/src/internal/worker/cognitive/baseline"
 	"plasmod/src/internal/worker/coordination"
 	"plasmod/src/internal/worker/indexing"
+	workermat "plasmod/src/internal/worker/materialization"
 	"plasmod/src/internal/worker/nodes"
 )
 
@@ -74,6 +75,29 @@ func TestEventSubscriber_DrainWAL(t *testing.T) {
 	if sub.lastLSN.Load() < wal.LatestLSN() {
 		t.Errorf("subscriber did not catch up: lastLSN=%d, latestLSN=%d",
 			sub.lastLSN.Load(), wal.LatestLSN())
+	}
+}
+
+func TestEventSubscriber_CheckpointCreatesStateSnapshots(t *testing.T) {
+	wal, mgr, store, _ := buildSubscriberRuntime(t)
+	mgr.RegisterStateMaterialization(workermat.CreateInMemoryStateMaterializationWorker(
+		"state-checkpoint", store.Objects(), store.Versions(), nil,
+	))
+	for _, event := range []schemas.Event{
+		{EventID: "state-update", AgentID: "agent", SessionID: "session", EventType: string(schemas.EventTypeStateUpdate), Payload: map[string]any{schemas.PayloadKeyStateKey: "phase", schemas.PayloadKeyStateValue: "ready"}},
+		{EventID: "checkpoint", AgentID: "agent", SessionID: "session", EventType: string(schemas.EventTypeCheckpoint)},
+	} {
+		if _, err := wal.Append(event); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	CreateEventSubscriber(wal, mgr).drainWAL()
+	states := store.Objects().ListStates("agent", "session")
+	if len(states) != 1 {
+		t.Fatalf("states = %d, want 1", len(states))
+	}
+	if versions := store.Versions().GetVersions(states[0].StateID); len(versions) != 1 || versions[0].SnapshotTag == "" {
+		t.Fatalf("checkpoint versions = %#v", versions)
 	}
 }
 

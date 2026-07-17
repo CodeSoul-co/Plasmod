@@ -22,6 +22,8 @@ const (
 	EnvStoreContracts = "PLASMOD_STORE_CONTRACTS"
 	// EnvBadgerInMemory forces Badger to use in-RAM tables only (tests / constrained disks).
 	EnvBadgerInMemory = "PLASMOD_BADGER_INMEMORY"
+	// EnvBadgerValueThreshold controls when values move from the LSM tree to the value log.
+	EnvBadgerValueThreshold = "PLASMOD_BADGER_VALUE_THRESHOLD_BYTES"
 )
 
 const (
@@ -55,6 +57,12 @@ func buildRuntime(get func(string) string) (*RuntimeBundle, error) {
 		"versions":  resolveBackend(mode, get(EnvStoreVersions)),
 		"policies":  resolveBackend(mode, get(EnvStorePolicies)),
 		"contracts": resolveBackend(mode, get(EnvStoreContracts)),
+	}
+	if stores["objects"] != stores["edges"] || stores["objects"] != stores["versions"] {
+		return nil, fmt.Errorf(
+			"storage: objects, edges, and versions must use the same backend for atomic canonical projection (objects=%s edges=%s versions=%s)",
+			stores["objects"], stores["edges"], stores["versions"],
+		)
 	}
 
 	needBadger := false

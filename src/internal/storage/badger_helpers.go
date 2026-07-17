@@ -3,6 +3,9 @@ package storage
 import (
 	"encoding/json"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/dgraph-io/badger/v4"
 )
@@ -51,9 +54,30 @@ func badgerDelete(db *badger.DB, key []byte) error {
 }
 
 func openBadger(path string) (*badger.DB, error) {
+	return badger.Open(badgerOptions(path))
+}
+
+func badgerOptions(path string) badger.Options {
 	opts := badger.DefaultOptions(path)
+	// Keep canonical JSON values out of the LSM once they exceed 1 KiB. The LSM
+	// then carries compact keys and value pointers instead of repeatedly
+	// compacting event payloads, without increasing Badger's memory buffers.
+	opts.ValueThreshold = badgerValueThreshold(os.Getenv)
 	opts.Logger = nil
-	return badger.Open(opts)
+	return opts
+}
+
+func badgerValueThreshold(get func(string) string) int64 {
+	const defaultThreshold = int64(1 << 10)
+	raw := strings.TrimSpace(get(EnvBadgerValueThreshold))
+	if raw == "" {
+		return defaultThreshold
+	}
+	threshold, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || threshold <= 0 || threshold > 1<<20 {
+		return defaultThreshold
+	}
+	return threshold
 }
 
 // openBadgerInMemory opens an ephemeral Badger instance (no disk I/O).

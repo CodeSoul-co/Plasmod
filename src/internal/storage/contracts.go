@@ -153,6 +153,19 @@ type MemoryAlgorithmStateStore interface {
 	ListAlgorithmStates(memoryID string) []schemas.MemoryAlgorithmState
 }
 
+// CanonicalProjection is the durable object-graph mutation produced from one
+// accepted event. Storage backends may commit the set atomically when their
+// object, edge, and version stores share a transaction engine.
+type CanonicalProjection struct {
+	Memory                   *schemas.Memory
+	State                    *schemas.State
+	Artifact                 *schemas.Artifact
+	Versions                 []schemas.ObjectVersion
+	Edges                    []schemas.Edge
+	IncludeMemoryBaseEdges   bool
+	IncludeArtifactBaseEdges bool
+}
+
 // RuntimeStorage is the unified accessor for all in-process stores.
 type RuntimeStorage interface {
 	Segments() SegmentStore
@@ -166,6 +179,7 @@ type RuntimeStorage interface {
 	Audits() AuditStore
 	// AlgorithmStates returns the per-memory, per-algorithm state store.
 	AlgorithmStates() MemoryAlgorithmStateStore
+	ApplyCanonicalProjection(projection CanonicalProjection) error
 
 	PutMemoryWithBaseEdges(obj schemas.Memory)
 	PutArtifactWithBaseEdges(obj schemas.Artifact)

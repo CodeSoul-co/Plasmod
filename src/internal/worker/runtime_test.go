@@ -30,6 +30,16 @@ func (f *failingPlane) Search(input dataplane.SearchInput) dataplane.SearchOutpu
 }
 func (f *failingPlane) Flush() error { return nil }
 
+type projectionTrackingStorage struct {
+	storage.RuntimeStorage
+	projections []storage.CanonicalProjection
+}
+
+func (s *projectionTrackingStorage) ApplyCanonicalProjection(projection storage.CanonicalProjection) error {
+	s.projections = append(s.projections, projection)
+	return s.RuntimeStorage.ApplyCanonicalProjection(projection)
+}
+
 func buildTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	clock := eventbackbone.NewHybridClock()
@@ -241,6 +251,39 @@ func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
 
 	if _, ok := store.Objects().GetMemory("mem_evt_failfast_1"); ok {
 		t.Fatal("memory should not be persisted when plane ingest fails")
+	}
+}
+
+func TestRuntime_SubmitIngest_UsesCanonicalProjectionBoundary(t *testing.T) {
+	r := buildTestRuntime(t)
+	tracked := &projectionTrackingStorage{RuntimeStorage: r.storage}
+	r.storage = tracked
+
+	_, err := r.SubmitIngest(schemas.Event{
+		EventID:     "evt_atomic_projection",
+		AgentID:     "agent-projection",
+		SessionID:   "session-projection",
+		WorkspaceID: "workspace-projection",
+		Payload:     map[string]any{"text": "persist as one canonical projection"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitIngest: %v", err)
+	}
+	if len(tracked.projections) != 1 {
+		t.Fatalf("canonical projections = %d, want 1", len(tracked.projections))
+	}
+	projection := tracked.projections[0]
+	if projection.Memory == nil || projection.Memory.MemoryID != "mem_evt_atomic_projection" {
+		t.Fatalf("unexpected projected memory: %#v", projection.Memory)
+	}
+	if !projection.IncludeMemoryBaseEdges {
+		t.Fatal("canonical projection omitted memory base edges")
+	}
+	if len(projection.Edges) == 0 {
+		t.Fatal("canonical projection omitted materialized edges")
+	}
+	if len(projection.Versions) != 1 {
+		t.Fatalf("projected versions = %d, want memory version", len(projection.Versions))
 	}
 }
 
