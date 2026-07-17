@@ -288,6 +288,27 @@ func TestRuntime_ConsistencyAdminWipeDrainsAndResetsProjection(t *testing.T) {
 	}
 }
 
+func TestRuntime_AdminWipeReleasesClearedHeap(t *testing.T) {
+	runtime := buildTestRuntime(t)
+	originalRelease := releaseOSMemory
+	released := make(chan struct{}, 1)
+	releaseOSMemory = func() { released <- struct{}{} }
+	t.Cleanup(func() { releaseOSMemory = originalRelease })
+
+	out, err := runtime.AdminWipeAll(nil, schemas.DefaultAlgorithmConfig())
+	if err != nil {
+		t.Fatalf("AdminWipeAll: %v", err)
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("AdminWipeAll did not schedule release of cleared Go heap pages")
+	}
+	if out["go_heap_release_scheduled"] != true {
+		t.Fatalf("go_heap_release_scheduled = %v, want true", out["go_heap_release_scheduled"])
+	}
+}
+
 func TestRuntime_ConsistencyAdminWipeDrainsSubscriber(t *testing.T) {
 	runtime := buildTestRuntime(t)
 	configureRuntimeConsistency(t, runtime, consistency.StrictVisible)

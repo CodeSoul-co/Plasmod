@@ -321,24 +321,8 @@ func newBadgerGraphEdgeStore(db *badger.DB) *badgerGraphEdgeStore {
 }
 
 func (s *badgerGraphEdgeStore) PutEdge(edge schemas.Edge) {
-	edgeKey := []byte(kpEdge + edge.EdgeID)
-	srcIdxKey := []byte(kpEdgeSrcIdx + edge.SrcObjectID + "|" + edge.EdgeID)
-	dstIdxKey := []byte(kpEdgeDstIdx + edge.DstObjectID + "|" + edge.EdgeID)
 	_ = s.db.Update(func(txn *badger.Txn) error {
-		b, err := json.Marshal(edge)
-		if err != nil {
-			return err
-		}
-		if err := txn.Set(edgeKey, b); err != nil {
-			return err
-		}
-		if err := txn.Set(srcIdxKey, edgeKey); err != nil {
-			return err
-		}
-		if err := txn.Set(dstIdxKey, edgeKey); err != nil {
-			return err
-		}
-		return nil
+		return putEdgeTxn(txn, edge)
 	})
 }
 

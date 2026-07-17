@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ import (
 	"plasmod/src/internal/worker/nodes"
 	"time"
 )
+
+var releaseOSMemory = debug.FreeOSMemory
 
 type Runtime struct {
 	wal               eventbackbone.WAL
@@ -482,73 +485,42 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 	r.flushDirty.Store(true)
 
-	// ── Synchronous object materialization ─────────────────────────────────
-	// State and Artifact objects are needed immediately for query correctness.
-	// Call the materialization workers here (not only in the async subscriber)
-	// so tests and synchronous query paths can read them without waiting for
-	// the next WAL poll cycle.
-	//
-	// Routing:
-	//   - Artifact (tool_call/tool_result) → ObjectMaterializationWorker
-	//   - State    (state_update/state_change/checkpoint) → StateMaterializationWorker
-	//     (NOTE: State is NOT handled by ObjectMaterializationWorker to avoid
-	//     creating duplicate State objects with different field values for the
-	//     same event. StateMaterializationWorker stores via PutState directly.)
-	//   - Memory   → stored directly below via tieredObjects.PutMemory (richer
-	//     MaterializeEvent output), not via ObjectMaterializationWorker.
-	r.nodeManager.DispatchObjectMaterialization(ev)
-	r.nodeManager.DispatchToolTrace(ev)
-
-	// State objects for ALL state events are created synchronously so they are
-	// immediately queryable.  The async subscriber's StateMaterialization handler
-	// handles the same events (creating a second State record with a different
-	// version number), which is intentional — the VersionStore accumulates
-	// snapshots rather than overwriting.
-	isStateEvent := ev.EventInfo.EventType == string(schemas.EventTypeStateUpdate) ||
-		ev.EventInfo.EventType == string(schemas.EventTypeStateChange) ||
-		ev.EventInfo.EventType == string(schemas.EventTypeCheckpoint)
-	if isStateEvent && ev.Actor.AgentID != "" && ev.Actor.SessionID != "" {
-		r.nodeManager.DispatchStateMaterialization(ev)
-		// checkpoint events additionally snapshot all current states.
-		if ev.EventInfo.EventType == string(schemas.EventTypeCheckpoint) {
-			r.nodeManager.DispatchStateCheckpoint(ev.Actor.AgentID, ev.Actor.SessionID)
-		}
-	}
-
 	// ── Persist canonical objects ─────────────────────────────────────────
-	// Route Memory writes through TieredObjectStore so the hot/warm/cold tiers
-	// are kept in sync. Cold-tier persistence is deferred to explicit archive
-	// (TTL expiry or manual tier migration) via TieredObjectStore.ArchiveMemory;
-	// it is NOT written on every ingest to avoid write amplification.
-	if r.tieredObjects != nil {
-		// Compute salience from the event importance if available, default 0.5.
-		salience := mat.Memory.Importance
-		if salience <= 0 {
-			salience = 0.5
-		}
-		r.tieredObjects.PutMemory(mat.Memory, salience)
-	} else {
-		// Fallback for tests or code paths that don't initialise TieredObjectStore.
-		r.storage.PutMemoryWithBaseEdges(mat.Memory)
+	projection := storage.CanonicalProjection{
+		Memory:                 &mat.Memory,
+		Edges:                  mat.Edges,
+		IncludeMemoryBaseEdges: true,
 	}
 	if !r.MinimalMode {
-		r.storage.Versions().PutVersion(mat.Version)
+		projection.Versions = append(projection.Versions, mat.Version)
 	}
 	if mat.Artifact != nil {
-		r.storage.Objects().PutArtifact(*mat.Artifact)
+		projection.Artifact = mat.Artifact
+		projection.IncludeArtifactBaseEdges = true
 		if !r.MinimalMode && mat.ArtifactVersion != nil {
-			r.storage.Versions().PutVersion(*mat.ArtifactVersion)
+			projection.Versions = append(projection.Versions, *mat.ArtifactVersion)
 		}
 	}
+	if err := r.storage.ApplyCanonicalProjection(projection); err != nil {
+		return nil, err
+	}
+	salience := mat.Memory.Importance
+	if salience <= 0 {
+		salience = 0.5
+	}
+	if r.tieredObjects != nil {
+		r.tieredObjects.PromoteMemory(mat.Memory, salience)
+	} else if r.storage.HotCache() != nil && salience >= schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold {
+		r.storage.HotCache().Put(mat.Memory.MemoryID, "memory", mat.Memory, salience)
+	}
+
+	// Auxiliary state, tool-trace, and derivation workers run through the
+	// asynchronous chains. Visibility is gated only by this canonical commit.
 	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
 		if err := r.memoryBackend.WriteShadow(ctx, mat.Memory, ev); err != nil {
 			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
 		}
 	}
-	for _, edge := range mat.Edges {
-		r.storage.Edges().PutEdge(edge)
-	}
-
 	// ── Synchronous ConflictMerge ──────────────────────────────────────────
 	// Detect and resolve same-session memory conflicts immediately after the new
 	// memory is stored.  The async subscriber also fires ConflictMerge (for
@@ -1803,6 +1775,8 @@ func (r *Runtime) AdminWipeAll(bundle *storage.RuntimeBundle, algoCfg schemas.Al
 	r.lastMem = make(map[string]string)
 	r.lastMemMu.Unlock()
 
+	go releaseOSMemory()
+	out["go_heap_release_scheduled"] = true
 	out["note"] = "S3/MinIO cold objects are not deleted by this endpoint; re-ingest or use bucket tools if needed."
 	return out, nil
 }

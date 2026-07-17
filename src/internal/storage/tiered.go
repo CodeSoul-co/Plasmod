@@ -420,6 +420,15 @@ func (t *TieredObjectStore) PutMemory(m schemas.Memory, salience float64) {
 	}
 }
 
+// PromoteMemory updates only the hot tier after the warm canonical mutation has
+// already been committed through RuntimeStorage.ApplyCanonicalProjection.
+func (t *TieredObjectStore) PromoteMemory(m schemas.Memory, salience float64) {
+	if t == nil || t.hot == nil || salience < t.hotThreshold {
+		return
+	}
+	t.hot.Put(m.MemoryID, "memory", m, salience)
+}
+
 // ArchiveMemory moves a memory from warm to cold (e.g. on TTL expiry).
 func (t *TieredObjectStore) ArchiveMemory(memoryID string) {
 	if t.warm == nil {

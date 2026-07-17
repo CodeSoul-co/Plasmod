@@ -363,6 +363,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
 			s.manager.DispatchStateMaterialization(ev)
+			if ev.EventInfo.EventType == string(schemas.EventTypeCheckpoint) {
+				s.manager.DispatchStateCheckpoint(ev.Actor.AgentID, ev.Actor.SessionID)
+			}
 		}
 	})
 

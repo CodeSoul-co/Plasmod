@@ -2,6 +2,7 @@ package storage
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"plasmod/src/internal/schemas"
@@ -68,32 +69,15 @@ func TestBadgerSnapshotVersionStore_PutVersionIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestBuildRuntime_hybridObjectsDiskRestMemory(t *testing.T) {
+func TestBuildRuntime_rejectsMixedCanonicalStores(t *testing.T) {
 	t.Setenv(EnvStorage, "hybrid")
 	t.Setenv(EnvDataDir, t.TempDir())
 	t.Setenv(EnvBadgerInMemory, "true")
 	t.Setenv(EnvStoreObjects, "disk")
 	t.Setenv(EnvStoreEdges, "memory")
-	bundle, err := buildRuntime(os.Getenv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = bundle.Close() }()
-	if bundle.Config.Stores["objects"] != backendDisk {
-		t.Fatalf("objects: %s", bundle.Config.Stores["objects"])
-	}
-	if bundle.Config.Stores["edges"] != backendMemory {
-		t.Fatalf("edges: %s", bundle.Config.Stores["edges"])
-	}
-	obj := bundle.RuntimeStorage.Objects()
-	obj.PutMemory(schemasMemoryFixture())
-	if len(obj.ListMemories("", "")) != 1 {
-		t.Fatal("expected 1 memory on badger object store")
-	}
-	edg := bundle.RuntimeStorage.Edges()
-	edg.PutEdge(schemasEdgeFixture())
-	if len(edg.ListEdges()) != 1 {
-		t.Fatal("expected 1 edge on memory edge store")
+	_, err := buildRuntime(os.Getenv)
+	if err == nil || !strings.Contains(err.Error(), "objects, edges, and versions") {
+		t.Fatalf("buildRuntime error = %v, want canonical store boundary error", err)
 	}
 }
 

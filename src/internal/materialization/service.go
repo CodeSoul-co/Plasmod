@@ -221,7 +221,7 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 
 	if ev.Actor.SessionID != "" {
 		edges = append(edges, schemas.Edge{
-			EdgeID:        schemas.IDPrefixEdge + memoryID + "_session",
+			EdgeID:        fmt.Sprintf("%s%s_%s_%s", schemas.IDPrefixEdge, memoryID, schemas.EdgeTypeBelongsToSession, ev.Actor.SessionID),
 			SrcObjectID:   memoryID,
 			SrcType:       string(schemas.ObjectTypeMemory),
 			EdgeType:      string(schemas.EdgeTypeBelongsToSession),
@@ -234,7 +234,7 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 	}
 	if ev.Actor.AgentID != "" {
 		edges = append(edges, schemas.Edge{
-			EdgeID:        schemas.IDPrefixEdge + memoryID + "_agent",
+			EdgeID:        fmt.Sprintf("%s%s_%s_%s", schemas.IDPrefixEdge, memoryID, schemas.EdgeTypeOwnedByAgent, ev.Actor.AgentID),
 			SrcObjectID:   memoryID,
 			SrcType:       string(schemas.ObjectTypeMemory),
 			EdgeType:      string(schemas.EdgeTypeOwnedByAgent),
@@ -428,7 +428,9 @@ func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*sche
 // "artifact" map with "uri", or event_type artifact_attached / tool_result_returned with uri.
 func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Artifact, *schemas.ObjectVersion) {
 	uri := ev.ArtifactURI()
-	if uri == "" && !ev.IsArtifactLike() {
+	isToolEvent := ev.EventInfo.EventType == string(schemas.EventTypeToolCall) ||
+		ev.EventInfo.EventType == string(schemas.EventTypeToolResult)
+	if uri == "" && !ev.IsArtifactLike() && !isToolEvent {
 		return nil, nil
 	}
 	artID := ev.ArtifactIDOrDefault()

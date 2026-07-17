@@ -386,6 +386,22 @@ func TestService_MaterializeEvent_NoArtifactWithoutURI(t *testing.T) {
 	}
 }
 
+func TestService_MaterializeEvent_PlainToolCallCreatesArtifact(t *testing.T) {
+	res := NewService().MaterializeEvent(schemas.Event{
+		EventID:   "evt_plain_tool",
+		AgentID:   "agent",
+		SessionID: "session",
+		EventType: string(schemas.EventTypeToolCall),
+		LogicalTS: 3,
+	})
+	if res.Artifact == nil || res.ArtifactVersion == nil {
+		t.Fatal("plain tool call did not create canonical artifact and version")
+	}
+	if res.Artifact.ArtifactID != schemas.IDPrefixArtifact+"evt_plain_tool" {
+		t.Fatalf("artifact id = %q", res.Artifact.ArtifactID)
+	}
+}
+
 func TestResolveMemoryType(t *testing.T) {
 	cases := []struct {
 		eventType  string
