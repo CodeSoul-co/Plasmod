@@ -1834,7 +1834,10 @@ func (r *Runtime) AdminReplayPreview(fromLSN int64, limit int) (map[string]any, 
 	if fromLSN < 0 {
 		fromLSN = 0
 	}
-	entries := r.wal.Scan(fromLSN)
+	entries, err := eventbackbone.ScanWAL(r.wal, fromLSN)
+	if err != nil {
+		return nil, fmt.Errorf("scan WAL for replay preview: %w", err)
+	}
 	total := len(entries)
 	if total == 0 {
 		return map[string]any{
@@ -1886,7 +1889,10 @@ func (r *Runtime) AdminReplayApply(fromLSN int64, limit int) (map[string]any, er
 	if fromLSN < 0 {
 		fromLSN = 0
 	}
-	entries := r.wal.Scan(fromLSN)
+	entries, err := eventbackbone.ScanWAL(r.wal, fromLSN)
+	if err != nil {
+		return nil, fmt.Errorf("scan WAL for replay apply: %w", err)
+	}
 	total := len(entries)
 	if total == 0 {
 		return map[string]any{

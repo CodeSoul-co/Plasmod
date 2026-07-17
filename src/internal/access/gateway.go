@@ -1767,6 +1767,7 @@ func (g *Gateway) handleAdminConsistencyMode(w http.ResponseWriter, r *http.Requ
 			"queue_capacity":     status.QueueCapacity,
 			"latest_lsn":         status.LatestLSN,
 			"visible_watermark":  status.VisibleWatermark,
+			"retained_entries":   status.RetainedEntries,
 			"pending":            status.Pending,
 			"retrying":           status.Retrying,
 			"failed":             status.Failed,

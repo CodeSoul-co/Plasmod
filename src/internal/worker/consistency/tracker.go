@@ -38,6 +38,7 @@ type trackedProjection struct {
 type TrackerStatus struct {
 	LatestLSN        int64         `json:"latest_lsn"`
 	VisibleWatermark int64         `json:"visible_watermark"`
+	RetainedEntries  int           `json:"retained_entries"`
 	Pending          int           `json:"pending"`
 	Retrying         int           `json:"retrying"`
 	Failed           int           `json:"failed"`
@@ -183,6 +184,7 @@ func (t *Tracker) MarkVisible(lsn int64) error {
 		if t.watermark != nil {
 			t.watermark.AdvanceTo(advanced)
 		}
+		t.releaseVisiblePrefixLocked()
 	}
 	t.signalLocked()
 	return nil
@@ -265,6 +267,7 @@ func (t *Tracker) Status() TrackerStatus {
 	status := TrackerStatus{
 		LatestLSN:        t.latestLSN,
 		VisibleWatermark: t.visibleWatermark,
+		RetainedEntries:  len(t.entries),
 		SLABreaches:      t.slaBreaches,
 		LastSLABreachMS:  t.lastSLABreachMS,
 		MaxSLABreachMS:   t.maxSLABreachMS,
@@ -286,6 +289,17 @@ func (t *Tracker) Status() TrackerStatus {
 		}
 	}
 	return status
+}
+
+func (t *Tracker) releaseVisiblePrefixLocked() {
+	if t.nextVisibleIndex == 0 {
+		return
+	}
+	for _, lsn := range t.order[:t.nextVisibleIndex] {
+		delete(t.entries, lsn)
+	}
+	t.order = append(t.order[:0], t.order[t.nextVisibleIndex:]...)
+	t.nextVisibleIndex = 0
 }
 
 func (t *Tracker) Reset() error {

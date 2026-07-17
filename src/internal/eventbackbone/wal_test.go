@@ -2,6 +2,7 @@ package eventbackbone
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,67 @@ func TestFileWAL_AppendAndReload(t *testing.T) {
 	}
 	if all[0].Event.EventID != "evt_1" || all[1].Event.EventID != "evt_2" {
 		t.Fatalf("unexpected restored order/content: %#v", all)
+	}
+}
+
+func TestFileWAL_DoesNotRetainPersistedEventPayloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	w, err := NewFileWAL(path, NewInMemoryBus(), NewHybridClock())
+	if err != nil {
+		t.Fatalf("NewFileWAL: %v", err)
+	}
+
+	const eventCount = 100
+	for i := 0; i < eventCount; i++ {
+		_, err := w.Append(schemas.Event{
+			EventID:   fmt.Sprintf("event-%d", i),
+			EventType: "artifact",
+			Payload:   map[string]any{"text": strings.Repeat("x", 64*1024)},
+		})
+		if err != nil {
+			t.Fatalf("Append(%d): %v", i, err)
+		}
+	}
+
+	if got := w.ResidentEntryCount(); got != 0 {
+		t.Fatalf("resident WAL entries = %d, want 0 for disk-backed WAL", got)
+	}
+	entries := w.Scan(0)
+	if len(entries) != eventCount {
+		t.Fatalf("Scan(0) entries = %d, want %d", len(entries), eventCount)
+	}
+}
+
+func TestFileWAL_TailScanUsesSparseIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	w, err := NewFileWAL(path, NewInMemoryBus(), NewHybridClock())
+	if err != nil {
+		t.Fatalf("NewFileWAL: %v", err)
+	}
+
+	const eventCount = 600
+	lsns := make([]int64, 0, eventCount)
+	for i := 0; i < eventCount; i++ {
+		entry, err := w.Append(schemas.Event{EventID: fmt.Sprintf("event-%d", i)})
+		if err != nil {
+			t.Fatalf("Append(%d): %v", i, err)
+		}
+		lsns = append(lsns, entry.LSN)
+	}
+
+	w, err = NewFileWAL(path, NewInMemoryBus(), NewHybridClock())
+	if err != nil {
+		t.Fatalf("reload FileWAL: %v", err)
+	}
+	entries, err := w.ScanWithError(lsns[550])
+	if err != nil {
+		t.Fatalf("ScanWithError: %v", err)
+	}
+	if len(entries) != 50 {
+		t.Fatalf("tail entries = %d, want 50", len(entries))
+	}
+	if decoded := w.LastScanDecodedEntries(); decoded > walSparseIndexStride+50 {
+		t.Fatalf("tail scan decoded %d records, want at most %d", decoded, walSparseIndexStride+50)
 	}
 }
 

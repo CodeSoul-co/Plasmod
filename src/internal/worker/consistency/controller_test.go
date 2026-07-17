@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,32 @@ import (
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/schemas"
 )
+
+func TestControllerStartFailsWhenWALRecoveryScanFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	bus := eventbackbone.NewInMemoryBus()
+	clock := eventbackbone.NewHybridClock()
+	wal, err := eventbackbone.NewFileWAL(path, bus, clock)
+	if err != nil {
+		t.Fatalf("NewFileWAL: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("corrupt-torn-record"), 0o600); err != nil {
+		t.Fatalf("corrupt WAL after startup: %v", err)
+	}
+
+	controller, err := NewController(wal, nil, NewMemoryCheckpoint(), DefaultConfig(), func(context.Context, eventbackbone.WALEntry) (map[string]any, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("NewController: %v", err)
+	}
+	if err := controller.Start(context.Background()); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = controller.Shutdown(ctx)
+		t.Fatal("Start succeeded despite WAL recovery scan failure")
+	}
+}
 
 func testEvent(id, session, mode string) schemas.Event {
 	return schemas.Event{
