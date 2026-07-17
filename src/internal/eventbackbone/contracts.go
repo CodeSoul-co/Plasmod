@@ -14,6 +14,22 @@ type WAL interface {
 	LatestLSN() int64
 }
 
+// ErrorAwareWAL is implemented by durable WALs whose scans can fail because
+// of storage or decoding errors.
+type ErrorAwareWAL interface {
+	WAL
+	ScanWithError(fromLSN int64) ([]WALEntry, error)
+}
+
+// ScanWAL preserves the simple in-memory WAL contract while propagating errors
+// from durable implementations.
+func ScanWAL(wal WAL, fromLSN int64) ([]WALEntry, error) {
+	if scanner, ok := wal.(ErrorAwareWAL); ok {
+		return scanner.ScanWithError(fromLSN)
+	}
+	return wal.Scan(fromLSN), nil
+}
+
 // Bus is the pub-sub message bus used to decouple producers from subscribers.
 type Bus interface {
 	Subscribe(channel string) <-chan Message

@@ -214,7 +214,11 @@ func (c *Controller) Start(ctx context.Context) error {
 }
 
 func (c *Controller) recoverFromWAL(generation uint64) error {
-	for _, entry := range c.wal.Scan(c.initialLSN + 1) {
+	entries, err := eventbackbone.ScanWAL(c.wal, c.initialLSN+1)
+	if err != nil {
+		return fmt.Errorf("scan WAL for consistency recovery: %w", err)
+	}
+	for _, entry := range entries {
 		if entry.LSN <= c.initialLSN {
 			continue
 		}

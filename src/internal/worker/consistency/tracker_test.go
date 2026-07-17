@@ -59,6 +59,54 @@ func TestTrackerAdvancesAcrossAcceptedLSNGapsOnlyWhenContiguous(t *testing.T) {
 	}
 }
 
+func TestTrackerReleasesEntriesBehindVisibleWatermark(t *testing.T) {
+	tracker := NewTracker(0, nil, NewMemoryCheckpoint())
+	now := time.Now()
+	tracker.Accept(10, now, time.Time{})
+	tracker.Accept(30, now, time.Time{})
+
+	if err := tracker.MarkVisible(30); err != nil {
+		t.Fatalf("MarkVisible(30): %v", err)
+	}
+	if status := tracker.Status(); status.RetainedEntries != 2 {
+		t.Fatalf("retained entries before contiguous visibility = %d, want 2", status.RetainedEntries)
+	}
+
+	if err := tracker.MarkVisible(10); err != nil {
+		t.Fatalf("MarkVisible(10): %v", err)
+	}
+	status := tracker.Status()
+	if status.VisibleWatermark != 30 {
+		t.Fatalf("visible watermark = %d, want 30", status.VisibleWatermark)
+	}
+	if status.RetainedEntries != 0 {
+		t.Fatalf("retained entries after contiguous visibility = %d, want 0", status.RetainedEntries)
+	}
+	if err := tracker.WaitThrough(context.Background(), 30); err != nil {
+		t.Fatalf("WaitThrough released watermark: %v", err)
+	}
+}
+
+func TestTrackerRetainedStateStaysBoundedAcrossLongSequentialRun(t *testing.T) {
+	tracker := NewTracker(0, nil, NewMemoryCheckpoint())
+	now := time.Now()
+	const eventCount = 100_000
+	for lsn := int64(1); lsn <= eventCount; lsn++ {
+		tracker.Accept(lsn, now, time.Time{})
+		if err := tracker.MarkVisible(lsn); err != nil {
+			t.Fatalf("MarkVisible(%d): %v", lsn, err)
+		}
+	}
+
+	status := tracker.Status()
+	if status.LatestLSN != eventCount || status.VisibleWatermark != eventCount {
+		t.Fatalf("unexpected final watermarks: %+v", status)
+	}
+	if status.RetainedEntries != 0 {
+		t.Fatalf("retained entries = %d, want 0", status.RetainedEntries)
+	}
+}
+
 func TestTrackerCheckpointFailureDoesNotConsumeVisibilityFrontier(t *testing.T) {
 	t.Parallel()
 

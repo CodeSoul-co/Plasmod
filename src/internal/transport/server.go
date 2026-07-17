@@ -354,7 +354,11 @@ func (s *Server) handleWALStream(w http.ResponseWriter, r *http.Request) {
 
 	// Replay buffered entries first.
 	if s.wal != nil {
-		entries := s.wal.Scan(fromLSN)
+		entries, err := eventbackbone.ScanWAL(s.wal, fromLSN)
+		if err != nil {
+			http.Error(w, "scan WAL: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 		for _, e := range entries {
 			if err := writeWALEvent(w, e); err != nil {
 				return

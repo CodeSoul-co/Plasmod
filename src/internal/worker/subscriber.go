@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -240,7 +241,9 @@ func (s *EventSubscriber) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.drainWAL()
+			if err := s.drainWAL(); err != nil {
+				log.Printf("event subscriber WAL scan failed: %v", err)
+			}
 		}
 	}
 }
@@ -250,17 +253,20 @@ func (s *EventSubscriber) Run(ctx context.Context) {
 // After processing at least one entry the MicroBatch queue is flushed so that
 // payloads enqueued by ConflictMergeWorker / CollaborationChain are drained on
 // every poll cycle rather than accumulating indefinitely.
-func (s *EventSubscriber) drainWAL() {
+func (s *EventSubscriber) drainWAL() error {
 	if s.paused.Load() {
-		return
+		return nil
 	}
 	s.drainMu.Lock()
 	defer s.drainMu.Unlock()
 	if s.paused.Load() {
-		return
+		return nil
 	}
 	fromLSN := s.lastLSN.Load() + 1
-	entries := s.wal.Scan(fromLSN)
+	entries, err := eventbackbone.ScanWAL(s.wal, fromLSN)
+	if err != nil {
+		return fmt.Errorf("scan WAL from LSN %d: %w", fromLSN, err)
+	}
 	s.boundaryMu.RLock()
 	visibleThrough := s.visibleThrough
 	s.boundaryMu.RUnlock()
@@ -282,6 +288,7 @@ func (s *EventSubscriber) drainWAL() {
 	if processed > 0 {
 		_ = s.manager.FlushMicroBatch()
 	}
+	return nil
 }
 
 // safeDispatch calls h(entry), recovers from any panic, and sends the entry

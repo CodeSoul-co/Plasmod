@@ -10,4 +10,4 @@ requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 pythonpath = ["sdk/python"]
-testpaths = ["tests"]
+testpaths = ["sdk/python/tests"]
