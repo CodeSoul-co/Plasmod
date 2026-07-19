@@ -1,5 +1,7 @@
 # 10. 代码库、接口实现与函数调用路径
 
+> Language: 中文 | [English](en/10-codebase-interfaces-and-call-paths.md)
+
 ---
 
 把系统概念落到 package、文件、类型、字段、constructor、method、helper、状态和测试。

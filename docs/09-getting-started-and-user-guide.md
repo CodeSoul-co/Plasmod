@@ -1,5 +1,7 @@
 # 09. 安装、启动与用户操作手册
 
+> Language: 中文 | [English](en/09-getting-started-and-user-guide.md)
+
 ---
 
 提供环境准备、构建启动、首次写入查询以及全部用户操作的完整闭环。

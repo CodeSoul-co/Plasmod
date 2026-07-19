@@ -1,5 +1,7 @@
 # 12. 部署、运维、恢复与故障排查
 
+> Language: 中文 | [English](en/12-deployment-operations-and-troubleshooting.md)
+
 ---
 
 覆盖原生与 Docker 部署、持久化、备份恢复、可观测性、安全加固和排障。

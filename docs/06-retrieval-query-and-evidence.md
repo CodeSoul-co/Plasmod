@@ -1,5 +1,7 @@
 # 06. 检索、查询与证据构建
 
+> Language: 中文 | [English](en/06-retrieval-query-and-evidence.md)
+
 ---
 
 说明双平面数据、候选检索、排序、hydrate、图扩展、版本、provenance 和 proof trace。

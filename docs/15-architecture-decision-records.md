@@ -1,5 +1,7 @@
 # 15. 架构决策记录
 
+> Language: 中文 | [English](en/15-architecture-decision-records.md)
+
 ---
 
 合并 Architecture Decision Records，记录选择、替代方案、后果和必须保持的不变量。

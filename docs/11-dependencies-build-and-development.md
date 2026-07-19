@@ -1,5 +1,7 @@
 # 11. 依赖、构建、测试与开发流程
 
+> Language: 中文 | [English](en/11-dependencies-build-and-development.md)
+
 ---
 
 说明 Go、C++、CGO、检索库、Badger、S3、embedding provider 和开发验证流程。

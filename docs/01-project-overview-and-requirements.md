@@ -1,5 +1,7 @@
 # 01. 项目总览、需求与系统边界
 
+> Language: 中文 | [English](en/01-project-overview-and-requirements.md)
+
 ---
 
 统一说明 Plasmod 的问题定义、目标用户、使用场景、能力边界、术语和可追踪需求。

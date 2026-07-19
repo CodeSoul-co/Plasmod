@@ -1,5 +1,7 @@
 # 14. 实现状态、缺口与可声明边界
 
+> Language: 中文 | [English](en/14-implementation-status-gaps-and-claim-boundaries.md)
+
 ---
 
 汇总系统设计核对、接口接线、失败矩阵、成熟度、限制和代码测试证据。

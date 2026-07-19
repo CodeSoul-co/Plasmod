@@ -1,5 +1,7 @@
 # 05. 一致性、恢复与正确性模型
 
+> Language: 中文 | [English](en/05-consistency-recovery-and-correctness.md)
+
 ---
 
 定义 WAL、Retrieval Projection、Canonical Store、Evidence 和异步 Worker 的阶段与失败边界。
