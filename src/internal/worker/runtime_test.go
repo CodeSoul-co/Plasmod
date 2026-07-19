@@ -259,7 +259,7 @@ func TestRuntime_SubmitIngest_UsesCanonicalProjectionBoundary(t *testing.T) {
 	tracked := &projectionTrackingStorage{RuntimeStorage: r.storage}
 	r.storage = tracked
 
-	_, err := r.SubmitIngest(schemas.Event{
+	ack, err := r.SubmitIngest(schemas.Event{
 		EventID:     "evt_atomic_projection",
 		AgentID:     "agent-projection",
 		SessionID:   "session-projection",
@@ -269,21 +269,52 @@ func TestRuntime_SubmitIngest_UsesCanonicalProjectionBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitIngest: %v", err)
 	}
+	stateID, ok := ack["state_id"].(string)
+	if !ok || stateID == "" {
+		t.Fatalf("ingest ACK omitted state_id: %#v", ack)
+	}
 	if len(tracked.projections) != 1 {
 		t.Fatalf("canonical projections = %d, want 1", len(tracked.projections))
 	}
 	projection := tracked.projections[0]
+	if projection.Event == nil || projection.Event.Identity.EventID != "evt_atomic_projection" {
+		t.Fatalf("unexpected projected event: %#v", projection.Event)
+	}
 	if projection.Memory == nil || projection.Memory.MemoryID != "mem_evt_atomic_projection" {
 		t.Fatalf("unexpected projected memory: %#v", projection.Memory)
 	}
-	if !projection.IncludeMemoryBaseEdges {
-		t.Fatal("canonical projection omitted memory base edges")
+	if projection.State == nil || projection.State.DerivedFromEventID != "evt_atomic_projection" {
+		t.Fatalf("unexpected projected state: %#v", projection.State)
+	}
+	if !projection.IncludeEventBaseEdges || !projection.IncludeMemoryBaseEdges {
+		t.Fatal("canonical projection omitted event or memory base edges")
 	}
 	if len(projection.Edges) == 0 {
 		t.Fatal("canonical projection omitted materialized edges")
 	}
-	if len(projection.Versions) != 1 {
-		t.Fatalf("projected versions = %d, want memory version", len(projection.Versions))
+	if len(projection.Versions) != 2 {
+		t.Fatalf("projected versions = %d, want memory and state versions", len(projection.Versions))
+	}
+	if _, ok := tracked.Objects().GetEvent("evt_atomic_projection"); !ok {
+		t.Fatal("canonical event was not persisted")
+	}
+	if _, ok := tracked.Objects().GetState(projection.State.StateID); !ok {
+		t.Fatal("canonical checkpoint state was not persisted")
+	}
+
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		QueryText:   "canonical projection",
+		AgentID:     "agent-projection",
+		SessionID:   "session-projection",
+		WorkspaceID: "workspace-projection",
+		ObjectTypes: []string{"event", "agent_state"},
+		TopK:        10,
+	})
+	if !containsString(resp.Objects, "evt_atomic_projection") {
+		t.Fatalf("explicit event query did not return canonical event: %v", resp.Objects)
+	}
+	if !containsString(resp.Objects, stateID) {
+		t.Fatalf("explicit state query did not return checkpoint state: %v", resp.Objects)
 	}
 }
 

@@ -157,11 +157,13 @@ type MemoryAlgorithmStateStore interface {
 // accepted event. Storage backends may commit the set atomically when their
 // object, edge, and version stores share a transaction engine.
 type CanonicalProjection struct {
+	Event                    *schemas.Event
 	Memory                   *schemas.Memory
 	State                    *schemas.State
 	Artifact                 *schemas.Artifact
 	Versions                 []schemas.ObjectVersion
 	Edges                    []schemas.Edge
+	IncludeEventBaseEdges    bool
 	IncludeMemoryBaseEdges   bool
 	IncludeArtifactBaseEdges bool
 }

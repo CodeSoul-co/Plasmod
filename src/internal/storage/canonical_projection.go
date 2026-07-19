@@ -37,6 +37,9 @@ func applyCanonicalProjection(
 	versions SnapshotVersionStore,
 	projection CanonicalProjection,
 ) {
+	if projection.Event != nil {
+		objects.PutEvent(*projection.Event)
+	}
 	if projection.Memory != nil {
 		objects.PutMemory(*projection.Memory)
 	}
@@ -56,6 +59,11 @@ func applyCanonicalProjection(
 
 func applyBadgerCanonicalProjection(db *badger.DB, projection CanonicalProjection) error {
 	return db.Update(func(txn *badger.Txn) error {
+		if projection.Event != nil {
+			if err := setJSONTxn(txn, []byte(kpObjEvent+projection.Event.Identity.EventID), *projection.Event); err != nil {
+				return fmt.Errorf("persist event %q: %w", projection.Event.Identity.EventID, err)
+			}
+		}
 		if projection.Memory != nil {
 			if err := setJSONTxn(txn, []byte(kpObjMemory+projection.Memory.MemoryID), *projection.Memory); err != nil {
 				return fmt.Errorf("persist memory %q: %w", projection.Memory.MemoryID, err)
@@ -87,6 +95,9 @@ func applyBadgerCanonicalProjection(db *badger.DB, projection CanonicalProjectio
 
 func canonicalProjectionEdges(projection CanonicalProjection) []schemas.Edge {
 	total := len(projection.Edges)
+	if projection.Event != nil && projection.IncludeEventBaseEdges {
+		total += len(schemas.BuildEventBaseEdges(*projection.Event))
+	}
 	if projection.Memory != nil && projection.IncludeMemoryBaseEdges {
 		total += len(schemas.BuildMemoryBaseEdges(*projection.Memory))
 	}
@@ -95,7 +106,7 @@ func canonicalProjectionEdges(projection CanonicalProjection) []schemas.Edge {
 	}
 	out := make([]schemas.Edge, 0, total)
 	seenIDs := make(map[string]int, total)
-	baseIDs := make(map[string]struct{}, 3)
+	baseIDs := make(map[string]struct{}, 6)
 	appendEdge := func(edge schemas.Edge, base bool) {
 		if index, exists := seenIDs[edge.EdgeID]; exists {
 			if _, isBase := baseIDs[edge.EdgeID]; isBase {
@@ -110,6 +121,11 @@ func canonicalProjectionEdges(projection CanonicalProjection) []schemas.Edge {
 			baseIDs[edge.EdgeID] = struct{}{}
 		}
 		out = append(out, edge)
+	}
+	if projection.Event != nil && projection.IncludeEventBaseEdges {
+		for _, edge := range schemas.BuildEventBaseEdges(*projection.Event) {
+			appendEdge(edge, true)
+		}
 	}
 	if projection.Memory != nil && projection.IncludeMemoryBaseEdges {
 		for _, edge := range schemas.BuildMemoryBaseEdges(*projection.Memory) {

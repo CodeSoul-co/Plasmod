@@ -41,9 +41,9 @@ func NewService() *Service {
 	return &Service{}
 }
 
-// MaterializeEvent is the primary ingest-time entry-point.  It returns a full
-// MaterializationResult so the Runtime can persist the canonical objects in the
-// same transaction as the retrieval ingest.
+// MaterializeEvent is the primary ingest-time entry-point. It returns the Event
+// derivatives needed for one canonical projection: Memory, checkpoint State,
+// optional Artifact, relations, versions, and the retrieval record.
 func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	ev = ev.NormalizeDynamicEventV04()
 	text := extractText(ev)
