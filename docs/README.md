@@ -6,10 +6,10 @@
 
 | 目标 | 建议路径 |
 |---|---|
-| 先理解 Plasmod | [项目总览](00-overview/project-overview.md) -> [能力地图](00-overview/capability-map.md) -> [系统架构](02-concepts-and-design/system-architecture.md) |
+| 先理解 Plasmod | [项目总览](00-overview/project-overview.md) -> [能力地图](00-overview/capability-map.md) -> [系统架构](02-concepts-and-design/system-architecture.md) -> [30 项系统设计核对](02-concepts-and-design/system-design/README.md) |
 | 启动并完成首次写入 | [前置条件](03-getting-started/prerequisites.md) -> [Quickstart](03-getting-started/quickstart.md) -> [首次 Event 与 Query](03-getting-started/first-event-and-query.md) |
 | 集成 API 或 SDK | [API 总览](05-api-and-reference/api-overview.md) -> [HTTP API](05-api-and-reference/public-http-api.md) -> [SDK Reference](05-api-and-reference/sdk-reference.md) |
-| 阅读核心代码 | [仓库总览](06-codebase/repository-overview.md) -> [架构到代码映射](06-codebase/architecture-to-code-map.md) -> [调用链](06-codebase/call-paths/) |
+| 阅读核心代码 | [30 项系统设计核对](02-concepts-and-design/system-design/README.md) -> [架构到代码映射](06-codebase/architecture-to-code-map.md) -> [接口实现注册表](02-concepts-and-design/system-design/06-cross-reference/interface-implementation-registry.md) -> [调用链](06-codebase/call-paths/) |
 | 修改或扩展实现 | [本地开发](08-development/local-development.md) -> [常见代码修改](08-development/common-code-changes.md) -> [扩展模型](10-extensibility/extension-overview.md) |
 | 部署和排障 | [部署模式](09-deployment-and-operations/deployment-modes.md) -> [运维 Runbook](09-deployment-and-operations/operations-runbook.md) -> [故障排查](09-deployment-and-operations/troubleshooting.md) |
 

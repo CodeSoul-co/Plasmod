@@ -1,5 +1,7 @@
 # 系统架构
 
+本页提供快速架构总览。严格区分 Architecture、Chain、Perspective、Mechanism、Engine，并核对每项字段、API、typed I/O、调用关系、状态和完成度时，使用 [System Design Reference](system-design/README.md)。
+
 ```mermaid
 flowchart LR
   C["Agent / SDK"] --> A["HTTP, gRPC, Binary Access"]
