@@ -1,5 +1,7 @@
 # 08. API、Schema、配置与 SDK 参考
 
+> Language: 中文 | [English](en/08-api-schema-and-sdk-reference.md)
+
 ---
 
 集中定义 HTTP、gRPC、内部 API、SDK、错误、幂等、配置和核心 Schema。

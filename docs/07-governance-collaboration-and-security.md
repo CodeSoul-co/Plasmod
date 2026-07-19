@@ -1,5 +1,7 @@
 # 07. 作用域、治理、协作与安全
 
+> Language: 中文 | [English](en/07-governance-collaboration-and-security.md)
+
 ---
 
 核对 Scope、ShareContract、Policy、协作派生、冲突、删除、隔离和安全边界。

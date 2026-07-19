@@ -1,5 +1,7 @@
 # 04. 运行时、四条执行 Chain 与调度
 
+> Language: 中文 | [English](en/04-runtime-chains-and-scheduling.md)
+
 ---
 
 把 Chain 作为动态执行路径，依次还原 Ingest、Memory、Query 和 Collaboration 的真实调用。

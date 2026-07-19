@@ -1,5 +1,7 @@
 # 02. 整体系统架构与设计原则
 
+> Language: 中文 | [English](en/02-system-architecture-and-design.md)
+
 ---
 
 从静态结构与运行依赖说明 Layer、Subsystem、Module 和 Canonical Object 的归属。

@@ -1,5 +1,7 @@
 # 13. 扩展、兼容性与系统演进
 
+> Language: 中文 | [English](en/13-extensibility-compatibility-and-evolution.md)
+
 ---
 
 给出新增对象、算法、算子、策略和 backend 的模板及兼容演进规则。

@@ -1,5 +1,7 @@
 # 03. 规范对象模型与记忆生命周期
 
+> Language: 中文 | [English](en/03-canonical-data-model-and-memory-lifecycle.md)
+
 ---
 
 定义 Event 派生的规范对象，并拆解对象派生、记忆演化、规范对象图和分层存储 Engine。
