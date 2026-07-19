@@ -1,38 +1,54 @@
-# Plasmod 工程文档
+# 00. Plasmod 核心库工程文档
 
-本目录描述 Plasmod 核心库的公开行为、实现边界和维护方式。内容以当前仓库中的 Go、C++、配置、构建脚本、SDK 和测试为事实来源。
+本目录只描述 Plasmod 核心库的公开行为、实现边界、代码结构、构建、部署与维护方式。事实来源是当前仓库中的 Go/C++ 代码、Schema、配置、构建脚本和测试；规划接口与未接入实现会显式标记，不作为已完成能力声明。
 
-## 阅读入口
+## 00.1. 顺序阅读
 
-| 目标 | 建议路径 |
+| 顺序 | 文档 | 主要问题 |
+|---|---|---|
+| 01 | [项目总览、需求与系统边界](01-project-overview-and-requirements.md) | 系统为何存在，需求和边界是什么 |
+| 02 | [整体系统架构与设计原则](02-system-architecture-and-design.md) | 系统由哪些层和模块构成 |
+| 03 | [规范对象模型与记忆生命周期](03-canonical-data-model-and-memory-lifecycle.md) | Event 如何成为规范对象，Memory 如何演化 |
+| 04 | [运行时、四条执行 Chain 与调度](04-runtime-chains-and-scheduling.md) | 请求如何经过四条 Chain 与调度组件 |
+| 05 | [一致性、恢复与正确性模型](05-consistency-recovery-and-correctness.md) | 一致性阶段、失败窗口和恢复语义是什么 |
+| 06 | [检索、查询与证据构建](06-retrieval-query-and-evidence.md) | 如何检索、hydrate 并构建证据 |
+| 07 | [作用域、治理、协作与安全](07-governance-collaboration-and-security.md) | 作用域、共享、治理和安全如何工作 |
+| 08 | [API、Schema、配置与 SDK 参考](08-api-schema-and-sdk-reference.md) | API、Schema、配置和 SDK 如何调用 |
+| 09 | [安装、启动与用户操作手册](09-getting-started-and-user-guide.md) | 如何安装、启动和完成用户操作 |
+| 10 | [代码库、接口实现与函数调用路径](10-codebase-interfaces-and-call-paths.md) | 接口、实现、字段和函数调用在哪里 |
+| 11 | [依赖、构建、测试与开发流程](11-dependencies-build-and-development.md) | 依赖、构建、测试和开发流程是什么 |
+| 12 | [部署、运维、恢复与故障排查](12-deployment-operations-and-troubleshooting.md) | 如何部署、运维、恢复和排障 |
+| 13 | [扩展、兼容性与系统演进](13-extensibility-compatibility-and-evolution.md) | 如何扩展并保持兼容 |
+| 14 | [实现状态、缺口与可声明边界](14-implementation-status-gaps-and-claim-boundaries.md) | 哪些能力完成，哪些仍有缺口 |
+| 15 | [架构决策记录](15-architecture-decision-records.md) | 关键架构决策及其后果是什么 |
+
+## 00.2. 按角色阅读
+
+| 读者 | 最短路径 |
 |---|---|
-| 先理解 Plasmod | [项目总览](00-overview/project-overview.md) -> [能力地图](00-overview/capability-map.md) -> [系统架构](02-concepts-and-design/system-architecture.md) -> [30 项系统设计核对](02-concepts-and-design/system-design/README.md) |
-| 启动并完成首次写入 | [前置条件](03-getting-started/prerequisites.md) -> [Quickstart](03-getting-started/quickstart.md) -> [首次 Event 与 Query](03-getting-started/first-event-and-query.md) |
-| 集成 API 或 SDK | [API 总览](05-api-and-reference/api-overview.md) -> [HTTP API](05-api-and-reference/public-http-api.md) -> [SDK Reference](05-api-and-reference/sdk-reference.md) |
-| 阅读核心代码 | [30 项系统设计核对](02-concepts-and-design/system-design/README.md) -> [架构到代码映射](06-codebase/architecture-to-code-map.md) -> [接口实现注册表](02-concepts-and-design/system-design/06-cross-reference/interface-implementation-registry.md) -> [调用链](06-codebase/call-paths/) |
-| 修改或扩展实现 | [本地开发](08-development/local-development.md) -> [常见代码修改](08-development/common-code-changes.md) -> [扩展模型](10-extensibility/extension-overview.md) |
-| 部署和排障 | [部署模式](09-deployment-and-operations/deployment-modes.md) -> [运维 Runbook](09-deployment-and-operations/operations-runbook.md) -> [故障排查](09-deployment-and-operations/troubleshooting.md) |
+| 首次了解 Plasmod | 01 -> 02 -> 03 -> 04 |
+| API/SDK 使用者 | 01 -> 08 -> 09 |
+| 核心开发者 | 02 -> 03 -> 04 -> 10 -> 11 -> 14 |
+| 部署与运维人员 | 09 -> 12 -> 05 |
+| 架构评审者 | 02 -> 04 -> 05 -> 06 -> 07 -> 14 -> 15 |
 
-完整导航见 [Documentation Map](00-overview/documentation-map.md)。
+## 00.3. 状态标签
 
-## 状态标签
+| 标签 | 定义 |
+|---|---|
+| Implemented | 当前 bootstrap 或主调用链可达，并有代码或测试支撑 |
+| Partial | 存在实现，但覆盖面、持久化、隔离、接口或恢复语义不完整 |
+| Experimental | 核心代码可用，但接口、配置或兼容性尚未承诺稳定 |
+| Defined-not-wired | 类型和实现存在，但当前 composition root 不调用 |
+| Contract-only | 只有接口或 Schema，核心库没有 active production implementation |
+| Planned | 目标设计，当前代码尚未实现 |
 
-- **Implemented**：启动路径可达，并有代码或测试支撑。
-- **Partial**：存在实现，但覆盖面、持久化、隔离、接口或恢复语义不完整。
-- **Experimental**：代码可用但接口、配置或兼容性尚未承诺稳定。
-- **Not Confirmed**：仓库中存在声明或结构，但未发现当前启动路径或测试证明。
-- **Deprecated**：保留用于兼容，不应作为新集成入口。
+## 00.4. 事实来源优先级
 
-## 事实来源优先级
+1. src/cmd/server/main.go 与 src/internal/app/bootstrap.go 的真实启动链。
+2. src/internal/access/gateway.go、gateway_rpc.go 与 gRPC server 的真实接口。
+3. src/internal/worker/runtime.go、consistency controller 与 Chain 的真实调用顺序。
+4. src/internal/schemas/、src/internal/storage/contracts.go 与 event backbone contract。
+5. Makefile、Compose、.env.example、配置加载器及对应测试。
 
-1. `src/cmd/server/main.go` 与 `src/internal/app/bootstrap.go` 的真实启动链。
-2. `src/internal/access/gateway.go`、`gateway_rpc.go` 和 gRPC proto 的真实接口。
-3. `src/internal/schemas/`、`storage/contracts.go` 和 `eventbackbone/contracts.go` 的类型与不变量。
-4. `Makefile`、Docker Compose、`.env.example` 和实际配置加载器。
-5. 与上述路径对应的单元和集成测试。
-
-注释、旧配置文件和 README 若与可执行路径冲突，以代码和测试为准；差异记录在 [Known Limitations](11-evolution-and-status/known-limitations.md)。
-
-## 核心边界
-
-文档只覆盖核心库。仓库中的 `src/internal/platformpkg/`、`coordinator/controlplane/`、`eventbackbone/streamplane/` 与 `cpp/vendor/` 需要按上游/兼容代码处理，不能作为 Plasmod 自研实现宣称；边界见 [Component Ownership](06-codebase/component-ownership.md)。
+历史注释或设计名称若与可执行路径冲突，以代码和测试为准；差异统一记录在第 14 章。

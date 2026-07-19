@@ -487,12 +487,18 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 
 	// ── Persist canonical objects ─────────────────────────────────────────
 	projection := storage.CanonicalProjection{
+		Event:                  &ev,
 		Memory:                 &mat.Memory,
+		State:                  mat.State,
 		Edges:                  mat.Edges,
+		IncludeEventBaseEdges:  true,
 		IncludeMemoryBaseEdges: true,
 	}
 	if !r.MinimalMode {
 		projection.Versions = append(projection.Versions, mat.Version)
+		if mat.StateVersion != nil {
+			projection.Versions = append(projection.Versions, *mat.StateVersion)
+		}
 	}
 	if mat.Artifact != nil {
 		projection.Artifact = mat.Artifact
@@ -514,8 +520,9 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 		r.storage.HotCache().Put(mat.Memory.MemoryID, "memory", mat.Memory, salience)
 	}
 
-	// Auxiliary state, tool-trace, and derivation workers run through the
-	// asynchronous chains. Visibility is gated only by this canonical commit.
+	// The ingest checkpoint State is part of the canonical commit above.
+	// Specialized keyed-state, tool-trace, and derivation workers remain on the
+	// asynchronous chains and are not included in the ingest visibility ACK.
 	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
 		if err := r.memoryBackend.WriteShadow(ctx, mat.Memory, ev); err != nil {
 			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
@@ -584,6 +591,9 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 	if mat.Artifact != nil {
 		ack["artifact_id"] = mat.Artifact.ArtifactID
+	}
+	if mat.State != nil {
+		ack["state_id"] = mat.State.StateID
 	}
 	return ack, nil
 }
@@ -655,11 +665,12 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	retrievalHitCount := len(result.ObjectIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
-	// State and Artifact objects are stored directly in ObjectStore, not in the
-	// retrieval plane.  When query requests these types, fetch them from the
-	// canonical store so they appear in the response alongside memory results.
+	// State, Artifact, and Event objects are stored directly in ObjectStore, not
+	// in the retrieval plane. Supplement them only for an explicit object_types
+	// request. Planner defaults must not turn an ordinary semantic query into an
+	// unranked scan of every checkpoint State or Artifact in the scope.
 	canonicalAddCount := 0
-	if !vectorOnlyMode && len(req.TargetObjectIDs) == 0 {
+	if !vectorOnlyMode && len(req.TargetObjectIDs) == 0 && len(req.ObjectTypes) > 0 {
 		canonicalIDs := r.fetchCanonicalObjects(plan.ObjectTypes, req.AgentID, req.SessionID, plan.Namespace)
 		canonicalAddCount = len(canonicalIDs)
 		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)

@@ -144,6 +144,13 @@ func TestBadgerValueThresholdCanBeConfigured(t *testing.T) {
 
 func TestCompositeRuntimeStorageApplyCanonicalProjection(t *testing.T) {
 	store := newBadgerProjectionStorage(t)
+	event := schemas.Event{
+		EventID:     "event-1",
+		AgentID:     "agent-1",
+		SessionID:   "session-1",
+		WorkspaceID: "workspace-1",
+	}
+	event = event.NormalizeDynamicEventV04()
 	memory := schemas.Memory{
 		MemoryID:       "memory-1",
 		AgentID:        "agent-1",
@@ -162,6 +169,17 @@ func TestCompositeRuntimeStorageApplyCanonicalProjection(t *testing.T) {
 		OwnerAgentID:      memory.AgentID,
 		ProducedByEventID: "event-1",
 	}
+	state := schemas.State{
+		StateID:            "state-1",
+		AgentID:            memory.AgentID,
+		SessionID:          memory.SessionID,
+		DerivedFromEventID: event.Identity.EventID,
+	}
+	stateVersion := schemas.ObjectVersion{
+		ObjectID:   state.StateID,
+		ObjectType: string(schemas.ObjectTypeAgentState),
+		Version:    1,
+	}
 	edge := schemas.Edge{
 		EdgeID:      "edge-custom",
 		SrcObjectID: memory.MemoryID,
@@ -170,10 +188,13 @@ func TestCompositeRuntimeStorageApplyCanonicalProjection(t *testing.T) {
 	}
 
 	err := store.ApplyCanonicalProjection(CanonicalProjection{
+		Event:                    &event,
 		Memory:                   &memory,
+		State:                    &state,
 		Artifact:                 &artifact,
-		Versions:                 []schemas.ObjectVersion{version},
+		Versions:                 []schemas.ObjectVersion{version, stateVersion},
 		Edges:                    []schemas.Edge{edge},
+		IncludeEventBaseEdges:    true,
 		IncludeMemoryBaseEdges:   true,
 		IncludeArtifactBaseEdges: true,
 	})
@@ -183,16 +204,27 @@ func TestCompositeRuntimeStorageApplyCanonicalProjection(t *testing.T) {
 	if _, ok := store.Objects().GetMemory(memory.MemoryID); !ok {
 		t.Fatal("canonical memory was not persisted")
 	}
+	if _, ok := store.Objects().GetEvent(event.Identity.EventID); !ok {
+		t.Fatal("canonical event was not persisted")
+	}
+	if _, ok := store.Objects().GetState(state.StateID); !ok {
+		t.Fatal("canonical state was not persisted")
+	}
 	if _, ok := store.Objects().GetArtifact(artifact.ArtifactID); !ok {
 		t.Fatal("canonical artifact was not persisted")
 	}
 	if got := store.Versions().GetVersions(memory.MemoryID); len(got) != 1 {
 		t.Fatalf("memory versions = %d, want 1", len(got))
 	}
+	if got := store.Versions().GetVersions(state.StateID); len(got) != 1 {
+		t.Fatalf("state versions = %d, want 1", len(got))
+	}
 	if _, ok := store.Edges().GetEdge(edge.EdgeID); !ok {
 		t.Fatal("explicit edge was not persisted")
 	}
-	for _, baseEdge := range append(schemas.BuildMemoryBaseEdges(memory), schemas.BuildArtifactBaseEdges(artifact)...) {
+	baseEdges := append(schemas.BuildEventBaseEdges(event), schemas.BuildMemoryBaseEdges(memory)...)
+	baseEdges = append(baseEdges, schemas.BuildArtifactBaseEdges(artifact)...)
+	for _, baseEdge := range baseEdges {
 		if _, ok := store.Edges().GetEdge(baseEdge.EdgeID); !ok {
 			t.Fatalf("base edge %q was not persisted", baseEdge.EdgeID)
 		}
