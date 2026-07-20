@@ -254,7 +254,7 @@ Do not claim a fully verified state machine, uniform reverse transitions, mandat
 
 ### 03.3.3. Inputs and Outputs
 
-The input is a complete Dynamic Event; see the [Object and Message Registry](14-implementation-status-gaps-and-claim-boundaries.md). An Event produces a Memory, Memory version, ingest-checkpoint State, State version, retrieval record, and base or causal edges. Artifact and ArtifactVersion are added when Artifact derivation rules match. The original Event and the derived records are assembled into the canonical projection write set.
+The input is a complete Dynamic Event; see the [Object and Message Registry](14-implementation-status-gaps-and-claim-boundaries.md). An Event produces a Memory, Memory version, stable keyed or `last_memory_id` State, State version, retrieval record, and base or causal edges. Artifact and ArtifactVersion are added when Artifact derivation rules match. The original Event and the derived records are assembled into the canonical projection write set.
 
 ### 03.3.4. Decision rules
 
@@ -455,8 +455,8 @@ Define EvolutionCommand/Decision/Transition record, mandatory version/edge/audit
 | same | `State`, `StateVersion` | ingest checkpoint candidate |
 | same | `Artifact`, `ArtifactVersion` | optional output |
 | Object worker | `id`, object/edge/version stores, derivation logger | specialized Artifact route |
-| State worker | `id`, object/version stores, derivation logger, mutex, `stateKeys` | keyed State version tracking |
-| Tool worker | id/store/log dependencies | tool Artifact trace |
+| State worker | `id`, object/version stores, derivation logger, mutex | store-backed keyed State version tracking and checkpoints |
+| Tool worker | ID/object/version/log dependencies | tool Artifact trace plus recoverable version |
 | PreCompute | cache/config | evidence fragment precomputation |
 
 ### 03.6.4. Input/output and field access
@@ -491,9 +491,10 @@ Upstream callers are Runtime `projectWALEntry`, `MainChain`, and the subscriber.
 
 ### 03.6.7. State, correctness and failure
 
-- The service is stateless; the State worker's `stateKeys` map is a process-local accelerator.
-- deterministic IDs support replay.
-- Runtime submits the original Event, Memory, checkpoint State, optional Artifact, relations, and corresponding versions as one canonical projection. Outputs from dedicated keyed-State, tool-trace, and lifecycle workers remain outside that transaction.
+- The Service is stateless. The State worker reads current State and version history from ObjectStore/VersionStore instead of relying on a process-local key map for version assignment.
+- Memory IDs, scope-safe `CanonicalStateID`, and mutation-event identity support idempotent replay.
+- Runtime submits the Event, Memory, stable keyed or `last_memory_id` State, optional Artifact, relations, and complete snapshot versions in one canonical projection. Dedicated tool-trace and lifecycle-worker outputs remain outside that transaction.
+- A Runtime mutex serializes State version resolution inside one process; cross-process writers still require an external single-writer or conditional-write protocol.
 - Worker store writes can overlap Runtime Artifact writes. Upsert semantics hide some duplication, but version histories can still diverge.
 - `enabled/targets` is not a hard routing gate.
 
@@ -816,15 +817,15 @@ When an Event omits its ID, Gateway generates an `evt_*` ID. Memory commonly use
 | state update / state change / checkpoint | AgentState;checkpoint can generate state versions |
 | Other materializable events | Memory + base/causal edges + version |
 
-An Event can specify `object.object_type` and `object.object_id`. `materialization.enabled` and `materialization.targets` are normalized, recorded, and available for filtering, but the active `materialization.Service` does not yet treat them as universal hard gates. Each Event ingest still creates the default Memory, ObjectVersion, and ingest-checkpoint State. Specialized State and Artifact workers use the state key, event/object type, and payload to decide whether to add more objects. Retrieval fields are normalized separately.
+An Event can specify `object.object_type` and `object.object_id`. `materialization.enabled` and `materialization.targets` are normalized, recorded, and available for filtering, but the active `materialization.Service` does not yet treat them as universal hard gates. Each Event ingest still creates the default Memory, ObjectVersion, and stable State. An explicit State key updates that key; otherwise `last_memory_id` is updated. Specialized State and Artifact workers perform additional actions based on event/object type and payload. Retrieval fields are normalized separately.
 
 ### 03.11.3. Memory materialization
 
-`materialization.Service.MaterializeEvent` derives text, scope, memory type, confidence, importance, source Event, and lifecycle, then produces Memory and derivation edges. Runtime writes retrieval records to the data plane and canonical projections to storage.
+`materialization.Service.MaterializeEvent` derives text, scope, memory type, confidence, importance, source Event, and lifecycle, then produces Memory and derivation edges. Runtime writes the canonical projection to storage before writing the retrieval record to the data plane.
 
 ### 03.11.4. State materialization
 
-`InMemoryStateMaterializationWorker.Apply` reads the state key and value from the Event, finds the existing State by agent, session, and key, and increments `Version`. State ID is derived from agent and state key. The worker's lookup map is process-local, so recovery and direct CRUD interactions require care.
+Primary Runtime and `InMemoryStateMaterializationWorker.Apply` read the State key/value and derive `CanonicalStateID` from a hash of tenant, workspace, agent, session, and key. Version increments from current ObjectStore/VersionStore records, and an existing mutation event is idempotent. The primary Runtime mutex serializes only one process, so direct CRUD and cross-process writers still require external coordination.
 
 ### 03.11.5. Artifact materialization
 

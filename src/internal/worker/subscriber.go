@@ -380,7 +380,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	// ── 1. ReflectionPolicy ───────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
 		ev := entry.Event.NormalizeDynamicEventV04()
-		memID := schemas.IDPrefixMemory + ev.Identity.EventID
+		memID := schemas.CanonicalMemoryID(ev)
 		s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
 	})
 
@@ -396,7 +396,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 			return
 		}
 		key := ev.Actor.AgentID + ":" + ev.Actor.SessionID
-		newMemID := schemas.IDPrefixMemory + ev.Identity.EventID
+		newMemID := schemas.CanonicalMemoryID(ev)
 
 		s.mu.Lock()
 		prevMemID, hasPrev := s.agentLastMem[key]

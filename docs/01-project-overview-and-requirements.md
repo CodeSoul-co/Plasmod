@@ -522,27 +522,111 @@ HTTP Implemented；gRPC limited；SDK Partial。
 
 ### 01.9.1. 扁平 memory store 的不足
 
-当 agent memory 只是一组文本、向量和 metadata 时，系统可以完成相似度检索，却难以稳定回答对象版本、因果链、状态覆盖、共享范围和恢复顺序。应用层往往被迫维护第二套 event log、state table 和 provenance graph，导致事实分散。
+当 agent memory 只是一组文本、向量和 metadata 时，系统可以完成相似度检索，却难以稳定回答对象版本、因果链、状态覆盖、共享范围和恢复顺序。应用层往往被迫维护第二套 event log、state table 和 provenance graph，导致写入确认、检索命中和权威事实来自不同数据源。
+
+| 缺失语义 | 仅有 vector + metadata 的后果 | Plasmod 的权威记录 |
+|---|---|---|
+| mutation order | 无法区分同一对象的并发更新与重放 | Event + WAL LSN |
+| current state | 相似命中不等于当前值 | State |
+| history | 覆盖写丢失旧值和有效时间 | ObjectVersion snapshot + validity interval |
+| causality | metadata 引用缺少可遍历关系 | Edge + source/target object ID |
+| visibility | 索引命中可能早于完整持久化 | mutation LSN + visible watermark |
+| recovery | 索引损坏后没有可验证重建源 | WAL + canonical objects/versions |
+
+工程不变量是：**canonical plane 是事实来源，retrieval plane 是可丢弃的加速视图**。查询候选必须通过 object ID 回连 canonical object；projection 不能反向覆盖 canonical data。
 
 ### 01.9.2. 动态状态的问题
 
-tool result、plan update 和 checkpoint 会持续修改 agent state。直接覆盖一个 metadata 字段会丢失 mutation event、版本、可见时刻和恢复依据。并发写入还需要明确哪个 LSN 已经物化、查询是否允许看到旧状态。
+tool result、plan update 和 checkpoint 会持续修改 agent state。直接覆盖一个 metadata 字段会丢失 mutation event、版本、可见时刻和恢复依据。Plasmod 将一个可变状态键定义为：
+
+```text
+(tenant_id, workspace_id, agent_id, session_id, state_key)
+```
+
+`CanonicalStateID` 对该元组生成稳定 ID；同一键的每次 mutation 递增 `State.version`，写入带完整 `Snapshot`、`MutationEventID`、`MutationLSN`、`ValidFrom/ValidTo` 的 `ObjectVersion`。处理规则如下：
+
+| 输入情况 | 状态处理 |
+|---|---|
+| 新 state key | 创建 version 1 |
+| 新 mutation event | 关闭上一版本并写入下一版本 |
+| 同一 WAL LSN 重试 | 幂等补全 projection，不重复递增 |
+| 已进入历史的旧 event 重放 | 保留当前状态，不回滚 |
+| 相同 event ID 以新 LSN 再次提交 | 返回 duplicate 结果，不重复 canonical mutation |
+
+Runtime 在 canonical commit 前用 `stateProjectionMu` 串行解析当前版本，并通过 `ApplyCanonicalProjection` 将 Event、Memory、State、Artifact、Edge 和 Version 写入同一 canonical projection。Badger 配置下 object、edge、version 共用 transaction；内存 backend 提供同样的逻辑写集，但不等同于跨进程事务。
 
 ### 01.9.3. Multi-agent scope 与 provenance
 
-多个 agent 共享 workspace 时，同一个 memory 可能是 private、session、team 或 shared。仅用一个 `scope` 字符串无法表达 visible agents、roles、policy tags、share contract 和派生权限。查询结果还需要说明“为什么返回”和“由什么关系支持”。
+多个 agent 共享 workspace 时，同一个 memory 可能是 private、session、team 或 shared。仅用一个 `scope` 字符串无法表达 tenant/workspace/team/session、owner、visible agents、roles、policy tags、share contract 和派生权限。
+
+Plasmod 在 Memory、State、Artifact、Edge 和 ObjectVersion 上持久化同一 `CanonicalAccess`：
+
+| 字段 | 作用 |
+|---|---|
+| `tenant_id`, `workspace_id`, `team_id`, `session_id` | 层级 scope |
+| `owner_agent_id` | owner 快速授权与来源保留 |
+| `visibility` | private/session/team/workspace/tenant/public/restricted |
+| `visible_to_agents`, `visible_to_roles` | 显式读取授权 |
+| `policy_tags` | 治理标签 |
+| `share_contract_id` | 将派生对象绑定到明确协议 |
+
+`POST /v1/query` 使用 `requester_agent_id` 和 `requester_roles` 构造 principal，在 candidate hydration 前执行 canonical access gate；授权结果写入 `QueryResponse.access_decisions`。Evidence 组装后再次过滤 Node、Edge、ProofStep 和 provenance 引用，防止可见 seed 通过图扩展泄漏 private endpoint。
+
+`POST /v1/internal/memory/share` 不再直接复制对象：Runtime 验证 owner，以及可选 ShareContract 的 tenant/workspace/scope、`derive` 和目标 `read` 权限，再生成 derived Event。该 Event 经 WAL、materialization、canonical projection 和 retrieval visibility 主链创建共享 Memory、ObjectVersion 与 `derived_from` Edge。
 
 ### 01.9.4. Plasmod 的工程回答
 
-- Event：记录因果输入和接受顺序。
-- WAL/LSN：提供 replay 与可见性推进基准。
-- Canonical Object：保存当前可查询事实。
-- ObjectVersion：保存对象历史边界。
-- Edge/Derivation：保存关系和来源。
-- Retrieval Projection：为 query 提供速度，但允许从 canonical data 重建。
-- Evidence Response：将命中对象、过滤、版本、边和 proof trace 一起返回。
+- Event：记录因果输入、actor、scope 和 mutation intent。
+- WAL/LSN：提供接受顺序、重试 identity、replay 和可见性推进基准。
+- Canonical Object：保存当前可查询事实及其 `CanonicalAccess`、`MutationLSN`。
+- ObjectVersion：保存完整 snapshot、mutation event、有效时间和 access context。
+- Edge/Derivation：保存 `derived_from`、supports、contradicts、conflict 等关系和来源。
+- Retrieval Projection：在 canonical commit 后创建；失败时由同一 WAL entry 重试，且在 visible watermark 前不会被查询授权为可见。
+- Evidence Response：将命中对象、访问决策、版本、边、provenance 和 proof trace 一起返回。
 
 这些能力必须在 runtime、storage、query 与 recovery 中保持同一套不变量，而不是由单个 SDK 或上层 framework 临时拼接。
+
+### 01.9.5. 写入与可见性协议
+
+```text
+Normalize Event
+-> Append WAL and assign LSN
+-> Derive canonical write set
+-> ApplyCanonicalProjection
+-> Ingest retrieval projection
+-> advance visible watermark
+-> ACK according to consistency mode
+```
+
+canonical write 先于 retrieval write 是有意设计：retrieval 失败时 WAL 和 canonical snapshot 仍可作为修复源。此时 controller 不推进 visible watermark；查询的 access gate 会拒绝 `mutation_lsn > read_watermark_lsn` 的对象。Strict ACK 等待该 LSN 完成整个 projection callback；bounded/eventual 使用 controller 定义的等待边界。
+
+### 01.9.6. 查询与证据协议
+
+```text
+QueryRequest + requester principal
+-> retrieval/canonical candidates
+-> canonical existence and access gate
+-> hydration and graph expansion
+-> endpoint access revalidation
+-> version/provenance/proof assembly
+-> QueryResponse(objects, access_decisions, read_watermark_lsn, evidence)
+```
+
+拒绝项不会出现在 `access_decisions`，避免泄露对象存在性；只对实际返回对象说明 owner、scope、explicit grant 或 share contract 等允许原因。
+
+### 01.9.7. 故障与恢复边界
+
+| 故障窗口 | 已实现行为 | 保证边界 |
+|---|---|---|
+| WAL append 前 | 请求失败，无 LSN | 不产生 canonical mutation |
+| WAL append 后、canonical commit 前 | controller 重试同一 LSN | materialization/state update 幂等 |
+| canonical commit 后、retrieval ingest 前 | canonical snapshot 已存在，watermark 未推进 | 普通 query 不暴露该 mutation；可重试同一 LSN |
+| duplicate event ID with new LSN | 返回原始 LSN 的 duplicate 信息 | 不重复创建版本或回滚 state |
+| projection/index 丢失 | 以 WAL/canonical data 重放或重建 | 自动全量 reconciliation 仍为部分能力 |
+
+### 01.9.8. 不应过度声明的范围
+
+本次实现解决的是核心 Runtime 的 canonical write/query/share 不变量，不代表完整 IAM 或所有管理接口均已授权。`requester_agent_id` 仍由调用方提供，必须由认证 gateway 可信绑定；原始 canonical CRUD/internal admin route 仍属于受信管理面。mask/partial response、所有 lifecycle direct mutation 的统一 write ACL、跨节点 state serialization 和自动全量 reconciliation 仍为后续工程范围。因此整体 Governance/Recovery 成熟度保持 **Partial**，而不是仅因 schema 存在就声明完整安全或分布式事务。
 
 ---
 

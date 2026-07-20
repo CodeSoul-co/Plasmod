@@ -512,15 +512,15 @@ The canonical type is `schemas.AgentState`, with compatibility alias `State`. Th
 
 ### 09.11.2. Event-driven Updates
 
-State changes should be submitted as `state_update`, `state_change`, or a related tool-result Event with a State key and value. The keyed State materializer derives:
+State changes should be submitted as `state_update`, `state_change`, or a related tool-result Event with a State key and value. Both primary Runtime materialization and the specialized State worker derive:
 
 ```text
-state_<agent_id>_<state_key>
+state_<sha256-prefix(tenant, workspace, agent, session, state_key)>
 ```
 
-The worker uses a stable ID and increments the version associated with the tracked State key.
+This produces a stable, scope-safe ID. The next version is read from canonical State/ObjectVersion stores. Retrying the same mutation event does not increment the version, and replaying an older event does not roll current State backward.
 
-In addition, `materialization.Service` creates an `ingest_checkpoint` State for every ingest with ID `state_<session_id>_<event_id>`. `materialization.targets` is not yet a universal hard gate for this default checkpoint.
+When no explicit State key exists, an ordinary Event updates the scope's stable `last_memory_id` State to the default Memory ID. It does not create a new checkpoint ID for every Event. `materialization.targets` is not yet a universal hard gate for this default State projection.
 
 ### 09.11.3. Direct State API
 
@@ -528,11 +528,10 @@ A direct `POST /v1/states` is not equivalent to an Event-driven update: it does 
 
 ### 09.11.4. Query the Latest State
 
-When querying latest State, constrain tenant, workspace, agent, and State key, then select the highest canonical version.
+When querying latest State, provide tenant, workspace, agent, session, and State key and use the same `CanonicalStateID` algorithm. Use `/v1/query` with a trust-bound `requester_agent_id` and roles when governance filtering is required.
 
 ### 09.11.5. Current Limitations
 
-- Some keyed-state version tracking is maintained in the worker process; restart semantics must be verified against durable ObjectVersion records and replay.
 - There is no cross-process transaction lock that serializes arbitrary direct CRUD updates.
 - `state` and `agent_state` are compatibility names; new clients should use canonical `agent_state`.
 

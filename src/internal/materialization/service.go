@@ -1,6 +1,7 @@
 package materialization
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -49,8 +50,9 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	text := extractText(ev)
 	retrievalNamespace := resolveNamespace(ev)
 	memoryScope := resolveMemoryScope(ev, retrievalNamespace)
-	memoryID := schemas.IDPrefixMemory + ev.Identity.EventID
+	memoryID := schemas.CanonicalMemoryID(ev)
 	now := time.Now().UTC().Format(time.RFC3339)
+	access := schemas.CanonicalAccessFromEvent(ev)
 
 	record := dataplane.IngestRecord{
 		ObjectID:        memoryID,
@@ -65,6 +67,8 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 	mem := schemas.Memory{
 		MemoryID:       memoryID,
 		MemoryType:     resolveMemoryType(ev),
+		TenantID:       ev.Identity.TenantID,
+		WorkspaceID:    ev.Identity.WorkspaceID,
 		AgentID:        ev.Actor.AgentID,
 		SessionID:      ev.Actor.SessionID,
 		Scope:          memoryScope,
@@ -78,7 +82,13 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		ValidFrom:      now,
 		ProvenanceRef:  ev.Identity.EventID,
 		Version:        ev.Time.LogicalTS,
+		MutationLSN:    ev.Time.WalLSN,
+		MaterializedAt: now,
+		Access:         access,
 		IsActive:       true,
+	}
+	if ev.Access.TTLMS != nil && *ev.Access.TTLMS > 0 {
+		mem.TTL = (*ev.Access.TTLMS + 999) / 1000
 	}
 	if ev.Payload != nil {
 		if d, ok := ev.Payload[schemas.PayloadKeyDataset]; ok {
@@ -114,7 +124,10 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		MutationEventID: ev.Identity.EventID,
 		ValidFrom:       now,
 		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
+		MutationLSN:     ev.Time.WalLSN,
+		Access:          access,
 	}
+	version.Snapshot = snapshotMap(mem)
 
 	st, stVer := deriveStateAndVersion(ev, memoryID, now)
 	art, artVer := deriveArtifactAndVersion(ev, now)
@@ -184,6 +197,11 @@ func resolveMemoryScope(ev schemas.Event, fallback string) string {
 }
 
 func resolveMemoryType(ev schemas.Event) string {
+	if ev.Payload != nil {
+		if raw, ok := ev.Payload["memory_type"].(string); ok && strings.TrimSpace(raw) != "" {
+			return strings.TrimSpace(raw)
+		}
+	}
 	switch ev.EventInfo.EventType {
 	case string(schemas.EventTypeUserMessage), string(schemas.EventTypeAssistantMessage):
 		return string(schemas.MemoryTypeEpisodic)
@@ -327,6 +345,11 @@ func deriveEdges(ev schemas.Event, memoryID string, st *schemas.State, art *sche
 			CreatedTS:     now,
 		})
 	}
+	access := schemas.CanonicalAccessFromEvent(ev)
+	for i := range edges {
+		edges[i].MutationLSN = ev.Time.WalLSN
+		edges[i].Access = access
+	}
 	return edges
 }
 
@@ -373,6 +396,12 @@ func buildAttributes(ev schemas.Event) map[string]string {
 	addAttributeList(attrs, "hook_evidence", ev.EvidenceHooks())
 	addAttributeList(attrs, "hook_chains", ev.ChainHooks())
 	addAttributeList(attrs, "hook_custom", ev.CustomHooks())
+	addAttributeList(attrs, "visible_to_agents", ev.Access.VisibleToAgents)
+	addAttributeList(attrs, "visible_to_roles", ev.Access.VisibleToRoles)
+	addAttributeList(attrs, "policy_tags", ev.Access.PolicyTags)
+	if ev.Access.ShareContractID != "" {
+		attrs["share_contract_id"] = ev.Access.ShareContractID
+	}
 	return attrs
 }
 
@@ -393,32 +422,52 @@ func parseEventUnixTS(ev schemas.Event) int64 {
 	return time.Now().Unix()
 }
 
-// deriveStateAndVersion builds a minimal session-scoped State so week-2
-// "event → memory/state/artifact" is satisfied: one checkpoint row per ingest.
+// deriveStateAndVersion creates one stable state key per canonical scope. State
+// updates use the key/value supplied by the Event; all other Events advance the
+// session's last_memory_id checkpoint. Runtime assigns the final monotonic
+// version after reading the current canonical State.
 func deriveStateAndVersion(ev schemas.Event, memoryID, nowRFC3339 string) (*schemas.State, *schemas.ObjectVersion) {
-	sid := ev.Actor.SessionID
-	if sid == "" {
-		sid = "default_session"
+	stateKey := strings.TrimSpace(ev.StateKey())
+	stateValue := ev.StateValueString()
+	stateType := ev.EventInfo.EventType
+	if stateKey == "" {
+		stateKey = "last_memory_id"
+		stateValue = memoryID
+		stateType = "ingest_checkpoint"
 	}
-	stateID := fmt.Sprintf("state_%s_%s", sid, ev.Identity.EventID)
+	stateID := schemas.CanonicalStateID(
+		ev.Identity.TenantID,
+		ev.Identity.WorkspaceID,
+		ev.Actor.AgentID,
+		ev.Actor.SessionID,
+		stateKey,
+	)
+	access := schemas.CanonicalAccessFromEvent(ev)
 	st := &schemas.State{
 		StateID:            stateID,
+		TenantID:           ev.Identity.TenantID,
+		WorkspaceID:        ev.Identity.WorkspaceID,
 		AgentID:            ev.Actor.AgentID,
 		SessionID:          ev.Actor.SessionID,
-		StateType:          "ingest_checkpoint",
-		StateKey:           "last_memory_id",
-		StateValue:         memoryID,
+		StateType:          stateType,
+		StateKey:           stateKey,
+		StateValue:         stateValue,
 		DerivedFromEventID: ev.Identity.EventID,
 		CheckpointTS:       nowRFC3339,
-		Version:            ev.Time.LogicalTS,
+		Version:            1,
+		MutationLSN:        ev.Time.WalLSN,
+		Access:             access,
 	}
 	ver := &schemas.ObjectVersion{
 		ObjectID:        stateID,
 		ObjectType:      string(schemas.ObjectTypeAgentState),
-		Version:         ev.Time.LogicalTS,
+		Version:         1,
 		MutationEventID: ev.Identity.EventID,
 		ValidFrom:       nowRFC3339,
 		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
+		MutationLSN:     ev.Time.WalLSN,
+		Snapshot:        snapshotMap(*st),
+		Access:          access,
 	}
 	return st, ver
 }
@@ -440,6 +489,8 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 	}
 	art := &schemas.Artifact{
 		ArtifactID:        artID,
+		TenantID:          ev.Identity.TenantID,
+		WorkspaceID:       ev.Identity.WorkspaceID,
 		SessionID:         ev.Actor.SessionID,
 		OwnerAgentID:      ev.Actor.AgentID,
 		ArtifactType:      firstNonEmpty(ev.Object.ObjectSubtype, ev.EventInfo.EventType, "artifact"),
@@ -447,6 +498,9 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		MimeType:          mime,
 		ProducedByEventID: ev.Identity.EventID,
 		Version:           ev.Time.LogicalTS,
+		MutationLSN:       ev.Time.WalLSN,
+		MaterializedAt:    nowRFC3339,
+		Access:            schemas.CanonicalAccessFromEvent(ev),
 	}
 	if name := ev.ArtifactName(); name != "" {
 		if art.Metadata == nil {
@@ -468,8 +522,23 @@ func deriveArtifactAndVersion(ev schemas.Event, nowRFC3339 string) (*schemas.Art
 		MutationEventID: ev.Identity.EventID,
 		ValidFrom:       nowRFC3339,
 		SnapshotTag:     fmt.Sprintf("ingest:%s", ev.EventInfo.EventType),
+		MutationLSN:     ev.Time.WalLSN,
+		Snapshot:        snapshotMap(*art),
+		Access:          schemas.CanonicalAccessFromEvent(ev),
 	}
 	return art, ver
+}
+
+func snapshotMap(value any) map[string]any {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
+		return nil
+	}
+	return snapshot
 }
 
 func firstNonEmpty(values ...string) string {

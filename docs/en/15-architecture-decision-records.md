@@ -139,7 +139,33 @@ This chapter records cross-module decisions that define Plasmod's current archit
 
 ---
 
-## 15.11. ADR Index
+## 15.11. ADR-0011: Canonical-first Projection with a Watermark Fence
+
+| Field | Decision record |
+|---|---|
+| Status | Accepted |
+| Context | Retrieval-first ordering can expose a candidate without a canonical object. Canonical-first ordering instead creates an internal window where authoritative state exists but indexing is incomplete. |
+| Decision | The main callback commits the canonical write set before retrieval ingest and advances the visible watermark only after both succeed. Canonical objects persist `MutationLSN`; query uses `ReadWatermarkLSN` as a visibility fence. |
+| Consequences | On retrieval failure, canonical snapshots remain available for same-LSN retry or reindex while normal queries hide the mutation. The two engines still do not form one ACID transaction. |
+| Rejected alternatives | Retrieval-first ordering, or making canonical commit immediately visible before retrieval completion. |
+| Invariant | An object whose `MutationLSN > ReadWatermarkLSN` must not be returned by the normal canonical query path. |
+
+---
+
+## 15.12. ADR-0012: Canonical Access and Evidence-safe Traversal
+
+| Field | Decision record |
+|---|---|
+| Status | Accepted, partial security boundary |
+| Context | One `scope` string cannot represent owner, hierarchical scope, agent/role grants, and share contracts. Filtering only seed candidates can leak private endpoints through graph expansion. |
+| Decision | Memory, State, Artifact, Edge, and ObjectVersion persist `CanonicalAccess`. `/v1/query` applies access before hydration and revalidates nodes, edge endpoints, proof steps, and provenance after evidence assembly. Allowed reasons are returned as `AccessDecision`. |
+| Consequences | Shared derivation binds typed ShareContract rules and enters through WAL. A trusted gateway must bind requester identity; raw CRUD and lifecycle routes still need a uniform write gate. |
+| Rejected alternative | Rely only on retrieval metadata filters or a post-hoc contamination counter. |
+| Invariant | Unauthorized objects and graph references must not appear in a normal QueryResponse; denied decisions must not disclose object existence. |
+
+---
+
+## 15.13. ADR Index
 
 | ADR | Decision | Primary code boundary |
 |---|---|---|
@@ -153,10 +179,12 @@ This chapter records cross-module decisions that define Plasmod's current archit
 | 0008 | Vector-only ingest is a projection API | Gateway vector and warm-segment routes |
 | 0009 | Consistency mode is explicit | `worker/consistency` |
 | 0010 | Canonical projection requires co-located stores | `storage/factory.go`, projection transaction |
+| 0011 | Canonical-first projection uses a watermark fence | Runtime projection and query access |
+| 0012 | Canonical access protects evidence traversal | schemas, semantic policy, Runtime access |
 
 ---
 
-## 15.12. Adding or Revising an ADR
+## 15.14. Adding or Revising an ADR
 
 Create or revise an ADR when a change affects more than one module and alters an API guarantee, persistence boundary, recovery rule, default behavior, or ownership split.
 

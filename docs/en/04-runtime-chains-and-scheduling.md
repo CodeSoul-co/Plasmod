@@ -245,14 +245,16 @@ Before the [Intelligent Scheduler](#049-intelligent-scheduler) can be considered
 | 1 | decode/normalize | Event JSON | normalized Event | sync |
 | 2 | admission/mode | Event + context | slot/shard/mode/deadline | sync |
 | 3 | WAL append | Event | WALEntry/LSN | sync all modes |
-| 4 | materialize in memory | WALEntry.Event | MaterializationResult containing Memory and derived records | projection worker |
-| 5 | retrieval ingest | IngestRecord | lexical/vector segment state | before canonical commit |
-| 6 | canonical commit | CanonicalProjection write set | store transaction/upserts | visibility gate |
+| 4 | materialize in memory | WALEntry.Event | IngestRecord, Memory, stable State, optional Artifact, Edge, and Version records | projection worker |
+| 5 | canonical commit | Event/Memory/State/optional Artifact/Edges/Versions | store transaction/upserts | authoritative write |
+| 6 | retrieval ingest | IngestRecord | lexical/vector segment state | after canonical commit |
 | 7 | hot/conflict/precompute | Memory/Event | cache, conflict edge, evidence fragment | same projection callback but not all are gate-critical |
 | 8 | tracker visible | LSN | checkpoint/watermark | strict waits |
 | 9 | subscriber maintenance | WAL scan | keyed State, tool trace, reflection, conflict, consolidation | async |
 
-Important boundary: `MaterializationResult.State` and `StateVersion` are produced, but `Runtime.projectWALEntry` does not include them in its `CanonicalProjection`. Queryable keyed State is materialized primarily by the asynchronous `StateMaterializationWorker`; its completion time must not be equated with strict Memory visibility.
+`Runtime.projectWALEntry` now includes `MaterializationResult.State` and State history in the same `CanonicalProjection`. Explicit `state_key/state_value` fields update a stable keyed State; other Events update the scope's `last_memory_id` State. Before commit, Runtime reads current State/version history, assigns the monotonic next version, and closes the previous interval. The asynchronous `StateMaterializationWorker` still serves specialized apply/checkpoint chains, but it is no longer the only source of primary-write State visibility.
+
+Canonical commit precedes retrieval ingest. If retrieval ingest fails, the controller does not advance the visible watermark and retries the same WAL LSN. Query also rejects canonical objects whose `MutationLSN` is beyond `ReadWatermarkLSN`, so canonical persistence alone does not make a failed projection visible.
 
 ### 04.3.4. MainChain abstraction
 
@@ -262,9 +264,9 @@ Important boundary: `MaterializationResult.State` and `StateVersion` are produce
 
 | Event signal | Output |
 |---|---|
-| every accepted Event | `mem_<event_id>`, Memory version, base/causal edges, retrieval record |
+| every accepted Event | default `mem_<event_id>` (or an explicit typed Memory object ID), Memory version, stable `last_memory_id` State, base/causal edges, retrieval record |
 | artifact/tool-like | Artifact + version + artifact edges; worker may also generate tool trace |
-| payload with state key | keyed `state_<agent_id>_<state_key>` via State worker |
+| payload with state key | `CanonicalStateID(tenant, workspace, agent, session, state_key)`, committed in the primary canonical write |
 | parent/causal/source/target refs | typed Edge according to builders |
 
 `materialization.enabled/targets` is currently normalized metadata and hook input. It does not universally disable or reroute the default Memory projection.
@@ -274,8 +276,8 @@ Important boundary: `MaterializationResult.State` and `StateVersion` are produce
 | Plane | Mutation |
 |---|---|
 | Event | WAL append, LSN/logical time |
-| Canonical | Memory, optional Artifact, Edge, Version; async State/tool artifacts |
-| Projection | DataPlane ingest, dirty flush flag |
+| Canonical | Event, Memory, State, optional Artifact, Edge, and complete ObjectVersion snapshots; tool traces may remain asynchronous |
+| Projection | DataPlane ingest after canonical commit, dirty flush flag |
 | Evidence | in-memory fragment cache, derivation log through workers |
 | Metrics | write latency/visible, counts, session step |
 
@@ -499,7 +501,7 @@ Do not claim that EvidenceAssembler enforces every policy, every object is fully
 | Entry | Concrete call |
 |---|---|
 | Chain | `CollaborationChain.Run(CollaborationChainInput)` |
-| Runtime | `DispatchShare`, `DispatchConflictResolve` |
+| Runtime | `DispatchShare`, `DispatchShareWithContract`, `DispatchConflictResolve` |
 | HTTP | memory share/conflict, agent handoff, MAS aggregate/consistency, agent list |
 | Workers | ConflictMergeWorker, CommunicationWorker, MicroBatchScheduler |
 | Stores | ObjectStore, EdgeStore, ShareContractStore, PolicyStore |
@@ -509,7 +511,7 @@ Do not claim that EvidenceAssembler enforces every policy, every object is fully
 | Operation | Input | Output | Mutation |
 |---|---|---|---|
 | conflict merge | left/right Memory IDs, object type | winner/loser | loser inactive + conflict edge |
-| share/broadcast | from/to agent + Memory ID | shared Memory ID | copied Memory with target agent/provenance |
+| share/broadcast | from/to agent + Memory ID + optional contract ID | shared Memory ID | derived Event creates Memory/Version/Edge/projection through WAL |
 | CollaborationChain | conflict input + agent IDs | winner/shared IDs | merge, microbatch enqueue, optional broadcast |
 | handoff | source/target/session/task context | handler response | Event/share path depending body |
 | aggregate/consistency | agent answers/results | score/aggregate | mainly response/metrics |
@@ -519,10 +521,10 @@ Do not claim that EvidenceAssembler enforces every policy, every object is fully
 | Concern | Current behavior |
 |---|---|
 | Agent/session resolution | request fields and Memory fields |
-| Share contract storage | canonical CRUD exists |
-| Read ACL | contamination detector checks matching contract; not universal pre-read deny |
-| Write/derive ACL | schema exists; no central enforcement on every collaboration mutation |
-| Shared object model | creates a copied Memory `shared_<source>_to_<target>` |
+| Share contract storage | canonical CRUD with typed agent/role grants and legacy ACL fields |
+| Read ACL | `/v1/query` enforces canonical access on candidates and revalidates evidence graph endpoints |
+| Write/derive ACL | contract-backed sharing enforces source `derive` and target `read`; other direct mutations are not yet uniform |
+| Shared object model | derives `shared_<source>_to_<target>`, preserves source ownership, and grants the target explicitly |
 | Handoff event | internal handler may submit Event; not a single canonical collaboration transaction |
 | Conflict detection | same agent+session active Memories; LWW by Version |
 | Conflict preservation | loser remains stored but inactive, edge points winner -> loser |
@@ -533,34 +535,34 @@ Do not claim that EvidenceAssembler enforces every policy, every object is fully
 
 ### 04.6.6. Data/state
 
-- Canonical: source/shared Memory, conflict Edge, ShareContract/Policy records.
-- Provenance: shared Memory uses `ProvenanceRef=shared_from:<agent>/<memory>`; conflict Edges do not always include a provenance reference.
-- Version: share/conflict workers do not create ObjectVersion uniformly.
-- Projection: shared or winning Memory is not reindexed uniformly.
-- WAL: direct share/conflict operations do not uniformly create an Event and WAL entry.
+- Canonical: the share path writes a derived Event, shared Memory, complete ObjectVersion snapshot, and `derived_from` Edge; ShareContract and Policy records remain independent.
+- Access: the shared object carries owner, scope, target-agent grant, policy tags, and contract ID.
+- Provenance: source/target causality on the share Event produces a traversable `derived_from` Edge.
+- Projection: share calls `SubmitIngest`, so it follows the ordinary retrieval-projection and watermark path.
+- Boundary: the legacy CommunicationWorker and conflict merge still contain direct store mutations without the same transaction/version/audit semantics.
 
 ### 04.6.7. Correctness and failure
 
-- A missing share source or same-agent share may be treated as a no-op rather than an error.
+- Missing source, owner mismatch, and contract scope/derive/read denial return errors; same-agent sharing remains a no-op.
 - Conflict precondition is no-op when not satisfied; LWW is the same version as left.
-- Memory copy, edge, version, projection, audit are not in the same transaction.
-- Cross-agent contamination is currently observed through metrics; detection does not replace prevention.
-- Scope, ACL, and contract policy are not enforced uniformly on direct canonical routes.
+- A WAL-derived share commits canonical Memory/Edge/Version together; retrieval follows, while Audit is not in that transaction.
+- Query candidates and evidence endpoints use prevention-based access filtering; contamination metrics are additional observation.
+- Raw canonical CRUD, legacy direct workers, and every lifecycle write do not yet share one write-policy gate.
 
 ### 04.6.8. Claim Boundaries
 
-Supported claim: Collaboration adapters support sharing, conflict recording, and selected merge behavior over canonical Memory and Edge records.
+Supported claim: explicit ShareContract storage, contract-backed WAL-derived sharing, canonical access filtering for query/evidence, same-session LWW conflict preservation, and handoff/MAS adapters.
 
-Do not claim complete multi-agent transactions, comprehensive ACL/derive enforcement, automatic semantic conflict detection, a unified merge-policy plugin, or a zero-leakage guarantee across agents.
+Do not claim complete multi-agent transactions, authenticated identity binding, comprehensive ACLs for every management/lifecycle write, automatic semantic conflict detection, a unified merge-policy plugin, or a security-audited zero-leakage guarantee.
 
 ### 04.6.9. Gaps
 
-1. Write a derived Event to WAL after the collaboration policy authorizes the command.
-2. Commit share/merge Memory, Version, Edge, Audit, and projection changes through one defined workflow.
-3. Enforce read, write, derive, and merge rules through one contract evaluator.
+1. Move conflict, merge, and handoff through policy-authorized derived Events and WAL.
+2. Add Audit and a retrieval-completion marker to the recoverable share/merge workflow.
+3. Apply one contract/policy write gate to raw CRUD, lifecycle, and all write operations.
 4. Semantic conflict detector and pluggable merge strategy;
 5. durable microbatch/job status;
-6. prevention-based contamination tests.
+6. authenticated principal binding and adversarial security tests.
 
 ---
 

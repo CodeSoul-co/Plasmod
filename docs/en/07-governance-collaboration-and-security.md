@@ -23,49 +23,49 @@ This chapter defines scope resolution, share contracts, policy enforcement, coll
 | Level | Fields/records |
 |---|---|
 | tenant/workspace | Event identity, Agent, QueryRequest |
-| team/agent/session | Event actor, Memory AgentID/SessionID/Scope |
-| visibility | Event access, policy tags, PolicyRecord |
-| sharing | ShareContract + shared Memory copy |
+| team/agent/session | Event actor plus canonical `CanonicalAccess` |
+| visibility | `CanonicalAccess.visibility/visible_to_*`, policy tags, PolicyRecord |
+| sharing | ShareContract plus WAL-derived shared Memory/Version/Edge |
 | lifecycle governance | TTL, quarantine, verified state, AuditRecord |
 
-The `MemoryScope` enum includes private user or agent scope, session-local scope, and workspace, team, global, or restricted shared scope. The materializer often resolves `Memory.Scope` to a workspace, retrieval, or session namespace string instead of copying the enum value directly.
+The `MemoryScope` enum includes private user or agent scope, session-local scope, and workspace, team, global, or restricted shared scope. `Memory.Scope` remains a compatibility field; `CanonicalAccess` on Memory, State, Artifact, Edge, and ObjectVersion is the structured representation used by Runtime authorization.
 
 ### 07.1.3. Engines and APIs
 
-PolicyEngine, ReflectionPolicyWorker, Policy/Contract stores, Runtime filters/contamination detector, Gateway visibility middleware; canonical policy/share routes and internal share/query APIs.
+PolicyEngine, ReflectionPolicyWorker, Policy/Contract stores, Runtime canonical access/evidence filters, Gateway visibility middleware, canonical policy/share routes, and internal share/query APIs.
 
 ### 07.1.4. Decisions
 
 | Decision | Current implementation |
 |---|---|
 | TTL/quarantine/confidence/salience | reflection and PolicyEngine helpers |
-| read ACL | `IsACLAllowed` helper and contamination contract check; not universal gate |
-| write/derive ACL | fields stored, no central mandatory evaluator |
+| read ACL | `EvaluateAccess` is mandatory for `/v1/query` candidates and evidence endpoints; `AccessDecision` explains allows |
+| write/derive ACL | `IsShareContractAllowed` enforces source derive and target read for contract-backed sharing; other writes remain partial |
 | allow/deny/mask/partial | Audit decision supports values; runtime composer not complete |
-| share copy | CommunicationWorker |
+| share derivation | `Runtime.DispatchShareWithContract` to derived Event/WAL/canonical projection |
 | conflict merge | LWW worker, not contract-selected strategy |
 
 ### 07.1.5. State and audit
 
-`PolicyRecord` and audit records are append-only; ShareContract supports put/list operations; `PolicyDecisionLog` is maintained separately. Memory stores its own scope, tags, TTL, and lifecycle state. Read responses do not carry a universal policy-snapshot ID.
+`PolicyRecord` and audit records are append-only; ShareContract supports put/get/by-scope/list operations; `PolicyDecisionLog` is maintained separately. Canonical objects persist `CanonicalAccess` and `MutationLSN`. QueryResponse returns `access_decisions` for allowed objects and `read_watermark_lsn`, but no policy-snapshot/version ID represents every composed rule.
 
 ### 07.1.6. Sync/async
 
-Query filtering and annotation are synchronous. Reflection runs asynchronously after ingest. Share and conflict operations are synchronous internal calls, while reflection may archive memories. Direct canonical routes may bypass policy evaluation.
+Query candidate and evidence filtering are synchronous. Reflection runs asynchronously after ingest. Share authorization and strict Event ingest are synchronous, while weaker consistency modes may project asynchronously. Reflection may archive memories. Direct canonical routes may bypass policy evaluation.
 
 ### 07.1.7. Correctness/security
 
-Contamination metric detects returned cross-agent Memory without contract but does not remove it.Internal routes lack admin auth by default.Production visibility strips debug fields but is not object ACL.
+Normal `/v1/query` removes unauthorized candidates before hydration and removes unauthorized nodes, edges, proof steps, and provenance after graph expansion. The contamination metric uses the same evaluator as an additional detector. An explicitly supplied tenant mismatch is denied first. A legacy request that omits tenant must still match owner, session, workspace, or an explicit grant; omission never makes the object public. Internal and raw canonical routes lack uniform authentication by default. Production response visibility strips debug fields but is not object authorization. `GovernanceDisabled` retains the WAL-watermark gate while bypassing object-scope policy.
 
 ### 07.1.8. Claim Boundaries
 
-Supported claim: Plasmod provides scoped schemas, policy/share/audit records, TTL and quarantine helpers, and contamination observation.
+Supported claim: structured canonical scope, prevention-based query/evidence reads, typed and legacy ShareContract read/derive evaluation, WAL-derived sharing, policy/share/audit records, TTL/quarantine helpers, and contamination observation.
 
-Do not claim complete hierarchical ACLs, deny-by-default enforcement, field masking, contract-enforced derive/write operations, or zero cross-agent leakage.
+Do not claim authenticated principal binding, uniform hierarchical ACLs for every raw/admin/lifecycle write, field masking, policy-composition snapshots, or a security-audited zero-leakage guarantee.
 
 ### 07.1.9. Gaps
 
-Need canonical ScopeResolver, PolicyDecision{allow/deny/partial/mask/quarantine}, mandatory Gateway/Runtime enforcement, policy composition/version snapshot, shared/derived command authorization, leakage prevention tests and decision logging on every access.
+Remaining work includes an authentication-bound principal resolver, mask/partial/quarantine decisions, raw CRUD/lifecycle write enforcement, policy-composition snapshots, durable access-decision logs, cross-process policy-cache invalidation, and exhaustive adversarial access tests.
 
 ---
 
@@ -107,41 +107,45 @@ Need canonical ScopeResolver, PolicyDecision{allow/deny/partial/mask/quarantine}
 | Method/component | Output |
 |---|---|
 | `ApplyQueryFilters` | descriptive filter list from QueryRequest |
+| `EvaluateAccess` | `(AccessDecision, allowed)` from canonical scope, principal, contracts, and watermark |
+| `IsShareContractAllowed` | typed read/write/derive decision for agent/roles plus legacy ACL tokens |
 | `IsTTLExpired` | bool |
 | `IsQuarantined` | bool |
 | `EffectiveSalience/Confidence` | effective score/value |
 | `IsACLAllowed` | simple ReadACL equality/wildcard result |
 | `IsVerified` | verification state |
 | Reflection `Reflect` | Memory mutation, policy/audit log, optional archive |
-| contamination detector | metrics increment, not deny |
+| Runtime access filter | removes denied candidate IDs and graph references; emits allow decisions |
+| contamination detector | uses the same evaluator and increments metrics for residual violations |
 
 ### 07.2.5. Input/output and state mutations
 
-Inputs include requester, scope, Memory, PolicyRecord, ShareContract, and time. Outputs are booleans, effective values, filter descriptions, annotations, or Memory mutations. No unified `PolicyDecision` struct is used on every path.
+Inputs include requester agent/roles, tenant/workspace/team/session, canonical access, mutation/read watermark, PolicyRecord, ShareContract, and time. The read path returns `AccessDecision{object_id, principal_id, visibility, reason, share_contract_id, mutation_lsn}`. Lifecycle helpers still return booleans, values, or mutations, so no global decision union covers allow/deny/partial/mask/quarantine.
 
 Reflection can mark Memory inactive and quarantined or decayed, override confidence, reduce salience, and archive to Cold. Query Assembler annotates quarantine and retraction; direct share and canonical writes are not all centrally authorized.
 
 ### 07.2.6. Call relationships
 
-Policy coordinator wraps the engine and store; Runtime invokes planning, filtering, and detection; subscribers invoke reflection; Evidence Assembler reads PolicyStore; Gateway handles canonical and admin controls. These are parallel governance hooks, not one mandatory policy middleware.
+Policy coordinator wraps the engine and store. Runtime calls `EvaluateAccess` before query hydration, rechecks graph endpoints after Evidence assembly, and calls `IsShareContractAllowed` for shared derivation. Subscribers invoke reflection; Evidence Assembler reads PolicyStore; Gateway handles canonical/admin controls. Query reads and sharing have explicit gates, while direct CRUD/lifecycle paths still use parallel hooks.
 
 ### 07.2.7. Correctness/security
 
 - PolicyRecord append-only but "latest" selection sometimes uses PolicyEventID lexical comparison.
-- `ReadACL` is one string, not general principal list/expression.
-- WriteACL/DeriveACL/merge/quarantine contract fields lack universal evaluator.
+- ShareContract accepts typed agent/role lists plus legacy ACL tokens; it is not a general condition-expression language.
+- Read/write/derive share one evaluator, while merge/quarantine and every direct mutation are not yet uniform.
+- Evidence filtering validates an Edge and both endpoints. Denied decisions are omitted from the response to avoid existence disclosure.
 - Internal routes are not covered by admin key automatically.
 - response visibility and object authorization are different mechanisms.
 
 ### 07.2.8. Claim Boundaries
 
-Supported claim: Plasmod provides policy/share/audit schemas, TTL/quarantine/score helpers, reflection enforcement, and contamination observation.
+Supported claim: canonical read decisions, watermark fencing, policy-safe evidence traversal, contract-backed share authorization, policy/share/audit schemas, and reflection helpers.
 
-Do not claim complete hierarchical ACLs, policy composition and version snapshots, deny-by-default enforcement, a partial/mask response engine, or a zero-leakage guarantee.
+Do not claim authenticated IAM, deny-by-default behavior on every entry point, policy-composition/version snapshots, a partial/mask response engine, or a security-certified zero-leakage guarantee.
 
 ### 07.2.9. Gaps
 
-Remaining work includes defining `GovernanceRequest` and `PolicyDecision`, a principal/scope resolver, policy precedence and versioning, mandatory authorization middleware, read/write/derive/share evaluators, a mask/partial transformer, policy-safe graph traversal, decision logging, and exhaustive access-matrix tests.
+Bind principals to verified transport identities; extend `AccessDecision` with deny/mask/partial/quarantine semantics without existence disclosure; apply mandatory write authorization to raw CRUD, lifecycle, and conflict operations; add policy precedence/versioning, durable decision logging, cache invalidation, and exhaustive access-matrix/security tests.
 
 ---
 

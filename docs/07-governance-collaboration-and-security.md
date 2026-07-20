@@ -23,49 +23,49 @@
 | Level | Fields/records |
 |---|---|
 | tenant/workspace | Event identity, Agent, QueryRequest |
-| team/agent/session | Event actor, Memory AgentID/SessionID/Scope |
-| visibility | Event access, policy tags, PolicyRecord |
-| sharing | ShareContract + shared Memory copy |
+| team/agent/session | Event actor + canonical `CanonicalAccess` |
+| visibility | `CanonicalAccess.visibility/visible_to_*`, policy tags, PolicyRecord |
+| sharing | ShareContract + WAL-derived shared Memory/Version/Edge |
 | lifecycle governance | TTL, quarantine, verified state, AuditRecord |
 
-MemoryScope enum includes private user/agent, session local, workspace/team/global/restricted shared；actual materializer often resolves `Memory.Scope` to workspace/retrieval/session namespace string rather than always using enum value。
+MemoryScope enum includes private user/agent, session local, workspace/team/global/restricted shared。`Memory.Scope` 保留兼容值；Memory、State、Artifact、Edge、ObjectVersion 上的 `CanonicalAccess` 是 Runtime access evaluator 使用的结构化表示。
 
 ### 07.1.3. Engines and APIs
 
-PolicyEngine, ReflectionPolicyWorker, Policy/Contract stores, Runtime filters/contamination detector, Gateway visibility middleware；canonical policy/share routes and internal share/query APIs。
+PolicyEngine、ReflectionPolicyWorker、Policy/Contract stores、Runtime canonical access/evidence filters、Gateway visibility middleware；canonical policy/share routes and internal share/query APIs。
 
 ### 07.1.4. Decisions
 
 | Decision | Current implementation |
 |---|---|
 | TTL/quarantine/confidence/salience | reflection and PolicyEngine helpers |
-| read ACL | `IsACLAllowed` helper and contamination contract check；not universal gate |
-| write/derive ACL | fields stored, no central mandatory evaluator |
+| read ACL | `EvaluateAccess` 在 `/v1/query` candidate 与 evidence endpoint 上强制执行；`AccessDecision` 解释 allow |
+| write/derive ACL | `IsShareContractAllowed` 对 contract-backed share 强制 source derive + target read；其他 write path 部分 |
 | allow/deny/mask/partial | Audit decision supports values; runtime composer not complete |
-| share copy | CommunicationWorker |
+| share derivation | `Runtime.DispatchShareWithContract` -> derived Event/WAL/canonical projection |
 | conflict merge | LWW worker, not contract-selected strategy |
 
 ### 07.1.5. State and audit
 
-PolicyRecord append-only；ShareContract put/list；Audit append-only；PolicyDecisionLog separate。Memory itself stores scope/tags/TTL/lifecycle。No single policy snapshot ID is attached to every read response。
+PolicyRecord append-only；ShareContract put/get/by-scope/list；Audit append-only；PolicyDecisionLog separate。Canonical objects persist `CanonicalAccess` 和 `MutationLSN`。QueryResponse 返回允许对象的 `access_decisions` 与 `read_watermark_lsn`，但仍没有覆盖每条规则组合的 policy snapshot/version ID。
 
 ### 07.1.6. Sync/async
 
-Query filtering/annotation synchronous；reflection asynchronous after ingest；share/conflict synchronous internal call；archive can occur in reflection。Direct canonical routes may bypass policy evaluation。
+Query candidate/evidence filtering synchronous；reflection asynchronous after ingest；share authorization 与 strict Event ingest 同步，其他 consistency mode 可按 controller 异步投影；archive can occur in reflection。Direct canonical routes may bypass policy evaluation。
 
 ### 07.1.7. Correctness/security
 
-Contamination metric detects returned cross-agent Memory without contract but does not remove it。Internal routes lack admin auth by default。Production visibility strips debug fields but is not object ACL。
+普通 `/v1/query` 在 hydration 前移除未授权 candidate，并在 graph expansion 后移除未授权 node/edge/proof/provenance；contamination metric 使用相同 evaluator 作为附加检测。请求显式提供 tenant 时，tenant mismatch 优先拒绝；旧客户端省略 tenant 时仍必须命中 owner、session、workspace 或显式 grant，不能把缺失 tenant 解释为 public。Internal/raw canonical routes lack uniform auth by default。Production visibility strips debug fields but is not object ACL。`GovernanceDisabled` 仍保留 WAL watermark gate，但绕过对象 scope policy。
 
 ### 07.1.8. 声明边界
 
-可声明 scoped schema, policy/share/audit records, TTL/quarantine helpers and contamination observation。
+可声明 structured canonical scope、query/evidence read prevention、typed/legacy ShareContract read/derive evaluation、WAL-derived sharing、policy/share/audit records、TTL/quarantine helpers and contamination observation。
 
-不可声明 complete hierarchical ACL, deny-by-default, field masking, contract-enforced derive/write or zero cross-agent leakage。
+不可声明 authenticated principal binding、所有 raw/admin/lifecycle write 的统一 hierarchical ACL、field masking、policy composition snapshot 或经安全审计的 zero cross-agent leakage。
 
 ### 07.1.9. 缺口
 
-Need canonical ScopeResolver, PolicyDecision{allow/deny/partial/mask/quarantine}, mandatory Gateway/Runtime enforcement, policy composition/version snapshot, shared/derived command authorization, leakage prevention tests and decision logging on every access。
+Need authentication-bound principal resolver、mask/partial/quarantine response decision、raw CRUD/lifecycle write enforcement、policy composition/version snapshot、durable access decision log、cross-process policy cache invalidation and exhaustive adversarial access tests。
 
 ---
 
@@ -107,41 +107,45 @@ Need canonical ScopeResolver, PolicyDecision{allow/deny/partial/mask/quarantine}
 | Method/component | Output |
 |---|---|
 | `ApplyQueryFilters` | descriptive filter list from QueryRequest |
+| `EvaluateAccess` | `(AccessDecision, allowed)` from canonical scope, principal, contracts and watermark |
+| `IsShareContractAllowed` | typed read/write/derive decision for agent/roles plus legacy ACL tokens |
 | `IsTTLExpired` | bool |
 | `IsQuarantined` | bool |
 | `EffectiveSalience/Confidence` | effective score/value |
 | `IsACLAllowed` | simple ReadACL equality/wildcard result |
 | `IsVerified` | verification state |
 | Reflection `Reflect` | Memory mutation, policy/audit log, optional archive |
-| contamination detector | metrics increment, not deny |
+| Runtime access filter | removes denied candidate IDs and graph references; emits allow decisions |
+| contamination detector | uses the same evaluator and increments metrics for residual violations |
 
 ### 07.2.5. Input/output and state mutations
 
-Input：requester/scope/Memory/PolicyRecord/ShareContract/time。Current outputs are booleans, effective values, filter descriptions, annotations or Memory mutation。There is no unified `PolicyDecision` struct used on every path。
+Input：requester agent/roles、tenant/workspace/team/session、canonical access、mutation/read watermark、PolicyRecord、ShareContract、time。Read-path output uses `AccessDecision{object_id, principal_id, visibility, reason, share_contract_id, mutation_lsn}`；其他 lifecycle helper 仍返回 bool/value/mutation，因此尚无覆盖 allow/deny/partial/mask/quarantine 的全局 decision union。
 
 Reflection can set inactive + quarantined/decayed, override confidence, decay salience and archive to cold。Query Assembler annotates quarantine/retracted；direct share/canonical writes are not all centrally authorized。
 
 ### 07.2.6. Call relationships
 
-Policy coordinator wraps engine/store；Runtime calls planner/filter/detection；subscriber calls reflection；Evidence Assembler reads PolicyStore；Gateway handles canonical/admin controls。These are parallel governance hooks, not one mandatory policy middleware。
+Policy coordinator wraps engine/store；Runtime 在 query hydration 前调用 `EvaluateAccess`，Evidence 组装后再次调用 endpoint filter，share mutation 调用 `IsShareContractAllowed`；subscriber calls reflection；Evidence Assembler reads PolicyStore；Gateway handles canonical/admin controls。Read/query 与 share 已有明确 gate，但 direct CRUD/lifecycle 仍是并行 hooks。
 
 ### 07.2.7. Correctness/security
 
 - PolicyRecord append-only but “latest” selection sometimes uses PolicyEventID lexical comparison。
-- `ReadACL` is one string, not general principal list/expression。
-- WriteACL/DeriveACL/merge/quarantine contract fields lack universal evaluator。
+- ShareContract 同时支持 typed agent/role lists 与 legacy ACL token；不支持通用条件表达式。
+- Read/write/derive 使用统一 helper，但 merge/quarantine 与所有 direct mutation 尚未统一。
+- Evidence filter 同时验证 Edge 本身及两个 endpoint；拒绝 decision 不返回客户端，避免对象存在性泄漏。
 - Internal routes are not covered by admin key automatically。
 - response visibility and object authorization are different mechanisms。
 
 ### 07.2.8. 声明边界
 
-可声明 policy/share/audit schema, TTL/quarantine/score helpers, reflection enforcement and contamination observation。
+可声明 canonical read access decision、watermark gate、policy-safe evidence traversal、contract-backed share authorization、policy/share/audit schema 和 reflection helpers。
 
-不可声明 full hierarchical ACL, policy composition/version snapshots, deny-by-default, partial/mask response engine or zero-leak guarantee。
+不可声明 authenticated IAM、所有入口 deny-by-default、policy composition/version snapshots、partial/mask response engine 或 security-certified zero-leak guarantee。
 
 ### 07.2.9. 缺口
 
-Define `GovernanceRequest/PolicyDecision`, principal/scope resolver, policy precedence/versioning, mandatory authorization middleware, read/write/derive/share evaluators, mask/partial transformer, policy-safe graph traversal, decision logging and exhaustive access matrix tests。
+Bind principal to verified transport identity；extend `AccessDecision` to deny/mask/partial/quarantine without existence disclosure；apply mandatory write authorization to raw CRUD/lifecycle/conflict；add policy precedence/versioning, durable decision logging, cache invalidation and exhaustive access-matrix/security tests。
 
 ---
 

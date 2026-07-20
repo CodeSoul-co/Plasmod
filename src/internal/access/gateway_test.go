@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -210,6 +211,23 @@ func TestServiceHTTPStatusMapsConsistencyFailures(t *testing.T) {
 				t.Fatalf("status=%d want=%d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestShareHTTPStatusMapsGovernanceFailures(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{err: fmt.Errorf("%w: missing fields", worker.ErrShareInvalid), want: http.StatusBadRequest},
+		{err: fmt.Errorf("%w: denied", worker.ErrShareForbidden), want: http.StatusForbidden},
+		{err: fmt.Errorf("%w: memory", worker.ErrShareNotFound), want: http.StatusNotFound},
+		{err: errors.New("storage failure"), want: http.StatusInternalServerError},
+	}
+	for _, test := range tests {
+		if got := shareHTTPStatus(test.err); got != test.want {
+			t.Fatalf("shareHTTPStatus(%v)=%d, want %d", test.err, got, test.want)
+		}
 	}
 }
 

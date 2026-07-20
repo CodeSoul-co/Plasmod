@@ -211,7 +211,7 @@ func TestRuntime_ExecuteQuery_MultilingualRetrievalConsistency(t *testing.T) {
 	}
 }
 
-func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
+func TestRuntime_SubmitIngest_ProjectionFailureKeepsCanonicalBelowVisibilityWatermark(t *testing.T) {
 	clock := eventbackbone.NewHybridClock()
 	bus := eventbackbone.NewInMemoryBus()
 	wal := eventbackbone.NewInMemoryWAL(bus, clock)
@@ -249,8 +249,23 @@ func TestRuntime_SubmitIngest_FailFast_NoCanonicalWrites(t *testing.T) {
 		t.Fatal("expected ingest error from failing plane")
 	}
 
-	if _, ok := store.Objects().GetMemory("mem_evt_failfast_1"); ok {
-		t.Fatal("memory should not be persisted when plane ingest fails")
+	memory, ok := store.Objects().GetMemory("mem_evt_failfast_1")
+	if !ok {
+		t.Fatal("canonical memory must survive retrieval projection failure for WAL recovery")
+	}
+	status := r.ConsistencyStatus()
+	if memory.MutationLSN <= status.VisibleWatermark {
+		t.Fatalf("failed projection crossed visibility boundary: mutation_lsn=%d visible=%d", memory.MutationLSN, status.VisibleWatermark)
+	}
+	resp := r.ExecuteQuery(schemas.QueryRequest{
+		TargetObjectIDs:   []string{memory.MemoryID},
+		ResponseMode:      schemas.ResponseModeObjectsOnly,
+		AccessConsistency: "eventual",
+		WorkspaceID:       "w1",
+		RequesterAgentID:  "agent_1",
+	})
+	if len(resp.Objects) != 0 {
+		t.Fatalf("query exposed canonical object before projection visibility: %v", resp.Objects)
 	}
 }
 

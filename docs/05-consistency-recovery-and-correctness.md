@@ -60,13 +60,13 @@
 
 - FileWAL append 是 durability boundary。
 - 同 backend canonical projection 可以 transactionally apply Event/Memory/checkpoint State/可选 Artifact/Edges/Versions。
-- DataPlane ingest、canonical transaction、cache、S3、subscriber workers 是多个 failure domains。
+- Canonical transaction、DataPlane ingest、cache、S3、subscriber workers 是多个 failure domains；主回调顺序为 canonical commit 后 retrieval ingest。
 - strict mode visibility failure不会删除已提交 WAL，而是返回 accepted-not-visible。
 - bounded/eventual ACK 表示 pending，不是全部可查询对象完成。
 
 ### 05.1.5. 调用关系
 
-Gateway 将 Event 交给 Runtime/consistency Controller；Controller 先 append WAL，再按 mode 同步或排队调用 Runtime projection callback。Projection 写 DataPlane 和 canonical bundle，随后 watermark/checkpoint 前进；Event bus subscriber 独立执行 state/tool/index/lifecycle 等维护。
+Gateway 将 Event 交给 Runtime/consistency Controller；Controller 先 append WAL，再按 mode 同步或排队调用 Runtime projection callback。Projection 先提交 canonical bundle，再写 DataPlane，二者均成功后 watermark/checkpoint 前进；Event bus subscriber 独立执行 tool/index/lifecycle 等补充维护。主 canonical bundle 已包含 stable State，subscriber State worker 主要承担专用 apply/checkpoint 调用。
 
 Strict 只等待主 projection 的 visible 条件，不等待所有 subscriber worker。Bounded/eventual 可以在 projection 完成前返回；read gate 使用 observed/required LSN 和 watermark 控制读取。
 
@@ -97,7 +97,7 @@ Recovery APIs：
 
 #### 05.1.7.1. Idempotency, retry and audit
 
-Deterministic IDs 和 upsert 支持 replay；Controller 重试 projection/checkpoint；subscriber 有进程内 DLQ/overflow/error channel。没有持久全局 dead-letter、divergence scanner、repair planner 或 post-repair verifier。
+Deterministic IDs 和 upsert 支持 replay；State 还以 mutation event 去重并拒绝旧历史回滚。若 canonical commit 成功而 retrieval ingest 失败，同一 LSN 重试会复用 canonical identity 并补全 projection；watermark 前的 `MutationLSN` 由 query gate 隐藏。相同 event ID 以新 LSN 再次提交返回 duplicate，不增加版本。Controller 重试 projection/checkpoint；subscriber 有进程内 DLQ/overflow/error channel。没有持久全局 dead-letter、divergence scanner、repair planner 或 post-repair verifier。
 
 ### 05.1.8. 声明边界
 

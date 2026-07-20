@@ -554,7 +554,7 @@ func BuildServer() (*ServerBundle, error) {
 		store.Versions(),
 		derivLog,
 	))
-	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog))
+	nodeManager.RegisterToolTrace(matworker.CreateInMemoryToolTraceWorker("tool-trace-1", store.Objects(), derivLog, store.Versions()))
 
 	// ── Index & Retrieval workers ─────────────────────────────────────────────
 	nodeManager.RegisterIndexBuild(indexing.CreateInMemoryIndexBuildWorker(

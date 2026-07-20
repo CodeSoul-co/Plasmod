@@ -1,6 +1,7 @@
 package materialization
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -19,8 +20,7 @@ type InMemoryStateMaterializationWorker struct {
 	verStore storage.SnapshotVersionStore
 	derivLog eventbackbone.DerivationLogger
 
-	mu        sync.Mutex
-	stateKeys map[string]string // "agentID:sessionID:stateKey" → stateID
+	mu sync.Mutex
 }
 
 func CreateInMemoryStateMaterializationWorker(
@@ -30,11 +30,10 @@ func CreateInMemoryStateMaterializationWorker(
 	derivLog eventbackbone.DerivationLogger,
 ) *InMemoryStateMaterializationWorker {
 	return &InMemoryStateMaterializationWorker{
-		id:        id,
-		objStore:  objStore,
-		verStore:  verStore,
-		derivLog:  derivLog,
-		stateKeys: make(map[string]string),
+		id:       id,
+		objStore: objStore,
+		verStore: verStore,
+		derivLog: derivLog,
 	}
 }
 
@@ -47,7 +46,13 @@ func (w *InMemoryStateMaterializationWorker) Run(input schemas.WorkerInput) (sch
 			return schemas.StateApplyOutput{}, err
 		}
 		stateKey := in.Event.StateKey()
-		stateID := schemas.IDPrefixState + in.Event.Actor.AgentID + "_" + stateKey
+		stateID := schemas.CanonicalStateID(
+			in.Event.Identity.TenantID,
+			in.Event.Identity.WorkspaceID,
+			in.Event.Actor.AgentID,
+			in.Event.Actor.SessionID,
+			stateKey,
+		)
 		var ver int64
 		if s, ok := w.objStore.GetState(stateID); ok {
 			ver = s.Version
@@ -87,22 +92,33 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 		return nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	lookupKey := ev.Actor.AgentID + ":" + ev.Actor.SessionID + ":" + stateKey
-
+	stateID := schemas.CanonicalStateID(
+		ev.Identity.TenantID,
+		ev.Identity.WorkspaceID,
+		ev.Actor.AgentID,
+		ev.Actor.SessionID,
+		stateKey,
+	)
 	w.mu.Lock()
-	existingID, exists := w.stateKeys[lookupKey]
-	stateID := schemas.IDPrefixState + ev.Actor.AgentID + "_" + stateKey
-	w.stateKeys[lookupKey] = stateID
-	w.mu.Unlock()
-
-	var version int64 = 1
-	if exists {
-		if prev, ok := w.objStore.GetState(existingID); ok {
-			version = prev.Version + 1
+	defer w.mu.Unlock()
+	version := int64(1)
+	if prev, ok := w.objStore.GetState(stateID); ok {
+		if prev.DerivedFromEventID == ev.Identity.EventID {
+			return nil
+		}
+		version = prev.Version + 1
+		if latest, found := w.verStore.LatestVersion(stateID); found {
+			latest.ValidTo = now
+			if len(latest.Snapshot) == 0 {
+				latest.Snapshot = canonicalWorkerSnapshot(prev)
+			}
+			w.verStore.PutVersion(latest)
 		}
 	}
-	w.objStore.PutState(schemas.State{
+	state := schemas.State{
 		StateID:            stateID,
+		TenantID:           ev.Identity.TenantID,
+		WorkspaceID:        ev.Identity.WorkspaceID,
 		AgentID:            ev.Actor.AgentID,
 		SessionID:          ev.Actor.SessionID,
 		StateType:          ev.EventInfo.EventType,
@@ -111,6 +127,20 @@ func (w *InMemoryStateMaterializationWorker) Apply(ev schemas.Event) error {
 		DerivedFromEventID: ev.Identity.EventID,
 		CheckpointTS:       now,
 		Version:            version,
+		MutationLSN:        ev.Time.WalLSN,
+		Access:             schemas.CanonicalAccessFromEvent(ev),
+	}
+	w.objStore.PutState(state)
+	w.verStore.PutVersion(schemas.ObjectVersion{
+		ObjectID:        stateID,
+		ObjectType:      string(schemas.ObjectTypeAgentState),
+		Version:         version,
+		MutationEventID: ev.Identity.EventID,
+		ValidFrom:       now,
+		SnapshotTag:     "state_apply",
+		MutationLSN:     ev.Time.WalLSN,
+		Snapshot:        canonicalWorkerSnapshot(state),
+		Access:          state.Access,
 	})
 	if w.derivLog != nil {
 		w.derivLog.Append(ev.Identity.EventID, "event", stateID, string(schemas.ObjectTypeAgentState), "state_apply")
@@ -128,7 +158,22 @@ func (w *InMemoryStateMaterializationWorker) Checkpoint(agentID, sessionID strin
 			Version:     s.Version,
 			ValidFrom:   now,
 			SnapshotTag: fmt.Sprintf("checkpoint_%s", now),
+			MutationLSN: s.MutationLSN,
+			Snapshot:    canonicalWorkerSnapshot(s),
+			Access:      s.Access,
 		})
 	}
 	return nil
+}
+
+func canonicalWorkerSnapshot(value any) map[string]any {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
+		return nil
+	}
+	return snapshot
 }

@@ -376,6 +376,26 @@ func (t *TieredObjectStore) ListColdMemories() []schemas.Memory {
 	return t.cold.ListMemories()
 }
 
+// PeekMemory returns the canonical memory without changing its storage tier.
+// Authorization, evidence filtering, and recovery checks use this path so a
+// read-only decision cannot reactivate an archived object or mutate its index.
+func (t *TieredObjectStore) PeekMemory(memoryID string) (schemas.Memory, bool) {
+	if t == nil {
+		return schemas.Memory{}, false
+	}
+	// Hot entries are acceleration copies and may lag lifecycle or policy
+	// changes. Authorization always reads authoritative warm/cold state.
+	if t.warm != nil {
+		if memory, ok := t.warm.GetMemory(memoryID); ok {
+			return memory, true
+		}
+	}
+	if t.cold != nil {
+		return t.cold.GetMemory(memoryID)
+	}
+	return schemas.Memory{}, false
+}
+
 // GetMemoryActivated returns a Memory with tier-aware activation.
 // Hot cache hit → immediate return.
 // Warm miss → warm store → promote to hot.

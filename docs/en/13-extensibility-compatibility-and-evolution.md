@@ -83,7 +83,7 @@ State types share the canonical AgentState model unless they require fundamental
 1. Define the meaning of `state_type` and stable `state_key`.
 2. Define the value codec and schema version.
 3. Extend Event validation and State materialization.
-4. Preserve deterministic State identity, normally derived from agent and key.
+4. Preserve `CanonicalStateID(tenant, workspace, agent, session, key)` or provide a storage-key migration.
 5. Define replace, merge, increment, and conflict semantics.
 6. Define latest-version ordering independently of vector similarity.
 7. Add replay, restart, and out-of-order update tests.

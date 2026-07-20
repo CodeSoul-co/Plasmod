@@ -330,4 +330,4 @@ EventSubscriber scans WAL entries up to the visible watermark and triggers worke
 
 ### 02.7.7. ACK Semantics
 
-Clients must distinguish four states: request not accepted, WAL accepted but not yet visible, canonical projection visible, and retrieval projection pending. `AcceptedNotVisibleError` means the Event already has an LSN; a retry must not blindly create a new event ID.
+Clients must distinguish request-not-accepted, WAL-accepted-but-not-visible, main-projection-complete/LSN-visible, and secondary subscriber/flush work still pending. The current main visibility callback requires both canonical commit and retrieval ingest; it does not expose a successful "canonical visible but retrieval pending" contract. `AcceptedNotVisibleError` means the Event already has an LSN, so recovery should preserve event identity rather than blindly create a new event ID.

@@ -28,6 +28,9 @@ type QueryRequest struct {
 	AgentID             string     `json:"agent_id"`
 	TenantID            string     `json:"tenant_id,omitempty"`
 	WorkspaceID         string     `json:"workspace_id,omitempty"`
+	TeamID              string     `json:"team_id,omitempty"`
+	RequesterAgentID    string     `json:"requester_agent_id,omitempty"`
+	RequesterRoles      []string   `json:"requester_roles,omitempty"`
 	TopK                int        `json:"top_k"`
 	TimeWindow          TimeWindow `json:"time_window"`
 	ObjectTypes         []string   `json:"object_types,omitempty"`
@@ -88,16 +91,18 @@ type RetrievalSummary struct {
 }
 
 type QueryResponse struct {
-	Objects        []string            `json:"objects"`
-	Nodes          []GraphNode         `json:"nodes,omitempty"`
-	Edges          []Edge              `json:"edges"`
-	Provenance     []string            `json:"provenance"`
-	Versions       []ObjectVersion     `json:"versions"`
-	AppliedFilters []string            `json:"applied_filters"`
-	ProofTrace     []ProofStep         `json:"proof_trace"`
-	ChainTraces    ChainTraceSlots     `json:"chain_traces"`
-	EvidenceCache  *EvidenceCacheStats `json:"evidence_cache,omitempty"`
-	Retrieval      *RetrievalSummary   `json:"retrieval,omitempty"`
+	Objects          []string            `json:"objects"`
+	Nodes            []GraphNode         `json:"nodes,omitempty"`
+	Edges            []Edge              `json:"edges"`
+	Provenance       []string            `json:"provenance"`
+	Versions         []ObjectVersion     `json:"versions"`
+	AppliedFilters   []string            `json:"applied_filters"`
+	ProofTrace       []ProofStep         `json:"proof_trace"`
+	ChainTraces      ChainTraceSlots     `json:"chain_traces"`
+	EvidenceCache    *EvidenceCacheStats `json:"evidence_cache,omitempty"`
+	Retrieval        *RetrievalSummary   `json:"retrieval,omitempty"`
+	AccessDecisions  []AccessDecision    `json:"access_decisions,omitempty"`
+	ReadWatermarkLSN int64               `json:"read_watermark_lsn,omitempty"`
 	// QueryStatus classifies retrieval-plane seed hits (distinct from supplemental canonical IDs).
 	//   ok — retrieval returned at least one candidate before canonical supplement.
 	//   no_retrieval_hits — zero retrieval seeds and empty objects list.
