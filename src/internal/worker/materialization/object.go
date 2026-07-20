@@ -67,7 +67,13 @@ func objectTypeFromEvent(ev schemas.Event) (objectType, objectID string) {
 	}
 	switch ev.EventInfo.EventType {
 	case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
-		return string(schemas.ObjectTypeAgentState), schemas.IDPrefixState + ev.Identity.EventID
+		return string(schemas.ObjectTypeAgentState), schemas.CanonicalStateID(
+			ev.Identity.TenantID,
+			ev.Identity.WorkspaceID,
+			ev.Actor.AgentID,
+			ev.Actor.SessionID,
+			ev.StateKey(),
+		)
 	default:
 		return string(schemas.ObjectTypeMemory), schemas.IDPrefixMemory + ev.Identity.EventID
 	}
@@ -100,13 +106,22 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 	if ev.IsArtifactLike() ||
 		ev.EventInfo.EventType == string(schemas.EventTypeToolCall) ||
 		ev.EventInfo.EventType == string(schemas.EventTypeToolResult) {
+		access := schemas.CanonicalAccessFromEvent(ev)
 		artifact := schemas.Artifact{
 			ArtifactID:        ev.ArtifactIDOrDefault(),
+			TenantID:          ev.Identity.TenantID,
+			WorkspaceID:       ev.Identity.WorkspaceID,
 			SessionID:         ev.Actor.SessionID,
 			OwnerAgentID:      ev.Actor.AgentID,
 			ArtifactType:      firstNonEmpty(ev.Object.ObjectSubtype, ev.EventInfo.EventType, string(schemas.ObjectTypeArtifact)),
 			ProducedByEventID: ev.Identity.EventID,
 			Version:           ev.Time.LogicalTS,
+			MutationLSN:       ev.Time.WalLSN,
+			MaterializedAt:    now,
+			Access:            access,
+		}
+		if artifact.Version <= 0 {
+			artifact.Version = 1
 		}
 		if ev.Payload != nil {
 			if uri := ev.ArtifactURI(); uri != "" {
@@ -139,9 +154,13 @@ func (w *InMemoryObjectMaterializationWorker) Materialize(ev schemas.Event) erro
 		w.verStore.PutVersion(schemas.ObjectVersion{
 			ObjectID:        artifact.ArtifactID,
 			ObjectType:      string(schemas.ObjectTypeArtifact),
-			Version:         ev.Time.LogicalTS + 1,
+			Version:         artifact.Version,
 			MutationEventID: ev.Identity.EventID,
 			ValidFrom:       now,
+			SnapshotTag:     "object_materialization",
+			MutationLSN:     ev.Time.WalLSN,
+			Snapshot:        canonicalWorkerSnapshot(artifact),
+			Access:          access,
 		})
 		if w.derivLog != nil {
 			w.derivLog.Append(ev.Identity.EventID, "event", artifact.ArtifactID, "artifact", "object_materialization")

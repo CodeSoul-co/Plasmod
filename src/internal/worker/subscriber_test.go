@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,8 +97,25 @@ func TestEventSubscriber_CheckpointCreatesStateSnapshots(t *testing.T) {
 	if len(states) != 1 {
 		t.Fatalf("states = %d, want 1", len(states))
 	}
-	if versions := store.Versions().GetVersions(states[0].StateID); len(versions) != 1 || versions[0].SnapshotTag == "" {
-		t.Fatalf("checkpoint versions = %#v", versions)
+	versions := store.Versions().GetVersions(states[0].StateID)
+	if len(versions) != 2 {
+		t.Fatalf("checkpoint versions = %d, want mutation + checkpoint snapshots: %#v", len(versions), versions)
+	}
+	seenMutation := false
+	seenCheckpoint := false
+	for _, version := range versions {
+		if len(version.Snapshot) == 0 {
+			t.Fatalf("version %q omitted recoverable canonical snapshot", version.SnapshotTag)
+		}
+		if version.SnapshotTag == "state_apply" {
+			seenMutation = true
+		}
+		if strings.HasPrefix(version.SnapshotTag, "checkpoint_") {
+			seenCheckpoint = true
+		}
+	}
+	if !seenMutation || !seenCheckpoint {
+		t.Fatalf("missing state mutation or checkpoint snapshot: %#v", versions)
 	}
 }
 

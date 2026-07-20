@@ -2,6 +2,7 @@ package materialization
 
 import (
 	"fmt"
+	"time"
 
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/schemas"
@@ -17,6 +18,7 @@ import (
 type InMemoryToolTraceWorker struct {
 	id       string
 	objStore storage.ObjectStore
+	verStore storage.SnapshotVersionStore
 	derivLog eventbackbone.DerivationLogger
 }
 
@@ -26,8 +28,13 @@ func CreateInMemoryToolTraceWorker(
 	id string,
 	objStore storage.ObjectStore,
 	derivLog eventbackbone.DerivationLogger,
+	versionStores ...storage.SnapshotVersionStore,
 ) *InMemoryToolTraceWorker {
-	return &InMemoryToolTraceWorker{id: id, objStore: objStore, derivLog: derivLog}
+	worker := &InMemoryToolTraceWorker{id: id, objStore: objStore, derivLog: derivLog}
+	if len(versionStores) > 0 {
+		worker.verStore = versionStores[0]
+	}
+	return worker
 }
 
 func (w *InMemoryToolTraceWorker) Run(input schemas.WorkerInput) (schemas.WorkerOutput, error) {
@@ -75,8 +82,12 @@ func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
 	meta["tool_call_event_id"] = ev.Causality.CallEventID
 
 	artifactID := fmt.Sprintf("%s%s", schemas.IDPrefixToolTrace, ev.Identity.EventID)
-	w.objStore.PutArtifact(schemas.Artifact{
+	now := time.Now().UTC().Format(time.RFC3339)
+	access := schemas.CanonicalAccessFromEvent(ev)
+	artifact := schemas.Artifact{
 		ArtifactID:        artifactID,
+		TenantID:          ev.Identity.TenantID,
+		WorkspaceID:       ev.Identity.WorkspaceID,
 		SessionID:         ev.Actor.SessionID,
 		OwnerAgentID:      ev.Actor.AgentID,
 		ArtifactType:      string(schemas.ArtifactTypeToolTrace),
@@ -84,7 +95,18 @@ func (w *InMemoryToolTraceWorker) TraceToolCall(ev schemas.Event) error {
 		Metadata:          meta,
 		ProducedByEventID: ev.Identity.EventID,
 		Version:           1,
-	})
+		MutationLSN:       ev.Time.WalLSN,
+		MaterializedAt:    now,
+		Access:            access,
+	}
+	w.objStore.PutArtifact(artifact)
+	if w.verStore != nil {
+		w.verStore.PutVersion(schemas.ObjectVersion{
+			ObjectID: artifactID, ObjectType: string(schemas.ObjectTypeArtifact), Version: 1,
+			MutationEventID: ev.Identity.EventID, ValidFrom: now, SnapshotTag: "tool_trace",
+			MutationLSN: ev.Time.WalLSN, Snapshot: canonicalWorkerSnapshot(artifact), Access: access,
+		})
+	}
 
 	// Record the causal edge: event → artifact in the DerivationLog.
 	// This allows ProofTraceWorker.AssembleTrace to follow the full

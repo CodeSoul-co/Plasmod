@@ -66,25 +66,30 @@ type Event struct {
 }
 
 type Memory struct {
-	MemoryID       string   `json:"memory_id"`
-	MemoryType     string   `json:"memory_type"`
-	AgentID        string   `json:"agent_id"`
-	SessionID      string   `json:"session_id"`
-	OwnerType      string   `json:"owner_type"`
-	Scope          string   `json:"scope"`
-	Level          int      `json:"level"`
-	Content        string   `json:"content"`
-	Summary        string   `json:"summary"`
-	SourceEventIDs []string `json:"source_event_ids"`
-	Confidence     float64  `json:"confidence"`
-	Importance     float64  `json:"importance"`
-	FreshnessScore float64  `json:"freshness_score"`
-	TTL            int64    `json:"ttl"`
-	ValidFrom      string   `json:"valid_from"`
-	ValidTo        string   `json:"valid_to"`
-	ProvenanceRef  string   `json:"provenance_ref"`
-	Version        int64    `json:"version"`
-	IsActive       bool     `json:"is_active"`
+	MemoryID       string          `json:"memory_id"`
+	MemoryType     string          `json:"memory_type"`
+	TenantID       string          `json:"tenant_id,omitempty"`
+	WorkspaceID    string          `json:"workspace_id,omitempty"`
+	AgentID        string          `json:"agent_id"`
+	SessionID      string          `json:"session_id"`
+	OwnerType      string          `json:"owner_type"`
+	Scope          string          `json:"scope"`
+	Level          int             `json:"level"`
+	Content        string          `json:"content"`
+	Summary        string          `json:"summary"`
+	SourceEventIDs []string        `json:"source_event_ids"`
+	Confidence     float64         `json:"confidence"`
+	Importance     float64         `json:"importance"`
+	FreshnessScore float64         `json:"freshness_score"`
+	TTL            int64           `json:"ttl"`
+	ValidFrom      string          `json:"valid_from"`
+	ValidTo        string          `json:"valid_to"`
+	ProvenanceRef  string          `json:"provenance_ref"`
+	Version        int64           `json:"version"`
+	MutationLSN    int64           `json:"mutation_lsn,omitempty"`
+	MaterializedAt string          `json:"materialized_at,omitempty"`
+	Access         CanonicalAccess `json:"access"`
+	IsActive       bool            `json:"is_active"`
 	// LifecycleState tracks the management stage (active/compressed/decayed/archived/…).
 	// See MemoryLifecycle constants. Complements IsActive with finer-grained states.
 	LifecycleState string `json:"lifecycle_state,omitempty"`
@@ -104,15 +109,19 @@ type Memory struct {
 }
 
 type State struct {
-	StateID            string `json:"state_id"`
-	AgentID            string `json:"agent_id"`
-	SessionID          string `json:"session_id"`
-	StateType          string `json:"state_type"`
-	StateKey           string `json:"state_key"`
-	StateValue         string `json:"state_value"`
-	DerivedFromEventID string `json:"derived_from_event_id"`
-	CheckpointTS       string `json:"checkpoint_ts"`
-	Version            int64  `json:"version"`
+	StateID            string          `json:"state_id"`
+	TenantID           string          `json:"tenant_id,omitempty"`
+	WorkspaceID        string          `json:"workspace_id,omitempty"`
+	AgentID            string          `json:"agent_id"`
+	SessionID          string          `json:"session_id"`
+	StateType          string          `json:"state_type"`
+	StateKey           string          `json:"state_key"`
+	StateValue         string          `json:"state_value"`
+	DerivedFromEventID string          `json:"derived_from_event_id"`
+	CheckpointTS       string          `json:"checkpoint_ts"`
+	Version            int64           `json:"version"`
+	MutationLSN        int64           `json:"mutation_lsn,omitempty"`
+	Access             CanonicalAccess `json:"access"`
 }
 
 // AgentState is the v0.4 canonical name for runtime state objects. State is
@@ -121,41 +130,51 @@ type State struct {
 type AgentState = State
 
 type Artifact struct {
-	ArtifactID        string         `json:"artifact_id"`
-	SessionID         string         `json:"session_id"`
-	OwnerAgentID      string         `json:"owner_agent_id"`
-	ArtifactType      string         `json:"artifact_type"`
-	URI               string         `json:"uri"`
-	ContentRef        string         `json:"content_ref"`
-	MimeType          string         `json:"mime_type"`
-	Metadata          map[string]any `json:"metadata"`
-	Hash              string         `json:"hash"`
-	ProducedByEventID string         `json:"produced_by_event_id"`
-	Version           int64          `json:"version"`
+	ArtifactID        string          `json:"artifact_id"`
+	TenantID          string          `json:"tenant_id,omitempty"`
+	WorkspaceID       string          `json:"workspace_id,omitempty"`
+	SessionID         string          `json:"session_id"`
+	OwnerAgentID      string          `json:"owner_agent_id"`
+	ArtifactType      string          `json:"artifact_type"`
+	URI               string          `json:"uri"`
+	ContentRef        string          `json:"content_ref"`
+	MimeType          string          `json:"mime_type"`
+	Metadata          map[string]any  `json:"metadata"`
+	Hash              string          `json:"hash"`
+	ProducedByEventID string          `json:"produced_by_event_id"`
+	Version           int64           `json:"version"`
+	MutationLSN       int64           `json:"mutation_lsn,omitempty"`
+	MaterializedAt    string          `json:"materialized_at,omitempty"`
+	Access            CanonicalAccess `json:"access"`
 }
 
 type Edge struct {
-	EdgeID        string         `json:"edge_id"`
-	SrcObjectID   string         `json:"src_object_id"`
-	SrcType       string         `json:"src_type"`
-	EdgeType      string         `json:"edge_type"`
-	DstObjectID   string         `json:"dst_object_id"`
-	DstType       string         `json:"dst_type"`
-	Weight        float64        `json:"weight"`
-	ProvenanceRef string         `json:"provenance_ref"`
-	CreatedTS     string         `json:"created_ts"`
-	Properties    map[string]any `json:"properties,omitempty"`
-	ExpiresAt     string         `json:"expires_at,omitempty"`
+	EdgeID        string          `json:"edge_id"`
+	SrcObjectID   string          `json:"src_object_id"`
+	SrcType       string          `json:"src_type"`
+	EdgeType      string          `json:"edge_type"`
+	DstObjectID   string          `json:"dst_object_id"`
+	DstType       string          `json:"dst_type"`
+	Weight        float64         `json:"weight"`
+	ProvenanceRef string          `json:"provenance_ref"`
+	CreatedTS     string          `json:"created_ts"`
+	Properties    map[string]any  `json:"properties,omitempty"`
+	ExpiresAt     string          `json:"expires_at,omitempty"`
+	MutationLSN   int64           `json:"mutation_lsn,omitempty"`
+	Access        CanonicalAccess `json:"access"`
 }
 
 type ObjectVersion struct {
-	ObjectID        string `json:"object_id"`
-	ObjectType      string `json:"object_type"`
-	Version         int64  `json:"version"`
-	MutationEventID string `json:"mutation_event_id"`
-	ValidFrom       string `json:"valid_from"`
-	ValidTo         string `json:"valid_to"`
-	SnapshotTag     string `json:"snapshot_tag"`
+	ObjectID        string          `json:"object_id"`
+	ObjectType      string          `json:"object_type"`
+	Version         int64           `json:"version"`
+	MutationEventID string          `json:"mutation_event_id"`
+	ValidFrom       string          `json:"valid_from"`
+	ValidTo         string          `json:"valid_to"`
+	SnapshotTag     string          `json:"snapshot_tag"`
+	MutationLSN     int64           `json:"mutation_lsn,omitempty"`
+	Snapshot        map[string]any  `json:"snapshot,omitempty"`
+	Access          CanonicalAccess `json:"access"`
 }
 
 // User defines a system user (model consumer, trainer, operator, etc.).
@@ -220,16 +239,24 @@ type PolicyRecord struct {
 // not just a single visibility field.
 // It is used to make "shared" semantics explicit and auditable.
 type ShareContract struct {
-	ContractID       string `json:"contract_id"`
-	Scope            string `json:"scope"`
-	ReadACL          string `json:"read_acl"`
-	WriteACL         string `json:"write_acl"`
-	DeriveACL        string `json:"derive_acl"`
-	TTLPolicy        string `json:"ttl_policy"`
-	ConsistencyLevel string `json:"consistency_level"`
-	MergePolicy      string `json:"merge_policy"`
-	QuarantinePolicy string `json:"quarantine_policy"`
-	AuditPolicy      string `json:"audit_policy"`
+	ContractID       string   `json:"contract_id"`
+	TenantID         string   `json:"tenant_id,omitempty"`
+	WorkspaceID      string   `json:"workspace_id,omitempty"`
+	Scope            string   `json:"scope"`
+	ReadACL          string   `json:"read_acl"`
+	WriteACL         string   `json:"write_acl"`
+	DeriveACL        string   `json:"derive_acl"`
+	TTLPolicy        string   `json:"ttl_policy"`
+	ConsistencyLevel string   `json:"consistency_level"`
+	MergePolicy      string   `json:"merge_policy"`
+	QuarantinePolicy string   `json:"quarantine_policy"`
+	AuditPolicy      string   `json:"audit_policy"`
+	ReadAgents       []string `json:"read_agents,omitempty"`
+	ReadRoles        []string `json:"read_roles,omitempty"`
+	WriteAgents      []string `json:"write_agents,omitempty"`
+	WriteRoles       []string `json:"write_roles,omitempty"`
+	DeriveAgents     []string `json:"derive_agents,omitempty"`
+	DeriveRoles      []string `json:"derive_roles,omitempty"`
 }
 
 // RetrievalSegment tracks a physical segment in the materialized retrieval layer.

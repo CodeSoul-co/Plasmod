@@ -269,14 +269,15 @@ Port resolution lives in `app/ports.go`; storage selection lives in `storage/fac
 ```text
 state_update/tool_result Event
   -> normalize actor/session + state key/value
-  -> StateMaterializationWorker
-  -> state_<agent>_<key>
-  -> version increment
-  -> AgentState + ObjectVersion
+  -> materialization.Service
+  -> CanonicalStateID(tenant, workspace, agent, session, key)
+  -> Runtime.prepareStateMutation (deduplicate + monotonic version)
+  -> ApplyCanonicalProjection(Event + AgentState + ObjectVersion snapshot)
+  -> optional subscriber StateMaterializationWorker checkpoint/apply
   -> query by scope/key/latest version
 ```
 
-Failure to extract a State key or version must prevent creation of an invalid empty State. Direct POST to `/v1/states` bypasses the Event chain and should be limited to management or migration.
+Without an explicit key, the primary chain updates `last_memory_id`. Same-event replay is idempotent and an old mutation cannot roll back newer State. Direct `POST /v1/states` bypasses the Event/WAL/version chain and should be limited to trusted management or migration.
 
 ---
 

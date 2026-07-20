@@ -330,4 +330,4 @@ EventSubscriber 扫描不超过 visible watermark 的 WAL entry，触发 memory 
 
 ### 02.7.7. ACK 语义
 
-客户端必须区分：请求未接受、WAL 已接受但暂不可见、canonical visible、retrieval projection pending。`AcceptedNotVisibleError` 表示 Event 已有 LSN，重试时不能简单创建新 event ID。
+客户端必须区分：请求未接受、WAL 已接受但暂不可见、主 projection 已完成且 LSN visible、subscriber/flush 等二级维护仍 pending。当前主 visibility callback 同时要求 canonical commit 与 retrieval ingest 成功，不对外承诺“canonical visible 但 retrieval pending”的独立成功状态。`AcceptedNotVisibleError` 表示 Event 已有 LSN，重试时应复用同一 event identity，而不是盲目创建新 event ID。

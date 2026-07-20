@@ -152,15 +152,20 @@ func TestRuntime_ConsistencyAsyncAckAndReadOverrides(t *testing.T) {
 				t.Fatal("projection did not start")
 			}
 			memoryID := "mem_" + event.EventID
-			if _, ok := runtime.storage.Objects().GetMemory(memoryID); ok {
-				t.Fatal("canonical object visible while projection is blocked")
+			memory, ok := runtime.storage.Objects().GetMemory(memoryID)
+			if !ok {
+				t.Fatal("canonical object was not durably materialized before retrieval projection")
+			}
+			if memory.MutationLSN <= runtime.ConsistencyStatus().VisibleWatermark {
+				t.Fatalf("blocked projection crossed visibility boundary: mutation_lsn=%d visible=%d", memory.MutationLSN, runtime.ConsistencyStatus().VisibleWatermark)
 			}
 
 			eventualCtx, cancelEventual := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancelEventual()
 			eventualResp, err := runtime.ExecuteQueryContext(eventualCtx, schemas.QueryRequest{
 				AccessConsistency: "eventual", TargetObjectIDs: []string{memoryID},
-				ResponseMode: schemas.ResponseModeObjectsOnly,
+				ResponseMode: schemas.ResponseModeObjectsOnly, TenantID: "tenant",
+				WorkspaceID: "workspace", RequesterAgentID: "agent",
 			})
 			if err != nil {
 				t.Fatalf("eventual query: %v", err)
@@ -174,7 +179,8 @@ func TestRuntime_ConsistencyAsyncAckAndReadOverrides(t *testing.T) {
 			go func() {
 				resp, err := runtime.ExecuteQueryContext(context.Background(), schemas.QueryRequest{
 					AccessConsistency: "strict", TargetObjectIDs: []string{memoryID},
-					ResponseMode: schemas.ResponseModeObjectsOnly,
+					ResponseMode: schemas.ResponseModeObjectsOnly, TenantID: "tenant",
+					WorkspaceID: "workspace", RequesterAgentID: "agent",
 				})
 				strictDone <- resp
 				strictErr <- err

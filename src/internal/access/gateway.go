@@ -62,6 +62,19 @@ func writeServiceHTTPError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), serviceHTTPStatus(err))
 }
 
+func shareHTTPStatus(err error) int {
+	switch {
+	case errors.Is(err, worker.ErrShareInvalid):
+		return http.StatusBadRequest
+	case errors.Is(err, worker.ErrShareForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, worker.ErrShareNotFound):
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // normalizeAdminMemoryIDs trims, drops empties, and de-duplicates while preserving order.
 func normalizeAdminMemoryIDs(ids []string) []string {
 	if len(ids) == 0 {
@@ -2209,7 +2222,7 @@ func (g *Gateway) handleMemory(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(obj.MemoryID) == "" {
 			obj.MemoryID = generateObjectID("mem")
 		}
-		g.coord.Memory.Put(obj)
+		g.coord.Object.PutMemory(obj, "")
 		writeJSON(w, map[string]string{"status": "ok", "memory_id": obj.MemoryID})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2712,17 +2725,18 @@ func (g *Gateway) handleMemoryDecay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// handleMemoryShare broadcasts a memory to a target agent via CommunicationWorker.
+// handleMemoryShare creates a WAL-derived shared memory after optional contract validation.
 func (g *Gateway) handleMemoryShare(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
-		MemoryID      string `json:"memory_id"`
-		FromAgentID   string `json:"from_agent_id"`
-		ToAgentID     string `json:"to_agent_id"`
-		ContractScope string `json:"contract_scope"` // "restricted_shared"
+		MemoryID        string `json:"memory_id"`
+		FromAgentID     string `json:"from_agent_id"`
+		ToAgentID       string `json:"to_agent_id"`
+		ContractScope   string `json:"contract_scope"` // legacy display field
+		ShareContractID string `json:"share_contract_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2732,9 +2746,9 @@ func (g *Gateway) handleMemoryShare(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "skipped", "reason": "same_agent"})
 		return
 	}
-	sharedID, err := g.runtime.DispatchShare(req.FromAgentID, req.ToAgentID, req.MemoryID)
+	sharedID, err := g.runtime.DispatchShareWithContract(req.FromAgentID, req.ToAgentID, req.MemoryID, req.ShareContractID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), shareHTTPStatus(err))
 		return
 	}
 	writeJSON(w, map[string]any{

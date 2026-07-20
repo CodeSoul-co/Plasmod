@@ -266,7 +266,7 @@ func TestMainChain_Run_StateUpdateEvent_RoutesToStateMatWorker(t *testing.T) {
 		t.Fatalf("MainChain.Run failed: %s", result.Error)
 	}
 	// State should be materialized (not Memory).
-	stateID := schemas.IDPrefixState + "a1_counter"
+	stateID := schemas.CanonicalStateID("", "", "a1", "s1", "counter")
 	_, ok := store.Objects().GetState(stateID)
 	if !ok {
 		t.Errorf("expected State %q after state_update event", stateID)

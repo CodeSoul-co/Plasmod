@@ -19,14 +19,14 @@ This chapter is the factual index for the documentation set. It connects public 
 | `POST /v1/ingest/document`     | document assembler -> repeated `SubmitIngest`                   | Ingest        | Object Derivation, Retrieval                                                       | Internal document adapter; not as stable as the Event API |
 | `POST /v1/query`               | `handleQuery` -> `ServiceQueryContext` -> `ExecuteQueryContext` | Query         | Retrieval, Evidence, Canonical Graph, Governance                                   | Primary structured evidence endpoint |
 | `POST /v1/query/batch`         | `ServiceQueryBatch`                                             | none          | Adaptive Retrieval                                                                 | Accepts `VectorWarmBatchQueryRequest`, not a QueryRequest array. |
-| `GET/POST /v1/agents`          | canonical handler                                               | none          | Canonical Graph                                                                    | Direct store CRUD, bypass WAL/Chain                       |
-| `GET/POST /v1/sessions`        | canonical handler                                               | none          | Canonical Graph                                                                    | Direct canonical CRUD; bypasses Event/WAL.                  |
-| `GET/POST /v1/memory`          | canonical handler                                               | none          | Canonical Graph                                                                    | Does not automatically write a retrieval projection or ObjectVersion |
-| `GET/POST /v1/states`          | canonical handler                                               | none          | Canonical Graph                                                                    | Direct canonical CRUD; bypasses Event/WAL.                  |
-| `GET/POST /v1/artifacts`       | canonical handler                                               | none          | Canonical Graph                                                                    | Direct canonical CRUD; bypasses Event/WAL.                  |
+| `GET/POST /v1/agents`          | canonical handler/ObjectCoordinator                             | none          | Canonical Graph                                                                    | POST writes a version snapshot; bypasses Event/WAL/retrieval/access gates |
+| `GET/POST /v1/sessions`        | canonical handler/ObjectCoordinator                             | none          | Canonical Graph                                                                    | Same boundary as direct Agent POST |
+| `GET/POST /v1/memory`          | canonical handler/ObjectCoordinator                             | none          | Canonical Graph                                                                    | POST writes a version snapshot but no WAL or retrieval projection |
+| `GET/POST /v1/states`          | canonical handler/ObjectCoordinator                             | none          | Canonical Graph                                                                    | POST writes a version snapshot without Event replay or the monotonic State guard |
+| `GET/POST /v1/artifacts`       | canonical handler/ObjectCoordinator                             | none          | Canonical Graph                                                                    | POST writes a version snapshot but no WAL or retrieval projection |
 | `GET/POST /v1/edges`           | canonical handler                                               | none          | Canonical Graph                                                                    | Does not enforce full referential or semantic integrity at both endpoints |
 | `GET/POST /v1/policies`        | canonical handler                                               | none          | Governance, Canonical Graph                                                        | Stores policy records; not a general policy language |
-| `GET/POST /v1/share-contracts` | canonical handler                                               | none          | Governance, Canonical Graph                                                        | Stores contracts; enforcement coverage is limited |
+| `GET/POST /v1/share-contracts` | canonical handler                                               | none          | Governance, Canonical Graph                                                        | Stores contracts; query and referenced share enforce them, other writes remain partial |
 | `GET /v1/traces/{id}`          | `handleTraces`                                                  | Query-like    | Evidence, Canonical Graph                                                          | Assembles recorded evidence and provenance for an object |
 | `GET /v1/agent/list`           | internal agent listing                                          | Collaboration | Canonical Graph/Governance                                                         | Experimental internal route |
 
@@ -39,7 +39,7 @@ This chapter is the factual index for the documentation set. It connects public 
 | `/v1/internal/memory/compress` | algorithm dispatch | Memory Evolution + Canonical Graph | derived Memory, state/audit |
 | `/v1/internal/memory/summarize` | algorithm dispatch | Memory Evolution + Canonical Graph | summary Memory, audit |
 | `/v1/internal/memory/decay` | algorithm dispatch | Memory Evolution | lifecycle/algorithm state/audit |
-| `/v1/internal/memory/share` | `DispatchShare` | Collaboration + Governance | Memory shared copy; contract enforcement limited |
+| `/v1/internal/memory/share` | `DispatchShareWithContract`/`DispatchShare` | Collaboration + Governance + Ingest | validates owner/contract, then writes a derived Event/WAL, shared Memory, Version, Edge, and retrieval projection |
 | `/v1/internal/memory/conflict/resolve` | `DispatchConflictResolve` | Collaboration | winner/loser mutation, conflict edge/audit |
 | `/v1/internal/memory/stale` | handler direct store mutation | Memory Evolution | `stale`, inactive, audit/metric path |
 | `/v1/internal/memory/conflict/inject` | handler direct canonical setup | Collaboration | controlled conflict records; internal only |
@@ -110,10 +110,10 @@ This section binds every supported core-system claim to current code entry point
 | Canonical truth is separated from retrieval projection | storage contracts + DataPlane | storage projection tests, dataplane tests | No cross-system ACID transaction spans both planes |
 | strict/bounded/eventual visibility modes | consistency controller/tracker/checkpoint | consistency mode/controller/tracker tests | Guarantees apply within the active single-process controller |
 | hybrid/tiered retrieval with optional native ANN | TieredDataPlane + vector/sparse/segment/native bridge | dataplane/retrievalplane tests | Native ANN depends on build tags/libraries; Cold is queried explicitly |
-| evidence-bearing query response | planner -> retrieval -> assembler -> QueryChain | evidence, semantic, worker e2e query tests | Response objects are IDs; policy annotation is not equivalent to full ACL enforcement |
+| evidence-bearing, access-filtered query response | planner -> retrieval -> canonical access gate -> assembler -> graph endpoint filter | evidence, semantic, runtime access/e2e query tests | Response objects are IDs; caller identity still requires external authentication binding |
 | pluggable memory management algorithm | interface + dispatcher + baseline/MemoryBank-style/Zep-style | cognitive tests | “Style” plugins are repository implementations, not external product services |
 | canonical graph and provenance records | Edge/Version/derivation stores + proof worker | schema graph, evidence, coordination tests | graph validity is application-enforced, not referential constraint |
-| explicit share contract records and shared copies | ShareContractStore + communication/conflict worker | governance/coordination tests | Enforcement is not uniform across every read, write, and derivation path |
+| contract-backed derived sharing | ShareContractStore + `DispatchShareWithContract` + Ingest Chain | semantic policy and runtime share/access tests | Share enforces derive/read; raw CRUD, lifecycle, and conflict writes are not uniform |
 | hot/warm/cold object management | TieredObjectStore + S3/InMemory cold | storage tiered/S3 tests | promotion/demotion mostly explicit/policy worker driven |
 
 ### 14.2.2. Claims Requiring Qualification
@@ -169,13 +169,13 @@ There is no single repository-wide `WriteState` enum. The following vocabulary m
 | `RECEIVED` | Gateway decode and normalization | Request memory | No acknowledgement yet |
 | `WAL_COMMITTED` | `WAL.Append` returns an LSN | FileWAL or InMemoryWAL | All modes have accepted the Event |
 | `PROJECTING` | tracker `MarkProjecting` | Tracker memory and checkpoint context | Strict waits; weaker modes may already have returned |
-| `INDEXED` | `DataPlane.Ingest` succeeds | Warm retrieval structures/native index | Required by the current strict projection path |
 | `PERSISTED` | `ApplyCanonicalProjection` succeeds | Object, edge, and version stores | Required by the current strict projection path |
+| `INDEXED` | `DataPlane.Ingest` succeeds | Warm retrieval structures/native index | Required by the current strict projection path |
 | `EVIDENCE_READY` | The precompute cache fragment is written | in-memory evidence cache | Not a visibility gate; may be skipped |
 | `VISIBLE` | tracker `MarkVisible` plus checkpoint/watermark | Tracker and checkpoint | Strict returns after this; weaker modes may have returned earlier |
 | `MAINTAINED` | subscriber/reflection/consolidation/flush | multiple stores/cache/index | No |
 
-The active `projectWALEntry` order is retrieval ingest, canonical projection, then hot promotion, conflict/precompute work, and worker dispatch. Early error checks reduce the partial-completion window, but retrieval and canonical persistence are still separate transactions.
+The active `projectWALEntry` order is canonical projection, retrieval ingest, then hot promotion, conflict/precompute work, and worker dispatch. Canonical-first ordering preserves recoverable facts. If retrieval fails, the controller does not advance the visible watermark and query hides the incomplete mutation using `MutationLSN` and `ReadWatermarkLSN`. Retrieval and canonical persistence remain separate transactions.
 
 ### 14.3.2. Consistency Modes
 
@@ -190,7 +190,7 @@ The active `projectWALEntry` order is retrieval ingest, canonical projection, th
 | Operation | Synchronous section | Asynchronous parts |
 |---|---|---|
 | Event ingest | validation, WAL, strict projection wait | bounded/eventual projection, subscriber maintenance, periodic flush |
-| Canonical projection | retrieval ingest followed by object/edge/version transaction | keyed State, tool trace, consolidation, and reflection through the subscriber |
+| Canonical projection | Event/Memory/stable State/optional Artifact/edge/version transaction followed by retrieval ingest | tool trace, consolidation, reflection, and specialized State checkpoints through the subscriber |
 | Query | planner, retrieval, filters, assembler, QueryChain | no durable background completion promised |
 | Memory algorithm API | selected plugin dispatch and store writes | provider shadow path may be external; no generic job tracker |
 | Collaboration | conflict/share call | microbatch queue only processes when explicitly flushed |
@@ -202,7 +202,7 @@ The active `projectWALEntry` order is retrieval ingest, canonical projection, th
 |---|---|---|---|
 | WAL append fails | no accepted write | returned error | caller retry with same event ID |
 | WAL succeeds, projection fails | durable Event, object not visible | tracker failure/status, 503 for strict | bounded retry; restart recovery scans WAL; admin replay |
-| Retrieval ingest succeeds, canonical projection fails | candidate may exist without canonical record | projection error; query hydration/filter anomalies | replay/reindex; no automatic two-plane rollback |
+| Canonical commit succeeds, retrieval ingest fails | authoritative object exists but its LSN is not visible | projection error/tracker retry; query watermark gate | retry the same WAL LSN or reindex; no automatic cross-plane rollback |
 | Canonical commit succeeds, precompute fails/skips | object visible without cached fragment | cache miss stats | query-time delta evidence |
 | Canonical succeeds, subscriber worker fails | main object visible, auxiliary state/audit/index may lag | logs/ErrorCh/in-memory DLQ/overflow; limited per-worker status | WAL subscriber re-scan/restart, manual replay; no durable dead-letter queue |
 | Checkpoint save fails | object may be visible but durable progress uncertain | `checkpointVisibilityError`, buffered checkpoint last error | retry/flush, restart WAL scan |
@@ -216,7 +216,7 @@ The active `projectWALEntry` order is retrieval ingest, canonical projection, th
 | Event replay | deterministic IDs from event ID | direct workers with alternate IDs must preserve same rule |
 | WAL ordering | monotonic LSN and serialized append section | global distributed ordering is not implemented by active single-process core |
 | Canonical projection | same-backend transaction and upsert | retrieval/S3/cache are outside transaction |
-| State version | state worker reads current state and increments | in-memory `stateKeys` plus store lookup; cross-process coordination absent |
+| State version | Runtime/worker read store history, deduplicate mutation event, increment, and snapshot | single-process mutex; cross-process conditional-write coordination absent |
 | Edge generation | deterministic source/type/destination IDs in builders | direct Edge POST can introduce duplicates/semantic inconsistency |
 | Algorithm state | composite memory/algorithm key | switching algorithm profile does not migrate old state |
 
@@ -424,23 +424,23 @@ Legacy flat fields are `json:"-"` compatibility aliases. `NormalizeDynamicEventV
 
 | Field groups | Fields | Ownership |
 |---|---|---|
-| Identity/type | `memory_id`, `memory_type`, `agent_id`, `session_id`, `owner_type`, `scope`, `level` | canonical Memory |
+| Identity/type | `memory_id`, `memory_type`, `tenant_id`, `workspace_id`, `agent_id`, `session_id`, `owner_type`, `scope`, `level` | canonical Memory |
 | Content | `content`, `summary` | canonical Memory |
 | Provenance | `source_event_ids`, `provenance_ref` | canonical Memory; detailed relationships live in Edge and derivation records |
 | Quality | `confidence`, `importance`, `freshness_score` | canonical Memory |
-| Validity | `ttl`, `valid_from`, `valid_to`, `version`, `is_active`, `lifecycle_state` | canonical Memory |
+| Validity | `ttl`, `valid_from`, `valid_to`, `version`, `mutation_lsn`, `materialized_at`, `is_active`, `lifecycle_state` | canonical Memory |
 | External references | `embedding_ref`, `algorithm_state_ref` | References Embedding and MemoryAlgorithmState records; persistence coverage depends on the active path |
-| Governance | `policy_tags`, `scope` | Memory + PolicyRecord/ShareContract |
+| Governance | `CanonicalAccess{tenant/workspace/team/owner/session/visibility/agents/roles/tags/contract}`, `policy_tags`, `scope` | Memory + PolicyRecord/ShareContract |
 | Ingest lineage | `dataset_name`, `source_file_name`, `import_batch_id` | delete/query selectors |
 
 #### 14.5.2.3. State, Artifact, Relation and Version
 
 | Object | Fields |
 |---|---|
-| `State`/`AgentState` | `state_id`, `agent_id`, `session_id`, `state_type`, `state_key`, `state_value`, `derived_from_event_id`, `checkpoint_ts`, `version` |
-| `Artifact` | `artifact_id`, `session_id`, `owner_agent_id`, `artifact_type`, `uri`, `content_ref`, `mime_type`, `metadata`, `hash`, `produced_by_event_id`, `version` |
-| `Edge` | `edge_id`, `src_object_id`, `src_type`, `edge_type`, `dst_object_id`, `dst_type`, `weight`, `provenance_ref`, `created_ts`, `properties`, `expires_at` |
-| `ObjectVersion` | `object_id`, `object_type`, `version`, `mutation_event_id`, `valid_from`, `valid_to`, `snapshot_tag` |
+| `State`/`AgentState` | `state_id`, tenant/workspace/agent/session, type/key/value, derived event, checkpoint, version, `mutation_lsn`, `access` |
+| `Artifact` | `artifact_id`, tenant/workspace/session/owner/type, URI/content/mime/metadata/hash, produced event, version, `mutation_lsn`, `materialized_at`, `access` |
+| `Edge` | source/type/relation/destination/type/weight/provenance/time/properties/expiry, `mutation_lsn`, `access` |
+| `ObjectVersion` | object/type/version, mutation event/LSN, valid from/to, snapshot tag, complete `snapshot`, `access` |
 
 #### 14.5.2.4. Governance and Retrieval Records
 
@@ -450,7 +450,7 @@ Legacy flat fields are `json:"-"` compatibility aliases. `NormalizeDynamicEventV
 | `Embedding` | `vector_id`, `vector_context`, `original_text`, `embedding_type`, `dim`, `model_id`, `vector_ref`, `created_ts` |
 | `Policy` | `policy_id`, `policy_version`, start/end time, publisher type/id, policy type |
 | `PolicyRecord` | policy ID/version/context, target object/type, salience/TTL/decay/confidence, verified/quarantine/visibility, reason/source/event ID |
-| `ShareContract` | `contract_id`, `scope`, read/write/derive ACL, TTL/consistency/merge/quarantine/audit policy |
+| `ShareContract` | contract/tenant/workspace/scope, legacy read/write/derive ACL, typed agent/role grants, TTL/consistency/merge/quarantine/audit policy |
 | `RetrievalSegment` | segment/object/namespace/time bucket, embedding family, storage/index refs, row count, min/max TS, tier |
 | `AuditRecord` | record/target/operation/actor/policy snapshot/decision/reason/time/downstream request |
 | `MemoryAlgorithmState` | memory/algorithm ID, strength, recall time/count, retention, portrait state, summary refs, suggested lifecycle, update time |
@@ -468,8 +468,8 @@ Legacy flat fields are `json:"-"` compatibility aliases. `NormalizeDynamicEventV
 
 | Type | Fields |
 |---|---|
-| `QueryRequest` | query/scope/session/agent/tenant/workspace, TopK/time, object/target/memory/edge/relation filters, response mode, dataset lineage, access/policy/share/materialization/runtime/extension filters, query hooks, warm segment, cold flag, query vector |
-| `QueryResponse` | object IDs, graph nodes/edges, provenance, versions, filters, proof trace, four chain trace slots, cache stats, retrieval summary, query status/hint |
+| `QueryRequest` | query/scope, tenant/workspace/team/session/agent selectors, `requester_agent_id/requester_roles`, TopK/time, object/target/memory/edge/relation filters, response mode, dataset lineage, access/policy/share/materialization/runtime/extension filters, hooks, warm/cold/vector fields |
+| `QueryResponse` | object IDs, graph nodes/edges, provenance, versions, filters, proof trace, `access_decisions`, `read_watermark_lsn`, four chain traces, cache/retrieval summary, status/hint |
 | `GraphExpandRequest` | seeds/types, session/agent, hops/time/edges, node/edge limits, props/provenance/response mode |
 | `GraphExpandResponse` | `EvidenceSubgraph`, applied filters |
 
@@ -496,19 +496,18 @@ Code: `src/internal/schemas/worker_params.go`.
 | Proof trace | object IDs/depth | proof steps/hops | read-only proof assembly |
 | Microbatch | query ID/opaque payload | items/count | in-memory queue |
 | Algorithm dispatch | operation, IDs, query/time/signals/scope | updated/produced/scored refs | Memory/algorithm state/audit |
-| Communication | source/target agent/memory ID | shared memory ID | copied Memory |
+| Communication | source/target agent/memory ID plus optional contract | shared memory ID | Runtime derives Event/WAL/Memory/Version/Edge; legacy worker copies scoped Memory |
 
 ### 14.5.6. ID and Version Invariants
 
 | Record | Default rules |
 |---|---|
-| Memory | `mem_<event_id>` |
-| Ingest checkpoint State | `state_<session_id>_<event_id>` |
-| Keyed State worker | `state_<agent_id>_<state_key>` |
+| Memory | default `mem_<event_id>`; typed Memory may use an explicit object ID |
+| State | `state_<24-hex sha256 prefix of tenant/workspace/agent/session/state_key>`; default key is `last_memory_id` |
 | Artifact | explicit `object.object_id` takes precedence; otherwise use the deterministic default |
 | Shared Memory | `shared_<memory_id>_to_<agent_id>` |
 | Edge | implementation-specific deterministic source/type/destination composition |
-| Version | ordered by logical timestamp or the State worker's current version; associated with the mutation Event |
+| Version | Memory/Artifact preserve object versions; State increments from store history; all associate mutation event/LSN and store snapshots |
 
 These rules affect replay and storage compatibility. Any change requires migration and replay tests.
 

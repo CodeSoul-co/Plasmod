@@ -140,18 +140,74 @@ Artifact、Edge、Version、Policy 和 provenance。
 
 ---
 
-## 15.9. ADR Index
+## 15.9. ADR-0009: 显式一致性模式
 
-| ADR | Decision |
+| Field | Decision record |
 |---|---|
-| [`0001`](15-architecture-decision-records.md) | Event 作为因果 source |
-| [`0002`](15-architecture-decision-records.md) | Canonical object 与 retrieval projection 分层 |
-| [`0003`](15-architecture-decision-records.md) | Go runtime + C++ retrieval |
-| [`0004`](15-architecture-decision-records.md) | Hot/Warm/Cold 分层 |
-| [`0005`](15-architecture-decision-records.md) | 返回结构化 Evidence |
-| [`0006`](15-architecture-decision-records.md) | Knowhere-style native ANN adapter |
-| [`0007`](15-architecture-decision-records.md) | 结果层 RRF fusion |
-| [`0008`](15-architecture-decision-records.md) | Vector-only 仅作为物理投影接口 |
+| Status | Accepted |
+| Context | Agent workload 对 ACK 延迟、可见性和后台吞吐的要求不同，隐式一致性无法给出清晰保证。 |
+| Decision | consistency controller 提供 strict、bounded-staleness 和 eventual visibility。 |
+| Consequences | 各 mode 的等待阶段和 timeout 不同；response/metrics 必须区分 accepted、projecting、visible。 |
+| Rejected alternative | 无论完成阶段都返回同一个 success。 |
+| Invariant | 较弱 mode 可以更早 ACK，但不能声明比实际完成阶段更强的 freshness。 |
+
+---
+
+## 15.10. ADR-0010: 原子 Canonical Projection 要求存储共置
+
+| Field | Decision record |
+|---|---|
+| Status | Accepted |
+| Context | object、edge 和 version 构成同一次 canonical mutation，拆到独立 transaction 会产生图/版本分歧。 |
+| Decision | storage factory 要求 object、edge、version backend 可共同实现 `ApplyCanonicalProjection`；Badger 使用同一 transaction。 |
+| Consequences | 限制任意混用 backend；未来分布式 backend 必须提供等价原子 contract 或明确降低保证。 |
+| Rejected alternative | 对三个独立 store 做 best-effort write 却仍声明 canonical atomicity。 |
+| Invariant | Runtime 必须拒绝无法满足 canonical projection contract 的配置。 |
+
+---
+
+## 15.11. ADR-0011: Canonical-first Projection 与 Watermark Fence
+
+| Field | Decision record |
+|---|---|
+| Status | Accepted |
+| Context | retrieval-first 会留下“索引候选存在但 canonical object 不存在”的泄漏窗口；canonical-first 会留下已持久化但索引尚未完成的内部窗口。 |
+| Decision | 主回调先提交 canonical write set，再写 retrieval projection；只有二者成功才推进 visible watermark。Canonical object 持久化 `MutationLSN`，query 以 `ReadWatermarkLSN` 作为 visibility fence。 |
+| Consequences | retrieval 失败时 canonical snapshot 可用于同 LSN 重试/reindex，普通 query 不暴露该 mutation；两个引擎仍非单一 ACID transaction。 |
+| Rejected alternative | retrieval-first，或 canonical commit 后立即对外 visible。 |
+| Invariant | `MutationLSN > ReadWatermarkLSN` 的 object 不得由普通 canonical query path 返回。 |
+
+---
+
+## 15.12. ADR-0012: Canonical Access 与 Evidence-safe Traversal
+
+| Field | Decision record |
+|---|---|
+| Status | Accepted, security boundary partial |
+| Context | 单一 `scope` 字符串无法表达 owner、层级 scope、agent/role grant 和 share contract；仅过滤 seed 会从图扩展泄漏 private endpoint。 |
+| Decision | Memory、State、Artifact、Edge、ObjectVersion 持久化 `CanonicalAccess`。`/v1/query` 在 hydration 前执行 access gate，并在 evidence assembly 后重验 node/edge endpoint/proof/provenance；允许原因通过 `AccessDecision` 返回。 |
+| Consequences | shared derivation 绑定 typed ShareContract 并经 WAL 创建；调用方必须由可信 gateway 绑定 requester identity。raw CRUD/lifecycle route 仍需后续统一 write gate。 |
+| Rejected alternative | 只依赖 retrieval metadata filter 或事后 contamination counter。 |
+| Invariant | 未授权 object 或其 graph reference 不得出现在普通 QueryResponse；拒绝 decision 不披露对象存在。 |
+
+---
+
+## 15.13. ADR Index
+
+| ADR | Decision | Primary code boundary |
+|---|---|---|
+| 0001 | Event/WAL 作为因果 source | `eventbackbone`, ingest runtime |
+| 0002 | Canonical object 是权威事实 | `storage`, `evidence`, `dataplane` |
+| 0003 | Go runtime + C++ retrieval | `retrievalplane`, `cpp/` |
+| 0004 | Hot/Warm/Cold 分层 | `storage/tiered.go`, DataPlane |
+| 0005 | Query 返回结构化 Evidence | `schemas/query.go`, `evidence` |
+| 0006 | Native ANN 置于 adapter 后 | C ABI and CGO bridge |
+| 0007 | Go result layer 执行 RRF | DataPlane/RRF |
+| 0008 | Vector-only 是 projection API | vector/warm routes |
+| 0009 | 一致性模式显式化 | `worker/consistency` |
+| 0010 | Canonical projection store 共置 | storage factory/projection transaction |
+| 0011 | Canonical-first + watermark fence | Runtime projection/query access |
+| 0012 | Canonical access + evidence-safe traversal | schemas/semantic/runtime access |
 
 新增跨模块、影响 API/持久化/故障语义的设计决定应增加 ADR，并记录 context、decision、alternatives、consequences
-和 migration impact。
+和 migration impact。ADR 不替代实现证据，第 14 章仍须标记实际完成度。

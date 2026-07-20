@@ -65,7 +65,7 @@ Transformation and hydration:
 
 Event writes are driven by the consistency projection callback, which invokes the materializer, DataPlane, and canonical store. Queries read the retrieval projection first, hydrate from canonical stores, and build evidence. Admin replay and reindex operations reconstruct projections from the WAL or canonical state.
 
-The active write path calls `DataPlane.Ingest` before `ApplyCanonicalProjection`; they do not share a transaction. Canonical materialization of keyed State is performed primarily by the subscriber worker, so visible Memory projection does not imply that State materialization has completed.
+The active write callback runs `ApplyCanonicalProjection` before `DataPlane.Ingest`; they still do not share a cross-engine transaction. Event, Memory, stable State, optional Artifact, Edge, and Version records commit in the canonical transaction, and only successful retrieval ingest advances the visible watermark. If canonical commit succeeds but retrieval fails, the query access gate rejects objects whose `MutationLSN > ReadWatermarkLSN`, and retry of the same WAL LSN completes projection.
 
 ### 06.1.6. Data and State
 
@@ -79,7 +79,9 @@ Projection records contain lexical, vector, and sparse features plus attributes 
 
 ### 06.1.7. Correctness
 
-- Retrieval projection succeeds before canonical commit in the active write callback; the two operations do not share a cross-engine transaction.
+- Canonical commit precedes retrieval projection; they do not share a cross-engine transaction, and the watermark is the query-visibility fence.
+- Candidate IDs must exist in the canonical/tiered object plane and pass `CanonicalAccess` before hydration. Projection-only IDs are accepted only on explicit vector-only or warm-segment paths.
+- After graph expansion, node/edge endpoints, proof steps, and provenance references are checked again to prevent a visible seed from exposing an invisible reference.
 - Normal queries filter inactive Warm Memory, while an explicit Cold query may return archived object IDs.
 - Delete/purge canonical, segment/index, cache, and cold records separately.
 - Archive/export should verify the Cold write before deleting Warm data; this rule is implemented by individual operation paths rather than one invariant manager.

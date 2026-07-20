@@ -525,27 +525,111 @@ Functional tests demonstrate behavior; they do not replace capacity testing, fau
 
 ### 01.9.1. Limitations of Flat Memory Stores
 
-When agent memory is only a collection of text, vectors, and metadata, similarity search is straightforward, but version history, causal chains, state replacement, sharing scope, and recovery order are not. Applications are then forced to maintain separate event logs, state tables, and provenance graphs, fragmenting the source of truth.
+When agent memory is only a collection of text, vectors, and metadata, similarity search is straightforward, but version history, causal chains, state replacement, sharing scope, and recovery order are not. Applications are then forced to maintain separate event logs, state tables, and provenance graphs, fragmenting write acknowledgement, retrieval hits, and authoritative facts across different systems.
+
+| Missing semantic | Consequence of vector + metadata only | Plasmod authoritative record |
+|---|---|---|
+| mutation order | concurrent updates and replay cannot be distinguished | Event + WAL LSN |
+| current state | a similar hit is not necessarily the current value | State |
+| history | overwrites lose old values and validity boundaries | ObjectVersion snapshot + validity interval |
+| causality | metadata references are not a traversable graph | Edge + source/target object ID |
+| visibility | an index hit may precede complete persistence | mutation LSN + visible watermark |
+| recovery | a damaged index has no verifiable rebuild source | WAL + canonical objects/versions |
+
+The engineering invariant is: **the canonical plane is authoritative; the retrieval plane is a disposable acceleration view**. Candidate IDs must hydrate back to canonical objects, and a projection must never overwrite canonical truth.
 
 ### 01.9.2. Dynamic State Challenges
 
-Tool results, plan updates, and checkpoints continuously mutate agent state. Overwriting a metadata field loses the mutation event, version, visibility time, and recovery basis.
+Tool results, plan updates, and checkpoints continuously mutate agent state. Overwriting a metadata field loses the mutation event, version, visibility time, and recovery basis. Plasmod identifies one mutable state key by:
+
+```text
+(tenant_id, workspace_id, agent_id, session_id, state_key)
+```
+
+`CanonicalStateID` hashes this tuple into a stable ID. Every mutation increments `State.version` and writes an `ObjectVersion` containing a complete `Snapshot`, `MutationEventID`, `MutationLSN`, and `ValidFrom/ValidTo` boundaries.
+
+| Input condition | State behavior |
+|---|---|
+| new state key | create version 1 |
+| new mutation event | close the previous version and append the next version |
+| retry of the same WAL LSN | idempotently complete projection without another version |
+| replay of an old event already in history | keep current state; do not roll it back |
+| same event ID submitted under a new LSN | return a duplicate result without another canonical mutation |
+
+Before canonical commit, Runtime serializes version resolution with `stateProjectionMu`. `ApplyCanonicalProjection` then writes Event, Memory, State, Artifact, Edge, and Version records as one canonical write set. With Badger, object, edge, and version records share one transaction; the memory backend preserves the logical write set but is not a cross-process transaction.
 
 ### 01.9.3. Multi-agent Scope and Provenance
 
-When multiple agents share a workspace, a memory may be private, session-scoped, team-scoped, or shared. A `scope` string alone cannot express visible agents, roles, policy tags, share contracts, and derivation permissions. Query results must also explain why an object was returned and which relationships support it.
+When multiple agents share a workspace, a memory may be private, session-scoped, team-scoped, or shared. A `scope` string alone cannot express tenant/workspace/team/session, owner, visible agents, roles, policy tags, share contracts, and derivation permissions.
+
+Memory, State, Artifact, Edge, and ObjectVersion records persist the same `CanonicalAccess` structure:
+
+| Field | Purpose |
+|---|---|
+| `tenant_id`, `workspace_id`, `team_id`, `session_id` | hierarchical scope |
+| `owner_agent_id` | owner authorization and provenance preservation |
+| `visibility` | private/session/team/workspace/tenant/public/restricted |
+| `visible_to_agents`, `visible_to_roles` | explicit read grants |
+| `policy_tags` | governance labels |
+| `share_contract_id` | binds a derived object to an explicit agreement |
+
+`POST /v1/query` builds a principal from `requester_agent_id` and `requester_roles`, then applies a canonical access gate before hydration. Allowed reasons are returned through `QueryResponse.access_decisions`. After evidence assembly, Node, Edge, ProofStep, and provenance references are filtered again so graph expansion from a visible seed cannot disclose a private endpoint.
+
+`POST /v1/internal/memory/share` no longer performs a direct object copy. Runtime validates ownership and, when supplied, the ShareContract tenant/workspace/scope plus source `derive` and target `read` permissions. It then emits a derived Event through the regular WAL, materialization, canonical projection, and retrieval-visibility path, creating a shared Memory, ObjectVersion, and `derived_from` Edge.
 
 ### 01.9.4. Plasmod Engineering Response
 
-- Event records the causal input.
-- WAL/LSN records acceptance order and drives replay and visibility progress.
-- Canonical Object preserves current, queryable facts.
-- ObjectVersion preserves historical object boundaries.
-- Edge and derivation records preserve relationships and provenance.
-- Retrieval Projection accelerates queries while remaining rebuildable from canonical data.
-- Evidence Response returns the selected object, applied filters, versions, edges, provenance, and proof steps together.
+- Event records causal input, actor, scope, and mutation intent.
+- WAL/LSN records acceptance order, retry identity, replay position, and visibility progress.
+- Canonical Object preserves current facts together with `CanonicalAccess` and `MutationLSN`.
+- ObjectVersion preserves a complete snapshot, mutation event, validity interval, and access context.
+- Edge and derivation records preserve `derived_from`, supports, contradicts, conflict, and other relations.
+- Retrieval Projection is created after canonical commit; a failed projection is retried from the same WAL entry and remains hidden before the visible watermark.
+- Evidence Response returns selected objects, access decisions, versions, edges, provenance, and proof steps together.
 
 These semantics must remain consistent across runtime, storage, query, and recovery paths rather than being reconstructed ad hoc by an SDK or agent framework.
+
+### 01.9.5. Write and Visibility Protocol
+
+```text
+Normalize Event
+-> Append WAL and assign LSN
+-> Derive canonical write set
+-> ApplyCanonicalProjection
+-> Ingest retrieval projection
+-> advance visible watermark
+-> ACK according to consistency mode
+```
+
+Canonical-before-retrieval ordering is deliberate. If retrieval ingest fails, WAL and canonical snapshots remain repair sources, while the controller does not advance the visible watermark. The query access gate rejects objects whose `mutation_lsn > read_watermark_lsn`. Strict ACK waits for the complete projection callback at that LSN; bounded and eventual modes use the controller's configured wait boundary.
+
+### 01.9.6. Query and Evidence Protocol
+
+```text
+QueryRequest + requester principal
+-> retrieval/canonical candidates
+-> canonical existence and access gate
+-> hydration and graph expansion
+-> endpoint access revalidation
+-> version/provenance/proof assembly
+-> QueryResponse(objects, access_decisions, read_watermark_lsn, evidence)
+```
+
+Denied candidates are not listed in `access_decisions`, avoiding object-existence disclosure. The response explains only why returned objects were allowed, such as owner, scope, explicit grant, or share contract.
+
+### 01.9.7. Failure and Recovery Boundaries
+
+| Failure window | Implemented behavior | Guarantee boundary |
+|---|---|---|
+| before WAL append | request fails without an LSN | no canonical mutation |
+| after WAL append, before canonical commit | controller retries the same LSN | materialization and State updates are idempotent |
+| after canonical commit, before retrieval ingest | canonical snapshot exists, watermark is not advanced | normal queries hide that mutation; the same LSN can retry |
+| duplicate event ID under a new LSN | duplicate result reports the original LSN | no duplicate version or State rollback |
+| lost projection/index | replay or rebuild from WAL/canonical data | automatic full reconciliation remains partial |
+
+### 01.9.8. Claims That Remain Out of Scope
+
+This implementation establishes canonical write/query/share invariants in the core Runtime; it is not a complete IAM system and does not authorize every management route. `requester_agent_id` is still caller-supplied and must be bound by an authenticated gateway. Raw canonical CRUD and internal admin routes remain a trusted management plane. Mask/partial responses, uniform write ACLs for every direct lifecycle mutation, cross-node State serialization, and automatic full reconciliation remain future work. Governance and Recovery therefore remain **Partial** overall; schema presence alone is not evidence of complete security or distributed transactions.
 
 ---
 

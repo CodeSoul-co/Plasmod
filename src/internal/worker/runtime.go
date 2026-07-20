@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"runtime/debug"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 
 	"plasmod/src/internal/coordinator"
@@ -26,10 +28,15 @@ import (
 	"plasmod/src/internal/worker/chain"
 	"plasmod/src/internal/worker/consistency"
 	"plasmod/src/internal/worker/nodes"
-	"time"
 )
 
 var releaseOSMemory = debug.FreeOSMemory
+
+var (
+	ErrShareInvalid   = errors.New("invalid share request")
+	ErrShareNotFound  = errors.New("share resource not found")
+	ErrShareForbidden = errors.New("share forbidden")
+)
 
 type Runtime struct {
 	wal               eventbackbone.WAL
@@ -50,9 +57,10 @@ type Runtime struct {
 	queryChain        *chain.QueryChain
 	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
 	// can fire synchronously in SubmitIngest (not only async via subscriber).
-	lastMem   map[string]string
-	lastMemMu sync.RWMutex
-	wipeMu    sync.Mutex
+	lastMem           map[string]string
+	lastMemMu         sync.RWMutex
+	stateProjectionMu sync.Mutex
+	wipeMu            sync.Mutex
 
 	consistencyMu         sync.Mutex
 	consistencyController *consistency.Controller
@@ -473,32 +481,41 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 
 func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
 	ev := entry.Event.NormalizeDynamicEventV04()
+	if existing, ok := r.storage.Objects().GetEvent(ev.Identity.EventID); ok {
+		existing = existing.NormalizeDynamicEventV04()
+		if existing.Time.WalLSN > 0 && existing.Time.WalLSN != entry.LSN {
+			memoryID := schemas.CanonicalMemoryID(existing)
+			return map[string]any{
+				"status":       "duplicate",
+				"lsn":          entry.LSN,
+				"original_lsn": existing.Time.WalLSN,
+				"event_id":     existing.Identity.EventID,
+				"memory_id":    memoryID,
+			}, nil
+		}
+	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 	r.stampEmbeddingSpec(&record)
 
-	// Fail fast on retrieval-plane ingest before mutating canonical stores.
-	// This reduces partial-success windows (WAL only) where object writes succeed
-	// but retrieval ingest fails and query surfaces inconsistent state.
-	if err := r.plane.Ingest(record); err != nil {
-		return nil, err
-	}
-	r.flushDirty.Store(true)
-
 	// ── Persist canonical objects ─────────────────────────────────────────
+	// Canonical state is authoritative and is committed before the disposable
+	// retrieval projection. A failed retrieval write is retried from WAL; query
+	// visibility is still gated by the Controller's visible watermark.
+	r.stateProjectionMu.Lock()
+	state, stateVersions := r.prepareStateMutation(mat.State, mat.StateVersion)
+	mat.State = state
 	projection := storage.CanonicalProjection{
 		Event:                  &ev,
 		Memory:                 &mat.Memory,
-		State:                  mat.State,
+		State:                  state,
 		Edges:                  mat.Edges,
 		IncludeEventBaseEdges:  true,
 		IncludeMemoryBaseEdges: true,
 	}
 	if !r.MinimalMode {
 		projection.Versions = append(projection.Versions, mat.Version)
-		if mat.StateVersion != nil {
-			projection.Versions = append(projection.Versions, *mat.StateVersion)
-		}
+		projection.Versions = append(projection.Versions, stateVersions...)
 	}
 	if mat.Artifact != nil {
 		projection.Artifact = mat.Artifact
@@ -508,8 +525,15 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 		}
 	}
 	if err := r.storage.ApplyCanonicalProjection(projection); err != nil {
+		r.stateProjectionMu.Unlock()
 		return nil, err
 	}
+	r.stateProjectionMu.Unlock()
+
+	if err := r.plane.Ingest(record); err != nil {
+		return nil, err
+	}
+	r.flushDirty.Store(true)
 	salience := mat.Memory.Importance
 	if salience <= 0 {
 		salience = 0.5
@@ -594,11 +618,12 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 	if mat.State != nil {
 		ack["state_id"] = mat.State.StateID
+		ack["state_version"] = mat.State.Version
 	}
 	return ack, nil
 }
 
-func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
+func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64) schemas.QueryResponse {
 	t0Query := time.Now()
 	metrics.Global().ConcurrentQueries.Add(1)
 	defer func() {
@@ -608,8 +633,11 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	if req.ResponseMode == schemas.ResponseModeObjectsOnly && len(req.TargetObjectIDs) > 0 {
 		objectIDs := r.fetchTargetObjectIDs(req)
 		objectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), objectIDs, nil)
+		objectIDs, accessDecisions := r.filterObjectIDsByAccess(req, objectIDs, readWatermarkLSN)
 		resp := schemas.QueryResponse{
-			Objects: objectIDs,
+			Objects:          objectIDs,
+			AccessDecisions:  accessDecisions,
+			ReadWatermarkLSN: readWatermarkLSN,
 			Retrieval: &schemas.RetrievalSummary{
 				Tier:          "target_object",
 				RetrievalHits: len(objectIDs),
@@ -662,7 +690,8 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	}
 	result.ObjectIDs = appendMissing(result.ObjectIDs, r.fetchTargetObjectIDs(req))
 	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs, result.ColdObjectIDs)
-	retrievalHitCount := len(result.ObjectIDs)
+	retrievalVisibleIDs, _ := r.filterObjectIDsByAccess(req, result.ObjectIDs, readWatermarkLSN)
+	retrievalHitCount := len(retrievalVisibleIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
 	// State, Artifact, and Event objects are stored directly in ObjectStore, not
@@ -675,10 +704,14 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		canonicalAddCount = len(canonicalIDs)
 		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
 	}
+	var accessDecisions []schemas.AccessDecision
+	result.ObjectIDs, accessDecisions = r.filterObjectIDsByAccess(req, result.ObjectIDs, readWatermarkLSN)
 
 	if vectorOnlyMode {
 		resp := schemas.QueryResponse{
-			Objects: result.ObjectIDs,
+			Objects:          result.ObjectIDs,
+			AccessDecisions:  accessDecisions,
+			ReadWatermarkLSN: readWatermarkLSN,
 			Retrieval: &schemas.RetrievalSummary{
 				Tier:               result.Tier,
 				ColdSearchMode:     result.ColdSearchMode,
@@ -701,7 +734,9 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 
 	if req.ResponseMode == schemas.ResponseModeObjectsOnly {
 		resp := schemas.QueryResponse{
-			Objects: result.ObjectIDs,
+			Objects:          result.ObjectIDs,
+			AccessDecisions:  accessDecisions,
+			ReadWatermarkLSN: readWatermarkLSN,
 			Retrieval: &schemas.RetrievalSummary{
 				Tier:               result.Tier,
 				ColdSearchMode:     result.ColdSearchMode,
@@ -727,6 +762,8 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 		filters = r.policy.ApplyQueryFilters(req)
 	}
 	resp := r.assembler.Build(searchInput, result, filters)
+	resp.AccessDecisions = accessDecisions
+	resp.ReadWatermarkLSN = readWatermarkLSN
 	resp.Retrieval = &schemas.RetrievalSummary{
 		Tier:               result.Tier,
 		ColdSearchMode:     result.ColdSearchMode,
@@ -792,6 +829,7 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 	if !r.VectorOnlyMode && !r.MinimalMode {
 		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 	}
+	r.filterResponseEvidenceByAccess(req, readWatermarkLSN, &resp)
 
 	// Record evidence-supported rate (3-MT5)
 	evidenceSupported := len(resp.ProofTrace) > 0 || len(resp.Nodes) > 0
@@ -813,6 +851,8 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest) schemas.QueryResponse {
 // are not covered by any share contract.  Each such ID increments the global
 // contamination counter (4-M1).
 func (r *Runtime) detectContamination(requesterAgentID string, objectIDs []string) {
+	principal := semantic.AccessPrincipal{AgentID: requesterAgentID}
+	contracts := r.storage.Contracts().ListContracts()
 	for _, id := range objectIDs {
 		mem, ok := r.storage.Objects().GetMemory(id)
 		if !ok {
@@ -821,18 +861,20 @@ func (r *Runtime) detectContamination(requesterAgentID string, objectIDs []strin
 		if mem.AgentID == "" || mem.AgentID == requesterAgentID {
 			continue
 		}
-		ownerScope := mem.Scope
-		if ownerScope == "" {
-			ownerScope = mem.AgentID
-		}
-		// Check if a share contract allows the requester to read this scope.
-		allowed := false
-		for _, c := range r.storage.Contracts().ContractsByScope(ownerScope) {
-			if c.ReadACL == "*" || c.ReadACL == requesterAgentID {
-				allowed = true
-				break
-			}
-		}
+		record := memoryAccessRecord(mem)
+		principal.TenantID = record.access.TenantID
+		principal.WorkspaceID = record.access.WorkspaceID
+		principal.TeamID = record.access.TeamID
+		principal.SessionID = record.access.SessionID
+		_, allowed := r.policy.EvaluateAccess(
+			id,
+			record.ownerAgentID,
+			record.access,
+			principal,
+			contracts,
+			record.mutationLSN,
+			math.MaxInt64,
+		)
 		if !allowed {
 			metrics.Global().RecordContaminationAttempt()
 		}
@@ -1415,39 +1457,104 @@ func (r *Runtime) MemoryDeleteOutboxStats() map[string]any {
 	return map[string]any{"enabled": false}
 }
 
-// DispatchShare copies a memory to a target agent's namespace and fires
-// CommunicationWorker for any side-effects.
+// DispatchShare creates an event-derived shared canonical Memory. The source
+// remains the owner and the target receives an explicit read grant.
 func (r *Runtime) DispatchShare(fromAgentID, toAgentID, memoryID string) (string, error) {
-	mem, ok := r.storage.Objects().GetMemory(memoryID)
+	return r.DispatchShareWithContract(fromAgentID, toAgentID, memoryID, "")
+}
+
+// DispatchShareWithContract validates an optional ShareContract before the
+// derived object enters the normal WAL/materialization/visibility pipeline.
+func (r *Runtime) DispatchShareWithContract(fromAgentID, toAgentID, memoryID, contractID string) (string, error) {
+	fromAgentID = strings.TrimSpace(fromAgentID)
+	toAgentID = strings.TrimSpace(toAgentID)
+	memoryID = strings.TrimSpace(memoryID)
+	if fromAgentID == "" || toAgentID == "" || memoryID == "" {
+		return "", fmt.Errorf("%w: memory_id, from_agent_id, and to_agent_id are required", ErrShareInvalid)
+	}
+	mem, ok := r.peekCanonicalMemory(memoryID)
 	if !ok {
-		return "", fmt.Errorf("memory not found: %s", memoryID)
+		return "", fmt.Errorf("%w: memory %s", ErrShareNotFound, memoryID)
+	}
+	sourceRecord := memoryAccessRecord(mem)
+	ownerAgentID := sourceRecord.ownerAgentID
+	if ownerAgentID != "" && ownerAgentID != fromAgentID {
+		return "", fmt.Errorf("%w: agent %s does not own memory %s", ErrShareForbidden, fromAgentID, memoryID)
 	}
 	if fromAgentID == toAgentID {
 		return "", nil // no-op
 	}
-	sharedID := "shared_" + memoryID + "_to_" + toAgentID
-	shared := schemas.Memory{
-		MemoryID:       sharedID,
-		AgentID:        toAgentID,
-		SessionID:      mem.SessionID,
-		OwnerType:      "shared",
-		Scope:          "restricted_shared",
-		MemoryType:     mem.MemoryType,
-		Content:        mem.Content,
-		Level:          mem.Level,
-		SourceEventIDs: mem.SourceEventIDs,
-		Importance:     mem.Importance,
-		Confidence:     mem.Confidence,
-		IsActive:       mem.IsActive,
-		Version:        mem.Version,
-		ValidFrom:      time.Now().UTC().Format(time.RFC3339),
-		ProvenanceRef:  fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID),
+	contractID = strings.TrimSpace(contractID)
+	if contractID != "" {
+		contract, found := r.storage.Contracts().GetContract(contractID)
+		if !found {
+			return "", fmt.Errorf("%w: share contract %s", ErrShareNotFound, contractID)
+		}
+		if !shareContractMatchesSourceScope(contract, sourceRecord.access) {
+			return "", fmt.Errorf("%w: share contract %s does not match memory scope", ErrShareForbidden, contractID)
+		}
+		source := r.accessPrincipal(schemas.QueryRequest{
+			TenantID: sourceRecord.access.TenantID, WorkspaceID: sourceRecord.access.WorkspaceID,
+			TeamID: sourceRecord.access.TeamID, SessionID: sourceRecord.access.SessionID,
+			RequesterAgentID: fromAgentID,
+		})
+		target := r.accessPrincipal(schemas.QueryRequest{
+			TenantID: sourceRecord.access.TenantID, WorkspaceID: sourceRecord.access.WorkspaceID,
+			TeamID: sourceRecord.access.TeamID, SessionID: sourceRecord.access.SessionID,
+			RequesterAgentID: toAgentID,
+		})
+		if !r.policy.IsShareContractAllowed("derive", contract, source) {
+			return "", fmt.Errorf("%w: share contract %s denies derive for %s", ErrShareForbidden, contractID, fromAgentID)
+		}
+		if !r.policy.IsShareContractAllowed("read", contract, target) {
+			return "", fmt.Errorf("%w: share contract %s denies read for %s", ErrShareForbidden, contractID, toAgentID)
+		}
 	}
-	r.storage.Objects().PutMemory(shared)
-	if r.nodeManager != nil {
-		r.nodeManager.DispatchCommunication(fromAgentID, toAgentID, memoryID)
+	sharedID := schemas.IDPrefixShared + memoryID + "_to_" + toAgentID
+	importance := mem.Importance
+	confidence := mem.Confidence
+	event := schemas.Event{
+		Identity: schemas.EventIdentity{
+			EventID:     fmt.Sprintf("share_%s_to_%s_%d", memoryID, toAgentID, time.Now().UnixNano()),
+			TenantID:    sourceRecord.access.TenantID,
+			WorkspaceID: sourceRecord.access.WorkspaceID,
+		},
+		Actor: schemas.EventActor{AgentID: fromAgentID, TeamID: sourceRecord.access.TeamID, SessionID: sourceRecord.access.SessionID},
+		EventInfo: schemas.EventDescriptor{
+			EventType: string(schemas.EventTypeMemoryWriteRequested), Importance: &importance, Confidence: &confidence,
+		},
+		Object: schemas.EventObject{ObjectID: sharedID, ObjectType: string(schemas.ObjectTypeMemory), ObjectSubtype: "shared"},
+		Causality: schemas.EventCausality{
+			SourceObjectID: memoryID, TargetObjectID: sharedID, EdgeKind: string(schemas.EdgeTypeDerivedFrom),
+		},
+		Access: schemas.EventAccess{
+			Consistency: string(schemas.AccessConsistencyStrict), Visibility: string(schemas.MemoryScopeRestrictedShared),
+			VisibleToAgents: []string{toAgentID}, PolicyTags: append([]string(nil), sourceRecord.access.PolicyTags...), ShareContractID: contractID,
+		},
+		Payload: map[string]any{
+			"text": mem.Content, "memory_type": mem.MemoryType,
+			"shared_from_memory_id": memoryID, "shared_to_agent_id": toAgentID,
+		},
+	}
+	if _, err := r.SubmitIngest(event); err != nil {
+		return "", err
 	}
 	return sharedID, nil
+}
+
+func shareContractMatchesSourceScope(contract schemas.ShareContract, access schemas.CanonicalAccess) bool {
+	if contract.TenantID != "" && contract.TenantID != access.TenantID {
+		return false
+	}
+	if contract.WorkspaceID != "" && contract.WorkspaceID != access.WorkspaceID {
+		return false
+	}
+	if contract.Scope == "" {
+		return true
+	}
+	return contract.Scope == access.WorkspaceID ||
+		contract.Scope == access.TeamID ||
+		contract.Scope == access.SessionID
 }
 
 // DispatchConflictResolve resolves a memory conflict and returns the winner ID.

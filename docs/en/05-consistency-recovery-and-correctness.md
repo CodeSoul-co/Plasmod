@@ -60,13 +60,13 @@ The [Execution State and Failure Matrix](14-implementation-status-gaps-and-claim
 
 - FileWAL append is a durability boundary.
 - The backend canonical projection can be applied transactionally to Event/Memory/checkpoint State/optional Artifact/Edges/Versions.
-- DataPlane ingest, canonical transaction, cache, S3, subscriber workers are multiple failure domains.
+- Canonical transaction, DataPlane ingest, cache, S3, and subscriber workers are separate failure domains; the primary callback commits canonical state before retrieval ingest.
 - strict mode visibility failure does not delete the submitted WAL, but returns accepted-not-visible.
 - bounded/eventual ACK indicates pending, not all queryable objects completed.
 
 ### 05.1.5. Call Relationships
 
-The Gateway passes the Event to Runtime and the consistency Controller. The Controller appends WAL first, then invokes the Runtime projection callback synchronously or through a queue according to the selected mode. Projection updates the DataPlane and canonical bundle before advancing the watermark and checkpoint. The Event-bus subscriber independently performs State, tool-trace, index, and lifecycle maintenance.
+The Gateway passes the Event to Runtime and the consistency Controller. The Controller appends WAL first, then invokes the Runtime projection callback synchronously or through a queue according to the selected mode. Projection commits the canonical bundle first, writes the DataPlane second, and advances watermark/checkpoint only after both succeed. The primary canonical bundle now includes stable State; the subscriber State worker primarily supports specialized apply/checkpoint calls, while tool-trace, index, and lifecycle maintenance remains asynchronous.
 
 Strict mode waits for the main projection to become visible, but it does not wait for every subscriber worker. Bounded and eventual modes may return before projection completes. Read gates compare the observed or required LSN with the visible watermark.
 
@@ -97,7 +97,7 @@ Recovery APIs:
 
 #### 05.1.7.1. Idempotency, retry and audit
 
-Deterministic IDs and upsert semantics support replay. The Controller retries projection and checkpoint work, while the subscriber has process-local overflow, error, and dead-letter handling. There is no durable universal dead-letter queue, divergence scanner, repair planner, or post-repair verifier.
+Deterministic IDs and upserts support replay. State history additionally deduplicates mutation events and prevents replay of an old mutation from rolling current State backward. If canonical commit succeeds and retrieval ingest fails, retrying the same LSN reuses canonical identity and completes projection; the query gate hides records beyond the watermark. Submitting the same event ID under a new LSN returns a duplicate result without another version. The Controller retries projection/checkpoint work, while the subscriber has process-local overflow, error, and dead-letter handling. There is no durable universal dead-letter queue, divergence scanner, repair planner, or post-repair verifier.
 
 ### 05.1.8. Claim Boundaries
 

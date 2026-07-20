@@ -144,8 +144,8 @@ func TestStateMatWorker_Apply_StateUpdateEvent(t *testing.T) {
 		t.Fatalf("Apply failed: %v", err)
 	}
 
-	// StateMat stores by agentID + "_" + stateKey, not by eventID
-	stateID := schemas.IDPrefixState + "a1_k"
+	// StateMat uses the same scope-safe deterministic ID as Runtime replay.
+	stateID := schemas.CanonicalStateID("", "", "a1", "s1", "k")
 	state, ok := store.Objects().GetState(stateID)
 	if !ok {
 		t.Fatalf("expected State to be stored with ID %q", stateID)

@@ -60,6 +60,12 @@ func (w *InMemoryCommunicationWorker) Broadcast(fromAgentID, toAgentID, memoryID
 	shared.MemoryID = schemas.IDPrefixShared + memoryID + "_to_" + toAgentID
 	shared.AgentID = toAgentID
 	shared.ProvenanceRef = fmt.Sprintf("shared_from:%s/%s", fromAgentID, memoryID)
+	shared.Access.OwnerAgentID = fromAgentID
+	shared.Access.Visibility = string(schemas.MemoryScopeRestrictedShared)
+	shared.Access.VisibleToAgents = []string{toAgentID}
+	shared.Access.VisibleToRoles = nil
+	shared.Access.ShareContractID = ""
+	shared.Scope = string(schemas.MemoryScopeRestrictedShared)
 	shared.IsActive = true
 	w.objStore.PutMemory(shared)
 	return nil

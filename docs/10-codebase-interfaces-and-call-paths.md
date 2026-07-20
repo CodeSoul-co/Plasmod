@@ -274,14 +274,16 @@ cmd/server.main
 ```text
 state_update/tool_result Event
   -> normalize actor/session + state key/value
-  -> StateMaterializationWorker
-  -> state_<agent>_<key>
-  -> version increment
-  -> AgentState + ObjectVersion
+  -> materialization.Service
+  -> CanonicalStateID(tenant, workspace, agent, session, key)
+  -> Runtime.prepareStateMutation (deduplicate + monotonic version)
+  -> ApplyCanonicalProjection(Event + AgentState + ObjectVersion snapshot)
+  -> optional subscriber StateMaterializationWorker checkpoint/apply
   -> query by scope/key/latest version
 ```
 
-State key/version 提取失败应阻止伪造空状态。直接 `/v1/states` POST 绕过此 Event 链，应只用于管理迁移。
+没有显式 key 时主链更新 `last_memory_id`。同 event replay 幂等，旧 mutation 不回滚新状态。直接
+`/v1/states` POST 绕过 Event/WAL/version chain，应只用于受信管理迁移。
 
 ---
 

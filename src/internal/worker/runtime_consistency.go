@@ -187,7 +187,7 @@ func (r *Runtime) ExecuteQueryContext(ctx context.Context, req schemas.QueryRequ
 	if err := controller.WaitForRead(ctx, req); err != nil {
 		return schemas.QueryResponse{}, err
 	}
-	return r.executeQuery(req), nil
+	return r.executeQuery(req, controller.Status().VisibleWatermark), nil
 }
 
 // ExecuteQuery preserves the historical no-error API for embedded callers.

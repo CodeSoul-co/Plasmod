@@ -160,8 +160,9 @@ func TestService_MaterializeEvent_DynamicEventV04(t *testing.T) {
 		Actor: schemas.EventActor{
 			AgentID:   "agent_1",
 			SessionID: "session_1",
+			TeamID:    "team_1",
 		},
-		Time: schemas.EventTime{LogicalTS: 99},
+		Time: schemas.EventTime{LogicalTS: 99, WalLSN: 88},
 		EventInfo: schemas.EventDescriptor{
 			EventType:  string(schemas.EventTypeToolResult),
 			Confidence: &confidence,
@@ -177,10 +178,13 @@ func TestService_MaterializeEvent_DynamicEventV04(t *testing.T) {
 			Reason:         "tool evidence",
 		},
 		Access: schemas.EventAccess{
-			Consistency: "bounded",
-			Visibility:  "workspace",
-			TTLMS:       &ttl,
-			PolicyTags:  []string{"synthetic"},
+			Consistency:     "bounded",
+			Visibility:      "workspace",
+			TTLMS:           &ttl,
+			PolicyTags:      []string{"synthetic"},
+			VisibleToAgents: []string{"agent_reader"},
+			VisibleToRoles:  []string{"critic"},
+			ShareContractID: "contract_1",
 		},
 		Retrieval: schemas.EventRetrieval{
 			IndexText:          "tool result text",
@@ -213,6 +217,16 @@ func TestService_MaterializeEvent_DynamicEventV04(t *testing.T) {
 	if res.Memory.EmbeddingRef != "embedding://evt_v04" {
 		t.Fatalf("embedding ref not copied: %q", res.Memory.EmbeddingRef)
 	}
+	if res.Memory.TenantID != "tenant_1" || res.Memory.WorkspaceID != "workspace_1" || res.Memory.MutationLSN != ev.Time.WalLSN || res.Memory.MaterializedAt == "" {
+		t.Fatalf("canonical mutation metadata not copied: %+v", res.Memory)
+	}
+	if res.Memory.TTL != 60 || res.Memory.Access.TeamID != "team_1" || res.Memory.Access.VisibleToAgents[0] != "agent_reader" ||
+		res.Memory.Access.VisibleToRoles[0] != "critic" || res.Memory.Access.ShareContractID != "contract_1" {
+		t.Fatalf("canonical access contract not copied: %+v", res.Memory.Access)
+	}
+	if len(res.Version.Snapshot) == 0 || res.Version.Access.ShareContractID != "contract_1" {
+		t.Fatalf("memory version is not recoverable or scoped: %+v", res.Version)
+	}
 	if res.Artifact == nil || res.Artifact.URI != "s3://bucket/result.json" || res.Artifact.MimeType != "application/json" {
 		t.Fatalf("artifact not derived from v0.4 payload: %+v", res.Artifact)
 	}
@@ -227,6 +241,19 @@ func TestService_MaterializeEvent_DynamicEventV04(t *testing.T) {
 	}
 	if !foundExplicitEdge {
 		t.Fatalf("explicit causality edge not materialized: %+v", res.Edges)
+	}
+}
+
+func TestServiceMaterializeEventUsesExplicitCanonicalMemoryID(t *testing.T) {
+	result := NewService().MaterializeEvent(schemas.Event{
+		Identity:  schemas.EventIdentity{EventID: "share-event"},
+		Actor:     schemas.EventActor{AgentID: "owner", SessionID: "session"},
+		EventInfo: schemas.EventDescriptor{EventType: string(schemas.EventTypeMemoryWriteRequested)},
+		Object:    schemas.EventObject{ObjectID: "shared_source_to_reader", ObjectType: string(schemas.ObjectTypeMemory)},
+		Payload:   map[string]any{"text": "derived shared memory"},
+	})
+	if result.Memory.MemoryID != "shared_source_to_reader" || result.Record.ObjectID != "shared_source_to_reader" || result.Version.ObjectID != "shared_source_to_reader" {
+		t.Fatalf("explicit canonical memory ID was not preserved: %+v", result)
 	}
 }
 

@@ -65,7 +65,7 @@ Object ID 是主要连接键；namespace、object/memory type、event time、emb
 
 Event write 由 consistency projection callback 驱动 materializer、DataPlane 和 canonical store；query 先读 projection，再从 canonical stores hydrate 并构造 evidence。Admin replay/reindex 从 WAL 或 canonical state 重建 projection。
 
-当前主写回调的顺序是 `DataPlane.Ingest` 先于 `ApplyCanonicalProjection`，两者不共享 transaction。State 的 keyed canonical materialization 主要由 subscriber worker 异步完成，因此不能把 Memory projection visible 推导为 State 已 materialized。
+当前主写回调先执行 `ApplyCanonicalProjection`，再执行 `DataPlane.Ingest`，两者仍不共享跨引擎 transaction。Event、Memory、stable State、可选 Artifact、Edge 和 Version 在 canonical transaction 内提交；retrieval 成功后才推进 visible watermark。canonical 已提交但 retrieval 失败时，query access gate 以 `MutationLSN > ReadWatermarkLSN` 拒绝该对象，并由同一 WAL LSN 重试补全 projection。
 
 ### 06.1.6. 数据与状态
 
@@ -79,7 +79,9 @@ Projection 中存 text/vector/sparse terms、attributes、segment/tier/index met
 
 ### 06.1.7. 正确性
 
-- Runtime projection success precedes canonical commit in main write callback；两者无跨引擎 transaction。
+- Runtime canonical commit precedes retrieval projection；两者无跨引擎 transaction，watermark 是 query visibility fence。
+- Candidate ID 在 hydration 前必须存在于 canonical/tiered object plane 并通过 `CanonicalAccess`；projection-only ID 仅限显式 vector-only/warm-segment 路径。
+- Evidence graph expansion 后再次检查 node/edge endpoint/proof/provenance，避免可见 seed 泄漏不可见引用。
 - inactive warm Memory 会从普通 query filter 中移除；explicit cold result 可保留 archived object。
 - delete/purge 要分别清理 canonical、segment/index、cache、cold records。
 - archive/export 必须在删除 warm 前确认 cold write；当前由操作路径而非统一 invariant manager 执行。
