@@ -79,6 +79,9 @@ type SearchOutput struct {
 	// ColdUsedFallback indicates that cold retrieval fell back from a preferred
 	// mode (e.g. HNSW) to a cheaper/safer alternative (vector or lexical).
 	ColdUsedFallback bool
+	// Candidate counts are measured before cross-tier fusion.
+	HotCandidateCount  int
+	WarmCandidateCount int
 }
 
 // DataPlane is the interface satisfied by all retrieval execution modules

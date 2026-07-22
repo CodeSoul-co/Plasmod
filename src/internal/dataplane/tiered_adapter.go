@@ -3,6 +3,7 @@ package dataplane
 import (
 	"fmt"
 	"sort"
+	"sync"
 
 	"plasmod/src/internal/dataplane/segmentstore"
 	"plasmod/src/internal/schemas"
@@ -35,6 +36,12 @@ type TieredDataPlane struct {
 	coldVectorSearch func(queryVec []float32, topK int) []string
 	coldHNSWSearch   func(queryVec []float32, topK int) []string
 	rrfK             int
+	tierMu           sync.RWMutex
+	hotEnabled       bool
+	warmEnabled      bool
+	coldEnabled      bool
+	hotLimit         int
+	hotObjects       map[string]struct{}
 }
 
 func normalizeTieredRRFK(cfg schemas.AlgorithmConfig) int {
@@ -71,7 +78,8 @@ func NewTieredDataPlaneWithConfig(tieredObjs *storage.TieredObjectStore, cfg sch
 		coldHNSWSearch: func(queryVec []float32, topK int) []string {
 			return objs.ColdHNSWSearch(queryVec, topK)
 		},
-		rrfK: normalizeTieredRRFK(cfg),
+		rrfK: normalizeTieredRRFK(cfg), hotEnabled: true, warmEnabled: true,
+		coldEnabled: true, hotLimit: 2000, hotObjects: make(map[string]struct{}),
 	}
 }
 
@@ -112,8 +120,35 @@ func NewTieredDataPlaneWithEmbedderAndConfig(tieredObjs *storage.TieredObjectSto
 		coldHNSWSearch: func(queryVec []float32, topK int) []string {
 			return tieredObjs.ColdHNSWSearch(queryVec, topK)
 		},
-		rrfK: normalizeTieredRRFK(cfg),
+		rrfK: normalizeTieredRRFK(cfg), hotEnabled: true, warmEnabled: true,
+		coldEnabled: true, hotLimit: 2000, hotObjects: make(map[string]struct{}),
 	}, nil
+}
+
+// ConfigureTierProfile enables the physical retrieval paths used by this
+// runtime. Hot capacity bounds insertion into the fast lexical index.
+func (t *TieredDataPlane) ConfigureTierProfile(profile string, hotCapacity int) {
+	if t == nil {
+		return
+	}
+	if hotCapacity < 1 {
+		hotCapacity = 1
+	}
+	t.tierMu.Lock()
+	defer t.tierMu.Unlock()
+	t.hotEnabled = profile != "no_hot" && profile != "warm_only"
+	t.warmEnabled = true
+	t.coldEnabled = profile != "warm_only" && profile != "no_cold"
+	t.hotLimit = hotCapacity
+	if t.hotObjects == nil {
+		t.hotObjects = make(map[string]struct{})
+	}
+}
+
+func (t *TieredDataPlane) tierSettings() (bool, bool, bool, int) {
+	t.tierMu.RLock()
+	defer t.tierMu.RUnlock()
+	return t.hotEnabled, t.warmEnabled, t.coldEnabled, t.hotLimit
 }
 
 // HotIndex exposes the raw hot-tier index so the node manager and bootstrap can
@@ -130,6 +165,9 @@ func (t *TieredDataPlane) AdminResetRetrieval(cfg schemas.AlgorithmConfig) error
 		return nil
 	}
 	t.hot = segmentstore.NewIndex()
+	t.tierMu.Lock()
+	t.hotObjects = make(map[string]struct{})
+	t.tierMu.Unlock()
 	t.rrfK = normalizeTieredRRFK(cfg)
 	if t.embedder == nil {
 		t.warm = NewSegmentDataPlaneWithConfig(cfg)
@@ -166,23 +204,30 @@ func (t *TieredDataPlane) Flush() error {
 // tier migration) via TieredObjectStore.ArchiveMemory; it is NOT written on
 // every ingest to avoid write amplification.
 func (t *TieredDataPlane) Ingest(record IngestRecord) error {
+	hotEnabled, warmEnabled, _, hotLimit := t.tierSettings()
 	warmIngest := t.warmIngest
 	if warmIngest == nil && t.warm != nil {
 		warmIngest = t.warm.Ingest
 	}
-	if warmIngest == nil {
+	if warmEnabled && warmIngest == nil {
 		return fmt.Errorf("warm plane unavailable")
 	}
-	if err := warmIngest(record); err != nil {
-		return err
+	if warmEnabled {
+		if err := warmIngest(record); err != nil {
+			return err
+		}
 	}
-	t.hot.InsertObject(
-		record.ObjectID,
-		record.Text,
-		record.Attributes,
-		record.Namespace,
-		record.EventUnixTS,
-	)
+	if hotEnabled {
+		t.tierMu.Lock()
+		_, exists := t.hotObjects[record.ObjectID]
+		if exists || len(t.hotObjects) < hotLimit {
+			t.hotObjects[record.ObjectID] = struct{}{}
+			t.tierMu.Unlock()
+			t.hot.InsertObject(record.ObjectID, record.Text, record.Attributes, record.Namespace, record.EventUnixTS)
+		} else {
+			t.tierMu.Unlock()
+		}
+	}
 	return nil
 }
 
@@ -342,21 +387,26 @@ func (t *TieredDataPlane) resolveColdIDs(input SearchInput) ([]string, string, b
 //  2. Warm plane — full in-memory (lexical, or hybrid if embedder is set)
 //  3. Cold tier — archived (only when IncludeCold flag set, via TieredObjectStore)
 func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
-	hotResult := t.hot.Search(segmentstore.SearchRequest{
-		Query:          input.QueryText,
-		TopK:           input.TopK,
-		Namespace:      input.Namespace,
-		MinEventUnixTS: input.TimeFromUnixTS,
-		MaxEventUnixTS: input.TimeToUnixTS,
-		IncludeGrowing: true,
-	})
+	hotEnabled, warmEnabled, coldEnabled, _ := t.tierSettings()
+	hotResult := segmentstore.SearchResult{}
+	if hotEnabled {
+		hotResult = t.hot.Search(segmentstore.SearchRequest{
+			Query:          input.QueryText,
+			TopK:           input.TopK,
+			Namespace:      input.Namespace,
+			MinEventUnixTS: input.TimeFromUnixTS,
+			MaxEventUnixTS: input.TimeToUnixTS,
+			IncludeGrowing: true,
+		})
+	}
 
 	hotOut := t.hotToOutput(hotResult)
+	hotOut.HotCandidateCount = len(hotOut.ObjectIDs)
 
 	// Early return only when hot fully satisfies the request and cold is not needed.
 	if len(hotResult.Hits) >= input.TopK && input.TopK > 0 {
 		hotOut.Tier = "hot"
-		if !input.IncludeCold {
+		if !input.IncludeCold || !coldEnabled {
 			return hotOut
 		}
 		// Caller asked for cold tier: merge even when hot already satisfies TopK,
@@ -370,6 +420,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 			ColdCandidateCount: len(coldIDs),
 			ColdTierRequested:  true,
 			ColdUsedFallback:   coldFallback,
+			HotCandidateCount:  len(hotOut.ObjectIDs),
 		}
 		merged := mergeOutputs(hotOut, coldOutput, input.TopK)
 		merged.Tier = "hot+cold"
@@ -378,11 +429,16 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		merged.ColdCandidateCount = coldOutput.ColdCandidateCount
 		merged.ColdTierRequested = true
 		merged.ColdUsedFallback = coldOutput.ColdUsedFallback
+		merged.HotCandidateCount = len(hotOut.ObjectIDs)
 		return merged
 	}
 
 	// Warm tier (lexical or lexical+vector depending on embedder/vector readiness).
-	warmOut := t.warm.Search(input)
+	warmOut := SearchOutput{}
+	if warmEnabled {
+		warmOut = t.warm.Search(input)
+		warmOut.WarmCandidateCount = len(warmOut.ObjectIDs)
+	}
 
 	// Collect candidate ranked lists for fusion.
 	candidateLists := [][]string{}
@@ -397,7 +453,7 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 
 	// Cold tier is consulted only when explicitly requested.
 	coldOut := SearchOutput{}
-	if input.IncludeCold {
+	if input.IncludeCold && coldEnabled {
 		coldIDs, coldMode, coldFallback := t.resolveColdIDs(input)
 		coldOut = SearchOutput{
 			ObjectIDs:          coldIDs,
@@ -434,8 +490,10 @@ func (t *TieredDataPlane) Search(input SearchInput) SearchOutput {
 		Tier:               tierLabel,
 		ColdSearchMode:     coldOut.ColdSearchMode,
 		ColdCandidateCount: coldOut.ColdCandidateCount,
-		ColdTierRequested:  input.IncludeCold,
+		ColdTierRequested:  input.IncludeCold && coldEnabled,
 		ColdUsedFallback:   coldOut.ColdUsedFallback,
+		HotCandidateCount:  len(hotOut.ObjectIDs),
+		WarmCandidateCount: len(warmOut.ObjectIDs),
 	}
 }
 
@@ -511,5 +569,9 @@ func mergeOutputs(a, b SearchOutput, topK int) SearchOutput {
 	}
 	segs := append(a.ScannedSegments, b.ScannedSegments...)
 	planned := append(a.PlannedSegments, b.PlannedSegments...)
-	return SearchOutput{ObjectIDs: ids, ScannedSegments: segs, PlannedSegments: planned}
+	return SearchOutput{
+		ObjectIDs: ids, ScannedSegments: segs, PlannedSegments: planned,
+		HotCandidateCount:  a.HotCandidateCount + b.HotCandidateCount,
+		WarmCandidateCount: a.WarmCandidateCount + b.WarmCandidateCount,
+	}
 }

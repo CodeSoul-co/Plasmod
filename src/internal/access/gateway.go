@@ -434,6 +434,11 @@ func (g *Gateway) RegisterMgmtRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/rollback", g.handleAdminRollback)
 	mux.HandleFunc("/v1/admin/consistency-mode", g.handleAdminConsistencyMode)
 	mux.HandleFunc("/v1/admin/replay", g.handleAdminReplay)
+	mux.HandleFunc("/v1/admin/recovery/reset", g.handleAdminRecoveryReset)
+	mux.HandleFunc("/v1/admin/runtime/state", g.handleAdminRuntimeState)
+	mux.HandleFunc("/v1/admin/capabilities", g.handleAdminCapabilities)
+	mux.HandleFunc("/v1/admin/tier/archive", g.handleAdminTierArchive)
+	mux.HandleFunc("/v1/admin/tier/status", g.handleAdminTierStatus)
 	mux.HandleFunc("/v1/admin/metrics", g.handleAdminMetrics)
 	mux.HandleFunc("/v1/admin/governance-mode", g.handleAdminGovernanceMode)
 	mux.HandleFunc("/v1/admin/runtime-mode", g.handleAdminRuntimeMode)
@@ -1857,6 +1862,97 @@ func (g *Gateway) handleAdminReplay(w http.ResponseWriter, r *http.Request) {
 	summary["dry_run"] = !applyRequested
 	summary["apply"] = applyRequested
 	writeJSON(w, summary)
+}
+
+func (g *Gateway) handleAdminCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "capabilities": g.runtime.RuntimeCapabilities()})
+}
+
+func (g *Gateway) handleAdminRuntimeState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "state": g.runtime.RuntimeStateSummary()})
+}
+
+func (g *Gateway) handleAdminRecoveryReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Confirm) != "reset_materialized" {
+		http.Error(w, `confirm must be "reset_materialized"`, http.StatusBadRequest)
+		return
+	}
+	out, err := g.runtime.AdminResetMaterialized(g.bundle, schemas.DefaultAlgorithmConfig())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, out)
+}
+
+func (g *Gateway) handleAdminTierArchive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		MemoryID string `json:"memory_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	out, err := g.runtime.AdminArchiveMemory(body.MemoryID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, out)
+}
+
+func (g *Gateway) handleAdminTierStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if g.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"status": "ok", "tier_profile": g.runtime.RuntimeCapabilities().TierProfile,
+		"state": g.runtime.RuntimeStateSummary(),
+	})
 }
 
 // handleAdminRollback performs a minimal memory-level rollback action for
