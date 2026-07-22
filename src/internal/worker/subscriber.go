@@ -61,15 +61,16 @@ type DispatchHandler func(entry eventbackbone.WALEntry)
 //   - DLQ overflow-safe: panics are never silently dropped — they are either
 //     sent to the deadLetter channel or appended to an in-memory overflow buffer.
 type EventSubscriber struct {
-	wal            eventbackbone.WAL
-	manager        *nodes.Manager
-	handlers       []DispatchHandler
-	lastLSN        atomic.Int64
-	pollInterval   time.Duration
-	boundaryMu     sync.RWMutex
-	visibleThrough func() int64
-	drainMu        sync.Mutex
-	paused         atomic.Bool
+	wal                    eventbackbone.WAL
+	manager                *nodes.Manager
+	handlers               []DispatchHandler
+	materializationProfile string
+	lastLSN                atomic.Int64
+	pollInterval           time.Duration
+	boundaryMu             sync.RWMutex
+	visibleThrough         func() int64
+	drainMu                sync.Mutex
+	paused                 atomic.Bool
 
 	// consolidateEvery controls how many events per agent+session trigger a
 	// MemoryConsolidation pass.  0 disables automatic consolidation.
@@ -100,19 +101,61 @@ const defaultOverflowCap = 256 // overflow buffer capacity when channel is full
 
 func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *EventSubscriber {
 	s := &EventSubscriber{
-		wal:              wal,
-		manager:          manager,
-		pollInterval:     200 * time.Millisecond,
-		consolidateEvery: 10,
-		agentEventCount:  make(map[string]int),
-		agentLastMem:     make(map[string]string),
-		deadLetter:       make(chan DeadLetterEntry, 64),
-		ErrorCh:          make(chan SubscriberError, 64),
-		overflowCap:      defaultOverflowCap,
-		overflowBuf:      make([]DeadLetterEntry, 0, defaultOverflowCap),
+		wal:                    wal,
+		manager:                manager,
+		materializationProfile: "full",
+		pollInterval:           200 * time.Millisecond,
+		consolidateEvery:       10,
+		agentEventCount:        make(map[string]int),
+		agentLastMem:           make(map[string]string),
+		deadLetter:             make(chan DeadLetterEntry, 64),
+		ErrorCh:                make(chan SubscriberError, 64),
+		overflowCap:            defaultOverflowCap,
+		overflowBuf:            make([]DeadLetterEntry, 0, defaultOverflowCap),
 	}
 	s.addBuiltinHandlers()
 	return s
+}
+
+// ConfigureCapabilities applies runtime materialization boundaries to the
+// built-in asynchronous handlers. Custom handlers remain caller-controlled.
+func (s *EventSubscriber) ConfigureCapabilities(cfg schemas.RuntimeCapabilities) {
+	profile := strings.ToLower(strings.TrimSpace(cfg.MaterializationProfile))
+	if profile == "" {
+		profile = "full"
+	}
+	s.materializationProfile = profile
+}
+
+func (s *EventSubscriber) materializesMemory() bool {
+	return s.materializationProfile != "none"
+}
+
+func (s *EventSubscriber) materializesState() bool {
+	switch s.materializationProfile {
+	case "none", "memory_only", "no_state", "no_version":
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *EventSubscriber) materializesArtifact() bool {
+	switch s.materializationProfile {
+	case "none", "memory_only", "no_artifact", "no_version":
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *EventSubscriber) materializesEdges() bool {
+	switch s.materializationProfile {
+	case "none", "memory_only", "no_edge":
+		return false
+	default:
+		return true
+	}
 }
 
 // SetPollInterval overrides the default 200 ms WAL poll cadence.
@@ -359,6 +402,9 @@ func (s *EventSubscriber) safeDispatch(h DispatchHandler, entry eventbackbone.WA
 func (s *EventSubscriber) addBuiltinHandlers() {
 	// ── 0. StateMaterialization ───────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
+		if !s.materializesState() {
+			return
+		}
 		ev := entry.Event.NormalizeDynamicEventV04()
 		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
@@ -371,6 +417,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 
 	// ── 0b. ToolTrace ─────────────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
+		if !s.materializesArtifact() {
+			return
+		}
 		ev := entry.Event.NormalizeDynamicEventV04()
 		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
@@ -379,6 +428,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	})
 	// ── 1. ReflectionPolicy ───────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
+		if !s.materializesMemory() {
+			return
+		}
 		ev := entry.Event.NormalizeDynamicEventV04()
 		memID := schemas.CanonicalMemoryID(ev)
 		s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
@@ -388,6 +440,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 	// Track the last memory ID written per agent+session so we can compare
 	// new arrivals against the previous write.
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
+		if !s.materializesMemory() || !s.materializesEdges() {
+			return
+		}
 		ev := entry.Event.NormalizeDynamicEventV04()
 		if ev.Actor.AgentID == "" {
 			return
@@ -410,6 +465,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 
 	// ── 3. MemoryConsolidation ────────────────────────────────────────────
 	s.AddHandler(func(entry eventbackbone.WALEntry) {
+		if !s.materializesMemory() {
+			return
+		}
 		ev := entry.Event.NormalizeDynamicEventV04()
 		if ev.Actor.AgentID == "" || s.consolidateEvery <= 0 {
 			return

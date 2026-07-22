@@ -119,6 +119,63 @@ func TestEventSubscriber_CheckpointCreatesStateSnapshots(t *testing.T) {
 	}
 }
 
+func TestEventSubscriberMaterializationProfileConstrainsBuiltins(t *testing.T) {
+	tests := []struct {
+		profile      string
+		wantState    bool
+		wantArtifact bool
+		wantEdge     bool
+	}{
+		{profile: "full", wantState: true, wantArtifact: true, wantEdge: true},
+		{profile: "none"},
+		{profile: "memory_only"},
+		{profile: "no_state", wantArtifact: true, wantEdge: true},
+		{profile: "no_artifact", wantState: true, wantEdge: true},
+		{profile: "no_edge", wantState: true, wantArtifact: true},
+		{profile: "no_version", wantEdge: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.profile, func(t *testing.T) {
+			wal, mgr, store, _ := buildSubscriberRuntime(t)
+			mgr.RegisterStateMaterialization(workermat.CreateInMemoryStateMaterializationWorker(
+				"state-profile", store.Objects(), store.Versions(), nil,
+			))
+			mgr.RegisterToolTrace(workermat.CreateInMemoryToolTraceWorker(
+				"tool-profile", store.Objects(), nil,
+			))
+			for i := 1; i <= 2; i++ {
+				store.Objects().PutMemory(schemas.Memory{
+					MemoryID: fmt.Sprintf("mem_profile_%d", i), AgentID: "agent",
+					SessionID: "session", Version: int64(i), IsActive: true,
+				})
+			}
+			for _, event := range []schemas.Event{
+				{EventID: "profile_1", AgentID: "agent", SessionID: "session", EventType: string(schemas.EventTypeStateUpdate), Payload: map[string]any{schemas.PayloadKeyStateKey: "phase", schemas.PayloadKeyStateValue: "ready"}},
+				{EventID: "profile_2", AgentID: "agent", SessionID: "session", EventType: string(schemas.EventTypeToolResult)},
+			} {
+				if _, err := wal.Append(event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sub := CreateEventSubscriber(wal, mgr)
+			cfg := schemas.DefaultRuntimeCapabilities()
+			cfg.MaterializationProfile = tc.profile
+			sub.ConfigureCapabilities(cfg)
+			if err := sub.drainWAL(); err != nil {
+				t.Fatal(err)
+			}
+			_, stateFound := store.Objects().GetState(schemas.CanonicalStateID("", "", "agent", "session", "phase"))
+			_, artifactFound := store.Objects().GetArtifact(schemas.IDPrefixToolTrace + "profile_2")
+			if stateFound != tc.wantState || artifactFound != tc.wantArtifact {
+				t.Fatalf("state=%t artifact=%t want state=%t artifact=%t", stateFound, artifactFound, tc.wantState, tc.wantArtifact)
+			}
+			if (len(store.Edges().ListEdges()) > 0) != tc.wantEdge {
+				t.Fatalf("edges=%d want presence=%t", len(store.Edges().ListEdges()), tc.wantEdge)
+			}
+		})
+	}
+}
+
 func TestEventSubscriber_VisibilityBoundaryBlocksUnprojectedEntries(t *testing.T) {
 	wal, mgr, _, _ := buildSubscriberRuntime(t)
 	entry, err := wal.Append(schemas.Event{EventID: "evt-pending", AgentID: "a", SessionID: "s"})

@@ -21,6 +21,7 @@ const (
 	envShutdownTimeout             = "PLASMOD_CONSISTENCY_SHUTDOWN_TIMEOUT"
 	envCheckpointPath              = "PLASMOD_CONSISTENCY_CHECKPOINT_PATH"
 	envCheckpointFlush             = "PLASMOD_CONSISTENCY_CHECKPOINT_FLUSH_INTERVAL"
+	envRecoveryReplay              = "PLASMOD_RECOVERY_REPLAY"
 	checkpointFileName             = "consistency_checkpoint.json"
 	defaultQueueSize               = 4096
 	defaultWorkers                 = 4
@@ -47,6 +48,7 @@ type Config struct {
 	CheckpointPath              string
 	CheckpointFlushInterval     time.Duration
 	BootstrapCheckpointAtLatest bool
+	RecoverOnStart              bool
 }
 
 // DefaultConfig returns safe compatibility defaults for an in-memory runtime.
@@ -62,6 +64,7 @@ func DefaultConfig() Config {
 		QueryWaitTimeout:        defaultQueryTimeout,
 		ShutdownTimeout:         defaultShutdown,
 		CheckpointFlushInterval: defaultCheckpointFlushInterval,
+		RecoverOnStart:          true,
 	}
 }
 
@@ -87,6 +90,7 @@ func ConfigFromEnv(dataDir string, persistent bool) Config {
 	cfg.QueryWaitTimeout = durationFromEnv(envQueryTimeout, cfg.QueryWaitTimeout)
 	cfg.ShutdownTimeout = durationFromEnv(envShutdownTimeout, cfg.ShutdownTimeout)
 	cfg.CheckpointFlushInterval = optionalDurationFromEnv(envCheckpointFlush, cfg.CheckpointFlushInterval)
+	cfg.RecoverOnStart = boolFromEnv(envRecoveryReplay, cfg.RecoverOnStart)
 
 	dataDir = strings.TrimSpace(dataDir)
 	if persistent && dataDir != "" && dataDir != ":memory:" {
@@ -97,6 +101,17 @@ func ConfigFromEnv(dataDir string, persistent bool) Config {
 		cfg.BootstrapCheckpointAtLatest = true
 	}
 	return cfg
+}
+
+func boolFromEnv(key string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func optionalDurationFromEnv(key string, fallback time.Duration) time.Duration {

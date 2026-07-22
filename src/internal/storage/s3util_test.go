@@ -2,6 +2,15 @@ package storage
 
 import "testing"
 
+func TestS3ObjectURLUsesAWSSigV4PathEncoding(t *testing.T) {
+	cfg := S3Config{Endpoint: "127.0.0.1:9000", Bucket: "plasmod-experiments"}
+	got := s3ObjectURL(cfg, "root/cold/memories/embedding_runtime_family=tfidf and+more.json")
+	want := "http://127.0.0.1:9000/plasmod-experiments/root/cold/memories/embedding_runtime_family%3Dtfidf%20and%2Bmore.json"
+	if got != want {
+		t.Fatalf("s3ObjectURL() = %q, want %q", got, want)
+	}
+}
+
 func TestLoadFromEnv_S3KeysTakePrecedence(t *testing.T) {
 	t.Setenv("S3_ENDPOINT", "127.0.0.1:9000")
 	t.Setenv("S3_ACCESS_KEY", "s3_key")

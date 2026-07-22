@@ -83,11 +83,15 @@ func parseHTTPDuration(envKey string, defaultVal time.Duration) time.Duration {
 
 func BuildServer() (*ServerBundle, error) {
 	listenCfg := ResolveListenConfig()
+	runtimeCapabilities, err := config.LoadRuntimeCapabilities()
+	if err != nil {
+		return nil, fmt.Errorf("load runtime capabilities: %w", err)
+	}
 
 	// ── Vector-only mode (Baseline 1) ────────────────────────────────────────
 	// When PLASMOD_VECTOR_ONLY_MODE=true, disable graph expansion, policy
 	// enforcement, and provenance tracking to create a pure vector-search baseline.
-	vectorOnlyMode := os.Getenv("PLASMOD_VECTOR_ONLY_MODE") == "true"
+	vectorOnlyMode := os.Getenv("PLASMOD_VECTOR_ONLY_MODE") == "true" || runtimeCapabilities.EvidenceProfile == "vector_only"
 	if vectorOnlyMode {
 		log.Printf("[bootstrap] VECTOR-ONLY MODE enabled (baseline: no graph/policy/provenance)")
 	}
@@ -114,16 +118,31 @@ func BuildServer() (*ServerBundle, error) {
 	store := bundle.RuntimeStorage
 	storageCfg := bundle.Config
 	var wal eventbackbone.WAL
-	if storageCfg != nil && storageCfg.WALPersistence {
+	walMode := runtimeCapabilities.WALMode
+	if walMode == "auto" {
+		if storageCfg != nil && storageCfg.WALPersistence {
+			walMode = "file"
+		} else {
+			walMode = "memory"
+		}
+	}
+	switch walMode {
+	case "file":
 		wal, err = eventbackbone.NewFileWAL(filepath.Join(storageCfg.DataDir, "wal.log"), bus, clock)
 		if err != nil {
 			return nil, fmt.Errorf("open write-ahead log: %w", err)
 		}
 		log.Printf("[bootstrap] wal: file-backed (%s)", filepath.Join(storageCfg.DataDir, "wal.log"))
-	} else {
+	case "memory":
 		wal = eventbackbone.NewInMemoryWAL(bus, clock)
 		log.Printf("[bootstrap] wal: in-memory mode")
+	case "disabled":
+		wal = eventbackbone.NewTransientWAL(bus, clock)
+		log.Printf("[bootstrap] wal: transient ordering only (no replay retention)")
+	default:
+		return nil, fmt.Errorf("unsupported wal mode %q", walMode)
 	}
+	runtimeCapabilities.WALMode = walMode
 	derivStore := eventbackbone.NewFileDerivationStore(filepath.Join(storageCfg.DataDir, "derivation.log"))
 	derivLog := eventbackbone.NewDerivationLogWithStore(clock, bus, derivStore)
 	policyDecLog := eventbackbone.NewPolicyDecisionLog(clock, bus)
@@ -476,6 +495,7 @@ func BuildServer() (*ServerBundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	plane.ConfigureTierProfile(runtimeCapabilities.TierProfile, runtimeCapabilities.HotCacheSize)
 	embeddingSpec := storage.ResolveEmbeddingSpec(nil, "", embedderDim)
 	compatibility := storage.CheckEmbeddingCompatibility(store.Segments().List(""), embeddingSpec)
 	reindexEmbeddings := !compatibility.Compatible()
@@ -619,6 +639,7 @@ func BuildServer() (*ServerBundle, error) {
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
+	runtime.ConfigureCapabilities(runtimeCapabilities)
 	if err := runtime.ConfigureEmbeddingSpec(embeddingSpec); err != nil {
 		return nil, fmt.Errorf("configure embedding spec: %w", err)
 	}
@@ -631,6 +652,7 @@ func BuildServer() (*ServerBundle, error) {
 	}
 	runtime.VectorOnlyMode = vectorOnlyMode
 	consistencyCfg := consistency.ConfigFromEnv(storageCfg.DataDir, storageCfg.WALPersistence)
+	consistencyCfg.RecoverOnStart = runtimeCapabilities.RecoveryReplay
 	if err := runtime.ConfigureConsistency(consistencyCfg, watermark); err != nil {
 		return nil, fmt.Errorf("configure consistency controller: %w", err)
 	}

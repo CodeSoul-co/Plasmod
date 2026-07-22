@@ -2,12 +2,43 @@ package storage
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestGetBytesRepeated404ReusesConnection(t *testing.T) {
+	t.Setenv("S3_MAX_RETRIES", "0")
+	var newConnections atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(strings.Repeat("missing", 128)))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConnections.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	cfg := S3Config{
+		Endpoint: strings.TrimPrefix(srv.URL, "http://"), AccessKey: "ak", SecretKey: "sk",
+		Bucket: "b", Region: "us-east-1",
+	}
+	for i := 0; i < 25; i++ {
+		got, err := GetBytes(context.Background(), nil, cfg, "missing.json")
+		if err != nil || got != nil {
+			t.Fatalf("request %d: got=%q err=%v", i, string(got), err)
+		}
+	}
+	if got := newConnections.Load(); got > 2 {
+		t.Fatalf("404 response bodies were not reused efficiently: new connections=%d", got)
+	}
+}
 
 func TestGetBytes_RetryOn503ThenSuccess(t *testing.T) {
 	t.Setenv("S3_MAX_RETRIES", "3")

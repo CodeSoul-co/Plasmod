@@ -81,6 +81,7 @@ type Runtime struct {
 	// GovernanceDisabled suppresses TTL / quarantine / ACL enforcement when
 	// true.  Used by 4-B4 to run Plasmod without the governance layer.
 	GovernanceDisabled bool
+	capabilities       schemas.RuntimeCapabilities
 	memoryBackend      *memoryBackendRouter
 
 	// flushTicker drives the background index-rebuild goroutine.  By decoupling
@@ -133,7 +134,29 @@ func CreateRuntime(
 		lastMem:           make(map[string]string),
 		memoryBackend:     newMemoryBackendRouterFromEnv(),
 		consistencyConfig: consistency.DefaultConfig(),
+		capabilities:      schemas.DefaultRuntimeCapabilities(),
 	}
+}
+
+// ConfigureCapabilities installs validated deployment profiles before the
+// consistency controller starts.
+func (r *Runtime) ConfigureCapabilities(cfg schemas.RuntimeCapabilities) {
+	if r == nil {
+		return
+	}
+	r.capabilities = cfg
+	r.VectorOnlyMode = r.VectorOnlyMode || cfg.EvidenceProfile == "vector_only"
+	r.GovernanceDisabled = r.GovernanceDisabled || cfg.GovernanceProfile == "no_access"
+	if r.storage != nil && r.storage.HotCache() != nil {
+		r.storage.HotCache().Resize(cfg.HotCacheSize)
+	}
+}
+
+func (r *Runtime) RuntimeCapabilities() schemas.RuntimeCapabilities {
+	if r == nil {
+		return schemas.DefaultRuntimeCapabilities()
+	}
+	return r.capabilities
 }
 
 func (r *Runtime) RegisterDefaults() {
@@ -389,6 +412,7 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 	if sub == nil || visibilityOnlyModeEnabled() {
 		return
 	}
+	sub.ConfigureCapabilities(r.capabilities)
 	sub.SetVisibilityBoundary(func() int64 {
 		return r.ConsistencyStatus().VisibleWatermark
 	})
@@ -480,6 +504,15 @@ func (r *Runtime) StartFlushLoop(ctx context.Context) {
 }
 
 func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+	return r.projectWALEntryWithOptions(ctx, entry, true)
+}
+
+func (r *Runtime) projectWALEntryCanonicalOnly(ctx context.Context, entry eventbackbone.WALEntry) (map[string]any, error) {
+	return r.projectWALEntryWithOptions(ctx, entry, false)
+}
+
+func (r *Runtime) projectWALEntryWithOptions(ctx context.Context, entry eventbackbone.WALEntry, rebuildRetrieval bool) (map[string]any, error) {
+	materializationStarted := time.Now()
 	ev := entry.Event.NormalizeDynamicEventV04()
 	if existing, ok := r.storage.Objects().GetEvent(ev.Identity.EventID); ok {
 		existing = existing.NormalizeDynamicEventV04()
@@ -496,31 +529,68 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
+	profile := r.capabilities.MaterializationProfile
+	if profile == "" {
+		profile = "full"
+	}
+	includeMemory := profile != "none"
+	includeState := includeMemory && profile != "memory_only" && profile != "no_state"
+	includeArtifact := includeMemory && profile != "memory_only" && profile != "no_artifact"
+	includeEdges := includeMemory && profile != "memory_only" && profile != "no_edge"
+	includeVersions := includeMemory && profile != "no_version" && !r.MinimalMode
+	// The no-materialization profile keeps the raw Event as a flat
+	// text/vector record. Using event_id avoids an orphan memory projection.
+	if profile == "none" {
+		record.ObjectID = ev.Identity.EventID
+		if record.Attributes == nil {
+			record.Attributes = make(map[string]string)
+		}
+		record.Attributes["object_type"] = string(schemas.ObjectTypeEvent)
+	}
 	r.stampEmbeddingSpec(&record)
+	rebuildFlatEventProjection := rebuildRetrieval && profile == "none"
+	rebuildMemoryProjection := rebuildRetrieval && includeMemory
 
 	// ── Persist canonical objects ─────────────────────────────────────────
 	// Canonical state is authoritative and is committed before the disposable
 	// retrieval projection. A failed retrieval write is retried from WAL; query
 	// visibility is still gated by the Controller's visible watermark.
 	r.stateProjectionMu.Lock()
-	state, stateVersions := r.prepareStateMutation(mat.State, mat.StateVersion)
+	var state *schemas.State
+	var stateVersions []schemas.ObjectVersion
+	if includeState {
+		state, stateVersions = r.prepareStateMutation(mat.State, mat.StateVersion)
+	}
 	mat.State = state
 	projection := storage.CanonicalProjection{
-		Event:                  &ev,
-		Memory:                 &mat.Memory,
-		State:                  state,
-		Edges:                  mat.Edges,
-		IncludeEventBaseEdges:  true,
-		IncludeMemoryBaseEdges: true,
+		Event: &ev,
+		State: state,
 	}
-	if !r.MinimalMode {
+	if includeMemory {
+		projection.Memory = &mat.Memory
+	}
+	if includeEdges {
+		projection.Edges = make([]schemas.Edge, 0, len(mat.Edges))
+		for _, edge := range mat.Edges {
+			if !includeState && (edge.SrcType == string(schemas.ObjectTypeAgentState) || edge.DstType == string(schemas.ObjectTypeAgentState)) {
+				continue
+			}
+			if !includeArtifact && (edge.SrcType == string(schemas.ObjectTypeArtifact) || edge.DstType == string(schemas.ObjectTypeArtifact)) {
+				continue
+			}
+			projection.Edges = append(projection.Edges, edge)
+		}
+		projection.IncludeEventBaseEdges = true
+		projection.IncludeMemoryBaseEdges = true
+	}
+	if includeVersions {
 		projection.Versions = append(projection.Versions, mat.Version)
 		projection.Versions = append(projection.Versions, stateVersions...)
 	}
-	if mat.Artifact != nil {
+	if includeArtifact && mat.Artifact != nil {
 		projection.Artifact = mat.Artifact
-		projection.IncludeArtifactBaseEdges = true
-		if !r.MinimalMode && mat.ArtifactVersion != nil {
+		projection.IncludeArtifactBaseEdges = includeEdges
+		if includeVersions && mat.ArtifactVersion != nil {
 			projection.Versions = append(projection.Versions, *mat.ArtifactVersion)
 		}
 	}
@@ -529,25 +599,32 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 		return nil, err
 	}
 	r.stateProjectionMu.Unlock()
+	materializationLatency := time.Since(materializationStarted)
 
-	if err := r.plane.Ingest(record); err != nil {
-		return nil, err
+	retrievalStarted := time.Now()
+	if rebuildMemoryProjection || rebuildFlatEventProjection {
+		if err := r.plane.Ingest(record); err != nil {
+			return nil, err
+		}
+		r.flushDirty.Store(true)
+		if includeMemory && r.capabilities.TierProfile != "no_hot" && r.capabilities.TierProfile != "warm_only" {
+			salience := mat.Memory.Importance
+			if salience <= 0 {
+				salience = 0.5
+			}
+			if r.tieredObjects != nil {
+				r.tieredObjects.PromoteMemory(mat.Memory, salience)
+			} else if r.storage.HotCache() != nil && salience >= schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold {
+				r.storage.HotCache().Put(mat.Memory.MemoryID, "memory", mat.Memory, salience)
+			}
+		}
 	}
-	r.flushDirty.Store(true)
-	salience := mat.Memory.Importance
-	if salience <= 0 {
-		salience = 0.5
-	}
-	if r.tieredObjects != nil {
-		r.tieredObjects.PromoteMemory(mat.Memory, salience)
-	} else if r.storage.HotCache() != nil && salience >= schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold {
-		r.storage.HotCache().Put(mat.Memory.MemoryID, "memory", mat.Memory, salience)
-	}
+	retrievalLatency := time.Since(retrievalStarted)
 
 	// The ingest checkpoint State is part of the canonical commit above.
 	// Specialized keyed-state, tool-trace, and derivation workers remain on the
 	// asynchronous chains and are not included in the ingest visibility ACK.
-	if r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
+	if includeMemory && r.memoryBackend != nil && r.memoryBackend.ShouldShadowWrite() {
 		if err := r.memoryBackend.WriteShadow(ctx, mat.Memory, ev); err != nil {
 			log.Printf("[memory-backend] shadow_write failed memory=%s: %v", mat.Memory.MemoryID, err)
 		}
@@ -558,7 +635,7 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	// cross-event races); this synchronous pass ensures the conflict_resolved
 	// edge is present before SubmitIngest returns — critical for test queries
 	// and any caller that reads edges immediately after ingest.
-	if mat.Memory.AgentID != "" &&
+	if includeMemory && includeEdges && mat.Memory.AgentID != "" &&
 		mat.Memory.SessionID != "" &&
 		mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) &&
 		!visibilityOnlyModeEnabled() &&
@@ -576,7 +653,7 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 
 	// ── Pre-compute evidence fragment ─────────────────────────────────────
-	if r.preCompute != nil && !visibilityOnlyModeEnabled() {
+	if rebuildRetrieval && includeMemory && r.preCompute != nil && !visibilityOnlyModeEnabled() {
 		frag := r.preCompute.Compute(ev, record)
 		if frag.SalienceScore >= 0.5 {
 			r.storage.HotCache().Put(record.ObjectID, ev.EventInfo.EventType, record, frag.SalienceScore)
@@ -584,7 +661,7 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 
 	// ── Retrieval plane ───────────────────────────────────────────────────
-	if !visibilityOnlyModeEnabled() {
+	if (rebuildMemoryProjection || rebuildFlatEventProjection) && !visibilityOnlyModeEnabled() {
 		r.nodeManager.DispatchIngest(record)
 	}
 	if ev.Time.IngestTime > 0 {
@@ -592,19 +669,30 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 	}
 	if ev.Actor.SessionID != "" {
 		metrics.Global().Session(ev.Actor.SessionID).AddStep()
-		metrics.Global().StorageMemoryCount.Add(1)
+		if includeMemory {
+			metrics.Global().StorageMemoryCount.Add(1)
+		}
 		metrics.Global().StorageEventCount.Add(1)
 	}
 	ack := map[string]any{
-		"status":    "accepted",
-		"lsn":       entry.LSN,
-		"event_id":  ev.Identity.EventID,
-		"memory_id": mat.Memory.MemoryID,
-		"edges":     len(mat.Edges),
+		"status":                          "accepted",
+		"lsn":                             entry.LSN,
+		"event_id":                        ev.Identity.EventID,
+		"materialization_profile":         profile,
+		"materialization_latency_ms":      float64(materializationLatency.Microseconds()) / 1000,
+		"retrieval_projection_latency_ms": float64(retrievalLatency.Microseconds()) / 1000,
+		"retrieval_projection_rebuilt":    rebuildRetrieval,
+		"edges":                           len(projection.Edges),
 	}
-	if len(mat.Edges) > 0 {
-		edgeIDs := make([]string, 0, len(mat.Edges))
-		for _, edge := range mat.Edges {
+	if includeMemory {
+		ack["memory_id"] = mat.Memory.MemoryID
+		ack["retrieval_object_id"] = record.ObjectID
+	} else if rebuildFlatEventProjection {
+		ack["retrieval_object_id"] = record.ObjectID
+	}
+	if len(projection.Edges) > 0 {
+		edgeIDs := make([]string, 0, len(projection.Edges))
+		for _, edge := range projection.Edges {
 			if strings.TrimSpace(edge.EdgeID) != "" {
 				edgeIDs = append(edgeIDs, edge.EdgeID)
 			}
@@ -613,10 +701,10 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 			ack["edge_ids"] = edgeIDs
 		}
 	}
-	if mat.Artifact != nil {
+	if includeArtifact && mat.Artifact != nil {
 		ack["artifact_id"] = mat.Artifact.ArtifactID
 	}
-	if mat.State != nil {
+	if includeState && mat.State != nil {
 		ack["state_id"] = mat.State.StateID
 		ack["state_version"] = mat.State.Version
 	}
@@ -625,6 +713,11 @@ func (r *Runtime) projectWALEntry(ctx context.Context, entry eventbackbone.WALEn
 
 func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64) schemas.QueryResponse {
 	t0Query := time.Now()
+	diagnostics := &schemas.QueryDiagnostics{}
+	evidenceProfile := r.capabilities.EvidenceProfile
+	if evidenceProfile == "" {
+		evidenceProfile = "full"
+	}
 	metrics.Global().ConcurrentQueries.Add(1)
 	defer func() {
 		metrics.Global().ConcurrentQueries.Add(-1)
@@ -632,12 +725,15 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 	}()
 	if req.ResponseMode == schemas.ResponseModeObjectsOnly && len(req.TargetObjectIDs) > 0 {
 		objectIDs := r.fetchTargetObjectIDs(req)
-		objectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), objectIDs, nil)
+		objectIDs = r.filterObjectIDsForLifecycle(objectIDs, nil)
+		policyStarted := time.Now()
 		objectIDs, accessDecisions := r.filterObjectIDsByAccess(req, objectIDs, readWatermarkLSN)
+		diagnostics.PolicyEvaluationLatencyMS += durationMS(time.Since(policyStarted))
 		resp := schemas.QueryResponse{
 			Objects:          objectIDs,
 			AccessDecisions:  accessDecisions,
 			ReadWatermarkLSN: readWatermarkLSN,
+			Diagnostics:      diagnostics,
 			Retrieval: &schemas.RetrievalSummary{
 				Tier:          "target_object",
 				RetrievalHits: len(objectIDs),
@@ -654,7 +750,7 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 		return resp
 	}
 	plan := r.planner.Build(req)
-	vectorOnlyMode := vectorOnlyModeEnabled()
+	vectorOnlyMode := r.VectorOnlyMode || vectorOnlyModeEnabled() || evidenceProfile == "vector_only"
 	searchInput := dataplane.SearchInput{
 		QueryText:      req.QueryText,
 		TopK:           plan.TopK,
@@ -678,6 +774,24 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 			}
 		}
 	}
+	promotionStarted := time.Now()
+	if r.tieredObjects != nil && r.capabilities.TierProfile != "no_promotion" {
+		for _, objectID := range result.ColdObjectIDs {
+			memory, ok := r.tieredObjects.GetMemoryActivated(objectID, 1)
+			if !ok {
+				continue
+			}
+			namespace := memory.WorkspaceID
+			if namespace == "" {
+				namespace = memory.Scope
+			}
+			_ = r.plane.Ingest(dataplane.IngestRecord{
+				ObjectID: objectID, Text: memory.Content, Namespace: namespace,
+				Attributes: map[string]string{"object_type": string(schemas.ObjectTypeMemory)},
+			})
+		}
+	}
+	diagnostics.PromotionLatencyMS = durationMS(time.Since(promotionStarted))
 	result.ObjectIDs = semantic.FilterObjectIDsByTypes(result.ObjectIDs, plan.ObjectTypes)
 	if queryUsesStructuredMemorySelectors(req) {
 		selectorIDs := r.fetchMemoryIDsByStructuredSelectors(req)
@@ -689,8 +803,10 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 		}
 	}
 	result.ObjectIDs = appendMissing(result.ObjectIDs, r.fetchTargetObjectIDs(req))
-	result.ObjectIDs = filterObjectIDsExcludingInactiveMemories(r.storage.Objects(), result.ObjectIDs, result.ColdObjectIDs)
+	result.ObjectIDs = r.filterObjectIDsForLifecycle(result.ObjectIDs, result.ColdObjectIDs)
+	policyStarted := time.Now()
 	retrievalVisibleIDs, _ := r.filterObjectIDsByAccess(req, result.ObjectIDs, readWatermarkLSN)
+	diagnostics.PolicyEvaluationLatencyMS += durationMS(time.Since(policyStarted))
 	retrievalHitCount := len(retrievalVisibleIDs)
 
 	// ── Canonical-object supplemental retrieval ──────────────────────────────
@@ -705,13 +821,16 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 		result.ObjectIDs = append(result.ObjectIDs, canonicalIDs...)
 	}
 	var accessDecisions []schemas.AccessDecision
+	policyStarted = time.Now()
 	result.ObjectIDs, accessDecisions = r.filterObjectIDsByAccess(req, result.ObjectIDs, readWatermarkLSN)
+	diagnostics.PolicyEvaluationLatencyMS += durationMS(time.Since(policyStarted))
 
-	if vectorOnlyMode {
+	if vectorOnlyMode || evidenceProfile == "none" {
 		resp := schemas.QueryResponse{
 			Objects:          result.ObjectIDs,
 			AccessDecisions:  accessDecisions,
 			ReadWatermarkLSN: readWatermarkLSN,
+			Diagnostics:      diagnostics,
 			Retrieval: &schemas.RetrievalSummary{
 				Tier:               result.Tier,
 				ColdSearchMode:     result.ColdSearchMode,
@@ -720,6 +839,8 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 				ColdUsedFallback:   result.ColdUsedFallback,
 				RetrievalHits:      retrievalHitCount,
 				CanonicalAdds:      0,
+				HotCandidateCount:  result.HotCandidateCount,
+				WarmCandidateCount: result.WarmCandidateCount,
 			},
 			ChainTraces: schemas.ChainTraceSlots{
 				Main:           append(formatQueryPathMainChainLines(req, result), "vector_only_mode=true"),
@@ -727,6 +848,9 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 				Query:          []string{"query_chain skipped=vector_only_mode"},
 				Collaboration:  []string{"collaboration_chain skipped=vector_only_mode"},
 			},
+		}
+		if evidenceProfile == "none" {
+			resp.ChainTraces.Main = append(formatQueryPathMainChainLines(req, result), "evidence_profile=none")
 		}
 		applyQueryOutcomeHint(&resp, retrievalHitCount)
 		return resp
@@ -737,6 +861,7 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 			Objects:          result.ObjectIDs,
 			AccessDecisions:  accessDecisions,
 			ReadWatermarkLSN: readWatermarkLSN,
+			Diagnostics:      diagnostics,
 			Retrieval: &schemas.RetrievalSummary{
 				Tier:               result.Tier,
 				ColdSearchMode:     result.ColdSearchMode,
@@ -745,6 +870,8 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 				ColdUsedFallback:   result.ColdUsedFallback,
 				RetrievalHits:      retrievalHitCount,
 				CanonicalAdds:      canonicalAddCount,
+				HotCandidateCount:  result.HotCandidateCount,
+				WarmCandidateCount: result.WarmCandidateCount,
 			},
 			ChainTraces: schemas.ChainTraceSlots{
 				Main:           formatQueryPathMainChainLines(req, result),
@@ -757,9 +884,12 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 		return resp
 	}
 
+	evidenceStarted := time.Now()
 	var filters []string
 	if !r.MinimalMode {
+		policyStarted = time.Now()
 		filters = r.policy.ApplyQueryFilters(req)
+		diagnostics.PolicyEvaluationLatencyMS += durationMS(time.Since(policyStarted))
 	}
 	resp := r.assembler.Build(searchInput, result, filters)
 	resp.AccessDecisions = accessDecisions
@@ -772,7 +902,10 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 		ColdUsedFallback:   result.ColdUsedFallback,
 		RetrievalHits:      retrievalHitCount,
 		CanonicalAdds:      canonicalAddCount,
+		HotCandidateCount:  result.HotCandidateCount,
+		WarmCandidateCount: result.WarmCandidateCount,
 	}
+	resp.Diagnostics = diagnostics
 	applyQueryOutcomeHint(&resp, retrievalHitCount)
 
 	resp.ChainTraces.Main = formatQueryPathMainChainLines(req, result)
@@ -787,12 +920,20 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 	//   5. Merging subgraph edges with the assembler's edges (deduplicated).
 	//
 	// In VECTOR-ONLY MODE: skip QueryChain (graph expansion, proof trace, provenance).
-	if r.VectorOnlyMode {
+	graphStarted := time.Now()
+	if evidenceProfile == "no_edge_expansion" {
+		resp.Edges = nil
+		resp.ChainTraces.Query = []string{"query_chain skipped=evidence_profile_no_edge_expansion"}
+	} else if r.VectorOnlyMode {
 		resp.ChainTraces.Query = []string{"query_chain skipped=vector_only_mode"}
 	} else if len(result.ObjectIDs) > 0 {
+		maxDepth := 0
+		if evidenceProfile == "one_hop" {
+			maxDepth = 1
+		}
 		chainOut, chainResult := r.queryChain.Run(chain.QueryChainInput{
 			ObjectIDs:   result.ObjectIDs,
-			MaxDepth:    0, // default cap of 8
+			MaxDepth:    maxDepth,
 			ObjectStore: r.storage.Objects(),
 			EdgeStore:   r.storage.Edges(),
 		})
@@ -822,14 +963,24 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 	} else {
 		resp.ChainTraces.Query = []string{"query_chain skipped=no_seed_object_ids"}
 	}
+	diagnostics.GraphExpansionLatencyMS = durationMS(time.Since(graphStarted))
 
 	resp.ChainTraces.Collaboration = formatQueryPathCollaborationLines(resp.Edges)
 
 	// In VECTOR-ONLY MODE or MINIMAL MODE: skip provenance attachment
-	if !r.VectorOnlyMode && !r.MinimalMode {
+	provenanceStarted := time.Now()
+	if evidenceProfile != "no_provenance" && !r.VectorOnlyMode && !r.MinimalMode {
 		resp = r.attachEmbeddingProvenance(resp, req, result.ObjectIDs)
 	}
+	if evidenceProfile == "no_provenance" {
+		resp.Provenance = nil
+	}
+	diagnostics.ProvenanceLatencyMS = durationMS(time.Since(provenanceStarted))
 	r.filterResponseEvidenceByAccess(req, readWatermarkLSN, &resp)
+	if evidenceProfile == "no_proof" {
+		resp.ProofTrace = nil
+	}
+	diagnostics.EvidenceAssemblyLatencyMS = durationMS(time.Since(evidenceStarted))
 
 	// Record evidence-supported rate (3-MT5)
 	evidenceSupported := len(resp.ProofTrace) > 0 || len(resp.Nodes) > 0
@@ -845,6 +996,10 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 	}
 
 	return resp
+}
+
+func durationMS(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000
 }
 
 // detectContamination counts memory IDs that belong to a different agent and
@@ -920,8 +1075,8 @@ func applyQueryOutcomeHint(resp *schemas.QueryResponse, retrievalHits int) {
 // coldIDs is a set of IDs that originated from the cold tier; those are exempted
 // because archived memories may be soft-deleted in warm but must still be surfaced
 // when include_cold=true is requested.
-func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []string, coldIDs []string) []string {
-	if os == nil || len(ids) == 0 {
+func (r *Runtime) filterObjectIDsForLifecycle(ids []string, coldIDs []string) []string {
+	if r == nil || r.storage == nil || r.storage.Objects() == nil || len(ids) == 0 {
 		return ids
 	}
 	coldSet := make(map[string]bool, len(coldIDs))
@@ -930,16 +1085,44 @@ func filterObjectIDsExcludingInactiveMemories(os storage.ObjectStore, ids []stri
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if coldSet[id] {
+		warmMemory, warmExists := r.storage.Objects().GetMemory(id)
+		memory := warmMemory
+		exists := warmExists
+		if !exists && r.tieredObjects != nil {
+			memory, exists = r.tieredObjects.PeekMemory(id)
+			if exists && !coldSet[id] {
+				continue
+			}
+		}
+		if !exists {
 			out = append(out, id)
 			continue
 		}
-		if m, ok := os.GetMemory(id); ok && !m.IsActive {
+		if r.capabilities.GovernanceProfile != "no_delete_propagation" && !memory.IsActive {
+			continue
+		}
+		if r.capabilities.GovernanceProfile != "no_quarantine" && memoryIsQuarantined(memory, r.storage.Policies()) {
 			continue
 		}
 		out = append(out, id)
 	}
 	return out
+}
+
+func memoryIsQuarantined(memory schemas.Memory, policies storage.PolicyStore) bool {
+	for _, tag := range memory.PolicyTags {
+		if strings.EqualFold(strings.TrimSpace(tag), "quarantine") || strings.EqualFold(strings.TrimSpace(tag), "quarantined") {
+			return true
+		}
+	}
+	if policies != nil {
+		for _, policy := range policies.GetPolicies(memory.MemoryID) {
+			if policy.QuarantineFlag {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func queryUsesStructuredMemorySelectors(req schemas.QueryRequest) bool {
@@ -1912,9 +2095,136 @@ func (r *Runtime) adminWipeWAL() string {
 	case *eventbackbone.InMemoryWAL:
 		w.Wipe()
 		return "memory_cleared"
+	case *eventbackbone.TransientWAL:
+		w.Wipe()
+		return "transient_reset"
 	default:
 		return "unknown_skipped"
 	}
+}
+
+// RuntimeStateSummary returns authoritative object-graph counts without
+// consulting the disposable retrieval projection.
+func (r *Runtime) RuntimeStateSummary() map[string]any {
+	if r == nil || r.storage == nil {
+		return map[string]any{}
+	}
+	events := r.storage.Objects().ListEvents("", "")
+	memories := r.storage.Objects().ListMemories("", "")
+	states := r.storage.Objects().ListStates("", "")
+	artifacts := r.storage.Objects().ListArtifacts("")
+	edges := r.storage.Edges().ListEdges()
+	versionCount := 0
+	seen := make(map[string]struct{})
+	for _, event := range events {
+		seen[event.NormalizeDynamicEventV04().Identity.EventID] = struct{}{}
+	}
+	for _, memory := range memories {
+		seen[memory.MemoryID] = struct{}{}
+	}
+	for _, state := range states {
+		seen[state.StateID] = struct{}{}
+	}
+	for _, artifact := range artifacts {
+		seen[artifact.ArtifactID] = struct{}{}
+	}
+	for objectID := range seen {
+		versionCount += len(r.storage.Versions().GetVersions(objectID))
+	}
+	coldMemories := 0
+	if r.tieredObjects != nil {
+		coldMemories = len(r.tieredObjects.ListColdMemories())
+	}
+	hotEntries := 0
+	if r.storage.HotCache() != nil {
+		hotEntries = r.storage.HotCache().Len()
+	}
+	return map[string]any{
+		"events": len(events), "memories": len(memories), "states": len(states),
+		"artifacts": len(artifacts), "edges": len(edges), "versions": versionCount,
+		"objects":       len(events) + len(memories) + len(states) + len(artifacts),
+		"latest_states": len(states), "hot_entries": hotEntries, "cold_memories": coldMemories,
+		"latest_lsn": r.wal.LatestLSN(), "visible_watermark": r.ConsistencyStatus().VisibleWatermark,
+	}
+}
+
+// AdminResetMaterialized clears canonical and retrieval state while preserving
+// the event log. It is the operational precursor to deterministic recovery.
+func (r *Runtime) AdminResetMaterialized(bundle *storage.RuntimeBundle, algoCfg schemas.AlgorithmConfig) (map[string]any, error) {
+	if r == nil {
+		return nil, errors.New("runtime is nil")
+	}
+	r.wipeMu.Lock()
+	defer r.wipeMu.Unlock()
+	before := r.RuntimeStateSummary()
+	pauseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	wasActive, err := r.pauseConsistencyForReset(pauseCtx)
+	if err != nil {
+		return nil, fmt.Errorf("pause consistency projection: %w", err)
+	}
+	if wasActive {
+		defer r.resumeConsistency()
+	}
+	pausedSubscribers := r.pauseSubscribers()
+	defer resumeSubscribers(pausedSubscribers)
+	if bundle != nil && bundle.Badger != nil {
+		if err := bundle.Badger.DropAll(); err != nil {
+			return nil, err
+		}
+	}
+	storage.WipeMutableRuntimeState(r.storage)
+	if tp, ok := r.plane.(*dataplane.TieredDataPlane); ok {
+		if err := tp.AdminResetRetrieval(algoCfg); err != nil {
+			return nil, err
+		}
+		tp.ConfigureTierProfile(r.capabilities.TierProfile, r.capabilities.HotCacheSize)
+	}
+	resetSubscribers(pausedSubscribers)
+	if err := r.resetConsistency(); err != nil {
+		return nil, fmt.Errorf("reset consistency projection: %w", err)
+	}
+	if r.derivationLog != nil {
+		if err := r.derivationLog.Wipe(); err != nil {
+			return nil, err
+		}
+	}
+	if r.policyDecisionLog != nil {
+		r.policyDecisionLog.Wipe()
+	}
+	if r.evCache != nil {
+		r.evCache.Clear()
+	}
+	r.lastMemMu.Lock()
+	r.lastMem = make(map[string]string)
+	r.lastMemMu.Unlock()
+	return map[string]any{
+		"status": "ok", "wal_preserved": true, "wal_entries": r.wal.LatestLSN(),
+		"before": before, "after": r.RuntimeStateSummary(),
+		"cold_tier_preserved": true,
+	}, nil
+}
+
+// AdminArchiveMemory moves a warm canonical memory to cold storage. Retrieval
+// filtering prevents its old warm projection from leaking unless cold access
+// is explicitly requested.
+func (r *Runtime) AdminArchiveMemory(memoryID string) (map[string]any, error) {
+	memoryID = strings.TrimSpace(memoryID)
+	if r == nil || r.tieredObjects == nil {
+		return nil, errors.New("tiered object store unavailable")
+	}
+	if memoryID == "" {
+		return nil, errors.New("memory_id is required")
+	}
+	if _, ok := r.storage.Objects().GetMemory(memoryID); !ok {
+		return nil, fmt.Errorf("memory %s not found in warm tier", memoryID)
+	}
+	started := time.Now()
+	r.tieredObjects.ArchiveMemory(memoryID)
+	return map[string]any{
+		"status": "ok", "memory_id": memoryID, "tier": "cold",
+		"archive_latency_ms": durationMS(time.Since(started)),
+	}, nil
 }
 
 // AdminReplayPreview scans WAL entries from fromLSN and returns a replay-oriented
@@ -1972,12 +2282,14 @@ func (r *Runtime) AdminReplayPreview(fromLSN int64, limit int) (map[string]any, 
 	}, nil
 }
 
-// AdminReplayApply replays WAL entries by re-submitting events through the ingest path.
-// This mutates runtime state and appends new WAL entries for the replayed events.
+// AdminReplayApply projects retained WAL entries at their original LSN. It
+// never appends replacement entries to the WAL.
 func (r *Runtime) AdminReplayApply(fromLSN int64, limit int) (map[string]any, error) {
 	if r == nil || r.wal == nil {
 		return nil, errors.New("wal not configured")
 	}
+	r.wipeMu.Lock()
+	defer r.wipeMu.Unlock()
 	if fromLSN < 0 {
 		fromLSN = 0
 	}
@@ -2003,32 +2315,62 @@ func (r *Runtime) AdminReplayApply(fromLSN int64, limit int) (map[string]any, er
 		limit = total
 	}
 	target := entries[:limit]
+	pauseCtx, cancelPause := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelPause()
+	wasActive, err := r.pauseConsistencyForReset(pauseCtx)
+	if err != nil {
+		return nil, fmt.Errorf("pause consistency projection: %w", err)
+	}
+	if wasActive {
+		defer r.resumeConsistency()
+	}
+	pausedSubscribers := r.pauseSubscribers()
+	defer resumeSubscribers(pausedSubscribers)
+	r.consistencyMu.Lock()
+	controller := r.consistencyController
+	r.consistencyMu.Unlock()
+	if controller == nil {
+		return nil, errors.New("consistency controller unavailable")
+	}
+	project := r.projectWALEntry
+	projectionMode := r.capabilities.RecoveryProjection
+	if projectionMode == "canonical_only" {
+		project = r.projectWALEntryCanonicalOnly
+	}
+	started := time.Now()
+	latestBefore := r.wal.LatestLSN()
 	applied := 0
-	failed := 0
-	failedIDs := make([]string, 0)
+	duplicates := 0
 	for _, entry := range target {
 		ev := entry.Event.NormalizeDynamicEventV04()
 		if strings.TrimSpace(ev.Identity.EventID) == "" {
-			failed++
-			failedIDs = append(failedIDs, "")
-			continue
+			return nil, fmt.Errorf("replay entry lsn=%d has empty event_id", entry.LSN)
 		}
-		if _, err := r.SubmitIngest(ev); err != nil {
-			failed++
-			failedIDs = append(failedIDs, ev.Identity.EventID)
-			continue
+		ack, projectErr := project(context.Background(), entry)
+		if projectErr != nil {
+			return nil, fmt.Errorf("replay event %s at lsn %d: %w", ev.Identity.EventID, entry.LSN, projectErr)
+		}
+		if ack["status"] == "duplicate" {
+			duplicates++
+		}
+		if err := controller.MarkReplayVisible(entry); err != nil {
+			return nil, fmt.Errorf("advance replay visibility at lsn %d: %w", entry.LSN, err)
 		}
 		applied++
 	}
+	elapsed := time.Since(started)
+	throughput := 0.0
+	if elapsed > 0 {
+		throughput = float64(applied) / elapsed.Seconds()
+	}
 	return map[string]any{
-		"status":           "ok",
-		"from_lsn":         fromLSN,
-		"latest_lsn":       r.wal.LatestLSN(),
-		"scanned_entries":  total,
-		"attempted":        len(target),
-		"applied":          applied,
-		"failed":           failed,
-		"failed_event_ids": failedIDs,
-		"note":             "replay apply re-submits events via ingest path",
+		"status": "ok", "from_lsn": fromLSN, "latest_lsn": r.wal.LatestLSN(),
+		"latest_lsn_before": latestBefore, "scanned_entries": total,
+		"attempted": len(target), "applied": applied, "failed": 0,
+		"duplicate_objects": duplicates, "recovery_time_ms": durationMS(elapsed),
+		"replay_throughput_events_s": throughput, "projection_mode": projectionMode,
+		"wal_appends_during_replay": r.wal.LatestLSN() - latestBefore,
+		"state":                     r.RuntimeStateSummary(),
+		"note":                      "entries projected at original LSN without WAL append",
 	}, nil
 }

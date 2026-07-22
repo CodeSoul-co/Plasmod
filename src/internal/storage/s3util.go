@@ -81,11 +81,46 @@ func (c S3Config) baseURL() string {
 	return fmt.Sprintf("%s://%s", scheme, c.Endpoint)
 }
 
+func s3EscapePath(raw string) string {
+	const hexChars = "0123456789ABCDEF"
+	var escaped strings.Builder
+	escaped.Grow(len(raw))
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+			(b >= '0' && b <= '9') || b == '-' || b == '_' || b == '.' || b == '~' || b == '/' {
+			escaped.WriteByte(b)
+			continue
+		}
+		escaped.WriteByte('%')
+		escaped.WriteByte(hexChars[b>>4])
+		escaped.WriteByte(hexChars[b&0x0f])
+	}
+	return escaped.String()
+}
+
+func s3BucketURL(cfg S3Config) string {
+	return cfg.baseURL() + s3EscapePath("/"+cfg.Bucket)
+}
+
+func s3ObjectURL(cfg S3Config, objectKey string) string {
+	objectKey = strings.TrimLeft(objectKey, "/")
+	return cfg.baseURL() + s3EscapePath("/"+cfg.Bucket+"/"+objectKey)
+}
+
 type s3HTTPConfig struct {
 	timeout    time.Duration
 	maxRetries int
 	retryBase  time.Duration
 }
+
+var sharedS3Transport = func() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 128
+	transport.MaxIdleConnsPerHost = 64
+	transport.MaxConnsPerHost = 64
+	return transport
+}()
 
 func loadS3HTTPConfigFromEnv() s3HTTPConfig {
 	timeoutMS := parseEnvInt("S3_HTTP_TIMEOUT_MS", 8000)
@@ -123,7 +158,15 @@ func resolveS3HTTPClient(httpClient *http.Client, cfg s3HTTPConfig) *http.Client
 	if httpClient != nil {
 		return httpClient
 	}
-	return &http.Client{Timeout: cfg.timeout}
+	return &http.Client{Timeout: cfg.timeout, Transport: sharedS3Transport}
+}
+
+func drainAndCloseS3Response(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 func isRetryableS3Status(code int) bool {
@@ -196,18 +239,18 @@ func doSignedS3Request(
 
 // EnsureBucket makes sure the bucket exists (creates if missing).
 func EnsureBucket(ctx context.Context, httpClient *http.Client, cfg S3Config) error {
-	rawURL := fmt.Sprintf("%s/%s", cfg.baseURL(), cfg.Bucket)
+	rawURL := s3BucketURL(cfg)
 	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodPut, rawURL, nil, "")
 	if err != nil {
 		return fmt.Errorf("ensure bucket do: %w", err)
 	}
-	defer resp.Body.Close()
-
 	// 200 OK = created; 409 Conflict = bucket already exists — both are fine.
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return fmt.Errorf("ensure bucket status %d: %s", resp.StatusCode, string(body))
 	}
+	drainAndCloseS3Response(resp)
 	return nil
 }
 
@@ -228,19 +271,20 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 		return 0, false, err
 	}
 
-	putURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	putURL := s3ObjectURL(cfg, objectKey)
 	putResp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodPut, putURL, data, contentType)
 	if err != nil {
 		return 0, false, fmt.Errorf("put do: %w", err)
 	}
-	defer putResp.Body.Close()
 	if putResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(putResp.Body)
+		putResp.Body.Close()
 		return 0, false, fmt.Errorf("put status %d: %s", putResp.StatusCode, string(body))
 	}
+	drainAndCloseS3Response(putResp)
 
 	// Round-trip verification: GET the object back and compare bytes.
-	getURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	getURL := s3ObjectURL(cfg, objectKey)
 	getResp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, getURL, nil, "")
 	if err != nil {
 		return 0, false, fmt.Errorf("get do: %w", err)
@@ -264,31 +308,31 @@ func PutBytesAndVerify(ctx context.Context, httpClient *http.Client, cfg S3Confi
 // NOTE: bucket creation is the caller's responsibility. S3ColdStore calls
 // EnsureBucket once via sync.Once before its first write.
 func PutBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string, data []byte, contentType string) error {
-	objectKey = strings.TrimLeft(objectKey, "/")
-	putURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	putURL := s3ObjectURL(cfg, objectKey)
 	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodPut, putURL, data, contentType)
 	if err != nil {
 		return fmt.Errorf("s3 put do: %w", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return fmt.Errorf("s3 put status %d: %s", resp.StatusCode, string(body))
 	}
+	drainAndCloseS3Response(resp)
 	return nil
 }
 
 // GetBytes fetches an object from S3 at objectKey.
 // Returns (nil, nil) when the object does not exist (404).
 func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string) ([]byte, error) {
-	objectKey = strings.TrimLeft(objectKey, "/")
-	getURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	getURL := s3ObjectURL(cfg, objectKey)
 	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, getURL, nil, "")
 	if err != nil {
 		return nil, fmt.Errorf("s3 get do: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -303,20 +347,19 @@ func GetBytes(ctx context.Context, httpClient *http.Client, cfg S3Config, object
 }
 
 func DeleteObject(ctx context.Context, httpClient *http.Client, cfg S3Config, objectKey string) error {
-	objectKey = strings.TrimLeft(objectKey, "/")
-	deleteURL := fmt.Sprintf("%s/%s/%s", cfg.baseURL(), cfg.Bucket, objectKey)
+	deleteURL := s3ObjectURL(cfg, objectKey)
 
 	resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodDelete, deleteURL, nil, "")
 	if err != nil {
 		return fmt.Errorf("s3 delete do: %w", err)
 	}
-	defer resp.Body.Close()
-
 	// S3/MinIO for DELETE usually successfully return 204 No Content or 200 OK
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return fmt.Errorf("s3 delete status %d: %s", resp.StatusCode, string(body))
 	}
+	drainAndCloseS3Response(resp)
 	return nil
 }
 
@@ -359,7 +402,7 @@ func ListObjectsLimited(
 			q.Set("continuation-token", continuationToken)
 		}
 
-		listURL := fmt.Sprintf("%s/%s?%s", cfg.baseURL(), cfg.Bucket, q.Encode())
+		listURL := fmt.Sprintf("%s?%s", s3BucketURL(cfg), q.Encode())
 		resp, err := doSignedS3Request(ctx, httpClient, cfg, http.MethodGet, listURL, nil, "")
 		if err != nil {
 			return nil, pagesScanned, truncatedByLimit, fmt.Errorf("list objects do: %w", err)

@@ -22,6 +22,9 @@ func (r *Runtime) filterObjectIDsByAccess(
 ) ([]string, []schemas.AccessDecision) {
 	principal := r.accessPrincipal(req)
 	contracts := r.storage.Contracts().ListContracts()
+	if r.capabilities.GovernanceProfile == "no_share_contract" || r.capabilities.GovernanceProfile == "metadata_only" {
+		contracts = nil
+	}
 	allowed := make([]string, 0, len(objectIDs))
 	decisions := make([]schemas.AccessDecision, 0, len(objectIDs))
 	seen := make(map[string]struct{}, len(objectIDs))
@@ -74,7 +77,7 @@ func (r *Runtime) objectAccessDecision(
 ) (schemas.AccessDecision, bool) {
 	record := r.canonicalAccessRecord(objectID)
 	if !record.exists {
-		if r.VectorOnlyMode || vectorOnlyModeEnabled() || strings.TrimSpace(req.WarmSegmentID) != "" {
+		if r.VectorOnlyMode || vectorOnlyModeEnabled() || r.capabilities.MaterializationProfile == "none" || strings.TrimSpace(req.WarmSegmentID) != "" {
 			return schemas.AccessDecision{
 				ObjectID:    objectID,
 				PrincipalID: principal.AgentID,
@@ -83,7 +86,7 @@ func (r *Runtime) objectAccessDecision(
 		}
 		return schemas.AccessDecision{}, false
 	}
-	if r.GovernanceDisabled {
+	if r.GovernanceDisabled || r.capabilities.GovernanceProfile == "no_access" {
 		if record.mutationLSN > 0 && record.mutationLSN > readWatermarkLSN {
 			return schemas.AccessDecision{}, false
 		}
@@ -94,6 +97,9 @@ func (r *Runtime) objectAccessDecision(
 			Reason:      "governance_disabled",
 			MutationLSN: record.mutationLSN,
 		}, true
+	}
+	if r.capabilities.GovernanceProfile == "metadata_only" {
+		return metadataAccessDecision(record, principal, readWatermarkLSN)
 	}
 	decision, allowed := r.policy.EvaluateAccess(
 		record.objectID,
@@ -127,6 +133,58 @@ func (r *Runtime) objectAccessDecision(
 		}
 	}
 	return decision, true
+}
+
+func metadataAccessDecision(record canonicalAccessRecord, principal semantic.AccessPrincipal, readWatermarkLSN int64) (schemas.AccessDecision, bool) {
+	decision := schemas.AccessDecision{
+		ObjectID: record.objectID, PrincipalID: principal.AgentID,
+		Visibility: record.access.Visibility, Reason: "metadata_filter",
+		MutationLSN: record.mutationLSN,
+	}
+	if record.mutationLSN > 0 && record.mutationLSN > readWatermarkLSN {
+		return decision, false
+	}
+	if record.access.TenantID != "" && principal.TenantID != "" && record.access.TenantID != principal.TenantID {
+		return decision, false
+	}
+	if record.ownerAgentID != "" && record.ownerAgentID == principal.AgentID {
+		return decision, true
+	}
+	if metadataContainsString(record.access.VisibleToAgents, principal.AgentID) || metadataIntersectsStrings(record.access.VisibleToRoles, principal.Roles) {
+		return decision, true
+	}
+	switch strings.ToLower(strings.TrimSpace(record.access.Visibility)) {
+	case "", string(schemas.VisibilityPrivate):
+		return decision, false
+	case string(schemas.VisibilitySession):
+		return decision, record.access.SessionID != "" && record.access.SessionID == principal.SessionID
+	case string(schemas.VisibilityTeam):
+		return decision, record.access.TeamID != "" && record.access.TeamID == principal.TeamID
+	case string(schemas.VisibilityWorkspace):
+		return decision, record.access.WorkspaceID != "" && record.access.WorkspaceID == principal.WorkspaceID
+	case string(schemas.VisibilityPublic), "shared":
+		return decision, true
+	default:
+		return decision, false
+	}
+}
+
+func metadataContainsString(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" && strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataIntersectsStrings(left, right []string) bool {
+	for _, value := range left {
+		if metadataContainsString(right, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) canonicalAccessRecord(objectID string) canonicalAccessRecord {
@@ -259,6 +317,9 @@ func (r *Runtime) filterResponseEvidenceByAccess(
 	}
 	principal := r.accessPrincipal(req)
 	contracts := r.storage.Contracts().ListContracts()
+	if r.capabilities.GovernanceProfile == "no_share_contract" || r.capabilities.GovernanceProfile == "metadata_only" {
+		contracts = nil
+	}
 	allowedReference := func(objectID string) bool {
 		if strings.TrimSpace(objectID) == "" {
 			return true

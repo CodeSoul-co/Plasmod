@@ -165,6 +165,20 @@ func (c *HotObjectCache) Clear() {
 	c.order = c.order[:0]
 }
 
+// Resize changes the bounded cache capacity and evicts the lowest-hotness
+// entries immediately when shrinking.
+func (c *HotObjectCache) Resize(maxSize int) {
+	if c == nil || maxSize < 1 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxSize = maxSize
+	for len(c.entries) > c.maxSize {
+		c.evictOne()
+	}
+}
+
 // evictOne removes the entry with the lowest hotness score.
 // Must be called with c.mu held (write).
 func (c *HotObjectCache) evictOne() {

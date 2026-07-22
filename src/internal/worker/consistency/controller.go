@@ -193,24 +193,47 @@ func (c *Controller) Start(ctx context.Context) error {
 		go c.runWorker(queue)
 	}
 
-	if err := c.recoverFromWAL(generation); err != nil {
-		c.cancelAdmission()
-		c.cancel()
-		c.workers.Wait()
-		c.drainQueues()
-		c.stateMu.Lock()
-		c.started = false
-		c.accepting = false
-		c.stateMu.Unlock()
-		if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
-			closeCtx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
-			closeErr := checkpoint.Close(closeCtx)
-			cancel()
-			return errors.Join(err, closeErr)
+	if c.cfg.RecoverOnStart {
+		if err := c.recoverFromWAL(generation); err != nil {
+			c.cancelAdmission()
+			c.cancel()
+			c.workers.Wait()
+			c.drainQueues()
+			c.stateMu.Lock()
+			c.started = false
+			c.accepting = false
+			c.stateMu.Unlock()
+			if checkpoint, ok := c.checkpoint.(*BufferedCheckpoint); ok {
+				closeCtx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+				closeErr := checkpoint.Close(closeCtx)
+				cancel()
+				return errors.Join(err, closeErr)
+			}
+			return err
 		}
-		return err
 	}
 	return nil
+}
+
+// MarkReplayVisible advances the read watermark for an entry projected by an
+// administrative replay. The controller must be paused so online admission
+// cannot interleave with deterministic replay order.
+func (c *Controller) MarkReplayVisible(entry eventbackbone.WALEntry) error {
+	c.stateMu.RLock()
+	accepting := c.accepting
+	c.stateMu.RUnlock()
+	if accepting {
+		return errors.New("consistency controller must be paused during replay")
+	}
+	if entry.LSN <= c.tracker.Status().VisibleWatermark {
+		return nil
+	}
+	acceptedAt := acceptedTime(entry)
+	c.tracker.Accept(entry.LSN, acceptedAt, time.Time{})
+	if err := c.tracker.MarkProjecting(entry.LSN, 1); err != nil {
+		return err
+	}
+	return c.tracker.MarkVisible(entry.LSN)
 }
 
 func (c *Controller) recoverFromWAL(generation uint64) error {
@@ -808,7 +831,6 @@ func baseAcknowledgement(task projectionTask, visibility string) map[string]any 
 	ack := map[string]any{
 		"status":            "accepted",
 		"event_id":          task.entry.Event.Identity.EventID,
-		"memory_id":         schemas.IDPrefixMemory + task.entry.Event.Identity.EventID,
 		"lsn":               task.entry.LSN,
 		"consistency_mode":  string(task.mode),
 		"visibility_status": visibility,

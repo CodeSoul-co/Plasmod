@@ -230,7 +230,7 @@ func TestS3ColdStore_MemoryEmbeddingLifecycle(t *testing.T) {
 
 	store := NewS3ColdStore(cfg)
 
-	memoryID := fmt.Sprintf("mem_s3_embed_%d", time.Now().UnixNano())
+	memoryID := fmt.Sprintf("mem_s3_embed=family_test_%d", time.Now().UnixNano())
 	mem := schemas.Memory{
 		MemoryID: memoryID,
 		Content:  "s3 embedding lifecycle test",

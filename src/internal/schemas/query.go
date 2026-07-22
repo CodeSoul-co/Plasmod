@@ -88,6 +88,16 @@ type RetrievalSummary struct {
 	ColdUsedFallback   bool   `json:"cold_used_fallback,omitempty"`
 	RetrievalHits      int    `json:"retrieval_hits,omitempty"`
 	CanonicalAdds      int    `json:"canonical_adds,omitempty"`
+	HotCandidateCount  int    `json:"hot_candidate_count,omitempty"`
+	WarmCandidateCount int    `json:"warm_candidate_count,omitempty"`
+}
+
+type QueryDiagnostics struct {
+	EvidenceAssemblyLatencyMS float64 `json:"evidence_assembly_latency_ms"`
+	PolicyEvaluationLatencyMS float64 `json:"policy_evaluation_latency_ms"`
+	GraphExpansionLatencyMS   float64 `json:"graph_expansion_latency_ms"`
+	ProvenanceLatencyMS       float64 `json:"provenance_latency_ms"`
+	PromotionLatencyMS        float64 `json:"promotion_latency_ms"`
 }
 
 type QueryResponse struct {
@@ -101,6 +111,7 @@ type QueryResponse struct {
 	ChainTraces      ChainTraceSlots     `json:"chain_traces"`
 	EvidenceCache    *EvidenceCacheStats `json:"evidence_cache,omitempty"`
 	Retrieval        *RetrievalSummary   `json:"retrieval,omitempty"`
+	Diagnostics      *QueryDiagnostics   `json:"diagnostics,omitempty"`
 	AccessDecisions  []AccessDecision    `json:"access_decisions,omitempty"`
 	ReadWatermarkLSN int64               `json:"read_watermark_lsn,omitempty"`
 	// QueryStatus classifies retrieval-plane seed hits (distinct from supplemental canonical IDs).
