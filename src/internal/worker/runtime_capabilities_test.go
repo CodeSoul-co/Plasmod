@@ -3,7 +3,9 @@ package worker
 import (
 	"testing"
 
+	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/storage"
 )
 
 func capabilityEvent(id string) schemas.Event {
@@ -117,4 +119,86 @@ func TestRuntimeEvidenceNoneReturnsObjectsAndDiagnostics(t *testing.T) {
 	if response.Diagnostics == nil {
 		t.Fatal("query diagnostics missing")
 	}
+}
+
+func TestRuntimeStateSummaryUsesCountStoresWhenAvailable(t *testing.T) {
+	base := storage.NewMemoryRuntimeStorage()
+	runtime := &Runtime{
+		wal: eventbackbone.NewInMemoryWAL(nil, eventbackbone.NewHybridClock()),
+		storage: storage.NewCompositeRuntimeStorage(
+			base.Segments(),
+			base.Indexes(),
+			countOnlyObjectStore{events: 11, memories: 7, states: 5, artifacts: 3},
+			countOnlyGraphEdgeStore{edges: 13},
+			countOnlySnapshotVersionStore{versions: 17},
+			base.Policies(),
+			base.Contracts(),
+			base.HotCache(),
+		),
+	}
+
+	summary := runtime.RuntimeStateSummary()
+
+	if summary["events"] != 11 || summary["memories"] != 7 ||
+		summary["states"] != 5 || summary["artifacts"] != 3 ||
+		summary["edges"] != 13 || summary["versions"] != 17 {
+		t.Fatalf("summary did not use store counts: %+v", summary)
+	}
+	if summary["objects"] != 26 || summary["latest_states"] != 5 {
+		t.Fatalf("unexpected aggregate counts: %+v", summary)
+	}
+}
+
+type countOnlyObjectStore struct {
+	storage.ObjectStore
+	events    int
+	memories  int
+	states    int
+	artifacts int
+}
+
+func (s countOnlyObjectStore) CountEvents(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		panic("RuntimeStateSummary requested filtered event count")
+	}
+	return s.events
+}
+
+func (s countOnlyObjectStore) CountMemories(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		panic("RuntimeStateSummary requested filtered memory count")
+	}
+	return s.memories
+}
+
+func (s countOnlyObjectStore) CountStates(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		panic("RuntimeStateSummary requested filtered state count")
+	}
+	return s.states
+}
+
+func (s countOnlyObjectStore) CountArtifacts(sessionID string) int {
+	if sessionID != "" {
+		panic("RuntimeStateSummary requested filtered artifact count")
+	}
+	return s.artifacts
+}
+
+type countOnlyGraphEdgeStore struct {
+	storage.GraphEdgeStore
+	edges int
+}
+
+func (s countOnlyGraphEdgeStore) CountEdges() int {
+	return s.edges
+}
+
+type countOnlySnapshotVersionStore struct {
+	storage.SnapshotVersionStore
+	versions int
+}
+
+func (s countOnlySnapshotVersionStore) CountVersions() int {
+	return s.versions
 }

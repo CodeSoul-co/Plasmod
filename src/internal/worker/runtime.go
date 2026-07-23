@@ -38,6 +38,21 @@ var (
 	ErrShareForbidden = errors.New("share forbidden")
 )
 
+type runtimeSummaryObjectCounter interface {
+	CountEvents(agentID, sessionID string) int
+	CountMemories(agentID, sessionID string) int
+	CountStates(agentID, sessionID string) int
+	CountArtifacts(sessionID string) int
+}
+
+type runtimeSummaryEdgeCounter interface {
+	CountEdges() int
+}
+
+type runtimeSummaryVersionCounter interface {
+	CountVersions() int
+}
+
 type Runtime struct {
 	wal               eventbackbone.WAL
 	bus               eventbackbone.Bus
@@ -2109,27 +2124,50 @@ func (r *Runtime) RuntimeStateSummary() map[string]any {
 	if r == nil || r.storage == nil {
 		return map[string]any{}
 	}
-	events := r.storage.Objects().ListEvents("", "")
-	memories := r.storage.Objects().ListMemories("", "")
-	states := r.storage.Objects().ListStates("", "")
-	artifacts := r.storage.Objects().ListArtifacts("")
-	edges := r.storage.Edges().ListEdges()
+	objects := r.storage.Objects()
+	eventCount := 0
+	memoryCount := 0
+	stateCount := 0
+	artifactCount := 0
+	if counter, ok := objects.(runtimeSummaryObjectCounter); ok {
+		eventCount = counter.CountEvents("", "")
+		memoryCount = counter.CountMemories("", "")
+		stateCount = counter.CountStates("", "")
+		artifactCount = counter.CountArtifacts("")
+	} else {
+		eventCount = len(objects.ListEvents("", ""))
+		memoryCount = len(objects.ListMemories("", ""))
+		stateCount = len(objects.ListStates("", ""))
+		artifactCount = len(objects.ListArtifacts(""))
+	}
+
+	edgeCount := 0
+	if counter, ok := r.storage.Edges().(runtimeSummaryEdgeCounter); ok {
+		edgeCount = counter.CountEdges()
+	} else {
+		edgeCount = len(r.storage.Edges().ListEdges())
+	}
+
 	versionCount := 0
-	seen := make(map[string]struct{})
-	for _, event := range events {
-		seen[event.NormalizeDynamicEventV04().Identity.EventID] = struct{}{}
-	}
-	for _, memory := range memories {
-		seen[memory.MemoryID] = struct{}{}
-	}
-	for _, state := range states {
-		seen[state.StateID] = struct{}{}
-	}
-	for _, artifact := range artifacts {
-		seen[artifact.ArtifactID] = struct{}{}
-	}
-	for objectID := range seen {
-		versionCount += len(r.storage.Versions().GetVersions(objectID))
+	if counter, ok := r.storage.Versions().(runtimeSummaryVersionCounter); ok {
+		versionCount = counter.CountVersions()
+	} else {
+		seen := make(map[string]struct{})
+		for _, event := range objects.ListEvents("", "") {
+			seen[event.NormalizeDynamicEventV04().Identity.EventID] = struct{}{}
+		}
+		for _, memory := range objects.ListMemories("", "") {
+			seen[memory.MemoryID] = struct{}{}
+		}
+		for _, state := range objects.ListStates("", "") {
+			seen[state.StateID] = struct{}{}
+		}
+		for _, artifact := range objects.ListArtifacts("") {
+			seen[artifact.ArtifactID] = struct{}{}
+		}
+		for objectID := range seen {
+			versionCount += len(r.storage.Versions().GetVersions(objectID))
+		}
 	}
 	coldMemories := 0
 	if r.tieredObjects != nil {
@@ -2140,10 +2178,10 @@ func (r *Runtime) RuntimeStateSummary() map[string]any {
 		hotEntries = r.storage.HotCache().Len()
 	}
 	return map[string]any{
-		"events": len(events), "memories": len(memories), "states": len(states),
-		"artifacts": len(artifacts), "edges": len(edges), "versions": versionCount,
-		"objects":       len(events) + len(memories) + len(states) + len(artifacts),
-		"latest_states": len(states), "hot_entries": hotEntries, "cold_memories": coldMemories,
+		"events": eventCount, "memories": memoryCount, "states": stateCount,
+		"artifacts": artifactCount, "edges": edgeCount, "versions": versionCount,
+		"objects":       eventCount + memoryCount + stateCount + artifactCount,
+		"latest_states": stateCount, "hot_entries": hotEntries, "cold_memories": coldMemories,
 		"latest_lsn": r.wal.LatestLSN(), "visible_watermark": r.ConsistencyStatus().VisibleWatermark,
 	}
 }

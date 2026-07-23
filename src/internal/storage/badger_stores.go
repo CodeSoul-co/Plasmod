@@ -209,6 +209,13 @@ func (s *badgerObjectStore) ListMemories(agentID, sessionID string) []schemas.Me
 	return out
 }
 
+func (s *badgerObjectStore) CountMemories(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		return len(s.ListMemories(agentID, sessionID))
+	}
+	return badgerCountPrefix(s.db, kpObjMemory)
+}
+
 func (s *badgerObjectStore) PutState(obj schemas.State) {
 	_ = badgerSetJSON(s.db, []byte(kpObjState+obj.StateID), obj)
 }
@@ -227,6 +234,13 @@ func (s *badgerObjectStore) ListStates(agentID, sessionID string) []schemas.Stat
 		}
 	}
 	return out
+}
+
+func (s *badgerObjectStore) CountStates(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		return len(s.ListStates(agentID, sessionID))
+	}
+	return badgerCountPrefix(s.db, kpObjState)
 }
 
 func (s *badgerObjectStore) PutArtifact(obj schemas.Artifact) {
@@ -249,6 +263,13 @@ func (s *badgerObjectStore) ListArtifacts(sessionID string) []schemas.Artifact {
 		}
 	}
 	return out
+}
+
+func (s *badgerObjectStore) CountArtifacts(sessionID string) int {
+	if sessionID != "" {
+		return len(s.ListArtifacts(sessionID))
+	}
+	return badgerCountPrefix(s.db, kpObjArtifact)
 }
 
 func (s *badgerObjectStore) PutEvent(obj schemas.Event) {
@@ -274,6 +295,13 @@ func (s *badgerObjectStore) ListEvents(agentID, sessionID string) []schemas.Even
 		}
 	}
 	return out
+}
+
+func (s *badgerObjectStore) CountEvents(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		return len(s.ListEvents(agentID, sessionID))
+	}
+	return badgerCountPrefix(s.db, kpObjEvent)
 }
 
 func (s *badgerObjectStore) PutUser(obj schemas.User) {
@@ -517,6 +545,10 @@ func (s *badgerGraphEdgeStore) ListEdges() []schemas.Edge {
 	return s.allEdges()
 }
 
+func (s *badgerGraphEdgeStore) CountEdges() int {
+	return badgerCountPrefix(s.db, kpEdge)
+}
+
 func (s *badgerGraphEdgeStore) PruneExpiredEdges(now string) int {
 	var count int
 	_ = s.db.Update(func(txn *badger.Txn) error {
@@ -593,6 +625,28 @@ func (s *badgerSnapshotVersionStore) GetVersions(objectID string) []schemas.Obje
 		return nil
 	}
 	return append([]schemas.ObjectVersion{}, list...)
+}
+
+func (s *badgerSnapshotVersionStore) CountVersions() int {
+	count := 0
+	_ = s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		prefix := []byte(kpVer)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			_ = item.Value(func(val []byte) error {
+				var list []schemas.ObjectVersion
+				if err := json.Unmarshal(val, &list); err != nil {
+					return err
+				}
+				count += len(list)
+				return nil
+			})
+		}
+		return nil
+	})
+	return count
 }
 
 func (s *badgerSnapshotVersionStore) LatestVersion(objectID string) (schemas.ObjectVersion, bool) {

@@ -53,6 +53,22 @@ func badgerDelete(db *badger.DB, key []byte) error {
 	})
 }
 
+func badgerCountPrefix(db *badger.DB, prefix string) int {
+	count := 0
+	_ = db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		p := []byte(prefix)
+		for it.Seek(p); it.ValidForPrefix(p); it.Next() {
+			count++
+		}
+		return nil
+	})
+	return count
+}
+
 func openBadger(path string) (*badger.DB, error) {
 	return badger.Open(badgerOptions(path))
 }

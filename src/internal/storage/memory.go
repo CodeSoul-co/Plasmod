@@ -172,6 +172,15 @@ func (s *memoryObjectStore) ListEvents(agentID, sessionID string) []schemas.Even
 	return out
 }
 
+func (s *memoryObjectStore) CountEvents(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		return len(s.ListEvents(agentID, sessionID))
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.events)
+}
+
 func (s *memoryObjectStore) PutMemory(obj schemas.Memory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -203,6 +212,15 @@ func (s *memoryObjectStore) ListMemories(agentID, sessionID string) []schemas.Me
 	return out
 }
 
+func (s *memoryObjectStore) CountMemories(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		return len(s.ListMemories(agentID, sessionID))
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.memories)
+}
+
 func (s *memoryObjectStore) PutState(obj schemas.State) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,6 +245,15 @@ func (s *memoryObjectStore) ListStates(agentID, sessionID string) []schemas.Stat
 	return out
 }
 
+func (s *memoryObjectStore) CountStates(agentID, sessionID string) int {
+	if agentID != "" || sessionID != "" {
+		return len(s.ListStates(agentID, sessionID))
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.states)
+}
+
 func (s *memoryObjectStore) PutArtifact(obj schemas.Artifact) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -248,6 +275,15 @@ func (s *memoryObjectStore) ListArtifacts(sessionID string) []schemas.Artifact {
 		}
 	}
 	return out
+}
+
+func (s *memoryObjectStore) CountArtifacts(sessionID string) int {
+	if sessionID != "" {
+		return len(s.ListArtifacts(sessionID))
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.artifacts)
 }
 
 func (s *memoryObjectStore) PutUser(obj schemas.User) {
@@ -435,6 +471,12 @@ func (s *memoryGraphEdgeStore) ListEdges() []schemas.Edge {
 	return out
 }
 
+func (s *memoryGraphEdgeStore) CountEdges() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.edges)
+}
+
 // PruneExpiredEdges removes all edges whose ExpiresAt is non-empty and ≤ now
 // (lexicographic RFC-3339 comparison).  Returns the number of edges pruned.
 func (s *memoryGraphEdgeStore) PruneExpiredEdges(now string) int {
@@ -484,6 +526,17 @@ func (s *memorySnapshotVersionStore) GetVersions(objectID string) []schemas.Obje
 	defer s.mu.RUnlock()
 	return append([]schemas.ObjectVersion{}, s.versions[objectID]...)
 }
+
+func (s *memorySnapshotVersionStore) CountVersions() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, versions := range s.versions {
+		count += len(versions)
+	}
+	return count
+}
+
 func (s *memorySnapshotVersionStore) LatestVersion(objectID string) (schemas.ObjectVersion, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
