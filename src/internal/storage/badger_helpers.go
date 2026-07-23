@@ -25,6 +25,28 @@ func badgerSetJSON(db *badger.DB, key []byte, v any) error {
 	})
 }
 
+func badgerSetJSONCounted(db *badger.DB, key []byte, counterName string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("[badger] marshal json failed key=%q err=%v", string(key), err)
+		return err
+	}
+	return db.Update(func(txn *badger.Txn) error {
+		exists, err := badgerTxnKeyExists(txn, key)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set(key, b); err != nil {
+			log.Printf("[badger] txn.Set failed key=%q err=%v", string(key), err)
+			return err
+		}
+		if !exists {
+			return badgerAddCounterTxn(txn, counterName, 1)
+		}
+		return nil
+	})
+}
+
 func badgerGetJSON(db *badger.DB, key []byte, dest any) (bool, error) {
 	var found bool
 	err := db.View(func(txn *badger.Txn) error {
@@ -53,6 +75,22 @@ func badgerDelete(db *badger.DB, key []byte) error {
 	})
 }
 
+func badgerDeleteCounted(db *badger.DB, key []byte, counterName string) error {
+	return db.Update(func(txn *badger.Txn) error {
+		exists, err := badgerTxnKeyExists(txn, key)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		if err := txn.Delete(key); err != nil {
+			return err
+		}
+		return badgerAddCounterTxn(txn, counterName, -1)
+	})
+}
+
 func badgerCountPrefix(db *badger.DB, prefix string) int {
 	count := 0
 	_ = db.View(func(txn *badger.Txn) error {
@@ -67,6 +105,80 @@ func badgerCountPrefix(db *badger.DB, prefix string) int {
 		return nil
 	})
 	return count
+}
+
+func badgerCounterValue(db *badger.DB, counterName string, fallbackPrefix string) int {
+	count, found := badgerReadCounter(db, counterName)
+	if found {
+		return count
+	}
+	count = badgerCountPrefix(db, fallbackPrefix)
+	_ = badgerWriteCounter(db, counterName, count)
+	return count
+}
+
+func badgerReadCounter(db *badger.DB, counterName string) (int, bool) {
+	var count int
+	found := false
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(badgerCounterKey(counterName))
+		if err == badger.ErrKeyNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		return item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &count)
+		})
+	})
+	return count, found && err == nil
+}
+
+func badgerWriteCounter(db *badger.DB, counterName string, count int) error {
+	return db.Update(func(txn *badger.Txn) error {
+		b, err := json.Marshal(count)
+		if err != nil {
+			return err
+		}
+		return txn.Set(badgerCounterKey(counterName), b)
+	})
+}
+
+func badgerAddCounterTxn(txn *badger.Txn, counterName string, delta int) error {
+	count := 0
+	item, err := txn.Get(badgerCounterKey(counterName))
+	if err == nil {
+		if err := item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &count)
+		}); err != nil {
+			return err
+		}
+	} else if err != badger.ErrKeyNotFound {
+		return err
+	}
+	count += delta
+	if count < 0 {
+		count = 0
+	}
+	b, err := json.Marshal(count)
+	if err != nil {
+		return err
+	}
+	return txn.Set(badgerCounterKey(counterName), b)
+}
+
+func badgerTxnKeyExists(txn *badger.Txn, key []byte) (bool, error) {
+	_, err := txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func badgerCounterKey(counterName string) []byte {
+	return []byte(kpCount + counterName)
 }
 
 func openBadger(path string) (*badger.DB, error) {

@@ -26,6 +26,7 @@ const (
 	kpVer         = "ver|"
 	kpPol         = "pol|"
 	kpCtr         = "ctr|"
+	kpCount       = "cnt|"
 )
 
 // Edge auxiliary indexes: kpeS|{srcObjectID}|{edgeID} and kpeD|{dstObjectID}|{edgeID}.
@@ -185,7 +186,7 @@ func (s *badgerObjectStore) ListSessions(agentID string) []schemas.Session {
 }
 
 func (s *badgerObjectStore) PutMemory(obj schemas.Memory) {
-	_ = badgerSetJSON(s.db, []byte(kpObjMemory+obj.MemoryID), obj)
+	_ = badgerSetJSONCounted(s.db, []byte(kpObjMemory+obj.MemoryID), kpObjMemory, obj)
 }
 func (s *badgerObjectStore) GetMemory(id string) (schemas.Memory, bool) {
 	var o schemas.Memory
@@ -194,7 +195,7 @@ func (s *badgerObjectStore) GetMemory(id string) (schemas.Memory, bool) {
 }
 
 func (s *badgerObjectStore) DeleteMemory(id string) {
-	_ = badgerDelete(s.db, []byte(kpObjMemory+id))
+	_ = badgerDeleteCounted(s.db, []byte(kpObjMemory+id), kpObjMemory)
 }
 
 func (s *badgerObjectStore) ListMemories(agentID, sessionID string) []schemas.Memory {
@@ -213,11 +214,11 @@ func (s *badgerObjectStore) CountMemories(agentID, sessionID string) int {
 	if agentID != "" || sessionID != "" {
 		return len(s.ListMemories(agentID, sessionID))
 	}
-	return badgerCountPrefix(s.db, kpObjMemory)
+	return badgerCounterValue(s.db, kpObjMemory, kpObjMemory)
 }
 
 func (s *badgerObjectStore) PutState(obj schemas.State) {
-	_ = badgerSetJSON(s.db, []byte(kpObjState+obj.StateID), obj)
+	_ = badgerSetJSONCounted(s.db, []byte(kpObjState+obj.StateID), kpObjState, obj)
 }
 func (s *badgerObjectStore) GetState(id string) (schemas.State, bool) {
 	var o schemas.State
@@ -240,11 +241,11 @@ func (s *badgerObjectStore) CountStates(agentID, sessionID string) int {
 	if agentID != "" || sessionID != "" {
 		return len(s.ListStates(agentID, sessionID))
 	}
-	return badgerCountPrefix(s.db, kpObjState)
+	return badgerCounterValue(s.db, kpObjState, kpObjState)
 }
 
 func (s *badgerObjectStore) PutArtifact(obj schemas.Artifact) {
-	_ = badgerSetJSON(s.db, []byte(kpObjArtifact+obj.ArtifactID), obj)
+	_ = badgerSetJSONCounted(s.db, []byte(kpObjArtifact+obj.ArtifactID), kpObjArtifact, obj)
 }
 func (s *badgerObjectStore) GetArtifact(id string) (schemas.Artifact, bool) {
 	var o schemas.Artifact
@@ -269,12 +270,12 @@ func (s *badgerObjectStore) CountArtifacts(sessionID string) int {
 	if sessionID != "" {
 		return len(s.ListArtifacts(sessionID))
 	}
-	return badgerCountPrefix(s.db, kpObjArtifact)
+	return badgerCounterValue(s.db, kpObjArtifact, kpObjArtifact)
 }
 
 func (s *badgerObjectStore) PutEvent(obj schemas.Event) {
 	obj = obj.NormalizeDynamicEventV04()
-	_ = badgerSetJSON(s.db, []byte(kpObjEvent+obj.Identity.EventID), obj)
+	_ = badgerSetJSONCounted(s.db, []byte(kpObjEvent+obj.Identity.EventID), kpObjEvent, obj)
 }
 func (s *badgerObjectStore) GetEvent(id string) (schemas.Event, bool) {
 	var o schemas.Event
@@ -301,7 +302,7 @@ func (s *badgerObjectStore) CountEvents(agentID, sessionID string) int {
 	if agentID != "" || sessionID != "" {
 		return len(s.ListEvents(agentID, sessionID))
 	}
-	return badgerCountPrefix(s.db, kpObjEvent)
+	return badgerCounterValue(s.db, kpObjEvent, kpObjEvent)
 }
 
 func (s *badgerObjectStore) PutUser(obj schemas.User) {
@@ -350,7 +351,17 @@ func newBadgerGraphEdgeStore(db *badger.DB) *badgerGraphEdgeStore {
 
 func (s *badgerGraphEdgeStore) PutEdge(edge schemas.Edge) {
 	_ = s.db.Update(func(txn *badger.Txn) error {
-		return putEdgeTxn(txn, edge)
+		exists, err := badgerTxnKeyExists(txn, []byte(kpEdge+edge.EdgeID))
+		if err != nil {
+			return err
+		}
+		if err := putEdgeTxn(txn, edge); err != nil {
+			return err
+		}
+		if !exists {
+			return badgerAddCounterTxn(txn, kpEdge, 1)
+		}
+		return nil
 	})
 }
 
@@ -386,8 +397,10 @@ func (s *badgerGraphEdgeStore) DeleteEdge(id string) {
 	_ = s.db.Update(func(txn *badger.Txn) error {
 		_ = txn.Delete(srcIdxKey)
 		_ = txn.Delete(dstIdxKey)
-		_ = txn.Delete(edgeKey)
-		return nil
+		if err := txn.Delete(edgeKey); err != nil {
+			return err
+		}
+		return badgerAddCounterTxn(txn, kpEdge, -1)
 	})
 }
 
@@ -437,6 +450,9 @@ func (s *badgerGraphEdgeStore) DeleteEdgesByObjectID(objectID string) int {
 				count++
 			}
 			_ = txn.Delete(key)
+		}
+		if count > 0 {
+			return badgerAddCounterTxn(txn, kpEdge, -count)
 		}
 		return nil
 	})
@@ -546,7 +562,7 @@ func (s *badgerGraphEdgeStore) ListEdges() []schemas.Edge {
 }
 
 func (s *badgerGraphEdgeStore) CountEdges() int {
-	return badgerCountPrefix(s.db, kpEdge)
+	return badgerCounterValue(s.db, kpEdge, kpEdge)
 }
 
 func (s *badgerGraphEdgeStore) PruneExpiredEdges(now string) int {
@@ -569,6 +585,9 @@ func (s *badgerGraphEdgeStore) PruneExpiredEdges(now string) int {
 				}
 				return nil
 			})
+		}
+		if count > 0 {
+			return badgerAddCounterTxn(txn, kpEdge, -count)
 		}
 		return nil
 	})
@@ -614,7 +633,10 @@ func (s *badgerSnapshotVersionStore) PutVersion(v schemas.ObjectVersion) {
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, b)
+		if err := txn.Set(key, b); err != nil {
+			return err
+		}
+		return badgerAddCounterTxn(txn, kpVer, 1)
 	})
 }
 
@@ -628,7 +650,11 @@ func (s *badgerSnapshotVersionStore) GetVersions(objectID string) []schemas.Obje
 }
 
 func (s *badgerSnapshotVersionStore) CountVersions() int {
-	count := 0
+	count, found := badgerReadCounter(s.db, kpVer)
+	if found {
+		return count
+	}
+	count = 0
 	_ = s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
@@ -646,6 +672,7 @@ func (s *badgerSnapshotVersionStore) CountVersions() int {
 		}
 		return nil
 	})
+	_ = badgerWriteCounter(s.db, kpVer, count)
 	return count
 }
 

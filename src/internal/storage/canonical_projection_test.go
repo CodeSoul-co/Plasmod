@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"plasmod/src/internal/schemas"
+
+	"github.com/dgraph-io/badger/v4"
 )
 
 func newBadgerProjectionStorage(t *testing.T) RuntimeStorage {
@@ -28,6 +31,70 @@ func newBadgerProjectionStorage(t *testing.T) RuntimeStorage {
 		newBadgerShareContractStore(db),
 		NewHotObjectCache(16),
 	)
+}
+
+func TestBadgerSummaryCountersAreMaintained(t *testing.T) {
+	db, err := openBadgerInMemory()
+	if err != nil {
+		t.Fatalf("openBadgerInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	objects := newBadgerObjectStore(db)
+	edges := newBadgerGraphEdgeStore(db)
+	versions := newBadgerSnapshotVersionStore(db)
+
+	event := schemas.Event{
+		EventID: "event-count", TenantID: "tenant-count", WorkspaceID: "workspace-count",
+		AgentID: "agent-count", SessionID: "session-count", EventType: "observation",
+	}
+	objects.PutEvent(event)
+	objects.PutEvent(event)
+	objects.PutMemory(schemas.Memory{MemoryID: "memory-count", AgentID: "agent-count", SessionID: "session-count"})
+	objects.PutState(schemas.State{StateID: "state-count", AgentID: "agent-count", SessionID: "session-count"})
+	objects.PutArtifact(schemas.Artifact{ArtifactID: "artifact-count", SessionID: "session-count"})
+	edges.PutEdge(schemas.Edge{EdgeID: "edge-count", SrcObjectID: "memory-count", DstObjectID: "state-count"})
+	edges.PutEdge(schemas.Edge{EdgeID: "edge-count", SrcObjectID: "memory-count", DstObjectID: "artifact-count"})
+	versions.PutVersion(schemas.ObjectVersion{ObjectID: "memory-count", ObjectType: "memory", Version: 1})
+	versions.PutVersion(schemas.ObjectVersion{ObjectID: "memory-count", ObjectType: "memory", Version: 1})
+	versions.PutVersion(schemas.ObjectVersion{ObjectID: "memory-count", ObjectType: "memory", Version: 2})
+
+	assertBadgerCounter(t, db, kpObjEvent, 1)
+	assertBadgerCounter(t, db, kpObjMemory, 1)
+	assertBadgerCounter(t, db, kpObjState, 1)
+	assertBadgerCounter(t, db, kpObjArtifact, 1)
+	assertBadgerCounter(t, db, kpEdge, 1)
+	assertBadgerCounter(t, db, kpVer, 2)
+
+	objects.DeleteMemory("memory-count")
+	edges.DeleteEdge("edge-count")
+	if got := objects.CountMemories("", ""); got != 0 {
+		t.Fatalf("CountMemories after delete = %d, want 0", got)
+	}
+	if got := edges.CountEdges(); got != 0 {
+		t.Fatalf("CountEdges after delete = %d, want 0", got)
+	}
+	assertBadgerCounter(t, db, kpObjMemory, 0)
+	assertBadgerCounter(t, db, kpEdge, 0)
+}
+
+func assertBadgerCounter(t *testing.T, db *badger.DB, name string, want int) {
+	t.Helper()
+	var got int
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(kpCount + name))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &got)
+		})
+	})
+	if err != nil {
+		t.Fatalf("counter %q missing or invalid: %v", name, err)
+	}
+	if got != want {
+		t.Fatalf("counter %q = %d, want %d", name, got, want)
+	}
 }
 
 func TestBadgerCanonicalProjectionSoak(t *testing.T) {
