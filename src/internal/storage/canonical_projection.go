@@ -60,33 +60,49 @@ func applyCanonicalProjection(
 func applyBadgerCanonicalProjection(db *badger.DB, projection CanonicalProjection) error {
 	return db.Update(func(txn *badger.Txn) error {
 		if projection.Event != nil {
-			if err := setJSONTxn(txn, []byte(kpObjEvent+projection.Event.Identity.EventID), *projection.Event); err != nil {
+			if err := setJSONCountedTxn(txn, []byte(kpObjEvent+projection.Event.Identity.EventID), kpObjEvent, *projection.Event); err != nil {
 				return fmt.Errorf("persist event %q: %w", projection.Event.Identity.EventID, err)
 			}
 		}
 		if projection.Memory != nil {
-			if err := setJSONTxn(txn, []byte(kpObjMemory+projection.Memory.MemoryID), *projection.Memory); err != nil {
+			if err := setJSONCountedTxn(txn, []byte(kpObjMemory+projection.Memory.MemoryID), kpObjMemory, *projection.Memory); err != nil {
 				return fmt.Errorf("persist memory %q: %w", projection.Memory.MemoryID, err)
 			}
 		}
 		if projection.State != nil {
-			if err := setJSONTxn(txn, []byte(kpObjState+projection.State.StateID), *projection.State); err != nil {
+			if err := setJSONCountedTxn(txn, []byte(kpObjState+projection.State.StateID), kpObjState, *projection.State); err != nil {
 				return fmt.Errorf("persist state %q: %w", projection.State.StateID, err)
 			}
 		}
 		if projection.Artifact != nil {
-			if err := setJSONTxn(txn, []byte(kpObjArtifact+projection.Artifact.ArtifactID), *projection.Artifact); err != nil {
+			if err := setJSONCountedTxn(txn, []byte(kpObjArtifact+projection.Artifact.ArtifactID), kpObjArtifact, *projection.Artifact); err != nil {
 				return fmt.Errorf("persist artifact %q: %w", projection.Artifact.ArtifactID, err)
 			}
 		}
 		for _, version := range projection.Versions {
-			if err := putVersionTxn(txn, version); err != nil {
+			inserted, err := putVersionTxn(txn, version)
+			if err != nil {
 				return fmt.Errorf("persist version for %q: %w", version.ObjectID, err)
+			}
+			if inserted {
+				if err := badgerAddCounterTxn(txn, kpVer, 1); err != nil {
+					return fmt.Errorf("count version for %q: %w", version.ObjectID, err)
+				}
 			}
 		}
 		for _, edge := range canonicalProjectionEdges(projection) {
+			edgeKey := []byte(kpEdge + edge.EdgeID)
+			exists, err := badgerTxnKeyExists(txn, edgeKey)
+			if err != nil {
+				return fmt.Errorf("check edge %q: %w", edge.EdgeID, err)
+			}
 			if err := putEdgeTxn(txn, edge); err != nil {
 				return fmt.Errorf("persist edge %q: %w", edge.EdgeID, err)
+			}
+			if !exists {
+				if err := badgerAddCounterTxn(txn, kpEdge, 1); err != nil {
+					return fmt.Errorf("count edge %q: %w", edge.EdgeID, err)
+				}
 			}
 		}
 		return nil
@@ -181,6 +197,20 @@ func setJSONTxn(txn *badger.Txn, key []byte, value any) error {
 	return txn.Set(key, encoded)
 }
 
+func setJSONCountedTxn(txn *badger.Txn, key []byte, counterName string, value any) error {
+	exists, err := badgerTxnKeyExists(txn, key)
+	if err != nil {
+		return err
+	}
+	if err := setJSONTxn(txn, key, value); err != nil {
+		return err
+	}
+	if !exists {
+		return badgerAddCounterTxn(txn, counterName, 1)
+	}
+	return nil
+}
+
 func putEdgeTxn(txn *badger.Txn, edge schemas.Edge) error {
 	edgeKey := []byte(kpEdge + edge.EdgeID)
 	if item, err := txn.Get(edgeKey); err == nil {
@@ -210,23 +240,23 @@ func putEdgeTxn(txn *badger.Txn, edge schemas.Edge) error {
 	return txn.Set([]byte(kpEdgeDstIdx+edge.DstObjectID+"|"+edge.EdgeID), edgeKey)
 }
 
-func putVersionTxn(txn *badger.Txn, version schemas.ObjectVersion) error {
+func putVersionTxn(txn *badger.Txn, version schemas.ObjectVersion) (bool, error) {
 	key := verKey(version.ObjectID)
 	var list []schemas.ObjectVersion
 	item, err := txn.Get(key)
 	if err == nil {
 		if err := item.Value(func(value []byte) error { return json.Unmarshal(value, &list) }); err != nil {
-			return err
+			return false, err
 		}
 	} else if err != badger.ErrKeyNotFound {
-		return err
+		return false, err
 	}
 	for index, existing := range list {
 		if sameObjectVersion(existing, version) {
 			list[index] = version
-			return setJSONTxn(txn, key, list)
+			return false, setJSONTxn(txn, key, list)
 		}
 	}
 	list = append(list, version)
-	return setJSONTxn(txn, key, list)
+	return true, setJSONTxn(txn, key, list)
 }

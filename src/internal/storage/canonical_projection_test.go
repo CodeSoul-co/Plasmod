@@ -77,6 +77,94 @@ func TestBadgerSummaryCountersAreMaintained(t *testing.T) {
 	assertBadgerCounter(t, db, kpEdge, 0)
 }
 
+func TestBadgerCanonicalProjectionMaintainsSeededSummaryCounters(t *testing.T) {
+	store := newBadgerProjectionStorage(t)
+	objects := store.Objects().(*badgerObjectStore)
+	edges := store.Edges().(*badgerGraphEdgeStore)
+	versions := store.Versions().(*badgerSnapshotVersionStore)
+
+	if objects.CountEvents("", "") != 0 ||
+		objects.CountMemories("", "") != 0 ||
+		objects.CountStates("", "") != 0 ||
+		objects.CountArtifacts("") != 0 ||
+		edges.CountEdges() != 0 ||
+		versions.CountVersions() != 0 {
+		t.Fatal("empty store counters were not seeded at zero")
+	}
+
+	event := schemas.Event{
+		EventID:     "event-projection-count",
+		AgentID:     "agent-projection-count",
+		SessionID:   "session-projection-count",
+		WorkspaceID: "workspace-projection-count",
+	}
+	event = event.NormalizeDynamicEventV04()
+	memory := schemas.Memory{
+		MemoryID:       "memory-projection-count",
+		AgentID:        event.Actor.AgentID,
+		SessionID:      event.Actor.SessionID,
+		SourceEventIDs: []string{event.Identity.EventID},
+		IsActive:       true,
+	}
+	state := schemas.State{
+		StateID:            "state-projection-count",
+		AgentID:            event.Actor.AgentID,
+		SessionID:          event.Actor.SessionID,
+		DerivedFromEventID: event.Identity.EventID,
+	}
+	artifact := schemas.Artifact{
+		ArtifactID:        "artifact-projection-count",
+		SessionID:         event.Actor.SessionID,
+		OwnerAgentID:      event.Actor.AgentID,
+		ProducedByEventID: event.Identity.EventID,
+	}
+	explicitEdge := schemas.Edge{
+		EdgeID:      "edge-projection-count",
+		SrcObjectID: memory.MemoryID,
+		DstObjectID: artifact.ArtifactID,
+	}
+
+	err := store.ApplyCanonicalProjection(CanonicalProjection{
+		Event:    &event,
+		Memory:   &memory,
+		State:    &state,
+		Artifact: &artifact,
+		Versions: []schemas.ObjectVersion{
+			{ObjectID: memory.MemoryID, ObjectType: string(schemas.ObjectTypeMemory), Version: 1},
+			{ObjectID: state.StateID, ObjectType: string(schemas.ObjectTypeAgentState), Version: 1},
+		},
+		Edges:                    []schemas.Edge{explicitEdge},
+		IncludeEventBaseEdges:    true,
+		IncludeMemoryBaseEdges:   true,
+		IncludeArtifactBaseEdges: true,
+	})
+	if err != nil {
+		t.Fatalf("ApplyCanonicalProjection: %v", err)
+	}
+
+	if got := objects.CountEvents("", ""); got != 1 {
+		t.Fatalf("CountEvents = %d, want 1", got)
+	}
+	if got := objects.CountMemories("", ""); got != 1 {
+		t.Fatalf("CountMemories = %d, want 1", got)
+	}
+	if got := objects.CountStates("", ""); got != 1 {
+		t.Fatalf("CountStates = %d, want 1", got)
+	}
+	if got := objects.CountArtifacts(""); got != 1 {
+		t.Fatalf("CountArtifacts = %d, want 1", got)
+	}
+	wantEdges := len(schemas.BuildEventBaseEdges(event)) +
+		len(schemas.BuildMemoryBaseEdges(memory)) +
+		len(schemas.BuildArtifactBaseEdges(artifact)) + 1
+	if got := edges.CountEdges(); got != wantEdges {
+		t.Fatalf("CountEdges = %d, want %d", got, wantEdges)
+	}
+	if got := versions.CountVersions(); got != 2 {
+		t.Fatalf("CountVersions = %d, want 2", got)
+	}
+}
+
 func assertBadgerCounter(t *testing.T, db *badger.DB, name string, want int) {
 	t.Helper()
 	var got int
