@@ -819,8 +819,16 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 		}
 	}
 	if r.MemoryBankMode && len(result.ObjectIDs) > 0 {
-		out := r.nodeManager.DispatchAlgorithmDispatch("recall", result.ObjectIDs, req.QueryText, "", req.AgentID, "", nil)
-		result.ObjectIDs = out.ScoredRefs
+		var memoryIDs, otherIDs []string
+		for _, id := range result.ObjectIDs {
+			if _, ok := r.storage.Objects().GetMemory(id); ok {
+				memoryIDs = append(memoryIDs, id)
+			} else {
+				otherIDs = append(otherIDs, id)
+			}
+		}
+		out := r.nodeManager.DispatchAlgorithmDispatch("recall", memoryIDs, req.QueryText, "", req.AgentID, "", nil)
+		result.ObjectIDs = append(out.ScoredRefs, otherIDs...)
 	}
 	promotionStarted := time.Now()
 	if r.tieredObjects != nil && r.capabilities.TierProfile != "no_promotion" {
@@ -1684,7 +1692,10 @@ func (r *Runtime) DispatchRecall(
 
 	// Forward the top candidates to algorithm-level Recall for scored re-ranking.
 	algoOut := schemas.AlgorithmDispatchOutput{}
-	if r.nodeManager != nil {
+	if r.MemoryBankMode {
+		// ExecuteQuery already applied governance and persisted reinforcement.
+		algoOut.ScoredRefs = visibleRefs
+	} else if r.nodeManager != nil {
 		algoOut = r.nodeManager.DispatchAlgorithmDispatch(
 			"recall", visibleRefs, query,
 			now.Format(time.RFC3339), agentID, sessionID, nil,

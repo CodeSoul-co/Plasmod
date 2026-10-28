@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"plasmod/src/internal/dataplane"
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/schemas"
 	"plasmod/src/internal/worker/cognitive"
@@ -43,6 +44,17 @@ func TestRuntimeMemoryBankIngestRecallAndGovernanceExclusion(t *testing.T) {
 	if state.RecallCount != 1 {
 		t.Fatalf("query skipped recall: %+v", state)
 	}
+	view := r.DispatchRecall("concise", "workspace", 5, "agent", "session", "tenant", "workspace")
+	if !containsString(view.VisibleMemoryRefs, id) {
+		t.Fatalf("missing recalled memory: %+v", view)
+	}
+	raw, _ = r.storage.Objects().GetState("governance:memorybank_v1:" + id)
+	if err := json.Unmarshal([]byte(raw.StateValue), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.RecallCount != 2 {
+		t.Fatalf("DispatchRecall reinforced twice: %+v", state)
+	}
 	state.SuggestedLifecycleState = "quarantined"
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -74,5 +86,22 @@ func TestWALReplayDoesNotResurrectForgottenMemory(t *testing.T) {
 	after, _ := r.storage.Objects().GetMemory(id)
 	if after.IsActive {
 		t.Fatal("WAL replay resurrected forgotten memory")
+	}
+}
+
+func TestMemoryBankDoesNotFilterNonMemoryObjects(t *testing.T) {
+	r := buildTestRuntime(t)
+	r.MemoryBankMode = true
+	r.nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker("bank", memorybank.New("memorybank_v1", memorybank.DefaultConfig()), r.storage.Objects(), r.storage.AlgorithmStates(), r.storage.Audits()))
+	r.storage.Objects().PutArtifact(schemas.Artifact{ArtifactID: "art_report", WorkspaceID: "workspace", OwnerAgentID: "agent"})
+	if err := r.plane.Ingest(dataplane.IngestRecord{ObjectID: "art_report", Text: "meeting report", Attributes: map[string]string{"workspace_id": "workspace", "agent_id": "agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.plane.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	got := r.ExecuteQuery(schemas.QueryRequest{QueryText: "meeting", WorkspaceID: "workspace", AgentID: "agent", QueryScope: "workspace", ObjectTypes: []string{"artifact"}, ResponseMode: "objects_only", TopK: 5})
+	if !containsString(got.Objects, "art_report") {
+		t.Fatalf("governance discarded non-memory object: %+v", got)
 	}
 }
