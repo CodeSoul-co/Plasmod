@@ -105,8 +105,8 @@ func NewVectorStore(embedder EmbeddingGenerator, cfg VectorStoreConfig) (*Vector
 	// NewRetrieverWithMetric returns an error when CGO is disabled or the .dylib/.so is missing.
 	r, err := retrievalplane.NewRetrieverWithMetric(vs.dim, hnswM, efCons, rrfK, metric)
 	if err != nil {
-		// Graceful degradation — vector search silently skipped, lexical still works.
-		return vs, nil
+		// A configured vector store requires the native backend.
+		return nil, err
 	}
 	vs.retriever = r
 	return vs, nil
@@ -280,7 +280,8 @@ func (vs *VectorStore) SearchFiltered(queryVec []float32, topK int, allowedObjec
 		}
 		allowList = make([]byte, (len(vs.idArray)+7)/8)
 		for idx, id := range vs.idArray {
-			if _, ok := allowedObjectIDs[id]; ok {
+			// Knowhere bitsets mark excluded IDs, not allowed IDs.
+			if _, ok := allowedObjectIDs[id]; !ok {
 				allowList[idx/8] |= 1 << (idx % 8)
 			}
 		}

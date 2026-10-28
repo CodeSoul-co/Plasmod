@@ -268,17 +268,8 @@ if(HAVE_OPENMP)
     endif()
 endif()
 
-# SIMD flags so hnswlib's space_ip.h / space_l2.h can call the
-# faiss::fvec_inner_product_avx512 / _avx variants directly (compile-time
-# dispatch) instead of going through the runtime-hooked function pointer
-# `faiss::fvec_inner_product`.  Indirect call is ~10 cycles per dispatch
-# and we make ~4000 distance calls per HNSW search at d=100, accounting
-# for ~40 µs/query of the gap vs the official knowhere build (which
-# already uses faiss's newer template dispatch).
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    target_compile_options(knowhere_hnsw PRIVATE
-        -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx2 -mfma -mf16c)
-endif()
+# Keep the portable HNSW build: hook.cc selects supported SIMD kernels at runtime.
+# Forcing AVX-512 here crashes x86_64 hosts that do not support that ISA.
 
 # ── Main shared library: knowhere ────────────────────────────────────────────
 set(KNOWHERE_ALL_OBJECTS

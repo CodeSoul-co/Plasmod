@@ -611,21 +611,17 @@ func BuildServer() (*ServerBundle, error) {
 	default:
 		activeAlgo = "memorybank"
 		activeAlgoID = "memorybank_v1"
-		activeAlgoImpl = memorybank.NewDefault(activeAlgoID)
+		cfg, err := memorybank.LoadFromYAML()
+		if err != nil {
+			return nil, fmt.Errorf("load memorybank config: %w", err)
+		}
+		activeAlgoImpl = memorybank.New(activeAlgoID, cfg)
 	}
 	log.Printf("[bootstrap] active algorithm profile: %s (%s)", activeAlgo, activeAlgoID)
 
 	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
 		"algo-dispatch-1",
 		activeAlgoImpl,
-		store.Objects(),
-		store.AlgorithmStates(),
-		store.Audits(),
-	))
-	// Baseline algorithm registered as a second dispatch worker (fallback / comparison).
-	nodeManager.RegisterAlgorithmDispatch(cognitive.CreateAlgorithmDispatchWorker(
-		"algo-dispatch-baseline",
-		baseline.NewDefault(),
 		store.Objects(),
 		store.AlgorithmStates(),
 		store.Audits(),
@@ -639,11 +635,13 @@ func BuildServer() (*ServerBundle, error) {
 
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
+	runtime.MemoryBankMode = activeAlgo == "memorybank"
 	runtime.ConfigureCapabilities(runtimeCapabilities)
 	if err := runtime.ConfigureEmbeddingSpec(embeddingSpec); err != nil {
 		return nil, fmt.Errorf("configure embedding spec: %w", err)
 	}
-	if reindexEmbeddings {
+	// The ANN index is process-local; rebuild it from canonical storage on every start.
+	{
 		count, err := runtime.ReindexEmbeddings()
 		if err != nil {
 			return nil, fmt.Errorf("reindex embeddings: %w", err)

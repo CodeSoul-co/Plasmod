@@ -274,6 +274,7 @@ func TestMemoryBankAlgorithm_Recall_ConflictPenalty(t *testing.T) {
 
 	existing := schemas.Memory{
 		MemoryID:    "mem-existing",
+		IsActive:    true,
 		MemoryType:  string(schemas.MemoryTypePreferenceConstraint),
 		AgentID:     "agent1",
 		Importance:  0.8,
@@ -680,6 +681,7 @@ func TestConflictDetection_PreferenceReversal(t *testing.T) {
 
 	memA := schemas.Memory{
 		MemoryID:   "mem-pref-a",
+		IsActive:   true,
 		MemoryType: string(schemas.MemoryTypePreferenceConstraint),
 		AgentID:    "agent1",
 		Content:    "prefers dark mode",
@@ -946,5 +948,30 @@ func TestLog1pCapped(t *testing.T) {
 		if got > tt.want+0.01 && got < tt.want-0.01 {
 			t.Errorf("log1pCapped(%d) = %.3f, want ≈ %.3f", tt.n, got, tt.want)
 		}
+	}
+}
+
+func TestMemoryBankIndependentFactsAndScope(t *testing.T) {
+	a := schemas.Memory{MemoryID: "a", MemoryType: "semantic", TenantID: "t", WorkspaceID: "w", AgentID: "agent", IsActive: true, Content: "I like coffee", SourceEventIDs: []string{"source-a"}}
+	b := a
+	b.MemoryID = "b"
+	b.Content = "I prefer short replies"
+	b.SourceEventIDs = []string{"source-b"}
+	registry := NewConflictRegistry()
+	if conflicts := DetectConflicts(registry, []schemas.Memory{a}, b); len(conflicts) != 0 {
+		t.Fatal("independent facts must coexist", conflicts)
+	}
+	b.SourceEventIDs = a.SourceEventIDs
+	if conflicts := DetectConflicts(registry, []schemas.Memory{a}, b); len(conflicts) == 0 {
+		t.Fatal("conflicting derivations of one source must remain detectable")
+	}
+	b.TenantID = "other"
+	if conflicts := DetectConflicts(registry, []schemas.Memory{a}, b); len(conflicts) != 0 {
+		t.Fatal("cross-tenant conflict")
+	}
+	b.TenantID = a.TenantID
+	a.IsActive = false
+	if conflicts := DetectConflicts(registry, []schemas.Memory{a}, b); len(conflicts) != 0 {
+		t.Fatal("deleted memory participated in conflict")
 	}
 }

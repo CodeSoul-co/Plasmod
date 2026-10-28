@@ -93,7 +93,7 @@ func DetectConflicts(
 			continue
 		}
 		// Only compare memories from the same agent
-		if existingMem.AgentID != newMem.AgentID {
+		if existingMem.AgentID != newMem.AgentID || existingMem.TenantID != newMem.TenantID || existingMem.WorkspaceID != newMem.WorkspaceID || !existingMem.IsActive {
 			continue
 		}
 
@@ -107,6 +107,10 @@ func DetectConflicts(
 
 // evaluatePair compares two memories and returns a ConflictRecord if a conflict exists.
 func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
+	// Independent user facts are not contradictions merely because their types match.
+	if a.WorkspaceID != "" && !overlapSourceEvents(a.SourceEventIDs, b.SourceEventIDs) {
+		return nil
+	}
 	// Rule 1: Value contradiction — same type, overlapping time, different content
 	if a.MemoryType == b.MemoryType && a.MemoryType != "" {
 		if !sameContent(a.Content, b.Content) && timeOverlap(a, b) {

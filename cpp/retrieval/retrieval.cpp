@@ -179,9 +179,9 @@ int plasmod_retriever_search(void*          handle,
     std::vector<int64_t> ids(k, -1);
     std::vector<float>   dists(k, 0.0f);
 
-    // allow_count in bits = filter_size (bytes) × 8
+    // Packed bytes include padding; Knowhere requires the actual indexed bit count.
     const int64_t allow_count = filter_bitset
-                                    ? static_cast<int64_t>(filter_size * 8)
+                                    ? std::min(static_cast<int64_t>(filter_size * 8), h->dense.Count())
                                     : 0;
     bool ok = h->dense.Search(query, /*nq=*/1, k,
                                filter_bitset, allow_count,

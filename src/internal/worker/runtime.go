@@ -84,6 +84,9 @@ type Runtime struct {
 	subscriberMu          sync.Mutex
 	subscribers           []*EventSubscriber
 
+	// MemoryBankMode applies the configured algorithm to canonical ingest and scoped query.
+	MemoryBankMode bool
+
 	// VectorOnlyMode disables graph expansion, policy enforcement, and provenance
 	// tracking to create a pure vector-search baseline (Baseline 1).
 	VectorOnlyMode bool
@@ -549,6 +552,10 @@ func (r *Runtime) projectWALEntryWithOptions(ctx context.Context, entry eventbac
 			}, nil
 		}
 	}
+	// A retained WAL entry must not resurrect a subsequently forgotten memory.
+	if memory, ok := r.storage.Objects().GetMemory(schemas.CanonicalMemoryID(ev)); ok && !memory.IsActive {
+		return map[string]any{"status": "accepted", "lsn": entry.LSN, "event_id": ev.Identity.EventID, "memory_id": memory.MemoryID}, nil
+	}
 	mat := r.materializer.MaterializeEvent(ev)
 	record := mat.Record
 	profile := r.capabilities.MaterializationProfile
@@ -621,6 +628,9 @@ func (r *Runtime) projectWALEntryWithOptions(ctx context.Context, entry eventbac
 		return nil, err
 	}
 	r.stateProjectionMu.Unlock()
+	if includeMemory && r.MemoryBankMode {
+		r.nodeManager.DispatchAlgorithmDispatch("ingest", []string{mat.Memory.MemoryID}, "", "", mat.Memory.AgentID, mat.Memory.SessionID, nil)
+	}
 	materializationLatency := time.Since(materializationStarted)
 
 	retrievalStarted := time.Now()
@@ -807,6 +817,10 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 			result.ObjectIDs = filterObjectIDsByStructuredSelectors(r.storage.Objects(), result.ObjectIDs, req)
 			result.ObjectIDs = appendMissing(result.ObjectIDs, selectorIDs)
 		}
+	}
+	if r.MemoryBankMode && len(result.ObjectIDs) > 0 {
+		out := r.nodeManager.DispatchAlgorithmDispatch("recall", result.ObjectIDs, req.QueryText, "", req.AgentID, "", nil)
+		result.ObjectIDs = out.ScoredRefs
 	}
 	promotionStarted := time.Now()
 	if r.tieredObjects != nil && r.capabilities.TierProfile != "no_promotion" {
