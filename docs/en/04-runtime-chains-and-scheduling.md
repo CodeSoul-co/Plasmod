@@ -2,6 +2,8 @@
 
 > Language: [中文](../04-runtime-chains-and-scheduling.md) | English
 
+> Wiring update (2026-10-30): production ingest uses MainChain.Submit/Project; memory operations and recall use MemoryPipelineChain.RunAlgorithm; query reasoning uses QueryChain; share/explicit conflict decisions use CollaborationChain. The production Orchestrator is bound to the same Runtime. See [chapter 16](16-memory-lifecycle-integration.md) for maintenance/recovery contracts. Generic scheduler futures remain incomplete.
+
 ---
 
 This chapter reconstructs the actual runtime paths for Ingest, Memory, Query, and Collaboration. A Chain denotes a dynamic execution path, not a static collection of modules.
@@ -78,10 +80,10 @@ The path does not automatically execute WAL, projection, version, evidence preco
 
 | Chain | Concrete object | How the main pathway enters |
 |---|---|---|
-| MainChain | `chain.MainChain` | Orchestrator task can be called; Event Runtime masterwriter does not call it |
-| MemoryPipelineChain | concrete | Orchestrator task can be called; subscriber is usually dispatched directly by worker |
+| MainChain | `chain.MainChain` | Runtime Submit/Project; queued tasks bind the same Runtime |
+| MemoryPipelineChain | concrete | Runtime RunAlgorithm; subscriber uses Chain stages |
 | QueryChain | Runtime holds | `executeQuery` Sync calls after retrieval/assembler |
-| CollaborationChain | concrete | Orchestrator task can be called; internal API is usually runtime dispatch. |
+| CollaborationChain | concrete | Runtime share/decision and subscriber use CollaborationChain. |
 
 There is therefore no central Chain Router for all requests. `Orchestrator.execute` contains a type switch, but Gateway and Runtime do not submit their primary requests through it.
 
@@ -197,7 +199,7 @@ Orchestrator has no dependency, deadline, tenant, cost, resource request, retry 
 ### 04.2.7. Correctness
 
 - The controller uses generation, pause/reset, mode gate and tracker to ensure reset/shutdown does not interfere with old tasks.
-- Orchestrator `execute` does not propagate a chain result or error. `Completed` means the call ended; it does not prove business success.
+- Orchestrator counts successful results in Completed and failures/invalid payloads in Failed. A generic task result future is still not provided.
 - Strict priority queues may starve low-priority tasks; no aging or fairness mechanism is implemented.
 - Most NodeManager registrations are not equivalent to redundancy or load balancing.
 
@@ -258,7 +260,7 @@ Canonical commit precedes retrieval ingest. If retrieval ingest fails, the contr
 
 ### 04.3.4. MainChain abstraction
 
-`MainChain.Run(MainChainInput)` invokes object, State, tool, index, and graph workers. It assumes WAL has already been written. The active Runtime write path does not call `MainChain`; only the Orchestrator does, and primary Gateway requests are not submitted to that Orchestrator.
+`MainChain.Run(MainChainInput)` invokes object, State, tool, index, and graph workers. It assumes WAL has already been written. The active Runtime uses MainChain.Submit/Project, while production queued tasks bind that same Runtime; the old Run method remains a worker-only compatibility entry.
 
 ### 04.3.5. Canonical object rules
 

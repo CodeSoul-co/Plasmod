@@ -391,6 +391,7 @@ func (AlgorithmDispatchInput) WorkerKind() WorkerKind { return WorkerKindAlgorit
 // AlgorithmDispatchOutput reports the results of an algorithm operation.
 type AlgorithmDispatchOutput struct {
 	Operation    string   `json:"operation"`
+	Error        string   `json:"error,omitempty"`
 	UpdatedCount int      `json:"updated_count"`          // MemoryAlgorithmState records written
 	ProducedIDs  []string `json:"produced_ids,omitempty"` // compress / summarize: new memory IDs
 	ScoredRefs   []string `json:"scored_refs,omitempty"`  // recall: memory IDs in score-descending order

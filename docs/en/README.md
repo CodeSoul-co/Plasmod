@@ -23,6 +23,7 @@ This documentation describes the public behavior, implementation boundaries, cod
 | 13 | [Extensibility, Compatibility, and System Evolution](13-extensibility-compatibility-and-evolution.md) | How can the system be extended without breaking contracts? |
 | 14 | [Implementation Status, Gaps, and Claim Boundaries](14-implementation-status-gaps-and-claim-boundaries.md) | Which capabilities are implemented, partial, unwired, or planned? |
 | 15 | [Architecture Decision Records](15-architecture-decision-records.md) | Which architectural decisions govern the implementation? |
+| 16 | [Chain and companion memory integration](16-memory-lifecycle-integration.md) | Admission, maintenance, mutation, providers, documents and SDK |
 
 ## 00.2. Role-based Reading Paths
 

@@ -3,6 +3,7 @@ package cognitive
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,12 +35,13 @@ import (
 //	"summarize" — algo.Summarize(); stores summary memories verbatim.
 //	"update"    — algo.Update(memories, signals); persists returned state updates.
 type InMemoryAlgorithmDispatchWorker struct {
-	mu         sync.Mutex
-	id         string
-	algo       schemas.MemoryManagementAlgorithm
-	objStore   storage.ObjectStore
-	algoStore  storage.MemoryAlgorithmStateStore
-	auditStore storage.AuditStore
+	mu           sync.Mutex
+	id           string
+	algo         schemas.MemoryManagementAlgorithm
+	objStore     storage.ObjectStore
+	algoStore    storage.MemoryAlgorithmStateStore
+	auditStore   storage.AuditStore
+	runtimeStore storage.RuntimeStorage
 }
 
 func CreateAlgorithmDispatchWorker(
@@ -48,14 +50,19 @@ func CreateAlgorithmDispatchWorker(
 	objStore storage.ObjectStore,
 	algoStore storage.MemoryAlgorithmStateStore,
 	auditStore storage.AuditStore,
+	runtimeStores ...storage.RuntimeStorage,
 ) *InMemoryAlgorithmDispatchWorker {
-	return &InMemoryAlgorithmDispatchWorker{
+	w := &InMemoryAlgorithmDispatchWorker{
 		id:         id,
 		algo:       algo,
 		objStore:   objStore,
 		algoStore:  algoStore,
 		auditStore: auditStore,
 	}
+	if len(runtimeStores) > 0 {
+		w.runtimeStore = runtimeStores[0]
+	}
+	return w
 }
 
 func (w *InMemoryAlgorithmDispatchWorker) Info() nodes.NodeInfo {
@@ -83,6 +90,11 @@ func (w *InMemoryAlgorithmDispatchWorker) Dispatch(
 	query, nowTS, agentID, sessionID string,
 	signals map[string]float64,
 ) (schemas.AlgorithmDispatchOutput, error) {
+	return w.DispatchDurable(schemas.AlgorithmDispatchInput{Operation: operation, MemoryIDs: memoryIDs, Query: query, NowTS: nowTS, AgentID: agentID, SessionID: sessionID, Signals: signals}, nil)
+}
+
+func (w *InMemoryAlgorithmDispatchWorker) DispatchDurable(in schemas.AlgorithmDispatchInput, persist func(string, []schemas.Memory, []schemas.Memory) error) (schemas.AlgorithmDispatchOutput, error) {
+	operation, memoryIDs, query, nowTS, agentID, sessionID, signals := in.Operation, in.MemoryIDs, in.Query, in.NowTS, in.AgentID, in.SessionID, in.Signals
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	memories := w.fetchMemories(memoryIDs)
@@ -95,6 +107,9 @@ func (w *InMemoryAlgorithmDispatchWorker) Dispatch(
 			}
 			w.algo.LoadState(state)
 		}
+	}
+	if restorer, ok := w.algo.(interface{ RestoreMemories([]schemas.Memory) }); ok {
+		restorer.RestoreMemories(w.objStore.ListMemories(agentID, ""))
 	}
 	ctx := schemas.AlgorithmContext{
 		AgentID:   agentID,
@@ -116,10 +131,39 @@ func (w *InMemoryAlgorithmDispatchWorker) Dispatch(
 		return w.runDecay(memories, ts)
 	case "recall":
 		return w.runRecall(query, memories, ctx)
-	case "compress":
-		return w.runCompress(memories, ctx)
-	case "summarize":
-		return w.runSummarize(memories, ctx)
+	case "compress", "summarize":
+		if len(memories) == 0 {
+			return schemas.AlgorithmDispatchOutput{Operation: operation}, nil
+		}
+		var derived []schemas.Memory
+		if operation == "compress" {
+			derived = w.algo.Compress(memories, ctx)
+		} else {
+			derived = w.algo.Summarize(memories, ctx)
+		}
+		if persist != nil {
+			if err := persist(operation, derived, memories); err != nil {
+				return schemas.AlgorithmDispatchOutput{Operation: operation}, err
+			}
+		} else {
+			for _, m := range derived {
+				w.objStore.PutMemory(m)
+			}
+		}
+		var states []schemas.MemoryAlgorithmState
+		var ids []string
+		for _, m := range derived {
+			ids = append(ids, m.MemoryID)
+		}
+		for _, m := range memories {
+			if st, ok := w.algo.ExportState(m.MemoryID); ok {
+				states = append(states, st)
+			}
+		}
+		if err := w.persistStatesAndApply(states); err != nil {
+			return schemas.AlgorithmDispatchOutput{Operation: operation}, err
+		}
+		return schemas.AlgorithmDispatchOutput{Operation: operation, ProducedIDs: ids, UpdatedCount: len(states)}, nil
 	case "update":
 		return w.runUpdate(memories, signals)
 	default:
@@ -132,7 +176,7 @@ func (w *InMemoryAlgorithmDispatchWorker) Dispatch(
 func (w *InMemoryAlgorithmDispatchWorker) fetchMemories(ids []string) []schemas.Memory {
 	out := make([]schemas.Memory, 0, len(ids))
 	for _, id := range ids {
-		if m, ok := w.objStore.GetMemory(id); ok {
+		if m, ok := w.objStore.GetMemory(id); ok && m.IsActive {
 			out = append(out, m)
 		}
 	}
@@ -152,16 +196,21 @@ func (w *InMemoryAlgorithmDispatchWorker) persistStatesAndApply(states []schemas
 		if err != nil {
 			return err
 		}
-		w.algoStore.PutAlgorithmState(states[i])
-		if memory, ok := w.objStore.GetMemory(states[i].MemoryID); ok {
-			w.objStore.PutState(schemas.State{StateID: "governance:" + w.algo.AlgorithmID() + ":" + memory.MemoryID, TenantID: memory.TenantID, WorkspaceID: memory.WorkspaceID, AgentID: memory.AgentID, SessionID: memory.SessionID, StateType: "memory_governance", StateValue: string(encoded), Access: memory.Access, Version: 1})
-		}
-		// Apply lifecycle suggestion verbatim — the algorithm decides; we just relay.
-		if states[i].SuggestedLifecycleState != "" {
-			if m, ok := w.objStore.GetMemory(states[i].MemoryID); ok {
-				m.LifecycleState = states[i].SuggestedLifecycleState
-				w.objStore.PutMemory(m)
+		if memory, ok := w.objStore.GetMemory(states[i].MemoryID); ok && memory.IsActive {
+			memory.AlgorithmStateRef = w.algo.AlgorithmID()
+			if states[i].SuggestedLifecycleState != "" {
+				memory.LifecycleState = states[i].SuggestedLifecycleState
 			}
+			state := schemas.State{StateID: "governance:" + w.algo.AlgorithmID() + ":" + memory.MemoryID, TenantID: memory.TenantID, WorkspaceID: memory.WorkspaceID, AgentID: memory.AgentID, SessionID: memory.SessionID, StateType: "memory_governance", StateValue: string(encoded), Access: memory.Access, Version: 1}
+			if w.runtimeStore != nil {
+				if err := w.runtimeStore.ApplyCanonicalProjection(storage.CanonicalProjection{Memory: &memory, State: &state}); err != nil {
+					return err
+				}
+			} else {
+				w.objStore.PutMemory(memory)
+				w.objStore.PutState(state)
+			}
+			w.algoStore.PutAlgorithmState(states[i])
 		}
 		w.emitAudit(states[i].MemoryID)
 	}
@@ -190,13 +239,25 @@ func (w *InMemoryAlgorithmDispatchWorker) runIngest(memories []schemas.Memory, c
 		}
 	}
 	states := w.algo.Ingest(fresh, ctx)
+	// Reevaluate existing candidates when independent evidence arrives; identical
+	// content is the conservative fallback until semantic extraction normalizes it.
+	var candidates []schemas.Memory
+	for _, m := range w.objStore.ListMemories(ctx.AgentID, "") {
+		if !m.IsActive || m.LifecycleState != "candidate" {
+			continue
+		}
+		for _, added := range fresh {
+			if m.TenantID == added.TenantID && m.WorkspaceID == added.WorkspaceID && m.AgentID == added.AgentID && strings.EqualFold(strings.TrimSpace(m.Content), strings.TrimSpace(added.Content)) {
+				candidates = append(candidates, m)
+				break
+			}
+		}
+	}
+	if len(candidates) > 0 {
+		states = append(states, w.algo.Update(candidates, nil)...)
+	}
 	if err := w.persistStatesAndApply(states); err != nil {
 		return schemas.AlgorithmDispatchOutput{}, err
-	}
-	for _, old := range memories {
-		m, _ := w.objStore.GetMemory(old.MemoryID)
-		m.AlgorithmStateRef = w.algo.AlgorithmID()
-		w.objStore.PutMemory(m)
 	}
 	return schemas.AlgorithmDispatchOutput{
 		Operation:    "ingest",
@@ -238,38 +299,6 @@ func (w *InMemoryAlgorithmDispatchWorker) runRecall(query string, candidates []s
 	return schemas.AlgorithmDispatchOutput{
 		Operation:  "recall",
 		ScoredRefs: refs,
-	}, nil
-}
-
-// runCompress calls algo.Compress and stores every derived Memory verbatim.
-// The algorithm owns all field values on derived memories including LifecycleState.
-// If the algorithm also returns MemoryAlgorithmState records (e.g. to mark sources),
-// those are handled via a secondary Ingest/Update call by the orchestrator.
-func (w *InMemoryAlgorithmDispatchWorker) runCompress(memories []schemas.Memory, ctx schemas.AlgorithmContext) (schemas.AlgorithmDispatchOutput, error) {
-	derived := w.algo.Compress(memories, ctx)
-	ids := make([]string, 0, len(derived))
-	for _, m := range derived {
-		w.objStore.PutMemory(m)
-		ids = append(ids, m.MemoryID)
-	}
-	return schemas.AlgorithmDispatchOutput{
-		Operation:   "compress",
-		ProducedIDs: ids,
-	}, nil
-}
-
-// runSummarize calls algo.Summarize and stores every summary Memory verbatim.
-// The algorithm owns all field values on summary memories.
-func (w *InMemoryAlgorithmDispatchWorker) runSummarize(memories []schemas.Memory, ctx schemas.AlgorithmContext) (schemas.AlgorithmDispatchOutput, error) {
-	summaries := w.algo.Summarize(memories, ctx)
-	ids := make([]string, 0, len(summaries))
-	for _, m := range summaries {
-		w.objStore.PutMemory(m)
-		ids = append(ids, m.MemoryID)
-	}
-	return schemas.AlgorithmDispatchOutput{
-		Operation:   "summarize",
-		ProducedIDs: ids,
 	}, nil
 }
 

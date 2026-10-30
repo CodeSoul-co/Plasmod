@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"fmt"
 	"sync"
 
 	"plasmod/src/internal/dataplane"
@@ -320,15 +321,11 @@ func (m *Manager) DispatchAlgorithmDispatch(
 	query, nowTS, agentID, sessionID string,
 	signals map[string]float64,
 ) schemas.AlgorithmDispatchOutput {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, w := range m.algorithmDispatchWorkers {
-		out, err := w.Dispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
-		if err == nil && !out.IsEmpty() {
-			return out
-		}
+	out, err := m.DispatchAlgorithmChecked(schemas.AlgorithmDispatchInput{Operation: operation, MemoryIDs: memoryIDs, Query: query, NowTS: nowTS, AgentID: agentID, SessionID: sessionID, Signals: signals}, nil)
+	if err != nil {
+		out.Error = err.Error()
 	}
-	return schemas.AlgorithmDispatchOutput{}
+	return out
 }
 
 // ─── Cognitive Compression registration ─────────────────────────────────────────
@@ -508,4 +505,22 @@ func (m *Manager) Topology() []NodeInfo {
 		out = append(out, n.Info())
 	}
 	return out
+}
+
+// DispatchAlgorithmChecked executes the configured algorithm once, including empty results.
+// Errors must never be converted to successful zero-work receipts.
+func (m *Manager) DispatchAlgorithmChecked(in schemas.AlgorithmDispatchInput, persist func(string, []schemas.Memory, []schemas.Memory) error) (schemas.AlgorithmDispatchOutput, error) {
+	m.mu.RLock()
+	workers := append([]AlgorithmDispatchWorker(nil), m.algorithmDispatchWorkers...)
+	m.mu.RUnlock()
+	if len(workers) == 0 {
+		return schemas.AlgorithmDispatchOutput{Operation: in.Operation}, fmt.Errorf("algorithm worker unavailable")
+	}
+	w := workers[0]
+	if durable, ok := w.(interface {
+		DispatchDurable(schemas.AlgorithmDispatchInput, func(string, []schemas.Memory, []schemas.Memory) error) (schemas.AlgorithmDispatchOutput, error)
+	}); ok {
+		return durable.DispatchDurable(in, persist)
+	}
+	return w.Dispatch(in.Operation, in.MemoryIDs, in.Query, in.NowTS, in.AgentID, in.SessionID, in.Signals)
 }

@@ -42,6 +42,7 @@ type Task struct {
 type OrchestratorStats struct {
 	Submitted  int64
 	Completed  int64
+	Failed     int64
 	Dropped    int64
 	InFlight   int64
 	QueueDepth int
@@ -61,7 +62,8 @@ type OrchestratorStats struct {
 //	TaskTypeQuery         → QueryChain
 //	TaskTypeCollaboration → CollaborationChain
 type Orchestrator struct {
-	mgr *nodes.Manager
+	mgr     *nodes.Manager
+	runtime *Runtime
 
 	// Channels — one per priority level (index = priority constant above).
 	queues [4]chan Task
@@ -73,6 +75,7 @@ type Orchestrator struct {
 	// Stats
 	submitted atomic.Int64
 	completed atomic.Int64
+	failed    atomic.Int64
 	dropped   atomic.Int64
 	inFlight  atomic.Int64
 
@@ -185,6 +188,7 @@ func (o *Orchestrator) Stats() OrchestratorStats {
 	return OrchestratorStats{
 		Submitted:  o.submitted.Load(),
 		Completed:  o.completed.Load(),
+		Failed:     o.failed.Load(),
 		Dropped:    o.dropped.Load(),
 		InFlight:   o.inFlight.Load(),
 		QueueDepth: total,
@@ -230,29 +234,109 @@ func (o *Orchestrator) dequeue() (Task, bool) {
 }
 
 // execute dispatches a task to the appropriate chain and tracks SLA latency.
+// BindRuntime makes queued production tasks use the same durable chains as HTTP.
+func (o *Orchestrator) BindRuntime(r *Runtime) { o.runtime = r }
+
 func (o *Orchestrator) execute(t Task) {
 	o.inFlight.Add(1)
-	defer func() {
-		o.inFlight.Add(-1)
+	defer o.inFlight.Add(-1)
+	result := chain.ChainResult{ChainName: string(t.Type), Error: "invalid task payload"}
+	if o.runtime != nil {
+		result = o.executeRuntime(t)
+	} else {
+		switch t.Type {
+		case TaskTypeIngest:
+			if in, ok := t.Payload.(chain.MainChainInput); ok {
+				result = o.mainChain.Run(in)
+			}
+		case TaskTypeMemory:
+			if in, ok := t.Payload.(chain.MemoryPipelineInput); ok {
+				result = o.memChain.Run(in)
+			}
+		case TaskTypeQuery:
+			if in, ok := t.Payload.(chain.QueryChainInput); ok {
+				_, result = o.queryChain.Run(in)
+			}
+		case TaskTypeCollaboration:
+			if in, ok := t.Payload.(chain.CollaborationChainInput); ok {
+				_, result = o.collabChain.Run(in)
+			}
+		}
+	}
+	if result.OK {
 		o.completed.Add(1)
-	}()
+	} else {
+		o.failed.Add(1)
+	}
+}
 
+func (o *Orchestrator) executeRuntime(t Task) chain.ChainResult {
+	result := chain.ChainResult{ChainName: string(t.Type), Error: "invalid task payload"}
 	switch t.Type {
 	case TaskTypeIngest:
 		if in, ok := t.Payload.(chain.MainChainInput); ok {
-			o.mainChain.Run(in)
+			ack, err := o.runtime.SubmitIngest(in.Event)
+			result = chain.ChainResult{ChainName: "main_chain", OK: err == nil, Meta: ack}
+			if err != nil {
+				result.Error = err.Error()
+			}
 		}
 	case TaskTypeMemory:
-		if in, ok := t.Payload.(chain.MemoryPipelineInput); ok {
-			o.memChain.Run(in)
+		req, ok := t.Payload.(MaintenanceRequest)
+		if !ok {
+			if in, valid := t.Payload.(chain.MemoryPipelineInput); valid {
+				if ev, found := o.runtime.storage.Objects().GetEvent(in.EventID); found {
+					ev = ev.NormalizeDynamicEventV04()
+					op := "ingest"
+					if in.RunConsolidation {
+						op = "summarize"
+					}
+					req = MaintenanceRequest{OperationID: t.ID, Operation: op, TenantID: ev.Identity.TenantID, WorkspaceID: ev.Identity.WorkspaceID, AgentID: ev.Actor.AgentID, SessionID: ev.Actor.SessionID}
+					ok = true
+				}
+			}
+		}
+		if ok {
+			if req.OperationID == "" {
+				req.OperationID = t.ID
+			}
+			out, err := o.runtime.Maintain(context.Background(), req)
+			result = chain.ChainResult{ChainName: "memory_pipeline_chain", OK: err == nil && out.FailedCount == 0}
+			if err != nil {
+				result.Error = err.Error()
+			} else if out.FailedCount > 0 {
+				result.Error = "maintenance partially failed"
+			}
 		}
 	case TaskTypeQuery:
-		if in, ok := t.Payload.(chain.QueryChainInput); ok {
-			o.queryChain.Run(in)
+		if in, ok := t.Payload.(schemas.QueryRequest); ok {
+			_, err := o.runtime.ExecuteQueryContext(context.Background(), in)
+			result = chain.ChainResult{ChainName: "query_chain", OK: err == nil}
+			if err != nil {
+				result.Error = err.Error()
+			}
+		} else if in, ok := t.Payload.(chain.QueryChainInput); ok {
+			_, result = o.runtime.queryChain.Run(in)
 		}
 	case TaskTypeCollaboration:
-		if in, ok := t.Payload.(chain.CollaborationChainInput); ok {
-			o.collabChain.Run(in)
+		if in, ok := t.Payload.(ConflictResolutionRequest); ok {
+			out, err := o.runtime.ResolveMemoryConflict(in)
+			result = chain.ChainResult{ChainName: "collaboration_chain", OK: err == nil && out["status"] == "completed", Meta: out}
+			if err != nil {
+				result.Error = err.Error()
+			}
+		} else if in, ok := t.Payload.(chain.CollaborationChainInput); ok {
+			winner := o.runtime.DispatchConflictResolve(in.LeftMemID, in.RightMemID)
+			result = chain.ChainResult{ChainName: "collaboration_chain", OK: true, Meta: map[string]any{"winner_id": winner}}
+			if in.TargetAgentID != "" {
+				id, err := o.runtime.DispatchShare(in.SourceAgentID, in.TargetAgentID, winner)
+				result.Meta["shared_id"] = id
+				if err != nil {
+					result.OK = false
+					result.Error = err.Error()
+				}
+			}
 		}
 	}
+	return result
 }

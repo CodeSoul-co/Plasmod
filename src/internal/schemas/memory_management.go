@@ -43,6 +43,10 @@ const (
 // honours it verbatim — it never applies any transition of its own.
 // Leave empty to make no lifecycle suggestion.
 type MemoryAlgorithmState struct {
+	UserConfirmed           bool     `json:"user_confirmed,omitempty"`
+	AdmissionScore          float64  `json:"admission_score,omitempty"`
+	AdmissionReason         string   `json:"admission_reason,omitempty"`
+	EvidenceEventIDs        []string `json:"evidence_event_ids,omitempty"`
 	MemoryID                string   `json:"memory_id"`
 	AlgorithmID             string   `json:"algorithm_id"`
 	Strength                float64  `json:"strength,omitempty"` // recall-based reinforcement weight

@@ -12,20 +12,20 @@ import (
 type ConflictType int
 
 const (
-	ConflictTypeNone        ConflictType = iota
-	ConflictTypeValue                  // same attribute has contradictory values
-	ConflictTypePreference             // opposite preference polarity expressed
-	ConflictTypeFactual                // high-confidence evidence contradicts memory
-	ConflictTypeEntity                 // same entity has conflicting properties
+	ConflictTypeNone       ConflictType = iota
+	ConflictTypeValue                   // same attribute has contradictory values
+	ConflictTypePreference              // opposite preference polarity expressed
+	ConflictTypeFactual                 // high-confidence evidence contradicts memory
+	ConflictTypeEntity                  // same entity has conflicting properties
 )
 
 // ConflictRecord stores a detected conflict between two memories.
 type ConflictRecord struct {
 	LeftID, RightID string
-	Type           ConflictType
-	Severity       float64 // 0-1; ≥0.7 → confirmed, <0.7 → suspected
-	DetectedAt     string
-	Resolved       bool
+	Type            ConflictType
+	Severity        float64 // 0-1; ≥0.7 → confirmed, <0.7 → suspected
+	DetectedAt      string
+	Resolved        bool
 }
 
 // ConflictRegistry manages conflict records in-memory within the algorithm.
@@ -107,8 +107,16 @@ func DetectConflicts(
 
 // evaluatePair compares two memories and returns a ConflictRecord if a conflict exists.
 func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
+	// Explicit semantic keys let us compare the same attribute without treating
+	// unrelated facts as contradictions. Preference changes are temporal evolution.
+	if a.FactKey != "" && a.FactKey == b.FactKey && !sameContent(a.Content, b.Content) {
+		if a.MemoryType == "preference_constraint" && b.MemoryType == "preference_constraint" {
+			return nil
+		}
+		return &ConflictRecord{LeftID: a.MemoryID, RightID: b.MemoryID, Type: ConflictTypeFactual, Severity: 0.8, DetectedAt: now}
+	}
 	// Independent user facts are not contradictions merely because their types match.
-	if a.WorkspaceID != "" && !overlapSourceEvents(a.SourceEventIDs, b.SourceEventIDs) {
+	if (a.WorkspaceID != "" && !overlapSourceEvents(a.SourceEventIDs, b.SourceEventIDs)) || a.FactKey != "" || b.FactKey != "" {
 		return nil
 	}
 	// Rule 1: Value contradiction — same type, overlapping time, different content
@@ -116,8 +124,8 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 		if !sameContent(a.Content, b.Content) && timeOverlap(a, b) {
 			return &ConflictRecord{
 				LeftID: a.MemoryID, RightID: b.MemoryID,
-				Type: ConflictTypeValue,
-				Severity:       0.8,
+				Type:       ConflictTypeValue,
+				Severity:   0.8,
 				DetectedAt: now,
 			}
 		}
@@ -130,8 +138,8 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 			if polarity(a.Content) != polarity(b.Content) {
 				return &ConflictRecord{
 					LeftID: a.MemoryID, RightID: b.MemoryID,
-					Type: ConflictTypePreference,
-					Severity:       0.85,
+					Type:       ConflictTypePreference,
+					Severity:   0.85,
 					DetectedAt: now,
 				}
 			}
@@ -143,8 +151,8 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 		if !sameContent(a.Content, b.Content) && !timeOverlap(a, b) {
 			return &ConflictRecord{
 				LeftID: a.MemoryID, RightID: b.MemoryID,
-				Type: ConflictTypeFactual,
-				Severity:       0.75,
+				Type:       ConflictTypeFactual,
+				Severity:   0.75,
 				DetectedAt: now,
 			}
 		}
@@ -160,8 +168,8 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 			if delta > 0.3 {
 				return &ConflictRecord{
 					LeftID: a.MemoryID, RightID: b.MemoryID,
-					Type: ConflictTypeEntity,
-					Severity:       0.6,
+					Type:       ConflictTypeEntity,
+					Severity:   0.6,
 					DetectedAt: now,
 				}
 			}

@@ -27,6 +27,7 @@ import (
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/transport"
 	"plasmod/src/internal/worker"
+	"plasmod/src/internal/worker/cognition"
 	cognitive "plasmod/src/internal/worker/cognitive"
 	baseline "plasmod/src/internal/worker/cognitive/baseline"
 	"plasmod/src/internal/worker/cognitive/memorybank"
@@ -625,6 +626,7 @@ func BuildServer() (*ServerBundle, error) {
 		store.Objects(),
 		store.AlgorithmStates(),
 		store.Audits(),
+		store,
 	))
 
 	coord.Registry.Register("node_manager", nodeManager)
@@ -636,6 +638,11 @@ func BuildServer() (*ServerBundle, error) {
 	// ── Runtime ──────────────────────────────────────────────────────────────
 	runtime := worker.CreateRuntime(wal, bus, plane, coord, policyEngine, planner, materializer, preCompute, assembler, evCache, derivLog, policyDecLog, nodeManager, store, tieredObjects)
 	runtime.MemoryBankMode = activeAlgo == "memorybank"
+	memoryProvider, err := cognition.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+	runtime.ConfigureCognition(memoryProvider)
 	runtime.ConfigureCapabilities(runtimeCapabilities)
 	if err := runtime.ConfigureEmbeddingSpec(embeddingSpec); err != nil {
 		return nil, fmt.Errorf("configure embedding spec: %w", err)
@@ -685,6 +692,7 @@ func BuildServer() (*ServerBundle, error) {
 	// The orchestrator provides priority-aware task dispatch across the 4 flow
 	// chains.  concurrency=4, queueCap=256 per priority level.
 	orch := worker.CreateOrchestrator(nodeManager, 4, 256)
+	orch.BindRuntime(runtime)
 	go orch.Run(ctx)
 	coord.Registry.Register("orchestrator", orch)
 

@@ -148,9 +148,6 @@ func (r *Runtime) SubmitIngestContext(ctx context.Context, ev schemas.Event) (ma
 	if err := validateEmbeddingIngestPayload(ev); err != nil {
 		return nil, err
 	}
-	if err := r.nodeManager.DispatchIngestValidation(ev); err != nil {
-		return nil, err
-	}
 	if err := r.StartConsistency(context.Background()); err != nil {
 		return nil, err
 	}
@@ -159,7 +156,7 @@ func (r *Runtime) SubmitIngestContext(ctx context.Context, ev schemas.Event) (ma
 	controller := r.consistencyController
 	r.consistencyMu.Unlock()
 	started := time.Now()
-	ack, err := controller.Submit(ctx, ev)
+	ack, err := r.mainChain.Submit(ctx, ev, controller.Submit)
 	metrics.Global().RecordWriteLatency(time.Since(started))
 	return ack, err
 }

@@ -236,6 +236,10 @@ func (c *QueryChain) Run(in QueryChainInput) (QueryChainOutput, ChainResult) {
 	// ── Pre-fetch Memory objects as GraphNodes ──────────────────────────────
 	preNodes := make([]schemas.GraphNode, 0, len(in.ObjectIDs))
 	for _, id := range in.ObjectIDs {
+		if m, found := in.ObjectStore.GetMemory(id); found {
+			preNodes = append(preNodes, schemas.MemoryToGraphNode(m))
+			continue
+		}
 		switch {
 		case strings.HasPrefix(id, schemas.IDPrefixMemory):
 			if m, ok := in.ObjectStore.GetMemory(id); ok {

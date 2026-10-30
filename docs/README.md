@@ -23,6 +23,7 @@
 | 13 | [扩展、兼容性与系统演进](13-extensibility-compatibility-and-evolution.md) | 如何扩展并保持兼容 |
 | 14 | [实现状态、缺口与可声明边界](14-implementation-status-gaps-and-claim-boundaries.md) | 哪些能力完成，哪些仍有缺口 |
 | 15 | [架构决策记录](15-architecture-decision-records.md) | 关键架构决策及其后果是什么 |
+| 16 | [四条 Chain 与伙伴记忆接入契约](16-memory-lifecycle-integration.md) | 晋升、维护、更正遗忘、provider、文档与 SDK |
 
 ## 00.2. 按角色阅读
 

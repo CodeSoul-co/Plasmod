@@ -136,8 +136,8 @@ func TestAlgorithmDispatchWorker_Decay_SetsLifecycleDecayed(t *testing.T) {
 
 func TestAlgorithmDispatchWorker_Recall_ReturnsScoredRefs(t *testing.T) {
 	store := storage.NewMemoryRuntimeStorage()
-	store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_r1", Content: "foo"})
-	store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_r2", Content: "bar"})
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_r1", Content: "foo", IsActive: true})
+	store.Objects().PutMemory(schemas.Memory{MemoryID: "mem_r2", Content: "bar", IsActive: true})
 
 	w := CreateAlgorithmDispatchWorker("adw-3", &stubAlgorithm{},
 		store.Objects(), store.AlgorithmStates(), store.Audits())

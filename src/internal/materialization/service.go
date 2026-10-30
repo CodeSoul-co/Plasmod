@@ -117,6 +117,16 @@ func (s *Service) MaterializeEvent(ev schemas.Event) MaterializationResult {
 		mem.EmbeddingRef = ev.Retrieval.EmbeddingRef
 	}
 
+	if ev.Payload != nil {
+		if source, ok := ev.Payload["source_id"].(string); ok && source != "" {
+			mem.SourceEventIDs = append(mem.SourceEventIDs, source)
+		}
+		if start, ok := numericInt(ev.Payload["source_start"]); ok {
+			if end, ok := numericInt(ev.Payload["source_end"]); ok {
+				mem.SourceSpans = []schemas.MemorySourceSpan{{EventID: ev.Identity.EventID, Start: start, End: end, Quote: text, ObservedAt: ev.Time.EventTime}}
+			}
+		}
+	}
 	version := schemas.ObjectVersion{
 		ObjectID:        memoryID,
 		ObjectType:      string(schemas.ObjectTypeMemory),
@@ -548,4 +558,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func numericInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), n == float64(int(n))
+	case json.Number:
+		i, e := n.Int64()
+		return int(i), e == nil
+	}
+	return 0, false
 }

@@ -68,7 +68,7 @@ func (w *InMemoryConflictMergeWorker) Merge(leftID, rightID, objectType string) 
 	if !okL || !okR {
 		return nil
 	}
-	if left.AgentID != right.AgentID || left.SessionID != right.SessionID {
+	if left.TenantID != right.TenantID || left.WorkspaceID != right.WorkspaceID || left.AgentID != right.AgentID || left.SessionID != right.SessionID {
 		return nil
 	}
 	if !left.IsActive || !right.IsActive {

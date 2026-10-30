@@ -97,6 +97,7 @@ func normalizeAdminMemoryIDs(ids []string) []string {
 }
 
 type Gateway struct {
+	documentMu    sync.Mutex
 	coord         *coordinator.Hub
 	runtime       *worker.Runtime
 	store         storage.RuntimeStorage
@@ -479,6 +480,12 @@ func (g *Gateway) RegisterAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/compress", g.handleMemoryCompress)
 	mux.HandleFunc("/v1/internal/memory/summarize", g.handleMemorySummarize)
 	mux.HandleFunc("/v1/internal/memory/decay", g.handleMemoryDecay)
+	mux.HandleFunc("/v1/internal/memory/maintenance", g.handleMaintenance)
+	mux.HandleFunc("/v1/internal/memory/mutate", g.handleMemoryMutation)
+	mux.HandleFunc("/v1/internal/memory/conflict/decision", g.handleConflictDecision)
+	mux.HandleFunc("/v1/internal/memory/mutations/", g.handleMutationStatus)
+	mux.HandleFunc("/v1/internal/memory/operations/", g.handleMaintenanceStatus)
+	mux.HandleFunc("/v1/internal/memory/update", func(w http.ResponseWriter, r *http.Request) { g.handleMaintenanceOperation(w, r, "update") })
 	mux.HandleFunc("/v1/internal/memory/share", g.handleMemoryShare)
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)
 	mux.HandleFunc("/v1/internal/memory/stale", g.handleMemoryMarkStale)
@@ -2288,6 +2295,14 @@ func (g *Gateway) handleMemory(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.URL.Query().Get("session_id")
 		workspaceID := r.URL.Query().Get("workspace_id")
 		all := g.store.Objects().ListMemories(agentID, sessionID)
+		tenantID := r.URL.Query().Get("tenant_id")
+		visible := all[:0]
+		for _, m := range all {
+			if (tenantID == "" || m.TenantID == tenantID) && !g.runtime.ObjectForgotten(m.MemoryID) {
+				visible = append(visible, m)
+			}
+		}
+		all = visible
 		if workspaceID == "" {
 			writeJSON(w, all)
 			return
@@ -2332,7 +2347,14 @@ func (g *Gateway) handleStates(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		agentID := r.URL.Query().Get("agent_id")
 		sessionID := r.URL.Query().Get("session_id")
-		writeJSON(w, g.store.Objects().ListStates(agentID, sessionID))
+		all := g.store.Objects().ListStates(agentID, sessionID)
+		visible := all[:0]
+		for _, st := range all {
+			if (r.URL.Query().Get("tenant_id") == "" || st.TenantID == r.URL.Query().Get("tenant_id")) && (r.URL.Query().Get("workspace_id") == "" || st.WorkspaceID == r.URL.Query().Get("workspace_id")) && !g.runtime.ObjectForgotten(st.StateID) {
+				visible = append(visible, st)
+			}
+		}
+		writeJSON(w, visible)
 	case http.MethodPost:
 		var obj schemas.State
 		if err := json.NewDecoder(r.Body).Decode(&obj); err != nil {
@@ -2451,6 +2473,18 @@ func (g *Gateway) handleTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if g.runtime.ObjectForgotten(id) {
+		http.Error(w, "object forgotten", http.StatusGone)
+		return
+	}
+	q := r.URL.Query()
+	traceScope := schemas.QueryRequest{TenantID: q.Get("tenant_id"), WorkspaceID: q.Get("workspace_id"), AgentID: q.Get("agent_id"), SessionID: q.Get("session_id")}
+	scopedTrace := traceScope.TenantID != "" || traceScope.WorkspaceID != "" || traceScope.AgentID != ""
+	if scopedTrace && !g.runtime.CanReadObject(traceScope, id) {
+		http.NotFound(w, r)
+		return
+	}
+
 	// ── 1. Object type inference ───────────────────────────────────────────
 	objType := inferObjectType(id)
 
@@ -2464,6 +2498,15 @@ func (g *Gateway) handleTraces(w http.ResponseWriter, r *http.Request) {
 	var edges []schemas.Edge
 	if g.store.Edges() != nil {
 		edges = g.store.Edges().BulkEdges([]string{id})
+		if scopedTrace {
+			visible := edges[:0]
+			for _, edge := range edges {
+				if g.runtime.CanReadObject(traceScope, edge.SrcObjectID) && g.runtime.CanReadObject(traceScope, edge.DstObjectID) {
+					visible = append(visible, edge)
+				}
+			}
+			edges = visible
+		}
 	}
 
 	// ── 4. Version chain ──────────────────────────────────────────────────
@@ -2749,76 +2792,22 @@ func (g *Gateway) handleMemoryRecall(w http.ResponseWriter, r *http.Request) {
 
 // handleMemoryIngest forwards memory IDs to the algorithm ingest pipeline.
 func (g *Gateway) handleMemoryIngest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		MemoryIDs []string `json:"memory_ids"`
-		AgentID   string   `json:"agent_id"`
-		SessionID string   `json:"session_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	out := g.runtime.DispatchAlgorithm("ingest", req.MemoryIDs, "", "", req.AgentID, req.SessionID, nil)
-	writeJSON(w, out)
+	g.handleMaintenanceOperation(w, r, "ingest")
 }
 
 // handleMemoryCompress triggers memory consolidation via MemoryConsolidationWorker.
 func (g *Gateway) handleMemoryCompress(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	out := g.runtime.DispatchAlgorithm("compress", nil, "", "", req.AgentID, req.SessionID, nil)
-	writeJSON(w, out)
+	g.handleMaintenanceOperation(w, r, "compress")
 }
 
 // handleMemorySummarize triggers memory summarization via SummarizationWorker.
 func (g *Gateway) handleMemorySummarize(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-		MaxLevel  int    `json:"max_level"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	out := g.runtime.DispatchAlgorithm("summarize", nil, "", "", req.AgentID, req.SessionID, nil)
-	writeJSON(w, out)
+	g.handleMaintenanceOperation(w, r, "summarize")
 }
 
 // handleMemoryDecay applies forgetting decay via AlgorithmDispatchWorker.
 func (g *Gateway) handleMemoryDecay(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	out := g.runtime.DispatchAlgorithm("decay", nil, "", time.Now().UTC().Format(time.RFC3339), req.AgentID, req.SessionID, nil)
-	writeJSON(w, out)
+	g.handleMaintenanceOperation(w, r, "decay")
 }
 
 // handleMemoryShare creates a WAL-derived shared memory after optional contract validation.
@@ -3436,120 +3425,6 @@ func (g *Gateway) handlePlanRepair(w http.ResponseWriter, r *http.Request) {
 // as a unit.  Returns the batch_id and per-chunk memory_ids.
 //
 // Covers 3-T1 (long-document analysis).
-func (g *Gateway) handleIngestDocument(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		AgentID       string  `json:"agent_id"`
-		SessionID     string  `json:"session_id"`
-		WorkspaceID   string  `json:"workspace_id"`
-		Title         string  `json:"title"`
-		Text          string  `json:"text"`
-		ChunkSize     int     `json:"chunk_size"`
-		Overlap       int     `json:"overlap"`
-		Importance    float64 `json:"importance"`
-		UploadBatchID string  `json:"upload_batch_id"`
-		SegmentIndex  int     `json:"segment_index"`
-		SegmentTotal  int     `json:"segment_total"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(req.Text) == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
-		return
-	}
-	segTotal := req.SegmentTotal
-	if segTotal <= 0 {
-		segTotal = 1
-	}
-	fullText, accumulating, aerr := g.docAssembler.tryAssembleDocument(req.UploadBatchID, req.SegmentIndex, segTotal, req.Text)
-	if aerr != nil {
-		http.Error(w, aerr.Error(), http.StatusBadRequest)
-		return
-	}
-	if accumulating != nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(accumulating)
-		return
-	}
-	if req.ChunkSize <= 0 {
-		req.ChunkSize = 1000
-	}
-	if req.Overlap < 0 {
-		req.Overlap = 0
-	}
-	if req.Importance <= 0 {
-		req.Importance = 0.5
-	}
-
-	chunks := splitTextIntoChunks(fullText, req.ChunkSize, req.Overlap)
-	batchID := generateObjectID("batch")
-	now := time.Now().UTC()
-	memoryIDs := make([]string, 0, len(chunks))
-	errs := []string{}
-
-	for i, chunk := range chunks {
-		evID := generateObjectID("evt")
-		title := req.Title
-		if title == "" {
-			title = fmt.Sprintf("chunk_%d", i)
-		} else {
-			title = fmt.Sprintf("%s_chunk_%d", title, i)
-		}
-		importance := req.Importance
-		ev := schemas.Event{
-			SchemaVersion: schemas.DynamicEventSchemaV04,
-			Identity: schemas.EventIdentity{
-				EventID:     evID,
-				WorkspaceID: req.WorkspaceID,
-			},
-			Actor: schemas.EventActor{
-				AgentID:   req.AgentID,
-				SessionID: req.SessionID,
-			},
-			Time: schemas.EventTime{
-				EventTime: now.UnixMilli(),
-			},
-			EventInfo: schemas.EventDescriptor{
-				EventType:  string(schemas.EventTypeMemoryWriteRequested),
-				Importance: &importance,
-			},
-			Payload: map[string]any{
-				"text":         chunk,
-				"title":        title,
-				"chunk_index":  i,
-				"chunk_total":  len(chunks),
-				"import_batch": batchID,
-			},
-		}
-		ack, err := g.runtime.SubmitIngest(ev)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("chunk_%d: %v", i, err))
-			continue
-		}
-		if mid, ok := ack["memory_id"].(string); ok {
-			memoryIDs = append(memoryIDs, mid)
-		}
-	}
-
-	result := map[string]any{
-		"status":     "ok",
-		"batch_id":   batchID,
-		"chunks":     len(chunks),
-		"memory_ids": memoryIDs,
-	}
-	if len(errs) > 0 {
-		result["errors"] = errs
-		result["status"] = "partial"
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
-}
-
 // splitTextIntoChunks divides text into chunks of at most chunkSize runes,
 // with optional overlap.  Splits prefer paragraph / sentence boundaries when
 // they fall within the last 20% of the chunk window.

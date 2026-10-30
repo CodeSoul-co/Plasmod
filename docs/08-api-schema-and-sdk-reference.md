@@ -690,8 +690,7 @@ post(path, body)
 
 ### 08.19.2. Node.js
 
-路径：`sdk/nodejs`；包名当前为 `andb-sdk-node`，标记为 private；类为 `AndbClient`。目前公开能力主要是
-consistency mode 操作，命名仍处于兼容迁移状态，稳定性为 Partial。
+路径：`sdk/nodejs`；0.2 提供 `PlasmodClient` 与兼容别名 `AndbClient`、TypeScript 类型、摄入/query/evidence、对象/State、维护、更正遗忘及回执查询。写入不自动重试。新接口要求支持[记忆接入契约](16-memory-lifecycle-integration.md)的服务端版本；包名保持 `andb-sdk-node`（private）。
 
 ### 08.19.3. SDK 兼容原则
 

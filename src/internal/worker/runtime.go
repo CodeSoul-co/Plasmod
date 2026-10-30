@@ -26,6 +26,7 @@ import (
 	"plasmod/src/internal/semantic"
 	"plasmod/src/internal/storage"
 	"plasmod/src/internal/worker/chain"
+	"plasmod/src/internal/worker/cognition"
 	"plasmod/src/internal/worker/consistency"
 	"plasmod/src/internal/worker/nodes"
 )
@@ -54,22 +55,27 @@ type runtimeSummaryVersionCounter interface {
 }
 
 type Runtime struct {
-	wal               eventbackbone.WAL
-	bus               eventbackbone.Bus
-	plane             dataplane.DataPlane
-	coord             *coordinator.Hub
-	policy            *semantic.PolicyEngine
-	planner           semantic.QueryPlanner
-	materializer      *materialization.Service
-	preCompute        *materialization.PreComputeService
-	assembler         *evidence.Assembler
-	evCache           *evidence.Cache
-	derivationLog     *eventbackbone.DerivationLog
-	policyDecisionLog *eventbackbone.PolicyDecisionLog
-	nodeManager       *nodes.Manager
-	storage           storage.RuntimeStorage
-	tieredObjects     *storage.TieredObjectStore
-	queryChain        *chain.QueryChain
+	cognitionProvider  cognition.Provider
+	wal                eventbackbone.WAL
+	bus                eventbackbone.Bus
+	plane              dataplane.DataPlane
+	coord              *coordinator.Hub
+	policy             *semantic.PolicyEngine
+	planner            semantic.QueryPlanner
+	materializer       *materialization.Service
+	preCompute         *materialization.PreComputeService
+	assembler          *evidence.Assembler
+	evCache            *evidence.Cache
+	derivationLog      *eventbackbone.DerivationLog
+	policyDecisionLog  *eventbackbone.PolicyDecisionLog
+	nodeManager        *nodes.Manager
+	storage            storage.RuntimeStorage
+	tieredObjects      *storage.TieredObjectStore
+	queryChain         *chain.QueryChain
+	mainChain          *chain.MainChain
+	memoryChain        *chain.MemoryPipelineChain
+	collaborationChain *chain.CollaborationChain
+	maintenanceMu      sync.Mutex
 	// lastMem tracks the most-recent memory ID per "agentID:sessionID" so ConflictMerge
 	// can fire synchronously in SubmitIngest (not only async via subscriber).
 	lastMem           map[string]string
@@ -133,26 +139,29 @@ func CreateRuntime(
 	tieredObjs *storage.TieredObjectStore,
 ) *Runtime {
 	return &Runtime{
-		wal:               wal,
-		bus:               bus,
-		plane:             plane,
-		coord:             coord,
-		policy:            policy,
-		planner:           planner,
-		materializer:      materializer,
-		preCompute:        preCompute,
-		assembler:         assembler,
-		evCache:           evCache,
-		derivationLog:     derivationLog,
-		policyDecisionLog: policyDecisionLog,
-		nodeManager:       nodeManager,
-		storage:           store,
-		tieredObjects:     tieredObjs,
-		queryChain:        chain.CreateQueryChain(nodeManager),
-		lastMem:           make(map[string]string),
-		memoryBackend:     newMemoryBackendRouterFromEnv(),
-		consistencyConfig: consistency.DefaultConfig(),
-		capabilities:      schemas.DefaultRuntimeCapabilities(),
+		wal:                wal,
+		bus:                bus,
+		plane:              plane,
+		coord:              coord,
+		policy:             policy,
+		planner:            planner,
+		materializer:       materializer,
+		preCompute:         preCompute,
+		assembler:          assembler,
+		evCache:            evCache,
+		derivationLog:      derivationLog,
+		policyDecisionLog:  policyDecisionLog,
+		nodeManager:        nodeManager,
+		storage:            store,
+		tieredObjects:      tieredObjs,
+		queryChain:         chain.CreateQueryChain(nodeManager),
+		mainChain:          chain.CreateMainChain(nodeManager),
+		memoryChain:        chain.CreateMemoryPipelineChain(nodeManager),
+		collaborationChain: chain.CreateCollaborationChain(nodeManager),
+		lastMem:            make(map[string]string),
+		memoryBackend:      newMemoryBackendRouterFromEnv(),
+		consistencyConfig:  consistency.DefaultConfig(),
+		capabilities:       schemas.DefaultRuntimeCapabilities(),
 	}
 }
 
@@ -438,6 +447,28 @@ func (r *Runtime) StartSubscriber(ctx context.Context, sub *EventSubscriber) {
 		return
 	}
 	sub.ConfigureCapabilities(r.capabilities)
+	if r.MemoryBankMode {
+		sub.memoryMaintenance = func(ev schemas.Event) error {
+			if ev.Identity.TenantID == "" || ev.Identity.WorkspaceID == "" {
+				return nil
+			}
+			cursor := ""
+			for {
+				req := MaintenanceRequest{OperationID: "background:" + ev.Identity.EventID + ":" + cursor, Operation: "decay", TenantID: ev.Identity.TenantID, WorkspaceID: ev.Identity.WorkspaceID, AgentID: ev.Actor.AgentID, AfterID: cursor, Limit: 100}
+				out, err := r.Maintain(ctx, req)
+				if err != nil {
+					return err
+				}
+				if out.FailedCount > 0 {
+					return fmt.Errorf("maintenance %s partially failed", out.OperationID)
+				}
+				if !out.HasMore {
+					return nil
+				}
+				cursor = out.NextCursor
+			}
+		}
+	}
 	sub.SetVisibilityBoundary(func() int64 {
 		return r.ConsistencyStatus().VisibleWatermark
 	})
@@ -539,6 +570,14 @@ func (r *Runtime) projectWALEntryCanonicalOnly(ctx context.Context, entry eventb
 func (r *Runtime) projectWALEntryWithOptions(ctx context.Context, entry eventbackbone.WALEntry, rebuildRetrieval bool) (map[string]any, error) {
 	materializationStarted := time.Now()
 	ev := entry.Event.NormalizeDynamicEventV04()
+	if r.referencesForgotten(ev.Identity.EventID, ev.Identity.TenantID, ev.Identity.WorkspaceID, map[string]bool{}) || r.isForgotten(schemas.CanonicalMemoryID(ev), ev.Identity.TenantID, ev.Identity.WorkspaceID) {
+		return map[string]any{"status": "forgotten", "event_id": ev.Identity.EventID, "lsn": entry.LSN}, nil
+	}
+	for _, id := range append(ev.Causality.SourceObjectIDs, ev.Causality.SourceObjectID) {
+		if id != "" && r.referencesForgotten(id, ev.Identity.TenantID, ev.Identity.WorkspaceID, map[string]bool{}) {
+			return nil, errors.New("cannot derive from forgotten source")
+		}
+	}
 	if existing, ok := r.storage.Objects().GetEvent(ev.Identity.EventID); ok {
 		existing = existing.NormalizeDynamicEventV04()
 		if existing.Time.WalLSN > 0 && existing.Time.WalLSN != entry.LSN {
@@ -584,74 +623,92 @@ func (r *Runtime) projectWALEntryWithOptions(ctx context.Context, entry eventbac
 	// Canonical state is authoritative and is committed before the disposable
 	// retrieval projection. A failed retrieval write is retried from WAL; query
 	// visibility is still gated by the Controller's visible watermark.
-	r.stateProjectionMu.Lock()
-	var state *schemas.State
-	var stateVersions []schemas.ObjectVersion
-	if includeState {
-		state, stateVersions = r.prepareStateMutation(mat.State, mat.StateVersion)
-	}
-	mat.State = state
-	projection := storage.CanonicalProjection{
-		Event: &ev,
-		State: state,
-	}
-	if includeMemory {
-		projection.Memory = &mat.Memory
-	}
-	if includeEdges {
-		projection.Edges = make([]schemas.Edge, 0, len(mat.Edges))
-		for _, edge := range mat.Edges {
-			if !includeState && (edge.SrcType == string(schemas.ObjectTypeAgentState) || edge.DstType == string(schemas.ObjectTypeAgentState)) {
-				continue
-			}
-			if !includeArtifact && (edge.SrcType == string(schemas.ObjectTypeArtifact) || edge.DstType == string(schemas.ObjectTypeArtifact)) {
-				continue
-			}
-			projection.Edges = append(projection.Edges, edge)
+	var materializationLatency, retrievalLatency time.Duration
+	var projection storage.CanonicalProjection
+	err := r.mainChain.Project(ctx, func() error {
+		r.stateProjectionMu.Lock()
+		var state *schemas.State
+		var stateVersions []schemas.ObjectVersion
+		if includeState {
+			state, stateVersions = r.prepareStateMutation(mat.State, mat.StateVersion)
 		}
-		projection.IncludeEventBaseEdges = true
-		projection.IncludeMemoryBaseEdges = true
-	}
-	if includeVersions {
-		projection.Versions = append(projection.Versions, mat.Version)
-		projection.Versions = append(projection.Versions, stateVersions...)
-	}
-	if includeArtifact && mat.Artifact != nil {
-		projection.Artifact = mat.Artifact
-		projection.IncludeArtifactBaseEdges = includeEdges
-		if includeVersions && mat.ArtifactVersion != nil {
-			projection.Versions = append(projection.Versions, *mat.ArtifactVersion)
+		mat.State = state
+		projection = storage.CanonicalProjection{
+			Event: &ev,
+			State: state,
 		}
-	}
-	if err := r.storage.ApplyCanonicalProjection(projection); err != nil {
+		if includeMemory {
+			projection.Memory = &mat.Memory
+		}
+		if includeEdges {
+			projection.Edges = make([]schemas.Edge, 0, len(mat.Edges))
+			for _, edge := range mat.Edges {
+				if !includeState && (edge.SrcType == string(schemas.ObjectTypeAgentState) || edge.DstType == string(schemas.ObjectTypeAgentState)) {
+					continue
+				}
+				if !includeArtifact && (edge.SrcType == string(schemas.ObjectTypeArtifact) || edge.DstType == string(schemas.ObjectTypeArtifact)) {
+					continue
+				}
+				projection.Edges = append(projection.Edges, edge)
+			}
+			projection.IncludeEventBaseEdges = true
+			projection.IncludeMemoryBaseEdges = true
+		}
+		if includeVersions {
+			projection.Versions = append(projection.Versions, mat.Version)
+			projection.Versions = append(projection.Versions, stateVersions...)
+		}
+		if includeArtifact && mat.Artifact != nil {
+			projection.Artifact = mat.Artifact
+			projection.IncludeArtifactBaseEdges = includeEdges
+			if includeVersions && mat.ArtifactVersion != nil {
+				projection.Versions = append(projection.Versions, *mat.ArtifactVersion)
+			}
+		}
+		if err := r.storage.ApplyCanonicalProjection(projection); err != nil {
+			r.stateProjectionMu.Unlock()
+			return err
+		}
 		r.stateProjectionMu.Unlock()
+		return nil
+	}, func() error {
+		if includeMemory && r.MemoryBankMode {
+			result := r.memoryChain.Ingest(func() error { return r.extractConversation(ctx, ev, mat.Memory) }, schemas.AlgorithmDispatchInput{Operation: "ingest", MemoryIDs: []string{mat.Memory.MemoryID}, AgentID: mat.Memory.AgentID, SessionID: mat.Memory.SessionID}, func() error {
+				return r.updateInferredProfile(mat.Memory.TenantID, mat.Memory.WorkspaceID, mat.Memory.AgentID)
+			})
+			if !result.OK {
+				return errors.New(result.Error)
+			}
+		}
+		return nil
+	}, func() error {
+		materializationLatency = time.Since(materializationStarted)
+
+		retrievalStarted := time.Now()
+		if rebuildMemoryProjection || rebuildFlatEventProjection {
+			if err := r.plane.Ingest(record); err != nil {
+				return err
+			}
+			r.flushDirty.Store(true)
+			if includeMemory && r.capabilities.TierProfile != "no_hot" && r.capabilities.TierProfile != "warm_only" {
+				salience := mat.Memory.Importance
+				if salience <= 0 {
+					salience = 0.5
+				}
+				if r.tieredObjects != nil {
+					r.tieredObjects.PromoteMemory(mat.Memory, salience)
+				} else if r.storage.HotCache() != nil && salience >= schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold {
+					r.storage.HotCache().Put(mat.Memory.MemoryID, "memory", mat.Memory, salience)
+				}
+			}
+		}
+		retrievalLatency = time.Since(retrievalStarted)
+
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	r.stateProjectionMu.Unlock()
-	if includeMemory && r.MemoryBankMode {
-		r.nodeManager.DispatchAlgorithmDispatch("ingest", []string{mat.Memory.MemoryID}, "", "", mat.Memory.AgentID, mat.Memory.SessionID, nil)
-	}
-	materializationLatency := time.Since(materializationStarted)
-
-	retrievalStarted := time.Now()
-	if rebuildMemoryProjection || rebuildFlatEventProjection {
-		if err := r.plane.Ingest(record); err != nil {
-			return nil, err
-		}
-		r.flushDirty.Store(true)
-		if includeMemory && r.capabilities.TierProfile != "no_hot" && r.capabilities.TierProfile != "warm_only" {
-			salience := mat.Memory.Importance
-			if salience <= 0 {
-				salience = 0.5
-			}
-			if r.tieredObjects != nil {
-				r.tieredObjects.PromoteMemory(mat.Memory, salience)
-			} else if r.storage.HotCache() != nil && salience >= schemas.DefaultAlgorithmConfig().HotTierSalienceThreshold {
-				r.storage.HotCache().Put(mat.Memory.MemoryID, "memory", mat.Memory, salience)
-			}
-		}
-	}
-	retrievalLatency := time.Since(retrievalStarted)
 
 	// The ingest checkpoint State is part of the canonical commit above.
 	// Specialized keyed-state, tool-trace, and derivation workers remain on the
@@ -667,17 +724,17 @@ func (r *Runtime) projectWALEntryWithOptions(ctx context.Context, entry eventbac
 	// cross-event races); this synchronous pass ensures the conflict_resolved
 	// edge is present before SubmitIngest returns — critical for test queries
 	// and any caller that reads edges immediately after ingest.
-	if includeMemory && includeEdges && mat.Memory.AgentID != "" &&
+	if !r.MemoryBankMode && includeMemory && includeEdges && mat.Memory.AgentID != "" &&
 		mat.Memory.SessionID != "" &&
 		mat.Memory.MemoryType == string(schemas.MemoryTypeEpisodic) &&
 		!visibilityOnlyModeEnabled() &&
 		!shouldSkipConflictMergeForEvent(ev) {
-		key := mat.Memory.AgentID + ":" + mat.Memory.SessionID
+		key := stableID(mat.Memory.TenantID, mat.Memory.WorkspaceID, mat.Memory.AgentID, mat.Memory.SessionID)
 		r.lastMemMu.RLock()
 		prevID, hasPrev := r.lastMem[key]
 		r.lastMemMu.RUnlock()
 		if hasPrev {
-			r.nodeManager.DispatchConflictMerge(mat.Memory.MemoryID, prevID, string(schemas.ObjectTypeMemory))
+			r.collaborationChain.Resolve(mat.Memory.MemoryID, prevID)
 		}
 		r.lastMemMu.Lock()
 		r.lastMem[key] = mat.Memory.MemoryID
@@ -827,7 +884,7 @@ func (r *Runtime) executeQuery(req schemas.QueryRequest, readWatermarkLSN int64)
 				otherIDs = append(otherIDs, id)
 			}
 		}
-		out := r.nodeManager.DispatchAlgorithmDispatch("recall", memoryIDs, req.QueryText, "", req.AgentID, "", nil)
+		out := r.DispatchAlgorithm("recall", memoryIDs, req.QueryText, "", req.AgentID, "", nil)
 		result.ObjectIDs = append(out.ScoredRefs, otherIDs...)
 	}
 	promotionStarted := time.Now()
@@ -1643,7 +1700,11 @@ func (r *Runtime) DispatchAlgorithm(
 	if r.nodeManager == nil {
 		return schemas.AlgorithmDispatchOutput{Operation: operation}
 	}
-	return r.nodeManager.DispatchAlgorithmDispatch(operation, memoryIDs, query, nowTS, agentID, sessionID, signals)
+	out, result := r.memoryChain.RunAlgorithm(schemas.AlgorithmDispatchInput{Operation: operation, MemoryIDs: memoryIDs, Query: query, NowTS: nowTS, AgentID: agentID, SessionID: sessionID, Signals: signals}, r.persistDerivedMemories)
+	if !result.OK {
+		out.Error = result.Error
+	}
+	return out
 }
 
 // DispatchRecall combines query retrieval with algorithm-level Recall scoring.
@@ -1696,7 +1757,7 @@ func (r *Runtime) DispatchRecall(
 		// ExecuteQuery already applied governance and persisted reinforcement.
 		algoOut.ScoredRefs = visibleRefs
 	} else if r.nodeManager != nil {
-		algoOut = r.nodeManager.DispatchAlgorithmDispatch(
+		algoOut = r.DispatchAlgorithm(
 			"recall", visibleRefs, query,
 			now.Format(time.RFC3339), agentID, sessionID, nil,
 		)
@@ -1817,6 +1878,10 @@ func (r *Runtime) DispatchShare(fromAgentID, toAgentID, memoryID string) (string
 // DispatchShareWithContract validates an optional ShareContract before the
 // derived object enters the normal WAL/materialization/visibility pipeline.
 func (r *Runtime) DispatchShareWithContract(fromAgentID, toAgentID, memoryID, contractID string) (string, error) {
+	return r.collaborationChain.Share(fromAgentID, toAgentID, memoryID, contractID, r.shareWithContract)
+}
+
+func (r *Runtime) shareWithContract(fromAgentID, toAgentID, memoryID, contractID string) (string, error) {
 	fromAgentID = strings.TrimSpace(fromAgentID)
 	toAgentID = strings.TrimSpace(toAgentID)
 	memoryID = strings.TrimSpace(memoryID)
@@ -1824,7 +1889,7 @@ func (r *Runtime) DispatchShareWithContract(fromAgentID, toAgentID, memoryID, co
 		return "", fmt.Errorf("%w: memory_id, from_agent_id, and to_agent_id are required", ErrShareInvalid)
 	}
 	mem, ok := r.peekCanonicalMemory(memoryID)
-	if !ok {
+	if !ok || !mem.IsActive || r.ObjectForgotten(memoryID) {
 		return "", fmt.Errorf("%w: memory %s", ErrShareNotFound, memoryID)
 	}
 	sourceRecord := memoryAccessRecord(mem)
@@ -1876,7 +1941,7 @@ func (r *Runtime) DispatchShareWithContract(fromAgentID, toAgentID, memoryID, co
 		},
 		Object: schemas.EventObject{ObjectID: sharedID, ObjectType: string(schemas.ObjectTypeMemory), ObjectSubtype: "shared"},
 		Causality: schemas.EventCausality{
-			SourceObjectID: memoryID, TargetObjectID: sharedID, EdgeKind: string(schemas.EdgeTypeDerivedFrom),
+			CausalRefs: []string{memoryID}, SourceObjectID: memoryID, TargetObjectID: sharedID, EdgeKind: string(schemas.EdgeTypeDerivedFrom),
 		},
 		Access: schemas.EventAccess{
 			Consistency: string(schemas.AccessConsistencyStrict), Visibility: string(schemas.MemoryScopeRestrictedShared),
@@ -1911,7 +1976,7 @@ func shareContractMatchesSourceScope(contract schemas.ShareContract, access sche
 // DispatchConflictResolve resolves a memory conflict and returns the winner ID.
 func (r *Runtime) DispatchConflictResolve(leftID, rightID string) string {
 	if r.nodeManager != nil {
-		return r.nodeManager.DispatchConflictMergeWithWinner(leftID, rightID, "memory")
+		return r.collaborationChain.Resolve(leftID, rightID)
 	}
 	return leftID
 }
@@ -1938,7 +2003,7 @@ func formatQueryPathMainChainLines(req schemas.QueryRequest, result dataplane.Se
 func formatQueryPathMemoryPipelineLines(store storage.RuntimeStorage, objectIDs []string) []string {
 	lines := []string{
 		"phase=query_path",
-		"memory_pipeline_chain not_reexecuted=runs_on_ingest_and_subscriber",
+		"memory_pipeline_chain recall_path=RunAlgorithm",
 	}
 	if store == nil {
 		lines = append(lines, "retrieved_memory_seeds=0", "object_store=nil")

@@ -22,8 +22,8 @@ type MemoryBankAlgorithm struct {
 	states map[string]schemas.MemoryAlgorithmState // keyed by memoryID
 
 	conflictRegistry *ConflictRegistry
-	signals         map[string]MemorySignals // admission signal cache
-	profiles        map[string]*ProfileState // keyed by agentID
+	signals          map[string]MemorySignals // admission signal cache
+	profiles         map[string]*ProfileState // keyed by agentID
 	// memoryCache stores the full Memory objects needed for conflict detection.
 	// DetectConflicts requires MemoryType and Content, which are not stored in
 	// MemoryAlgorithmState, so we cache them here keyed by memoryID.
@@ -33,13 +33,13 @@ type MemoryBankAlgorithm struct {
 // New creates a MemoryBankAlgorithm with the provided config.
 func New(id string, cfg Config) *MemoryBankAlgorithm {
 	return &MemoryBankAlgorithm{
-		id:              id,
-		cfg:             cfg,
-		states:          make(map[string]schemas.MemoryAlgorithmState),
+		id:               id,
+		cfg:              cfg,
+		states:           make(map[string]schemas.MemoryAlgorithmState),
 		conflictRegistry: NewConflictRegistry(),
-		signals:        make(map[string]MemorySignals),
-		profiles:        make(map[string]*ProfileState),
-		memoryCache:     make(map[string]schemas.Memory),
+		signals:          make(map[string]MemorySignals),
+		profiles:         make(map[string]*ProfileState),
+		memoryCache:      make(map[string]schemas.Memory),
 	}
 }
 
@@ -101,13 +101,14 @@ func (mb *MemoryBankAlgorithm) Ingest(memories []schemas.Memory, ctx schemas.Alg
 		}
 
 		st := schemas.MemoryAlgorithmState{
-			MemoryID:                m.MemoryID,
-			AlgorithmID:            AlgorithmID,
-			Strength:               strength,
-			RetentionScore:         admScore,
-			RecallCount:            0,
+			MemoryID:       m.MemoryID,
+			AdmissionScore: admScore, AdmissionReason: "initial_admission", EvidenceEventIDs: append([]string(nil), m.SourceEventIDs...),
+			AlgorithmID:             AlgorithmID,
+			Strength:                strength,
+			RetentionScore:          admScore,
+			RecallCount:             0,
 			SuggestedLifecycleState: suggestedState,
-			UpdatedAt:              now,
+			UpdatedAt:               now,
 		}
 		mb.states[m.MemoryID] = st
 		out = append(out, st)
@@ -156,14 +157,9 @@ func (mb *MemoryBankAlgorithm) Update(memories []schemas.Memory, signals map[str
 		currentState := st.SuggestedLifecycleState
 		if conflictPenalty >= 0.7 && currentState != string(schemas.MemoryLifecycleQuarantined) {
 			st.SuggestedLifecycleState = string(schemas.MemoryLifecycleQuarantined)
-		} else if currentState == string(schemas.MemoryLifecycleCandidate) {
-			// Re-evaluate admission
-			sig := mb.signals[m.MemoryID]
-			if ComputeAdmissionScore(mb.cfg, sig) >= mb.cfg.THActive {
-				st.SuggestedLifecycleState = string(schemas.MemoryLifecycleActive)
-			}
 		}
 
+		mb.evaluateAdmissionLocked(m, &st, reaffirmSet[m.MemoryID])
 		st.UpdatedAt = now
 		mb.states[m.MemoryID] = st
 		out = append(out, st)
@@ -313,7 +309,7 @@ func (mb *MemoryBankAlgorithm) Compress(memories []schemas.Memory, ctx schemas.A
 	portraitState := profile.Serialize()
 
 	src := memories[0]
-	summaryID := fmt.Sprintf("%smb_cmp_%s_%d", schemas.IDPrefixSummary, src.AgentID, time.Now().UnixNano())
+	summaryID := derivedID("compress", memories)
 
 	// Update source states with summary refs
 	for _, m := range memories {
@@ -327,7 +323,8 @@ func (mb *MemoryBankAlgorithm) Compress(memories []schemas.Memory, ctx schemas.A
 	}
 
 	return []schemas.Memory{{
-		MemoryID:           summaryID,
+		MemoryID: summaryID,
+		TenantID: src.TenantID, WorkspaceID: src.WorkspaceID, Scope: src.Scope, Access: src.Access, OwnerType: src.OwnerType, SourceEventIDs: sourceEvents(memories), PolicyTags: src.PolicyTags, TTL: src.TTL, ValidTo: src.ValidTo,
 		MemoryType:        string(schemas.MemoryTypeSemantic),
 		AgentID:           src.AgentID,
 		SessionID:         src.SessionID,
@@ -386,7 +383,9 @@ func (mb *MemoryBankAlgorithm) Decay(memories []schemas.Memory, nowTS string) []
 		// Only states set by Ingest/Update are re-evaluated.
 		currentState := st.SuggestedLifecycleState
 		if currentState != string(schemas.MemoryLifecycleQuarantined) &&
-			currentState != string(schemas.MemoryLifecycleArchived) {
+			currentState != string(schemas.MemoryLifecycleArchived) &&
+			currentState != string(schemas.MemoryLifecycleCandidate) &&
+			currentState != string(schemas.MemoryLifecycleCompressed) {
 			conflictPenalty := mb.conflictRegistry.MaxSeverity(m.MemoryID)
 			if conflictPenalty >= 0.7 {
 				st.SuggestedLifecycleState = string(schemas.MemoryLifecycleQuarantined)
@@ -397,6 +396,7 @@ func (mb *MemoryBankAlgorithm) Decay(memories []schemas.Memory, nowTS string) []
 			}
 		}
 
+		mb.evaluateAdmissionLocked(m, &st, false)
 		st.UpdatedAt = nowTS
 		mb.states[m.MemoryID] = st
 		out = append(out, st)
@@ -448,7 +448,7 @@ func (mb *MemoryBankAlgorithm) Summarize(memories []schemas.Memory, ctx schemas.
 	portraitState := profile.Serialize()
 
 	src := memories[0]
-	summaryID := fmt.Sprintf("%smb_sum_%s_%d", schemas.IDPrefixSummary, src.AgentID, time.Now().UnixNano())
+	summaryID := derivedID("summarize", memories)
 
 	// Update source states with summary refs
 	for _, m := range memories {
@@ -462,7 +462,8 @@ func (mb *MemoryBankAlgorithm) Summarize(memories []schemas.Memory, ctx schemas.
 	}
 
 	return []schemas.Memory{{
-		MemoryID:           summaryID,
+		MemoryID: summaryID,
+		TenantID: src.TenantID, WorkspaceID: src.WorkspaceID, Scope: src.Scope, Access: src.Access, OwnerType: src.OwnerType, SourceEventIDs: sourceEvents(memories), PolicyTags: src.PolicyTags, TTL: src.TTL, ValidTo: src.ValidTo,
 		MemoryType:        string(schemas.MemoryTypeSemantic),
 		AgentID:           src.AgentID,
 		SessionID:         src.SessionID,
@@ -511,11 +512,11 @@ func (mb *MemoryBankAlgorithm) getOrInitLocked(memoryID, now string) schemas.Mem
 		return st
 	}
 	return schemas.MemoryAlgorithmState{
-		MemoryID:     memoryID,
-		AlgorithmID: AlgorithmID,
-		Strength:    mb.cfg.InitialStrength["episodic"],
+		MemoryID:       memoryID,
+		AlgorithmID:    AlgorithmID,
+		Strength:       mb.cfg.InitialStrength["episodic"],
 		RetentionScore: 1.0,
-		UpdatedAt:   now,
+		UpdatedAt:      now,
 	}
 }
 

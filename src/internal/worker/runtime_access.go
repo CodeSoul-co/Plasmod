@@ -93,6 +93,9 @@ func (r *Runtime) objectAccessDecision(
 	readWatermarkLSN int64,
 ) (schemas.AccessDecision, bool) {
 	record := r.canonicalAccessRecord(objectID)
+	if r.isForgotten(objectID, principal.TenantID, principal.WorkspaceID) || r.ObjectForgotten(objectID) {
+		return schemas.AccessDecision{}, false
+	}
 	if !record.exists {
 		if r.VectorOnlyMode || vectorOnlyModeEnabled() || r.capabilities.MaterializationProfile == "none" || strings.TrimSpace(req.WarmSegmentID) != "" {
 			return schemas.AccessDecision{
@@ -387,4 +390,10 @@ func (r *Runtime) filterResponseEvidenceByAccess(
 		}
 	}
 	resp.Provenance = provenance
+}
+
+// CanReadObject applies the same canonical scope and forgotten-source gate as query.
+func (r *Runtime) CanReadObject(req schemas.QueryRequest, id string) bool {
+	_, allowed := r.objectAccessDecision(req, r.accessPrincipal(req), r.contractsForAccess(), id, int64(^uint64(0)>>1))
+	return allowed
 }

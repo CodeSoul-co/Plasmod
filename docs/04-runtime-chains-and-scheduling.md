@@ -2,6 +2,8 @@
 
 > Language: 中文 | [English](en/04-runtime-chains-and-scheduling.md)
 
+> 2026-10-30 接线更新：正式摄入经过 MainChain.Submit/Project，记忆操作/召回经过 MemoryPipelineChain.RunAlgorithm，查询推理经过 QueryChain，分享/显式冲突决议经过 CollaborationChain。生产 Orchestrator 已绑定相同 Runtime。新维护和恢复行为见[第 16 章](16-memory-lifecycle-integration.md)。下文未迁移的 generic scheduler/future 仍不是已完成能力。
+
 ---
 
 把 Chain 作为动态执行路径，依次还原 Ingest、Memory、Query 和 Collaboration 的真实调用。
@@ -78,10 +80,10 @@ HTTP canonical POST -> handler -> Object/Edge/Policy/Contract store
 
 | Chain | Concrete object | 主路径如何进入 |
 |---|---|---|
-| MainChain | `chain.MainChain` | Orchestrator task 可调用；Event Runtime 主写不调用它 |
-| MemoryPipelineChain | concrete | Orchestrator task 可调用；subscriber 通常直接逐 worker dispatch |
+| MainChain | `chain.MainChain` | Runtime 主写/回放调用 Submit/Project；Orchestrator 绑定同一 Runtime |
+| MemoryPipelineChain | concrete | Runtime 治理/维护/召回调用 RunAlgorithm；subscriber 经 Chain |
 | QueryChain | Runtime 持有 | `executeQuery` 在 retrieval/assembler 后同步调用 |
-| CollaborationChain | concrete | Orchestrator task 可调用；internal API 通常直接 Runtime dispatch |
+| CollaborationChain | concrete | Runtime share/decision 与 subscriber 经 CollaborationChain |
 
 因此不存在一个对所有请求生效的 central Chain Router。`Orchestrator.execute` 有 type switch，但没有 Gateway/Runtime submit call site。
 
@@ -224,7 +226,7 @@ Orchestrator 没有 dependency、deadline、tenant、cost、resource request、r
 | 类型 | Chain |
 | 目标 | 将 Dynamic Event 变为 WAL record、canonical objects 和 retrieval projection |
 | 关键路径 | 是 |
-| 成熟度 | 完整主写链；`MainChain` concrete abstraction 仅部分接线 |
+| 成熟度 | 主写/回放/后台辅助路径已接入 MainChain；见第 16 章 |
 
 ### 04.3.2. 代码入口
 
@@ -258,7 +260,7 @@ canonical commit 先于 retrieval ingest。若 retrieval 写失败，controller 
 
 ### 04.3.4. MainChain abstraction
 
-`MainChain.Run(MainChainInput)` 依次调用 object/state/tool/index/graph workers。它假设 WAL 已写，但 Runtime 主写链并不调用 MainChain；Orchestrator 才会调用它，且 Orchestrator 没有主请求 submit caller。因此 MainChain 是真实可测试组合对象，但不是当前权威 Event write transaction。
+`MainChain.Submit/Project` 是当前 Runtime 的权威入口，协调校验、WAL/水位、canonical、记忆治理和索引。`Run(MainChainInput)` 保留 worker-only 兼容行为；生产 Orchestrator 绑定 Runtime，避免使用旧入口绕过持久化。
 
 ### 04.3.5. Canonical object rules
 
@@ -298,7 +300,7 @@ canonical commit 先于 retrieval ingest。若 retrieval 写失败，controller 
 ### 04.3.9. 缺口
 
 1. 已完成：checkpoint State 与 StateVersion 进入 visibility transaction，并返回 `state_id`；
-2. 合并 MainChain 与 Runtime 主链或明确废弃其主链含义；
+2. 已完成 MainChain 与 Runtime 主链接线（第 16 章）；
 3. worker error 必须进入 ACK/maintenance status；
 4. 增加 projection/canonical divergence marker；
 5. 为 duplicate Event 的 payload conflict 定义拒绝/覆盖策略。
@@ -774,7 +776,7 @@ Bootstrap starts Orchestrator goroutines and registers it, but Gateway/Runtime d
 
 - Orchestrator priority is non-preemptive and can starve low priority。
 - submit times out at 30 s and increments dropped；no durable queue/retry/result/cancel。
-- `Completed` increments even if payload type mismatch or ChainResult failed。
+- `Completed` 仅统计成功；失败/非法 payload 计入 `Failed`。
 - Controller has robust generation/pause/retry/checkpoint semantics but only for write visibility。
 - No fairness, tenant isolation, resource health or deadline scheduling beyond write SLA。
 

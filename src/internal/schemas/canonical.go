@@ -65,31 +65,47 @@ type Event struct {
 	Extensions      EventExtensions `json:"extensions,omitempty"`
 }
 
+type MemorySourceSpan struct {
+	EventID    string `json:"event_id"`
+	Start      int    `json:"start"`
+	End        int    `json:"end"`
+	Quote      string `json:"quote"`
+	ObservedAt int64  `json:"observed_at"`
+}
+type MemoryConclusion struct {
+	Text      string   `json:"text"`
+	SourceIDs []string `json:"source_ids"`
+	Uncertain bool     `json:"uncertain"`
+}
 type Memory struct {
-	MemoryID       string          `json:"memory_id"`
-	MemoryType     string          `json:"memory_type"`
-	TenantID       string          `json:"tenant_id,omitempty"`
-	WorkspaceID    string          `json:"workspace_id,omitempty"`
-	AgentID        string          `json:"agent_id"`
-	SessionID      string          `json:"session_id"`
-	OwnerType      string          `json:"owner_type"`
-	Scope          string          `json:"scope"`
-	Level          int             `json:"level"`
-	Content        string          `json:"content"`
-	Summary        string          `json:"summary"`
-	SourceEventIDs []string        `json:"source_event_ids"`
-	Confidence     float64         `json:"confidence"`
-	Importance     float64         `json:"importance"`
-	FreshnessScore float64         `json:"freshness_score"`
-	TTL            int64           `json:"ttl"`
-	ValidFrom      string          `json:"valid_from"`
-	ValidTo        string          `json:"valid_to"`
-	ProvenanceRef  string          `json:"provenance_ref"`
-	Version        int64           `json:"version"`
-	MutationLSN    int64           `json:"mutation_lsn,omitempty"`
-	MaterializedAt string          `json:"materialized_at,omitempty"`
-	Access         CanonicalAccess `json:"access"`
-	IsActive       bool            `json:"is_active"`
+	FactKey        string             `json:"fact_key,omitempty"`
+	SourceSpans    []MemorySourceSpan `json:"source_spans,omitempty"`
+	Conclusions    []MemoryConclusion `json:"conclusions,omitempty"`
+	SummaryMethod  string             `json:"summary_method,omitempty"`
+	MemoryID       string             `json:"memory_id"`
+	MemoryType     string             `json:"memory_type"`
+	TenantID       string             `json:"tenant_id,omitempty"`
+	WorkspaceID    string             `json:"workspace_id,omitempty"`
+	AgentID        string             `json:"agent_id"`
+	SessionID      string             `json:"session_id"`
+	OwnerType      string             `json:"owner_type"`
+	Scope          string             `json:"scope"`
+	Level          int                `json:"level"`
+	Content        string             `json:"content"`
+	Summary        string             `json:"summary"`
+	SourceEventIDs []string           `json:"source_event_ids"`
+	Confidence     float64            `json:"confidence"`
+	Importance     float64            `json:"importance"`
+	FreshnessScore float64            `json:"freshness_score"`
+	TTL            int64              `json:"ttl"`
+	ValidFrom      string             `json:"valid_from"`
+	ValidTo        string             `json:"valid_to"`
+	ProvenanceRef  string             `json:"provenance_ref"`
+	Version        int64              `json:"version"`
+	MutationLSN    int64              `json:"mutation_lsn,omitempty"`
+	MaterializedAt string             `json:"materialized_at,omitempty"`
+	Access         CanonicalAccess    `json:"access"`
+	IsActive       bool               `json:"is_active"`
 	// LifecycleState tracks the management stage (active/compressed/decayed/archived/…).
 	// See MemoryLifecycle constants. Complements IsActive with finer-grained states.
 	LifecycleState string `json:"lifecycle_state,omitempty"`

@@ -13,6 +13,7 @@ import (
 
 	"plasmod/src/internal/eventbackbone"
 	"plasmod/src/internal/schemas"
+	"plasmod/src/internal/worker/chain"
 	"plasmod/src/internal/worker/nodes"
 )
 
@@ -61,6 +62,10 @@ type DispatchHandler func(entry eventbackbone.WALEntry)
 //   - DLQ overflow-safe: panics are never silently dropped — they are either
 //     sent to the deadLetter channel or appended to an in-memory overflow buffer.
 type EventSubscriber struct {
+	mainChain              *chain.MainChain
+	memoryChain            *chain.MemoryPipelineChain
+	collaborationChain     *chain.CollaborationChain
+	memoryMaintenance      func(schemas.Event) error
 	wal                    eventbackbone.WAL
 	manager                *nodes.Manager
 	handlers               []DispatchHandler
@@ -101,7 +106,8 @@ const defaultOverflowCap = 256 // overflow buffer capacity when channel is full
 
 func CreateEventSubscriber(wal eventbackbone.WAL, manager *nodes.Manager) *EventSubscriber {
 	s := &EventSubscriber{
-		wal:                    wal,
+		wal:       wal,
+		mainChain: chain.CreateMainChain(manager), memoryChain: chain.CreateMemoryPipelineChain(manager), collaborationChain: chain.CreateCollaborationChain(manager),
 		manager:                manager,
 		materializationProfile: "full",
 		pollInterval:           200 * time.Millisecond,
@@ -411,10 +417,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		ev := entry.Event.NormalizeDynamicEventV04()
 		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeStateUpdate), string(schemas.EventTypeStateChange), string(schemas.EventTypeCheckpoint):
-			s.manager.DispatchStateMaterialization(ev)
-			if ev.EventInfo.EventType == string(schemas.EventTypeCheckpoint) {
-				s.manager.DispatchStateCheckpoint(ev.Actor.AgentID, ev.Actor.SessionID)
-			}
+			s.mainChain.MaterializeState(ev)
 		}
 	})
 
@@ -426,7 +429,7 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		ev := entry.Event.NormalizeDynamicEventV04()
 		switch ev.EventInfo.EventType {
 		case string(schemas.EventTypeToolCall), string(schemas.EventTypeToolResult):
-			s.manager.DispatchToolTrace(ev)
+			s.mainChain.CaptureToolTrace(ev)
 		}
 	})
 	// ── 1. ReflectionPolicy ───────────────────────────────────────────────
@@ -436,7 +439,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		}
 		ev := entry.Event.NormalizeDynamicEventV04()
 		memID := schemas.CanonicalMemoryID(ev)
-		s.manager.DispatchReflectionPolicy(memID, string(schemas.ObjectTypeMemory))
+		if s.memoryMaintenance == nil {
+			s.memoryChain.Reflect(memID)
+		}
 	})
 
 	// ── 2. ConflictMerge ──────────────────────────────────────────────────
@@ -462,7 +467,9 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		s.mu.Unlock()
 
 		if hasPrev {
-			s.manager.DispatchConflictMerge(newMemID, prevMemID, string(schemas.ObjectTypeMemory))
+			if s.memoryMaintenance == nil {
+				s.collaborationChain.Resolve(newMemID, prevMemID)
+			}
 		}
 	})
 
@@ -483,7 +490,13 @@ func (s *EventSubscriber) addBuiltinHandlers() {
 		s.mu.Unlock()
 
 		if count%s.consolidateEvery == 0 {
-			s.manager.DispatchMemoryConsolidation(ev.Actor.AgentID, ev.Actor.SessionID)
+			if s.memoryMaintenance != nil {
+				if err := s.memoryMaintenance(ev); err != nil {
+					panic(err)
+				}
+			} else {
+				s.memoryChain.Consolidate(ev.Actor.AgentID, ev.Actor.SessionID)
+			}
 		}
 	})
 }
