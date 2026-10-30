@@ -65,7 +65,7 @@ POST /v1/internal/memory/mutate
 
 `GET /v1/internal/memory/mutations/{operation_id}?tenant_id=...&workspace_id=...` 返回 running/partial/completed、forgotten_ids、replacement_id 和 error。partial 可用同一请求继续；不是伪装的原子更正。
 
-范围内按 source_event_ids 与 derived_from/caused_by 追踪。持久遗忘标记保护原文、派生 Memory、依赖 State/evidence 和旧版本；query/evidence/WAL replay 都检查。trace 对已遗忘对象返回 410。新派生不得引用已遗忘来源。该接口是**逻辑遗忘**，不是磁盘/WAL/备份的物理擦除；物理清理由受控 purge/备份保留策略处理。
+引用 Memory ID 时会先撤回其原始 source_event_ids，再在范围内按 source_event_ids 与 derived_from/caused_by 追踪，以免提炼事实遗忘后由原文副本重新出现。持久遗忘标记保护原文、派生 Memory、依赖 State/evidence 和旧版本；query/evidence/WAL replay 都检查。trace 对已遗忘对象返回 410。新派生不得引用已遗忘来源。该接口是**逻辑遗忘**，不是磁盘/WAL/备份的物理擦除；物理清理由受控 purge/备份保留策略处理。
 
 旧 admin delete-by-source 保留兼容；接入方应切换统一 mutation 才获得操作回执、来源闭包及回放屏障。
 

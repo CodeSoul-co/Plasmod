@@ -101,6 +101,13 @@ func (r *Runtime) MutateMemory(ctx context.Context, req MemoryMutationRequest) (
 		forgotten := map[string]bool{}
 		for _, id := range req.ReferenceIDs {
 			forgotten[id] = true
+			// Forgetting an extracted fact must also revoke its original utterance,
+			// otherwise replay or another derivative can reintroduce the same fact.
+			if m, ok := r.storage.Objects().GetMemory(id); ok && m.TenantID == req.TenantID && m.WorkspaceID == req.WorkspaceID {
+				for _, source := range m.SourceEventIDs {
+					forgotten[source] = true
+				}
+			}
 		}
 		// Traverse dependencies only, never session/ownership edges.
 		changed := true

@@ -18,7 +18,7 @@ Derived memories preserve scope, access, source IDs, Event/Version/Edge provenan
 
 ## Mutation and semantic processing
 
-POST `/v1/internal/memory/mutate` accepts operation_id, operation (forget/correct), tenant_id, workspace_id, reference_ids, and replacement Event for correction. GET `/v1/internal/memory/mutations/{id}` with scope reads status. Partial mutations can resume using the same request. Forgotten markers block raw/derived recall, traces, retained versions and WAL resurrection. This is logical forgetting, not physical erasure of backups or WAL.
+POST `/v1/internal/memory/mutate` accepts operation_id, operation (forget/correct), tenant_id, workspace_id, reference_ids, and replacement Event for correction. GET `/v1/internal/memory/mutations/{id}` with scope reads status. Partial mutations can resume using the same request. Memory-ID forgetting first revokes the original source event IDs, preventing raw copies from recreating extracted facts. Forgotten markers block raw/derived recall, traces, retained versions and WAL resurrection. This is logical forgetting, not physical erasure of backups or WAL.
 
 Optional `PLASMOD_MEMORY_LLM_BASE_URL`, `PLASMOD_MEMORY_LLM_MODEL`, and `PLASMOD_MEMORY_LLM_API_KEY` configure Plasmod's provider. User-message extraction validates exact Unicode quote spans and confidence. Semantic summaries require per-conclusion source citations. Provider errors are explicit; without a provider summaries are labeled extractive. Real-model semantic quality requires a separate evaluation.
 

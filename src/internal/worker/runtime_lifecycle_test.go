@@ -242,7 +242,15 @@ func TestLifecycleSummaryFailureDoesNotCompressSources(t *testing.T) {
 }
 
 func TestLifecycleCorrectionAndConflictDecisionsPersist(t *testing.T) {
-	r := lifecycleRuntime(t, nil)
+	t.Setenv(storage.EnvStorage, "disk")
+	t.Setenv(storage.EnvDataDir, t.TempDir())
+	t.Setenv(storage.EnvBadgerInMemory, "false")
+	bundle, err := storage.BuildRuntimeFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bundle.Close() })
+	r := lifecycleRuntime(t, bundle.RuntimeStorage)
 	old := putConversation(t, r, "evt_old", "s", "old preference", 1)
 	replacement := schemas.Event{Identity: schemas.EventIdentity{TenantID: "tenant", WorkspaceID: "workspace"}, Actor: schemas.EventActor{AgentID: "agent", SessionID: "s"}, Payload: map[string]any{"text": "new preference"}}
 	req := MemoryMutationRequest{OperationID: "correct", Operation: "correct", TenantID: "tenant", WorkspaceID: "workspace", ReferenceIDs: []string{old}, Replacement: &replacement}
@@ -276,6 +284,26 @@ func TestLifecycleCorrectionAndConflictDecisionsPersist(t *testing.T) {
 	}
 	if _, err := r.ResolveMemoryConflict(decision); err != nil {
 		t.Fatal(err)
+	}
+	if err := r.ShutdownConsistency(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := bundle.Close(); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err = storage.BuildRuntimeFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := lifecycleRuntime(t, bundle.RuntimeStorage)
+	if state, ok := restored.storage.Objects().GetState(st.StateID); !ok || state.StateValue != st.StateValue {
+		t.Fatal("inferred profile changed across restart")
+	}
+	if result, err := restored.ResolveMemoryConflict(decision); err != nil || result["status"] != "completed" {
+		t.Fatalf("conflict decision lost: %+v %v", result, err)
+	}
+	if recalled := restored.DispatchAlgorithm("recall", []string{a, b}, "preference", "", "agent", "s", nil); !containsString(recalled.ScoredRefs, b) || containsString(recalled.ScoredRefs, a) {
+		t.Fatalf("resolved conflict not restored: %+v", recalled)
 	}
 }
 
@@ -348,5 +376,24 @@ func TestLifecycleDerivedDiskReindexAndForgetRecovery(t *testing.T) {
 	}
 	if got := again.ExecuteQuery(q); containsString(got.Objects, id) {
 		t.Fatalf("forgotten derived memory resurrected after index rebuild: %+v", got)
+	}
+}
+
+func TestForgetExtractedFactRevokesOriginalAndSiblings(t *testing.T) {
+	r := lifecycleRuntime(t, nil)
+	r.ConfigureCognition(extractionProvider{})
+	original := putConversation(t, r, "evt_fact_origin", "s", "Please keep answers concise", 1)
+	factID := ""
+	for _, m := range r.storage.Objects().ListMemories("agent", "s") {
+		if m.MemoryType == "preference_constraint" {
+			factID = m.MemoryID
+		}
+	}
+	if factID == "" {
+		t.Fatal("missing extracted fact")
+	}
+	out, err := r.MutateMemory(context.Background(), MemoryMutationRequest{OperationID: "forget-fact", Operation: "forget", TenantID: "tenant", WorkspaceID: "workspace", ReferenceIDs: []string{factID}})
+	if err != nil || out.Status != "completed" || !containsString(out.ForgottenIDs, original) || !r.ObjectForgotten("evt_fact_origin") {
+		t.Fatalf("original utterance can reintroduce forgotten fact: %+v %v", out, err)
 	}
 }
