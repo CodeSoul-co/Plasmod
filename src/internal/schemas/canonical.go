@@ -78,6 +78,9 @@ type MemoryConclusion struct {
 	Uncertain bool     `json:"uncertain"`
 }
 type Memory struct {
+	FactIdentity   string             `json:"fact_identity,omitempty"`
+	FactValidFrom  string             `json:"fact_valid_from,omitempty"`
+	FactValidTo    string             `json:"fact_valid_to,omitempty"`
 	FactKey        string             `json:"fact_key,omitempty"`
 	SourceSpans    []MemorySourceSpan `json:"source_spans,omitempty"`
 	Conclusions    []MemoryConclusion `json:"conclusions,omitempty"`

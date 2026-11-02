@@ -485,6 +485,7 @@ func (g *Gateway) RegisterAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/internal/memory/conflict/decision", g.handleConflictDecision)
 	mux.HandleFunc("/v1/internal/memory/mutations/", g.handleMutationStatus)
 	mux.HandleFunc("/v1/internal/memory/operations/", g.handleMaintenanceStatus)
+	mux.HandleFunc("/v1/internal/memory/extractions/", g.handleExtractionStatus)
 	mux.HandleFunc("/v1/internal/memory/update", func(w http.ResponseWriter, r *http.Request) { g.handleMaintenanceOperation(w, r, "update") })
 	mux.HandleFunc("/v1/internal/memory/share", g.handleMemoryShare)
 	mux.HandleFunc("/v1/internal/memory/conflict/resolve", g.handleMemoryConflictResolve)

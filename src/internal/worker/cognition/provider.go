@@ -75,7 +75,18 @@ func (p *HTTPProvider) Complete(ctx context.Context, system, input string) (stri
 	return out.Choices[0].Message.Content, nil
 }
 
+// ValidationError identifies rejected provider evidence without exposing its body.
+type ValidationError struct {
+	Code      string
+	FactIndex int
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("invalid extraction: %s (fact %d)", e.Code, e.FactIndex)
+}
+
 type Fact struct {
+	Identity   string  `json:"identity,omitempty"`
 	Key        string  `json:"key,omitempty"`
 	Text       string  `json:"text"`
 	Kind       string  `json:"kind"`
@@ -96,24 +107,47 @@ func Extract(ctx context.Context, p Provider, text string) ([]Fact, error) {
 		Facts []Fact `json:"facts"`
 	}
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil, fmt.Errorf("invalid extraction JSON: %w", err)
+		return nil, &ValidationError{Code: "invalid_json", FactIndex: -1}
 	}
 	runes := []rune(text)
 	if len(out.Facts) > 32 {
-		return nil, errors.New("too many extracted facts")
+		return nil, &ValidationError{Code: "too_many_facts", FactIndex: -1}
 	}
-	for _, f := range out.Facts {
-		if f.Text == "" || (f.Kind != "factual" && f.Kind != "preference_constraint") || f.Confidence < 0 || f.Confidence > 1 || f.Start < 0 || f.End <= f.Start || f.End > len(runes) || string(runes[f.Start:f.End]) != f.Quote {
-			return nil, errors.New("invalid fact type, confidence or source span")
+	for i, f := range out.Facts {
+		// Identity is assigned only by the runtime, never by extraction output.
+		out.Facts[i].Identity = ""
+		code := ""
+		switch {
+		case strings.TrimSpace(f.Text) == "":
+			code = "empty_text"
+		case f.Kind != "factual" && f.Kind != "preference_constraint":
+			code = "invalid_kind"
+		case f.Confidence < 0 || f.Confidence > 1:
+			code = "invalid_confidence"
+		case f.Start < 0 || f.End <= f.Start || f.End > len(runes):
+			code = "invalid_source_offsets"
+		case string(runes[f.Start:f.End]) != f.Quote:
+			code = "source_quote_mismatch"
+		}
+		if code != "" {
+			return nil, &ValidationError{Code: code, FactIndex: i}
 		}
 		for _, ts := range []string{f.ValidFrom, f.ValidTo} {
 			if ts != "" {
 				if _, err := time.Parse(time.RFC3339, ts); err != nil {
-					return nil, errors.New("invalid fact validity time")
+					return nil, &ValidationError{Code: "invalid_validity_time", FactIndex: i}
 				}
 			}
 		}
+		if f.ValidFrom != "" && f.ValidTo != "" {
+			from, _ := time.Parse(time.RFC3339, f.ValidFrom)
+			to, _ := time.Parse(time.RFC3339, f.ValidTo)
+			if !from.Before(to) {
+				return nil, &ValidationError{Code: "invalid_validity_interval", FactIndex: i}
+			}
+		}
 	}
+
 	return out.Facts, nil
 }
 

@@ -3,7 +3,6 @@ package cognitive
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +64,20 @@ func CreateAlgorithmDispatchWorker(
 	return w
 }
 
+// Restore governance before evaluating both requested memories and older candidates.
+func (w *InMemoryAlgorithmDispatchWorker) restoreGovernance(memories []schemas.Memory) error {
+	for _, m := range memories {
+		if stored, ok := w.objStore.GetState("governance:" + w.algo.AlgorithmID() + ":" + m.MemoryID); ok {
+			var state schemas.MemoryAlgorithmState
+			if err := json.Unmarshal([]byte(stored.StateValue), &state); err != nil {
+				return err
+			}
+			w.algo.LoadState(state)
+		}
+	}
+	return nil
+}
+
 func (w *InMemoryAlgorithmDispatchWorker) Info() nodes.NodeInfo {
 	return nodes.NodeInfo{
 		ID:           w.id,
@@ -98,15 +111,8 @@ func (w *InMemoryAlgorithmDispatchWorker) DispatchDurable(in schemas.AlgorithmDi
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	memories := w.fetchMemories(memoryIDs)
-	// Restore per-memory governance from the durable canonical store, including after restart.
-	for _, m := range memories {
-		if stored, ok := w.objStore.GetState("governance:" + w.algo.AlgorithmID() + ":" + m.MemoryID); ok {
-			var state schemas.MemoryAlgorithmState
-			if err := json.Unmarshal([]byte(stored.StateValue), &state); err != nil {
-				return schemas.AlgorithmDispatchOutput{}, err
-			}
-			w.algo.LoadState(state)
-		}
+	if err := w.restoreGovernance(memories); err != nil {
+		return schemas.AlgorithmDispatchOutput{}, err
 	}
 	if restorer, ok := w.algo.(interface{ RestoreMemories([]schemas.Memory) }); ok {
 		restorer.RestoreMemories(w.objStore.ListMemories(agentID, ""))
@@ -239,21 +245,24 @@ func (w *InMemoryAlgorithmDispatchWorker) runIngest(memories []schemas.Memory, c
 		}
 	}
 	states := w.algo.Ingest(fresh, ctx)
-	// Reevaluate existing candidates when independent evidence arrives; identical
-	// content is the conservative fallback until semantic extraction normalizes it.
+	// Reevaluate equivalent candidates on ingest and replay; independent source
+	// events and sessions, not repeated calls, determine admission.
 	var candidates []schemas.Memory
 	for _, m := range w.objStore.ListMemories(ctx.AgentID, "") {
 		if !m.IsActive || m.LifecycleState != "candidate" {
 			continue
 		}
-		for _, added := range fresh {
-			if m.TenantID == added.TenantID && m.WorkspaceID == added.WorkspaceID && m.AgentID == added.AgentID && strings.EqualFold(strings.TrimSpace(m.Content), strings.TrimSpace(added.Content)) {
+		for _, added := range memories {
+			if schemas.SameMemoryFact(m, added) {
 				candidates = append(candidates, m)
 				break
 			}
 		}
 	}
 	if len(candidates) > 0 {
+		if err := w.restoreGovernance(candidates); err != nil {
+			return schemas.AlgorithmDispatchOutput{}, err
+		}
 		states = append(states, w.algo.Update(candidates, nil)...)
 	}
 	if err := w.persistStatesAndApply(states); err != nil {

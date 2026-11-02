@@ -22,3 +22,12 @@ Methods: ingestEvent, ingestDocument, query, recall, listMemories, listStates, e
 The API is v1 and these maintenance/mutation methods require this server revision or later; older servers can return 404/400. There is no fallback to combining delete-and-write, and no client-side admission/decay logic. The SDK does not authenticate end users; configure your authorized proxy and bind tenant/agent identity there.
 
 Run `npm test` for the transport-contract tests.
+
+Extraction failures can be inspected without a strict memory query:
+
+```js
+const status = await client.extractionStatus(eventId, { tenant_id: "user-1", workspace_id: "partner-1" });
+// status.lsn identifies the original WAL entry; error_code classifies rejection.
+```
+
+Recovery uses the existing controlled admin replay API; the SDK does not automatically retry ingestion or replay. See the [memory integration contract](../../docs/en/16-memory-lifecycle-integration.md) for tenant read barriers and multilingual fact identities.

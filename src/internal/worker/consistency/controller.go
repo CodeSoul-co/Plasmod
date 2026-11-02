@@ -229,7 +229,7 @@ func (c *Controller) MarkReplayVisible(entry eventbackbone.WALEntry) error {
 		return nil
 	}
 	acceptedAt := acceptedTime(entry)
-	c.tracker.Accept(entry.LSN, acceptedAt, time.Time{})
+	c.tracker.AcceptTenant(entry.LSN, acceptedAt, time.Time{}, entry.Event.Identity.TenantID)
 	if err := c.tracker.MarkProjecting(entry.LSN, 1); err != nil {
 		return err
 	}
@@ -274,7 +274,7 @@ func (c *Controller) recoverFromWAL(generation uint64) error {
 			}
 			return c.rootCtx.Err()
 		}
-		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
+		c.tracker.AcceptTenant(entry.LSN, acceptedAt, deadline, entry.Event.Identity.TenantID)
 		c.enqueue(projectionTask{
 			entry: entry, mode: mode, lag: lag, acceptedAt: acceptedAt,
 			deadline: deadline, generation: generation,
@@ -355,7 +355,10 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 		gateReadLocked = true
 		waitCtx, cancelWait := context.WithCancel(ctx)
 		stopAdmissionCancel := context.AfterFunc(admissionCtx, cancelWait)
-		err := c.tracker.WaitThrough(waitCtx, c.wal.LatestLSN())
+		c.appendMu.Lock()
+		target := c.tracker.Status().LatestLSN
+		c.appendMu.Unlock()
+		_, err := c.tracker.ReadBarrier(waitCtx, target, normalized.Identity.TenantID, StrictVisible, 0)
 		stopAdmissionCancel()
 		cancelWait()
 		if err != nil {
@@ -386,7 +389,7 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 		if mode == BoundedStaleness {
 			deadline = acceptedAt.Add(lag)
 		}
-		c.tracker.Accept(entry.LSN, acceptedAt, deadline)
+		c.tracker.AcceptTenant(entry.LSN, acceptedAt, deadline, entry.Event.Identity.TenantID)
 	}
 	c.appendMu.Unlock()
 	if err != nil {
@@ -444,19 +447,23 @@ func (c *Controller) Submit(ctx context.Context, ev schemas.Event) (map[string]a
 }
 
 func (c *Controller) WaitForRead(ctx context.Context, req schemas.QueryRequest) error {
+	_, err := c.ReadBarrier(ctx, req)
+	return err
+}
+
+// ReadBarrier captures the accepted WAL prefix and returns its tenant-scoped
+// frontier. Callers must use this frontier for evidence visibility as well.
+func (c *Controller) ReadBarrier(ctx context.Context, req schemas.QueryRequest) (int64, error) {
 	mode, err := ResolveRead(c.currentDefaultMode(), req)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if mode == EventualVisibility {
-		return nil
-	}
+	c.appendMu.Lock()
+	target := c.tracker.Status().LatestLSN
+	c.appendMu.Unlock()
 	waitCtx, cancel := c.withWaitTimeout(ctx)
 	defer cancel()
-	if mode == BoundedStaleness {
-		return c.tracker.WaitWithinLag(waitCtx, c.cfg.BoundedMaxLag)
-	}
-	return c.tracker.WaitThrough(waitCtx, c.wal.LatestLSN())
+	return c.tracker.ReadBarrier(waitCtx, target, strings.TrimSpace(req.TenantID), mode, c.cfg.BoundedMaxLag)
 }
 
 func (c *Controller) SetDefaultMode(raw string) (Mode, error) {

@@ -95,7 +95,7 @@ func (mb *MemoryBankAlgorithm) evaluateAdmissionLocked(m schemas.Memory, st *sch
 	events := map[string]bool{}
 	sessions := map[string]bool{}
 	for _, other := range mb.memoryCache {
-		if !other.IsActive || other.TenantID != m.TenantID || other.WorkspaceID != m.WorkspaceID || other.AgentID != m.AgentID || !sameContent(other.Content, m.Content) {
+		if !other.IsActive || other.TenantID != m.TenantID || other.WorkspaceID != m.WorkspaceID || other.AgentID != m.AgentID || !schemas.SameMemoryFact(other, m) {
 			continue
 		}
 		for _, id := range other.SourceEventIDs {

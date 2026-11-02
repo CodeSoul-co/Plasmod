@@ -181,10 +181,11 @@ func (r *Runtime) ExecuteQueryContext(ctx context.Context, req schemas.QueryRequ
 	r.consistencyMu.Lock()
 	controller := r.consistencyController
 	r.consistencyMu.Unlock()
-	if err := controller.WaitForRead(ctx, req); err != nil {
+	readWatermark, err := controller.ReadBarrier(ctx, req)
+	if err != nil {
 		return schemas.QueryResponse{}, err
 	}
-	return r.executeQuery(req, controller.Status().VisibleWatermark), nil
+	return r.executeQuery(req, readWatermark), nil
 }
 
 // ExecuteQuery preserves the historical no-error API for embedded callers.
