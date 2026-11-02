@@ -56,6 +56,7 @@ export class PlasmodClient {
   listStates(scope, options) { return this.get("/v1/states", scope, options); }
   evidence(id, scope, options) { return this.get(`/v1/traces/${encodeURIComponent(id)}`, scope, options); }
   maintain(request, options) { return this.post("/v1/internal/memory/maintenance", request, options); }
+  extractionStatus(eventId, scope, options) { return this.get(`/v1/internal/memory/extractions/${encodeURIComponent(eventId)}`, scope, options); }
   maintenanceStatus(id, scope, options) { return this.get(`/v1/internal/memory/operations/${encodeURIComponent(id)}`, scope, options); }
   mutate(request, options) { return this.post("/v1/internal/memory/mutate", request, options); }
   forget(request, options) { return this.mutate({ ...request, operation: "forget" }, options); }

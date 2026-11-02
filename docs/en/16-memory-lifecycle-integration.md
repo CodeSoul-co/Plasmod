@@ -24,6 +24,18 @@ Optional `PLASMOD_MEMORY_LLM_BASE_URL`, `PLASMOD_MEMORY_LLM_MODEL`, and `PLASMOD
 
 Explicit attribute keys support fact conflict detection; preference changes are distinguished from contradictions. POST `/v1/internal/memory/conflict/decision` takes operation_id, scope, winner_id, loser_id and kind (factual_conflict/preference_change). Decisions preserve previous evidence and valid time. Inferred profile States retain sources and versions and never overwrite explicit Agent.RoleProfile configuration.
 
+## Extraction isolation, recovery and multilingual evidence (2026-11-02)
+
+Queries with `tenant_id` wait for that tenant's accepted WAL prefix and use the same scoped read watermark for evidence visibility. Unrelated tenant failures do not block these reads or bounded writes. Unscoped queries remain global, and legacy events without a tenant remain dependencies of all tenants. Isolation is at tenant level, preserving dependencies across shared workspaces/agents within a tenant. The global recovery checkpoint still advances only over a contiguous successful prefix. Repair unresolved failures rather than indefinitely retaining their recovery tracking state.
+
+GET `/v1/internal/memory/extractions/{event_id}?tenant_id=...&workspace_id=...` returns a durable receipt with source memory ID, original LSN, base projection status, extraction status/stage, pipeline attempts, fact count, timestamp and classified error code/fact index. It does not store raw provider responses. Extraction `completed` covers admission, not the subsequent base retrieval index projection. Invalid evidence stays rejected; existing projection retry limits are unchanged.
+
+After repairing the provider/dependency, use the existing controlled POST `/v1/admin/replay` with `from_lsn` from the receipt, `limit: 1`, `apply: true`, `confirm: "apply_replay"`. Preview first by omitting apply/confirm. Replay pauses online admission and retains the original event; verify the receipt, strict retrieval and provenance before resuming the application task. Do not create a new event ID to disguise recovery.
+
+Facts persist `fact_identity` and explicit `fact_valid_from`/`fact_valid_to`, separate from materialization time. Different text can share an identity only after the configured provider compares complete assertions and exact source quotes, preserving values, negation, constraints, uncertainty and time. Matching candidates are restricted to the same tenant/workspace/agent, type and explicit validity. Attribute keys and embedding similarity alone never merge evidence. Equivalent decisions must reference a supplied identity and both exact quotes with confidence >= 0.95; distinct/uncertain decisions remain separate. Invalid decisions fail explicitly.
+
+Comparison may add model requests in batches of up to 32 candidates. Valid extraction and resolved identities are cached durably; successful replay reuses them. Each fact keeps its own source event/session/span/version; admission counts independent evidence and conflict detection uses the same identity. Candidate governance is reloaded before reevaluation after restart. Existing facts have a deterministic compatibility identity; replay of historical source events can reconcile previously split candidates without a database reset or automatic full-store rewrite. Real-provider semantic quality still requires separate evaluation.
+
 ## Documents, SDK, and boundaries
 
 Document segments/manifests are durable, scoped and idempotent. Changed content for an existing segment returns 409. Missing segments and per-chunk failures are reported; Unicode offsets and source IDs survive ingestion. Multi-user callers must provide tenant/workspace even though legacy unscoped document requests remain accepted.

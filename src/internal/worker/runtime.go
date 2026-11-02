@@ -56,6 +56,7 @@ type runtimeSummaryVersionCounter interface {
 
 type Runtime struct {
 	cognitionProvider  cognition.Provider
+	cognitionLocks     [64]sync.Mutex
 	wal                eventbackbone.WAL
 	bus                eventbackbone.Bus
 	plane              dataplane.DataPlane

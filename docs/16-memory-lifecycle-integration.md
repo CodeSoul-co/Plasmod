@@ -87,6 +87,29 @@ Plasmod 使用自身 provider 调用 chat completions，单次超时 60 秒，�
 
 已准入的 profile/preference 生成 `StateType=inferred_profile`，含来源 ID、版本及 inferred 标记。它不会修改 Agent.RoleProfile 或覆盖用户明确配置。画像/冲突 State 可通过带 scope 的 `/v1/states` 读取。
 
+## 提炼失败隔离、恢复与多语言证据（2026-11-02）
+
+带 `tenant_id` 的查询按该租户的已接受 WAL 前缀等待投影，并使用相同范围的 `read_watermark_lsn` 做证据可见性判断。其他租户的失败不会阻塞该查询或 bounded 写入。未指定 tenant 的查询仍使用全局屏障；历史无 tenant 的事件保守地影响所有租户。同租户的跨 workspace/agent 共享仍等待整个租户，不能用缩小请求范围绕过尚未完成的共享写入。
+
+全局 `visible_watermark` 仍是连续成功投影的恢复检查点；它可能落后于成功查询的租户读取水位。失败记录保留，不被跳过、清库或假报成功。失败租户的严格查询仍返回错误，原有投影重试次数不变。未修复的失败会继续占用恢复跟踪状态，应定位并恢复，而不是长期忽略全局告警。
+
+`GET /v1/internal/memory/extractions/{event_id}?tenant_id=...&workspace_id=...` 返回持久提炼状态：
+
+- `event_id`、`source_memory_id`、`lsn` 定位原始事件。
+- `base_projection=completed` 表示进入提炼前的 canonical 基础投影已完成。
+- `status=running|failed|completed`，`stage=extract|normalize|materialize|admission`，以及 `attempts`、`fact_count`、`updated_at`。
+- `error_code` 区分 `invalid_json`、`invalid_kind`、`invalid_confidence`、`invalid_source_offsets`、`source_quote_mismatch`、有效时间错误及等价判定错误；事实校验失败含从 0 开始的 `fact_index`，非单条错误为 -1。状态不保存供应商原始响应。
+
+`attempts` 是提炼管线的执行次数，可能复用已缓存事实，不等于模型调用次数。`completed` 只说明提炼与准入完成，不代表后续基础检索索引已成功；完整投影状态仍以 consistency 检查为准。
+
+恢复时先查看上述状态和 `/v1/admin/consistency-mode`。修复 provider 或服务依赖后，复用已有受控接口 `POST /v1/admin/replay`，传 `{"from_lsn":失败LSN,"limit":1,"apply":true,"confirm":"apply_replay"}`；也可先省略 apply/confirm 做 preview。回放暂停在线摄入，使用原始 WAL 事件，成功后推进可见性。确认失败租户的严格查询恢复、状态完成和事实来源后，再恢复业务任务。不要用新事件 ID 重投同一句话冒充原任务恢复。
+
+提炼事实新增 `fact_identity`、`fact_valid_from`、`fact_valid_to`。后两个字段保留提炼的显式事实有效期，与 Memory 的物化时间区分。文本完全一致、类型和有效期一致的事实可复用确定性身份；不同文本通过同一 provider 对完整断言和原文引文做等价判断，支持跨语言和同义表述。候选限制在同 tenant/workspace/agent、类型和显式有效期内；属性 key 或 embedding 相似度不能直接决定合并。只有引用了已提供身份及精确双方引文的 equivalent 结果、且判定置信度至少 0.95，才复用身份。distinct/uncertain 保留独立身份；格式或引用不合法会记录失败。
+
+这可能增加额外模型请求，每批至多 32 个候选；来源与等价判断后的身份持久保存，成功 replay 不重新调用模型。每份事实仍保留自己的 Event、Session、原文范围和版本，证据累计按独立事件、独立会话去重。同一身份用于晋升与冲突检测。恢复旧候选时先加载其持久治理状态；旧事实无需清库，精确文本可按兼容身份参与，新到达的同义事实可关联旧证据。已有分裂的历史候选可通过原事件 replay 归一和重新评估；不会启动全库自动重算。
+
+模型等价判断仍需独立的真实 provider 验收；固定输出回归不构成语义准确率保证。
+
 ## 文档与 SDK
 
 `/v1/ingest/document` 支持 tenant_id、workspace_id、agent_id、session_id、source_id、idempotency_key（或请求头）、text、chunk_size、overlap、upload_batch_id、segment_index、segment_total。

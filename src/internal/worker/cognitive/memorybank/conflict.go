@@ -2,7 +2,6 @@ package memorybank
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"plasmod/src/internal/schemas"
@@ -109,7 +108,10 @@ func DetectConflicts(
 func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 	// Explicit semantic keys let us compare the same attribute without treating
 	// unrelated facts as contradictions. Preference changes are temporal evolution.
-	if a.FactKey != "" && a.FactKey == b.FactKey && !sameContent(a.Content, b.Content) {
+	if a.FactKey != "" && a.FactKey == b.FactKey && !schemas.SameMemoryFact(a, b) {
+		if !factTimeOverlap(a, b) {
+			return nil
+		}
 		if a.MemoryType == "preference_constraint" && b.MemoryType == "preference_constraint" {
 			return nil
 		}
@@ -121,7 +123,7 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 	}
 	// Rule 1: Value contradiction — same type, overlapping time, different content
 	if a.MemoryType == b.MemoryType && a.MemoryType != "" {
-		if !sameContent(a.Content, b.Content) && timeOverlap(a, b) {
+		if !schemas.SameMemoryFact(a, b) && timeOverlap(a, b) {
 			return &ConflictRecord{
 				LeftID: a.MemoryID, RightID: b.MemoryID,
 				Type:       ConflictTypeValue,
@@ -148,7 +150,7 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 
 	// Rule 3: Factual disagreement — high-confidence factual contradicts new memory
 	if a.MemoryType == string(schemas.MemoryTypeFactual) && a.Confidence >= 0.9 {
-		if !sameContent(a.Content, b.Content) && !timeOverlap(a, b) {
+		if !schemas.SameMemoryFact(a, b) && !timeOverlap(a, b) {
 			return &ConflictRecord{
 				LeftID: a.MemoryID, RightID: b.MemoryID,
 				Type:       ConflictTypeFactual,
@@ -177,18 +179,6 @@ func evaluatePair(a, b schemas.Memory, now string) *ConflictRecord {
 	}
 
 	return nil
-}
-
-// sameContent returns true if two content strings are semantically the same.
-// Uses simple heuristics: identical or one is a prefix of the other.
-func sameContent(a, b string) bool {
-	if a == b {
-		return true
-	}
-	// Normalise whitespace
-	a = strings.TrimSpace(strings.ToLower(a))
-	b = strings.TrimSpace(strings.ToLower(b))
-	return a == b
 }
 
 // timeOverlap returns true if two memories have overlapping time validity.
@@ -274,4 +264,14 @@ func (ct ConflictType) String() string {
 	default:
 		return fmt.Sprintf("unknown(%d)", ct)
 	}
+}
+
+func factTimeOverlap(a, b schemas.Memory) bool {
+	if a.FactValidTo != "" && b.FactValidFrom != "" && !parseTime(a.FactValidTo).After(parseTime(b.FactValidFrom)) {
+		return false
+	}
+	if b.FactValidTo != "" && a.FactValidFrom != "" && !parseTime(b.FactValidTo).After(parseTime(a.FactValidFrom)) {
+		return false
+	}
+	return true
 }

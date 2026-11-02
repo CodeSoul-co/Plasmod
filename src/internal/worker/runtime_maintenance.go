@@ -295,7 +295,12 @@ func (r *Runtime) persistDerivedMemoriesContext(ctx context.Context, operation s
 	for i := range derived {
 		m := &derived[i]
 		if saved, ok := r.storage.Objects().GetMemory(m.MemoryID); ok {
+			identity, from, to := m.FactIdentity, m.FactValidFrom, m.FactValidTo
 			*m = saved
+			if operation == "extract" && saved.FactIdentity == "" && identity != "" {
+				m.FactIdentity, m.FactValidFrom, m.FactValidTo = identity, from, to
+				m.Version++
+			}
 		} else if err := r.summarizeContent(ctx, operation, m, sources); err != nil {
 			return err
 		}

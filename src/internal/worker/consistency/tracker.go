@@ -26,6 +26,7 @@ type WatermarkAdvancer interface {
 
 type trackedProjection struct {
 	lsn        int64
+	tenantID   string
 	acceptedAt time.Time
 	deadline   time.Time
 	state      projectionState
@@ -94,6 +95,10 @@ func NewTracker(initialLSN int64, watermark WatermarkAdvancer, checkpoint Checkp
 }
 
 func (t *Tracker) Accept(lsn int64, acceptedAt, deadline time.Time) {
+	t.AcceptTenant(lsn, acceptedAt, deadline, "")
+}
+
+func (t *Tracker) AcceptTenant(lsn int64, acceptedAt, deadline time.Time, tenantID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if lsn <= t.visibleWatermark {
@@ -104,6 +109,7 @@ func (t *Tracker) Accept(lsn int64, acceptedAt, deadline time.Time) {
 	}
 	entry := &trackedProjection{
 		lsn:        lsn,
+		tenantID:   tenantID,
 		acceptedAt: acceptedAt,
 		deadline:   deadline,
 		state:      stateAccepted,
@@ -157,6 +163,7 @@ func (t *Tracker) MarkVisible(lsn int64) error {
 	if !ok {
 		return fmt.Errorf("unknown projection lsn %d", lsn)
 	}
+	previousState, previousErr := entry.state, entry.err
 	entry.state = stateVisible
 	entry.err = nil
 
@@ -177,6 +184,7 @@ func (t *Tracker) MarkVisible(lsn int64) error {
 	}
 	if advanced > t.visibleWatermark {
 		if err := t.checkpoint.Save(advanced); err != nil {
+			entry.state, entry.err = previousState, previousErr
 			return err
 		}
 		t.nextVisibleIndex = nextVisibleIndex
@@ -347,4 +355,52 @@ func (t *Tracker) oldestUnresolvedLocked() *trackedProjection {
 func (t *Tracker) signalLocked() {
 	close(t.notify)
 	t.notify = make(chan struct{})
+}
+
+// ReadBarrier returns a visibility frontier for this tenant, without advancing
+// the global recovery checkpoint past failures belonging to another tenant.
+// Empty tenant IDs remain global dependencies for legacy/shared events.
+func (t *Tracker) ReadBarrier(ctx context.Context, target int64, tenant string, mode Mode, maxLag time.Duration) (int64, error) {
+	for {
+		t.mu.Lock()
+		frontier := target
+		var oldest *trackedProjection
+		var failure *trackedProjection
+		for _, lsn := range t.order {
+			if lsn > target {
+				break
+			}
+			entry := t.entries[lsn]
+			if tenant != "" && entry.tenantID != "" && entry.tenantID != tenant {
+				continue
+			}
+			if entry.state == stateVisible {
+				continue
+			}
+			if oldest == nil {
+				oldest = entry
+				frontier = lsn - 1
+			}
+			if failure == nil && entry.state == stateFailed {
+				failure = entry
+			}
+		}
+		ready := oldest == nil || mode == EventualVisibility || (mode == BoundedStaleness && time.Since(oldest.acceptedAt) <= maxLag)
+		if ready {
+			t.mu.Unlock()
+			return frontier, nil
+		}
+		if failure != nil {
+			err := &ProjectionFailureError{LSN: failure.lsn, Err: failure.err}
+			t.mu.Unlock()
+			return 0, err
+		}
+		notify := t.notify
+		t.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-notify:
+		}
+	}
 }

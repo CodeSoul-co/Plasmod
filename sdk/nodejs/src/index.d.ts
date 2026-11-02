@@ -12,9 +12,15 @@ export interface DynamicEvent {
 export interface Memory extends Scope {
  memory_id: string; content: string; summary: string; memory_type: string; lifecycle_state?: string;
  is_active: boolean; source_event_ids: string[]; version: number; confidence: number;
+ fact_identity?: string; fact_valid_from?: string; fact_valid_to?: string;
  source_spans?: { event_id: string; start: number; end: number; quote: string; observed_at: number }[];
  summary_method?: "extractive" | "semantic";
  [key: string]: unknown;
+}
+export interface ExtractionStatus {
+ event_id: string; source_memory_id: string; lsn: number; base_projection: "completed";
+ status: "running" | "failed" | "completed"; stage: "extract" | "normalize" | "materialize" | "admission";
+ attempts: number; fact_count: number; error_code?: string; fact_index?: number; updated_at: string;
 }
 export interface MaintenanceRequest extends Scope {
  operation_id: string; operation: "ingest" | "update" | "decay" | "compress" | "summarize";
@@ -61,6 +67,7 @@ export class PlasmodClient {
  listStates(scope: Scope, options?: RequestOptions): Promise<Record<string,unknown>[]>;
  evidence(id: string, scope: Scope, options?: RequestOptions): Promise<Record<string,unknown>>;
  maintain(request: MaintenanceRequest, options?: RequestOptions): Promise<MaintenanceReceipt>;
+ extractionStatus(eventId: string, scope: Scope, options?: RequestOptions): Promise<ExtractionStatus>;
  maintenanceStatus(id: string, scope: Scope, options?: RequestOptions): Promise<MaintenanceReceipt>;
  mutate(request: MutationRequest, options?: RequestOptions): Promise<MutationReceipt>;
  forget(request: Omit<MutationRequest,"operation">, options?: RequestOptions): Promise<MutationReceipt>;

@@ -108,3 +108,22 @@ func (g *Gateway) handleConflictDecision(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, out)
 }
+
+func (g *Gateway) handleExtractionStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	q := r.URL.Query()
+	if q.Get("tenant_id") == "" || q.Get("workspace_id") == "" {
+		http.Error(w, "tenant_id and workspace_id are required", 400)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/internal/memory/extractions/")
+	out, ok := g.runtime.ExtractionStatus(q.Get("tenant_id"), q.Get("workspace_id"), id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, out)
+}

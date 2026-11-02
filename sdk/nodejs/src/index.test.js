@@ -62,3 +62,18 @@ test("mutation status scopes and encodes the operation ID", async () => {
  assert.equal((await client.mutationStatus("a/b", { tenant_id: "t", workspace_id: "w" })).status, "partial");
  assert.equal(requested, "http://test/v1/internal/memory/mutations/a%2Fb?tenant_id=t&workspace_id=w");
 });
+
+test("extraction status preserves tenant scope and cancellation", async () => {
+ let requested;
+ const controller = new AbortController();
+ const client = new PlasmodClient("http://test", { fetch: async (url, options) => {
+  requested = [url, options];
+  return { ok: true, json: async () => ({ status: "failed", error_code: "source_quote_mismatch", lsn: 77 }) };
+ } });
+ const status = await client.extractionStatus("event/77", { tenant_id: "tenant A", workspace_id: "w" }, { signal: controller.signal });
+ assert.equal(status.lsn, 77);
+ assert.equal(status.error_code, "source_quote_mismatch");
+ assert.equal(requested[0], "http://test/v1/internal/memory/extractions/event%2F77?tenant_id=tenant+A&workspace_id=w");
+ assert.equal(requested[1].method, "GET");
+ assert.equal(requested[1].signal, controller.signal);
+});
