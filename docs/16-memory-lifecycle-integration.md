@@ -81,6 +81,8 @@ PLASMOD_MEMORY_LLM_API_KEY= # 通过部署环境注入
 
 Plasmod 使用自身 provider 调用 chat completions，单次超时 60 秒，不自动重试 HTTP 调用。`user_message` 提炼只接收事实/持久偏好；每条结果必须有可验证的 Unicode 原文范围、精确引文、置信度和可选有效时间。问题、引用、助手猜测、临时意图、遗忘指令不应提炼为事实。来源校验不等于模型语义正确性保证，模型质量另行验收。
 
+时间字段契约：`valid_from` / `valid_to` 可为空；非空值必须是含 `Z` 或数值时区偏移（如 `+08:00`）的完整 RFC3339 日期时间。只有日期、`today` 等相对表达或缺少时区依据时，提示要求未确定的边界留空，同时在 `text` 和精确 `quote` 中保留原始时间限定。当前 `Extract` 不接收事件参考时钟；不能用主机时钟推断日期，也不能擅自补午夜或时区。两个边界均非空时，起点必须按绝对时刻严格早于终点。不合法输出仍整体失败，不能用空 facts 掩盖错误。
+
 语义摘要必须逐结论引用输入来源；未知引用、空结果和格式错误会失败，不静默回退。未配置 provider 时保留基础 materialization 和明确标记 `summary_method=extractive` 的算法摘要，不宣称已完成语义压缩。
 
 提炼可给出显式属性 `key`；同属性不同事实进入冲突机制，偏好变化不直接视为事实矛盾。`POST /v1/internal/memory/conflict/decision` 接收 operation_id、tenant_id、workspace_id、winner_id、loser_id、kind（factual_conflict / preference_change）。显式决议保存有效时间、旧证据、版本、关系和治理状态；重复请求幂等。

@@ -22,6 +22,8 @@ POST `/v1/internal/memory/mutate` accepts operation_id, operation (forget/correc
 
 Optional `PLASMOD_MEMORY_LLM_BASE_URL`, `PLASMOD_MEMORY_LLM_MODEL`, and `PLASMOD_MEMORY_LLM_API_KEY` configure Plasmod's provider. User-message extraction validates exact Unicode quote spans and confidence. Semantic summaries require per-conclusion source citations. Provider errors are explicit; without a provider summaries are labeled extractive. Real-model semantic quality requires a separate evaluation.
 
+Each extraction validity boundary must be empty or a full RFC3339 date-time with `Z` or an explicit numeric timezone offset. The prompt requires unresolved boundaries to remain empty when the utterance supplies only a date, relative time, or insufficient timezone evidence, while preserving temporal qualifiers in the assertion and exact source quote. `Extract` receives no reference/event clock: it must not infer a date from the host clock or invent midnight/a timezone. When both boundaries are present, the start must be strictly earlier than the end as an absolute instant. Invalid output still fails the whole extraction; it is not converted to empty facts.
+
 Explicit attribute keys support fact conflict detection; preference changes are distinguished from contradictions. POST `/v1/internal/memory/conflict/decision` takes operation_id, scope, winner_id, loser_id and kind (factual_conflict/preference_change). Decisions preserve previous evidence and valid time. Inferred profile States retain sources and versions and never overwrite explicit Agent.RoleProfile configuration.
 
 ## Extraction isolation, recovery and multilingual evidence (2026-11-02)
