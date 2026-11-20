@@ -4,7 +4,7 @@
 
 <div class="column" align="middle">
   <a href="https://github.com/CodeSoul-co/Plasmod/blob/main/LICENSE"><img height="20" src="https://img.shields.io/github/license/CodeSoul-co/Plasmod" alt="license"/></a>
-  <a href="https://hub.docker.com/r/oneflybird/plasmod"><img src="https://img.shields.io/docker/pulls/oneflybird/plasmod" alt="docker-pull-count"/></a>
+  <a href="https://hub.docker.com/r/adamwerw/plasmod/tags?name=v1.0"><img src="https://img.shields.io/docker/pulls/adamwerw/plasmod" alt="docker-pull-count"/></a>
   <a href="https://pypi.org/project/pyplasmod/"><img src="https://img.shields.io/pypi/v/pyplasmod" alt="pypi-version"/></a>
   <a href="https://github.com/CodeSoul-co/Plasmod"><img src="https://img.shields.io/github/stars/CodeSoul-co/Plasmod" alt="github-stars"/></a>
 </div>
@@ -43,22 +43,21 @@ from pyplasmod import EasyPlasmod
 
 ### 2. 使用 Docker 启动 Plasmod
 
-拉取并运行 Plasmod 服务端：
+v1.0 镜像支持 Linux ARM64，也可在 Apple 芯片 Mac 上通过 Docker 运行。
 
 ```bash
-docker pull oneflybird/plasmod
-docker run -d --name plasmod -p 19530:19530 oneflybird/plasmod
+docker pull adamwerw/plasmod:v1.0
+docker run -d --name plasmod -p 127.0.0.1:19530:19530 -p 127.0.0.1:9091:9091 adamwerw/plasmod:v1.0
 ```
 
-服务将在 `http://127.0.0.1:19530` 可用。
+写入和查询使用 `19530` 端口，健康检查使用 `9091` 端口。
 
 ### 3. 连接 Plasmod
 
 ```python
 from pyplasmod import EasyPlasmod
 
-# 连接本地 Plasmod 服务
-with EasyPlasmod(base_url="http://127.0.0.1:19530") as client:
+with EasyPlasmod(base_url="http://127.0.0.1:9091") as client:
     # 检查服务健康状态
     print(client.health())  # {"status": "ok"}
 ```
@@ -226,7 +225,7 @@ Plasmod 与流行的 AI 开发工具集成：
 |------|------|
 | **LangChain** | `PlasmodVectorStore` 适配器无缝集成 LangChain 应用 |
 | **嵌入提供商** | 支持 OpenAI、Cohere、HuggingFace、ONNX 和本地 TF-IDF |
-| **Docker** | 官方镜像 `oneflybird/plasmod` 便于部署 |
+| **Docker** | 官方镜像 `adamwerw/plasmod:v1.0` 便于部署 |
 | **Python SDK** | `pyplasmod` 在 PyPI 可用，提供完整 API 覆盖 |
 
 ### LangChain 集成
@@ -255,7 +254,7 @@ results = vectorstore.similarity_search("greeting")
 
 | 选项 | 描述 |
 |------|------|
-| **Docker（推荐）** | `docker run -d -p 19530:19530 oneflybird/plasmod` |
+| **Docker（推荐）** | `docker run -d -p 127.0.0.1:19530:19530 -p 127.0.0.1:9091:9091 adamwerw/plasmod:v1.0` |
 | **Docker Compose** | 完整栈，包含 MinIO 冷存储 |
 | **从源码构建** | 直接构建和运行 Go 服务 |
 
@@ -349,6 +348,6 @@ Plasmod 开源版基于 [MIT 许可证](LICENSE) 发布。
 <p align="center">
   <a href="https://github.com/CodeSoul-co/Plasmod"><strong>GitHub</strong></a> ·
   <a href="https://github.com/CodeSoul-co/pyplasmod"><strong>Python SDK</strong></a> ·
-  <a href="https://hub.docker.com/r/oneflybird/plasmod"><strong>Docker Hub</strong></a> ·
+  <a href="https://hub.docker.com/r/adamwerw/plasmod/tags?name=v1.0"><strong>Docker Hub</strong></a> ·
   <a href="https://github.com/CodeSoul-co/Plasmod/issues"><strong>Issues</strong></a>
 </p>

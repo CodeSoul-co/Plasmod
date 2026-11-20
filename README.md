@@ -4,7 +4,7 @@
 
 <div class="column" align="middle">
   <a href="https://github.com/CodeSoul-co/Plasmod/blob/main/LICENSE"><img height="20" src="https://img.shields.io/github/license/CodeSoul-co/Plasmod" alt="license"/></a>
-  <a href="https://hub.docker.com/r/oneflybird/plasmod"><img src="https://img.shields.io/docker/pulls/oneflybird/plasmod" alt="docker-pull-count"/></a>
+  <a href="https://hub.docker.com/r/adamwerw/plasmod/tags?name=v1.0"><img src="https://img.shields.io/docker/pulls/adamwerw/plasmod" alt="docker-pull-count"/></a>
   <a href="https://pypi.org/project/pyplasmod/"><img src="https://img.shields.io/pypi/v/pyplasmod" alt="pypi-version"/></a>
   <a href="https://github.com/CodeSoul-co/Plasmod"><img src="https://img.shields.io/github/stars/CodeSoul-co/Plasmod" alt="github-stars"/></a>
 </div>
@@ -45,22 +45,21 @@ from pyplasmod import EasyPlasmod
 
 ### 2. Start Plasmod with Docker
 
-Pull and run the Plasmod server using Docker:
+The v1.0 image supports Linux ARM64, including Docker on Apple Silicon.
 
 ```bash
-docker pull oneflybird/plasmod
-docker run -d --name plasmod -p 19530:19530 oneflybird/plasmod
+docker pull adamwerw/plasmod:v1.0
+docker run -d --name plasmod -p 127.0.0.1:19530:19530 -p 127.0.0.1:9091:9091 adamwerw/plasmod:v1.0
 ```
 
-The server will be available at `http://127.0.0.1:19530`.
+Use port `19530` for ingestion and queries and port `9091` for health checks.
 
 ### 3. Connect to Plasmod
 
 ```python
 from pyplasmod import EasyPlasmod
 
-# Connect to local Plasmod server
-with EasyPlasmod(base_url="http://127.0.0.1:19530") as client:
+with EasyPlasmod(base_url="http://127.0.0.1:9091") as client:
     # Check server health
     print(client.health())  # {"status": "ok"}
 ```
@@ -236,7 +235,7 @@ Plasmod integrates with popular AI development tools:
 |-------------|-------------|
 | **LangChain** | `PlasmodVectorStore` adapter for seamless integration with LangChain applications |
 | **Embedding providers** | Support for OpenAI, Cohere, HuggingFace, ONNX, and local TF-IDF |
-| **Docker** | Official image at `oneflybird/plasmod` for easy deployment |
+| **Docker** | Official image at `adamwerw/plasmod:v1.0` for easy deployment |
 | **Python SDK** | `pyplasmod` available on PyPI with full API coverage |
 
 ### LangChain Integration
@@ -265,7 +264,7 @@ results = vectorstore.similarity_search("greeting")
 
 | Option | Description |
 |--------|-------------|
-| **Docker (recommended)** | `docker run -d -p 19530:19530 oneflybird/plasmod` |
+| **Docker (recommended)** | `docker run -d -p 127.0.0.1:19530:19530 -p 127.0.0.1:9091:9091 adamwerw/plasmod:v1.0` |
 | **Docker Compose** | Full stack with MinIO for cold storage |
 | **From source** | Build and run the Go server directly |
 
@@ -359,6 +358,6 @@ For project and commercial inquiries, contact [duanzhenke@code-soul.com](mailto:
 <p align="center">
   <a href="https://github.com/CodeSoul-co/Plasmod"><strong>GitHub</strong></a> ·
   <a href="https://github.com/CodeSoul-co/pyplasmod"><strong>Python SDK</strong></a> ·
-  <a href="https://hub.docker.com/r/oneflybird/plasmod"><strong>Docker Hub</strong></a> ·
+  <a href="https://hub.docker.com/r/adamwerw/plasmod/tags?name=v1.0"><strong>Docker Hub</strong></a> ·
   <a href="https://github.com/CodeSoul-co/Plasmod/issues"><strong>Issues</strong></a>
 </p>
