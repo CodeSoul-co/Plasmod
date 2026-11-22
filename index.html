@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#193b58">
+  <meta name="description" content="Plasmod 智能体原生数据库本地演示管理台">
+  <title>Plasmod · 数据库管理台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#overview" aria-label="Plasmod 首页"><img src="assets/plasmod.png" alt="Plasmod Agent-native database"></a>
+    <div class="sidebar-caption">DATABASE CONSOLE <span>v1.0</span></div>
+    <nav id="navigation" aria-label="主导航"></nav>
+    <div class="sidebar-bottom"><div class="local-instance"><i class="dot"></i><div><strong>Local instance</strong><small>127.0.0.1 · 演示环境</small></div><span class="connection-icon">⌁</span></div><div class="company"><span>POWERED BY</span><div class="company-logo"><img src="assets/codesoul.png" alt="CodeSoul 公司 Logo"></div></div></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div class="breadcrumbs"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="展开导航">☰</button><span class="server-icon">▤</span><span>Plasmod Console</span><span class="slash">/</span><strong id="breadcrumb">数据库总览</strong></div><div class="topbar-right"><span class="demo-label">DEMO</span><span class="top-status"><i class="dot"></i> 本地演示</span><span class="avatar">CS</span></div></header>
+    <div class="contextbar"><div class="scope-fields"><label>租户 <select id="tenant"><option value="codesoul">codesoul</option></select></label><span class="context-divider"></span><label>工作区 <select id="workspace"><option value="default">default</option><option value="sandbox">sandbox</option></select></label></div><div class="context-note"><span class="tiny-dot"></span>浏览器本地模拟数据 <span class="context-divider"></span><span id="mode-label">TEST MODE</span></div></div>
+    <main id="main" tabindex="-1"></main>
+    <footer class="footer"><span>Plasmod <span class="muted">/</span> Agent-native database</span><span>CodeSoul © 2026 <span class="muted">·</span> 本地演示版</span></footer>
+  </div>
+  <div id="overlay-root"></div><div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

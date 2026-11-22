@@ -1,0 +1,9 @@
+{
+  "name": "plasmod-console",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check app.js && node --check server.mjs && node verify.cjs"
+  }
+}
