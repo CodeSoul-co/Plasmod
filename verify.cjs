@@ -34,18 +34,20 @@ function submit(id,data,dataset={}) {
   const form={id,data,dataset,querySelector:element};
   events.submit[0]({target:form,preventDefault(){}});
 }
-for(const route of ['overview','agents','sessions','memory','query','objects','sharing','maintenance','cleanup']) {
+const titles = {overview:'Database Overview',agents:'Agents',sessions:'Sessions',memory:'Memories',query:'Query & Trace',objects:'Objects',sharing:'Sharing & Resolution',maintenance:'Memory Maintenance',cleanup:'Source Cleanup'};
+for(const [route,title] of Object.entries(titles)) {
   context.location.hash='#'+route;
   run('render()');
-  assert.match(element('#main').innerHTML,/<h1>/,route+' renders');
+  assert.ok(element('#main').innerHTML.includes('<h1>'+title+'</h1>'),route+' renders its English title');
+  assert.doesNotMatch(element('#main').innerHTML,/\b(?:demo(?:nstration)?|mock|simulat\w*)\b/i);
 }
 for(const [key,values] of Object.entries({overview:['system'],agents:['global'],query:['recall','trace'],objects:['states','artifacts','edges','policies'],sharing:['share','conflict'],maintenance:['receipt','extraction']})) {
   for(const value of values){context.location.hash='#'+key;run(`tabs[${JSON.stringify(key)}]=${JSON.stringify(value)};render()`);assert.ok(element('#main').innerHTML.length>500,key+'/'+value);}
 }
 run("scope='sandbox';location.hash='#memory';render()");
-assert.ok(!element('#main').innerHTML.includes('用户希望默认使用中文'),'workspace separation');
+assert.ok(!element('#main').innerHTML.includes('mem_8f3a21b0'),'workspace separation');
 run("scope='default';tabs.query='query';location.hash='#query';render()");
-submit('query-form',{query_text:'中文',query_scope:'default',requester_agent_id:'agent_assistant',top_k:'3',response_mode:'structured_evidence'});
+submit('query-form',{query_text:'terminology',query_scope:'default',requester_agent_id:'agent_assistant',top_k:'3',response_mode:'structured_evidence'});
 check("queryResponse.memories.length===1 && queryResponse.memories[0].agent_id==='agent_assistant'",'query matches text and requester');
 check('db.queryTotal===25','query counter updates');
 submit('query-form',{query_text:'test',query_scope:'default',requester_agent_id:'agent_research',top_k:'3',response_mode:'objects_only',target_object_ids:'mem_8f3a21b0'});
@@ -78,7 +80,7 @@ check('cleanupPreview.eligible.length===0','purge excludes active memory');
 run("previewCleanup({operation:'purge',source_type:'memory_id',source_id:'mem_3b6d05a8',only_if_inactive:'true',include_memory_ids:'true'})");
 check('cleanupPreview.eligible.length===1','purge permits stale memory');
 run("db.mode='prod';tabs.query='query';location.hash='#query'");
-submit('query-form',{query_text:'中文',query_scope:'default',requester_agent_id:'agent_assistant',top_k:'3',response_mode:'structured_evidence'});
-assert.ok(!element('#main').innerHTML.includes('TEST ONLY'),'production hides chain traces');
+submit('query-form',{query_text:'terminology',query_scope:'default',requester_agent_id:'agent_assistant',top_k:'3',response_mode:'structured_evidence'});
+assert.ok(!element('#main').innerHTML.includes('class="chain-card"'),'production hides chain traces');
 assert.equal(run("esc('<script>')"),'&lt;script&gt;','untrusted text is escaped');
 console.log('PASS: 9 pages, secondary tabs, workspace isolation, query, ingest, correction/410, sharing permissions, maintenance pagination/receipts, cleanup preview, prod mode and escaping.');
